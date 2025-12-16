@@ -56,7 +56,7 @@ snakeviz==2.2.1        # Interactive profiler visualization
 # Explicitly listing some deeper dependencies of dev tools for clarity or pinning:
 astroid==3.3.10         # Pylint's AST anlyzer
 dill==0.4.0             # Can be useful for more complex serialization in dev/testing
-filelock==3.16.1        # Often used by testing tools or linters for cache management
+filelock==3.20.1        # Often used by testing tools or linters for cache management
 fsspec==2025.3.2         # May be pulled in by other tools, good to have pinned
 iniconfig==2.1.0        # Pytest dependency
 mpmath==1.3.0           # Sympy dependency, but if dev tools use sympy features
