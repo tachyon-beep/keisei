@@ -63,7 +63,7 @@ mpmath==1.3.0           # Sympy dependency, but if dev tools use sympy features
 pathspec==0.12.1        # Black dependency
 platformdirs==4.3.8     # Flake8 dependency
 pluggy==1.6.0           # Pytest's plugin system
-protobuf==6.31.0        # Can be a dependency of various tools, including W&B or Tensorboard
+protobuf==6.33.5        # Can be a dependency of various tools, including W&B or Tensorboard
 psutil==6.1.0           # Useful for monitoring system resources during dev/tests
 tomlkit==0.13.2         # For parsing pyproject.toml, used by black, pylint, etc.
 types-requests==2.32.0.20250515 # Type stubs
