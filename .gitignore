@@ -84,10 +84,20 @@ wandb/
 .sonarlint
 src/
 
-
-#Ignore vscode AI rules
+# Codacy / VS Code AI rules
 .github/copilot-instructions.md
-
-
-#Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# Test models and checkpoints
+/test_models/
+
+# Analysis outputs
+analytics_output/
+humantools/*.xml
+
+# Temp/scratch files in root
+/*.png
+/*.jpg
+
+# Virtual environments
+.venv/

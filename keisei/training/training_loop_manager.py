@@ -633,6 +633,15 @@ class TrainingLoopManager:
                     current_speed,
                     self.trainer.metrics_manager.pending_progress_updates,
                 )
+            
+            # Update WebUI if enabled (parallel to display update)
+            if self.trainer.webui_manager:
+                self.trainer.webui_manager.update_progress(
+                    self.trainer,
+                    current_speed,
+                    self.trainer.metrics_manager.pending_progress_updates,
+                )
+                
             self.trainer.metrics_manager.pending_progress_updates.clear()
 
             self.last_time_for_sps = current_time
@@ -650,6 +659,10 @@ class TrainingLoopManager:
                 self.display.refresh_dashboard_panels
             ):
                 self.display.refresh_dashboard_panels(self.trainer)
+            
+            # Update WebUI dashboard if enabled (parallel to display refresh)
+            if self.trainer.webui_manager:
+                self.trainer.webui_manager.refresh_dashboard_panels(self.trainer)
 
         self._update_display_if_needed()
 

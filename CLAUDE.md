@@ -11,16 +11,16 @@ Keisei is a production-ready Deep Reinforcement Learning system for mastering Sh
 ### Training
 ```bash
 # Basic training
-python train.py
+python train.py train
 
 # Training with custom config
-python train.py --config my_config.yaml
+python train.py train --config my_config.yaml
 
 # Training with CLI overrides
-python train.py training.learning_rate=0.001 training.total_timesteps=500000
+python train.py train --override training.learning_rate=0.001 --override training.total_timesteps=500000
 
 # Resume from checkpoint
-python train.py --resume_checkpoint_path models/my_model/checkpoint.pt
+python train.py train --resume models/my_model/checkpoint.pt
 
 # Hyperparameter sweep with Weights & Biases
 python -m keisei.training.train_wandb_sweep
@@ -52,13 +52,13 @@ flake8 keisei/             # Linting
 ### Evaluation
 ```bash
 # Evaluate against random opponent
-python -m keisei.evaluation.evaluate \
+python train.py evaluate \
   --agent_checkpoint path/to/model.pt \
   --opponent_type random \
   --num_games 100
 
 # Evaluate against another trained agent
-python -m keisei.evaluation.evaluate \
+python train.py evaluate \
   --agent_checkpoint path/to/model1.pt \
   --opponent_type ppo \
   --opponent_checkpoint path/to/model2.pt \
@@ -66,9 +66,26 @@ python -m keisei.evaluation.evaluate \
   --wandb_log_eval
 ```
 
+### WebUI (Twitch Streaming)
+```bash
+# Enable WebUI for streaming/demo
+python train.py train --override webui.enabled=true
+
+# Custom WebUI configuration
+python train.py train --override webui.enabled=true --override webui.port=8765
+
+# WebUI demo with mock data
+python demo_webui.py
+
+# Access WebUI dashboard
+# WebSocket: ws://0.0.0.0:8765 (accessible from any IP)
+# Dashboard: http://YOUR_SERVER_IP:8766
+# Local access: http://localhost:8766
+```
+
 ## High-Level Architecture
 
-The system uses a manager-based architecture with 9 specialized components orchestrated by the Trainer:
+The system uses a manager-based architecture with 9 core specialized components orchestrated by the Trainer:
 
 1. **SessionManager**: Handles directories, WandB setup, config saving
 2. **ModelManager**: Model creation, checkpoints, mixed precision
@@ -79,6 +96,9 @@ The system uses a manager-based architecture with 9 specialized components orche
 7. **DisplayManager**: Rich console UI, progress bars, logging
 8. **CallbackManager**: Event system, evaluation scheduling, checkpoints
 9. **SetupManager**: Component initialization, validation, dependencies
+
+**Optional Components:**
+- **WebUIManager**: Real-time WebSocket streaming for Twitch/demo (parallel to DisplayManager)
 
 ### Key Design Patterns
 
@@ -104,6 +124,7 @@ The system uses a manager-based architecture with 9 specialized components orche
 - **Training**: `training/trainer.py`, `training/train.py`
 - **Models**: `training/models/resnet_tower.py`, `core/neural_network.py`
 - **Utils**: `utils/unified_logger.py`, `utils/checkpoint.py`
+- **WebUI**: `webui/webui_manager.py`, `webui/static/index.html`
 
 ### Development Notes
 
@@ -112,6 +133,8 @@ The system uses a manager-based architecture with 9 specialized components orche
 - The game engine supports full Shogi rules including drops, promotions, and special rules
 - Experience collection can be parallelized using `training/parallel/` components
 - Evaluation system supports multiple opponent types (random, heuristic, trained agents)
+- WebUI system runs parallel to console display without impacting training performance
+- WebUI requires `websockets` package: `pip install websockets`
 
 ## Development Environment Setup
 
@@ -140,13 +163,17 @@ keisei/
 │   ├── models/              # Neural network architectures
 │   └── parallel/            # Multi-process experience collection
 ├── evaluation/              # Evaluation system with multiple strategies
+├── webui/                   # WebUI streaming system for Twitch/demo
+│   ├── static/              # HTML/CSS/JS frontend files
+│   ├── webui_manager.py     # WebSocket streaming manager
+│   └── web_server.py        # HTTP server for static files
 └── utils/                   # Utilities (logging, checkpoints, profiling)
 ```
 
 ### Configuration System
 - **Primary config**: `default_config.yaml` with comprehensive documentation
 - **Schema validation**: `config_schema.py` using Pydantic models
-- **CLI overrides**: `python train.py training.learning_rate=0.001`
+- **CLI overrides**: `python train.py train --override training.learning_rate=0.001`
 - **Environment variables**: Load from `.env` file for W&B API keys
 
 ### Testing Strategy

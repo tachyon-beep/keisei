@@ -616,4 +616,36 @@ display:
 # - Too many layers? Use more specific keywords
 # - Slow performance? Reduce the number of keywords
 # - Missing important layers? Add broader keywords like "head" or "output"
-#
+
+
+# =============================================================================
+# WEBUI CONFIGURATION (WebUIConfig)
+# =============================================================================
+# Real-time WebUI for streaming training data via WebSocket (ideal for Twitch/demo)
+# Runs parallel to the Rich console display without impacting training performance
+webui:
+  # Enable WebUI streaming service for Twitch/demo streaming
+  enabled: true
+  
+  # WebSocket server port for real-time data streaming
+  port: 8765
+  
+  # Host binding - use "0.0.0.0" for all interfaces (remote access), "localhost" for local only
+  host: "0.0.0.0"
+  
+  # Update frequency in Hz for real-time data
+  update_rate_hz: 2.0
+  
+  # Maximum concurrent WebSocket connections
+  max_connections: 10
+  
+  # Board state update frequency (higher for smoother moves)
+  board_update_rate_hz: 5.0
+  
+  # Metrics update frequency
+  metrics_update_rate_hz: 1.0
+  
+# Access URLs (when enabled):
+# - WebSocket: ws://YOUR_SERVER_IP:8765 (for real-time data)
+# - Dashboard: http://YOUR_SERVER_IP:8766 (HTTP server runs on port+1)
+# - Local access: http://localhost:8766

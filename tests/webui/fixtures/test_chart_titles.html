@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chart Titles Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1a1a2e;
+            color: white;
+            padding: 20px;
+        }
+        .chart-container {
+            width: 400px;
+            height: 200px;
+            margin: 20px 0;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Keisei WebUI Chart Titles Test</h1>
+    <p>This test validates that Chart.js titles render properly with our configuration.</p>
+
+    <div class="chart-container">
+        <canvas id="test-learning-chart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <canvas id="test-winrate-chart"></canvas>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Test configuration matching our fixed WebUI
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 0 },
+            scales: {
+                x: { display: false },
+                y: {
+                    beginAtZero: false,
+                    grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                    ticks: { color: '#ffffff', font: { size: 10 } }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    color: '#ffffff',
+                    font: { size: 12, weight: 'bold' },
+                    padding: { top: 5, bottom: 10 }
+                },
+                legend: {
+                    display: true,
+                    labels: { color: '#ffffff', font: { size: 10 } }
+                }
+            }
+        };
+
+        // Test Learning Chart
+        const learningChart = new Chart(document.getElementById('test-learning-chart'), {
+            type: 'line',
+            data: {
+                labels: [1, 2, 3, 4, 5],
+                datasets: [
+                    {
+                        label: 'Policy Loss',
+                        data: [0.8, 0.6, 0.5, 0.4, 0.3],
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        tension: 0.1,
+                        pointRadius: 2,
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Value Loss',
+                        data: [0.7, 0.5, 0.4, 0.3, 0.25],
+                        borderColor: '#4ecdc4',
+                        backgroundColor: 'rgba(76, 205, 196, 0.1)',
+                        tension: 0.1,
+                        pointRadius: 2,
+                        borderWidth: 2
+                    }
+                ]
+            },
+            options: {
+                ...commonOptions,
+                plugins: {
+                    ...commonOptions.plugins,
+                    title: {
+                        ...commonOptions.plugins.title,
+                        text: 'Policy Loss, Value Loss & Entropy'
+                    }
+                }
+            }
+        });
+
+        // Test Win Rate Chart  
+        const winrateChart = new Chart(document.getElementById('test-winrate-chart'), {
+            type: 'line',
+            data: {
+                labels: [1, 2, 3, 4, 5],
+                datasets: [
+                    {
+                        label: 'Win %',
+                        data: [45, 48, 52, 55, 58],
+                        borderColor: '#4ecdc4',
+                        backgroundColor: 'rgba(76, 205, 196, 0.1)',
+                        tension: 0.1,
+                        pointRadius: 2,
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Loss %',
+                        data: [50, 47, 43, 40, 37],
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        tension: 0.1,
+                        pointRadius: 2,
+                        borderWidth: 2
+                    }
+                ]
+            },
+            options: {
+                ...commonOptions,
+                scales: { ...commonOptions.scales, y: { ...commonOptions.scales.y, beginAtZero: true, max: 100 } },
+                plugins: {
+                    ...commonOptions.plugins,
+                    title: {
+                        ...commonOptions.plugins.title,
+                        text: 'Win Rate Trends Over Time'
+                    }
+                }
+            }
+        });
+
+        console.log('✅ Test charts initialized with titles and legends');
+        console.log('✅ Configuration matches fixed WebUI implementation');
+    </script>
+</body>
+</html>

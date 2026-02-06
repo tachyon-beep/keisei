@@ -84,6 +84,38 @@ class Trainer:
             self.rich_log_messages,
             also_stdout=False,
         )
+
+        # Initialize WebUI manager if enabled
+        self.webui_manager = None
+        self.webui_http_server = None
+        if config.webui.enabled:
+            try:
+                from keisei.webui.webui_manager import WebUIManager
+                from keisei.webui.web_server import WebUIHTTPServer
+                
+                self.webui_manager = WebUIManager(config.webui)
+                self.webui_http_server = WebUIHTTPServer(
+                    host=config.webui.host,
+                    port=config.webui.port + 1  # HTTP server on port+1
+                )
+                
+                # Start WebUI servers
+                if self.webui_manager.start():
+                    self.logger.log("WebUI WebSocket server started successfully")
+                else:
+                    self.logger.log("Failed to start WebUI WebSocket server")
+                    self.webui_manager = None
+                    
+                if self.webui_http_server.start():
+                    self.logger.log(f"WebUI HTTP server available at http://{config.webui.host}:{config.webui.port + 1}")
+                else:
+                    self.logger.log("Failed to start WebUI HTTP server")
+                    self.webui_http_server = None
+                    
+            except ImportError as e:
+                self.logger.log(f"WebUI not available: {e}")
+                self.webui_manager = None
+                self.webui_http_server = None
         self.model_manager = ModelManager(config, args, self.device, self.logger.log)
         self.env_manager = EnvManager(config, self.logger.log)
         self.metrics_manager = MetricsManager(
@@ -364,6 +396,12 @@ class Trainer:
 
         # Finalize display and save console output
         self.display_manager.finalize_display(self.run_name, self.run_artifact_dir)
+        
+        # Cleanup WebUI if enabled
+        if self.webui_manager:
+            self.webui_manager.stop()
+        if self.webui_http_server:
+            self.webui_http_server.stop()
 
     def run_training_loop(self):
         """Executes the main training loop by delegating to TrainingLoopManager."""

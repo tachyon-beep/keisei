@@ -661,6 +661,25 @@ def _create_display_config() -> DisplayConfig:
     return DisplayConfig()  # type: ignore[call-arg]
 
 
+class WebUIConfig(BaseModel):
+    """Configuration for WebUI streaming service for Twitch/demo streaming."""
+    enabled: bool = Field(False, description="Enable WebUI streaming")
+    port: int = Field(8765, description="WebUI server port")
+    host: str = Field("0.0.0.0", description="WebUI server host (0.0.0.0 for all interfaces)")
+    update_rate_hz: float = Field(
+        2.0, description="Update frequency in Hz for real-time data"
+    )
+    max_connections: int = Field(
+        10, description="Maximum concurrent WebSocket connections"
+    )
+    board_update_rate_hz: float = Field(
+        5.0, description="Board state update frequency (higher for smoother moves)"
+    )
+    metrics_update_rate_hz: float = Field(
+        1.0, description="Metrics update frequency"
+    )
+
+
 class AppConfig(BaseModel):
     env: EnvConfig
     training: TrainingConfig
@@ -670,5 +689,6 @@ class AppConfig(BaseModel):
     parallel: ParallelConfig
     demo: Optional[DemoConfig] = None
     display: DisplayConfig = Field(default_factory=_create_display_config)
+    webui: WebUIConfig = Field(default_factory=WebUIConfig)
 
     model_config = {"extra": "forbid"}  # Disallow unknown fields for strict validation

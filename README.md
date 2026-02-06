@@ -558,4 +558,4 @@ We welcome contributions! Please see our development guidelines:
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+I don't believe AI generated code is eligible for copyright but for avoidance of doubt: This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

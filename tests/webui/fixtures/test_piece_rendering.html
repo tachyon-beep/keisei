@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Piece Rendering Unit Test</title>
+    <style>
+        body {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            background: #1a1a2e;
+            color: white;
+            padding: 20px;
+        }
+        
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #444;
+            border-radius: 8px;
+        }
+        
+        .piece {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            line-height: 40px;
+            text-align: center;
+            margin: 5px;
+            border: 1px solid #666;
+            border-radius: 4px;
+            font-size: 24px;
+            vertical-align: top;
+        }
+        
+        .piece.black {
+            background: rgba(76, 205, 196, 0.2);
+            color: #000;
+        }
+        
+        .piece.white {
+            background: rgba(255, 107, 107, 0.2);
+            color: #d32f2f;
+            transform: rotate(180deg);
+        }
+        
+        .piece.white.no-rotate {
+            transform: none;
+        }
+        
+        .test-result {
+            margin-left: 10px;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        
+        .pass { background: rgba(76, 205, 196, 0.3); }
+        .fail { background: rgba(255, 107, 107, 0.3); }
+    </style>
+</head>
+<body>
+    <h1>🧪 Piece Rendering Unit Test</h1>
+    
+    <div class="test-section">
+        <h2>1. Piece Symbol Mapping Test</h2>
+        <div id="mapping-test"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>2. Backend Data Simulation Test</h2>
+        <div id="backend-test"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>3. Promoted Piece Rendering Test</h2>
+        <div id="promoted-test"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>4. Frontend Logic Test Results</h2>
+        <div id="logic-test"></div>
+    </div>
+
+    <script>
+        // Copy the exact pieces mapping from app.js
+        const pieces = {
+            'pawn': { black: '歩', white: '歩' },
+            'lance': { black: '香', white: '香' },
+            'knight': { black: '桂', white: '桂' },
+            'silver': { black: '銀', white: '銀' },
+            'gold': { black: '金', white: '金' },
+            'bishop': { black: '角', white: '角' },
+            'rook': { black: '飛', white: '飛' },
+            'king': { black: '王', white: '王' },
+            'promotedpawn': { black: 'と', white: 'と' },
+            'promotedlance': { black: '成香', white: '成香' },
+            'promotedknight': { black: '成桂', white: '成桂' },
+            'promotedsilver': { black: '成銀', white: '成銀' },
+            'promotedbishop': { black: '馬', white: '馬' },
+            'promotedrook': { black: '龍', white: '龍' }
+        };
+
+        function runMappingTest() {
+            const mappingDiv = document.getElementById('mapping-test');
+            let html = '<h3>Available Piece Mappings:</h3>';
+            
+            for (const [pieceType, colors] of Object.entries(pieces)) {
+                html += `<div><strong>${pieceType}:</strong> black=${colors.black}, white=${colors.white}</div>`;
+            }
+            
+            mappingDiv.innerHTML = html;
+        }
+
+        function simulateBackendData() {
+            // Simulate the exact data structure the backend would send
+            return [
+                { type: 'bishop', color: 'black', promoted: false },
+                { type: 'bishop', color: 'white', promoted: false },
+                { type: 'promoted_bishop', color: 'black', promoted: true },
+                { type: 'promoted_bishop', color: 'white', promoted: true },
+                { type: 'knight', color: 'black', promoted: false },
+                { type: 'knight', color: 'white', promoted: false },
+                { type: 'promoted_knight', color: 'black', promoted: true },
+                { type: 'promoted_knight', color: 'white', promoted: true },
+            ];
+        }
+
+        function runBackendTest() {
+            const backendDiv = document.getElementById('backend-test');
+            const testData = simulateBackendData();
+            
+            let html = '<h3>Simulated Backend Data:</h3>';
+            testData.forEach((piece, i) => {
+                html += `<div><strong>Piece ${i+1}:</strong> type="${piece.type}", color="${piece.color}", promoted=${piece.promoted}</div>`;
+            });
+            
+            backendDiv.innerHTML = html;
+        }
+
+        function testPieceRendering(piece) {
+            // Copy the EXACT logic from app.js
+            console.log(`🧪 Testing piece: ${JSON.stringify(piece)}`);
+            
+            // Get piece symbol - backend already sends the full type like "promoted_bishop"
+            let pieceType = piece.type;
+            console.log(`   pieceType = "${pieceType}"`);
+            
+            // Set base classes
+            let className = `piece ${piece.color}`;
+            
+            // Don't rotate promoted white pieces - they look better unrotated
+            if (piece.color === 'white' && piece.type.startsWith('promoted_')) {
+                className += ' no-rotate';
+            }
+            console.log(`   className = "${className}"`);
+            
+            const symbol = pieces[pieceType]?.[piece.color] || piece.type;
+            console.log(`   symbol lookup: pieces["${pieceType}"]["${piece.color}"] = "${symbol}"`);
+            
+            return {
+                pieceType,
+                className,
+                symbol,
+                isValidSymbol: pieces[pieceType] && pieces[pieceType][piece.color],
+                fallbackUsed: !pieces[pieceType] || !pieces[pieceType][piece.color]
+            };
+        }
+
+        function runPromotedTest() {
+            const promotedDiv = document.getElementById('promoted-test');
+            const testData = simulateBackendData();
+            
+            let html = '<h3>Promoted Piece Rendering:</h3>';
+            testData.forEach((piece, i) => {
+                const result = testPieceRendering(piece);
+                
+                // Create visual piece
+                const pieceElement = document.createElement('div');
+                pieceElement.className = result.className;
+                pieceElement.textContent = result.symbol;
+                pieceElement.style.display = 'inline-block';
+                pieceElement.style.margin = '5px';
+                
+                const isCorrect = result.isValidSymbol && result.symbol !== piece.type;
+                const statusClass = isCorrect ? 'pass' : 'fail';
+                
+                html += `<div style="margin: 10px 0;">
+                    <strong>Test ${i+1}:</strong> ${piece.type} (${piece.color})
+                    <div class="test-result ${statusClass}">
+                        Symbol: "${result.symbol}" | Valid: ${result.isValidSymbol} | Fallback: ${result.fallbackUsed}
+                    </div>
+                </div>`;
+                
+                promotedDiv.innerHTML = html;
+                promotedDiv.appendChild(pieceElement);
+            });
+        }
+
+        function runLogicTest() {
+            const logicDiv = document.getElementById('logic-test');
+            const testData = simulateBackendData();
+            
+            let results = [];
+            testData.forEach((piece, i) => {
+                const result = testPieceRendering(piece);
+                const passed = result.isValidSymbol && result.symbol !== piece.type;
+                results.push({
+                    test: `${piece.type} (${piece.color})`,
+                    passed,
+                    issue: !passed ? (result.fallbackUsed ? 'Symbol lookup failed' : 'Unknown') : 'None'
+                });
+            });
+            
+            const passedTests = results.filter(r => r.passed).length;
+            const failedTests = results.filter(r => !r.passed).length;
+            
+            let html = `<h3>Test Summary: ${passedTests}/${results.length} passed</h3>`;
+            
+            if (failedTests > 0) {
+                html += '<h4>❌ Failed Tests:</h4>';
+                results.filter(r => !r.passed).forEach(result => {
+                    html += `<div class="test-result fail">${result.test}: ${result.issue}</div>`;
+                });
+            }
+            
+            if (passedTests > 0) {
+                html += '<h4>✅ Passed Tests:</h4>';
+                results.filter(r => r.passed).forEach(result => {
+                    html += `<div class="test-result pass">${result.test}: Working correctly</div>`;
+                });
+            }
+            
+            logicDiv.innerHTML = html;
+        }
+
+        // Run all tests
+        console.log('🧪 Starting Piece Rendering Unit Tests...');
+        runMappingTest();
+        runBackendTest();
+        runPromotedTest();
+        runLogicTest();
+        
+        console.log('🧪 Unit tests completed. Check the visual results above.');
+    </script>
+</body>
+</html>
