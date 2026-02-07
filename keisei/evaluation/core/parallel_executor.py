@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..core import (
@@ -102,24 +102,17 @@ class ParallelGameExecutor:
         self._start_memory_monitoring()
 
         try:
-            # Submit all tasks to the executor
-            future_to_task = {}
-            for task in tasks:
-                future = self._executor.submit(self._execute_single_game, task)
-                future_to_task[future] = task
-                self.active_tasks[task.task_id] = task
-
-            # Process completed tasks as they finish
+            loop = asyncio.get_event_loop()
             completed_count = 0
-            for future in as_completed(
-                future_to_task.keys(),
-                timeout=self.timeout_per_game_seconds * len(tasks),
-            ):
-                task = future_to_task[future]
-                completed_count += 1
 
+            async def _run_task(task: ParallelGameTask) -> None:
+                """Run a single game task in the thread pool, tracking results."""
+                nonlocal completed_count
+                self.active_tasks[task.task_id] = task
                 try:
-                    result = future.result()
+                    result = await loop.run_in_executor(
+                        self._executor, self._execute_single_game, task
+                    )
                     if result:
                         successful_results.append(result)
                         self.completed_tasks.append(task)
@@ -129,21 +122,22 @@ class ParallelGameExecutor:
                         error_messages.append(error_msg)
                         self.failed_tasks.append(task)
                         logger.warning(error_msg)
-
                 except Exception as e:
                     error_msg = f"Game {task.task_id} failed with error: {str(e)}"
                     error_messages.append(error_msg)
                     task.error = e
                     self.failed_tasks.append(task)
                     logger.error(error_msg, exc_info=True)
-
                 finally:
-                    # Remove from active tasks
                     self.active_tasks.pop(task.task_id, None)
-
-                    # Call progress callback if provided
+                    completed_count += 1
                     if progress_callback:
                         progress_callback(completed_count, len(tasks))
+
+            await asyncio.wait_for(
+                asyncio.gather(*[_run_task(task) for task in tasks]),
+                timeout=self.timeout_per_game_seconds * len(tasks),
+            )
 
         finally:
             self._stop_memory_monitoring()

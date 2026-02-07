@@ -257,32 +257,9 @@ class CustomEvaluator(BaseEvaluator):
         context: EvaluationContext,
     ) -> GameResult:
         """Evaluate a single step (game) against an opponent."""
-        # For custom evaluation, we can add custom game logic here
-        # For now, delegate to the base implementation which will raise NotImplementedError
-        # This will need to be implemented based on the specific game engine integration
-
-        # Generate a placeholder result for now
-        game_id = f"custom_game_{context.session_id}_{opponent_info.name}"
-
-        # In a real implementation, this would run the actual game
-        logger.debug(f"Running custom game: {agent_info.name} vs {opponent_info.name}")
-
-        # Placeholder result - in real implementation would come from game engine
-        import random
-
-        winner = random.choice([0, 1, None])  # 0=agent, 1=opponent, None=draw
-
-        return GameResult(
-            game_id=game_id,
-            winner=winner,
-            moves_count=random.randint(10, 100),
-            duration_seconds=random.uniform(1.0, 10.0),
-            agent_info=agent_info,
-            opponent_info=opponent_info,
-            metadata={
-                "evaluation_strategy": "custom",
-                "custom_params": self.config.strategy_params,
-            },
+        raise NotImplementedError(
+            "CustomEvaluator.evaluate_step() must be implemented with actual game "
+            "execution logic. Subclass CustomEvaluator and override this method."
         )
 
     async def _run_round_robin_evaluation(

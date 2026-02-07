@@ -326,11 +326,9 @@ class EvaluationResult:
             and isinstance(eval_config_data, dict)
         ):
             try:
-                strategy_val = eval_config_data.get("strategy")
-                config_class = get_config_class(strategy_val)  # type: ignore
-                current_eval_config = config_class.from_dict(eval_config_data)
+                current_eval_config = EvaluationConfig.model_validate(eval_config_data)
             except Exception:
-                current_eval_config = EvaluationConfig.from_dict(eval_config_data)
+                current_eval_config = EvaluationConfig()
 
         if not current_eval_config:
             # This case should ideally be handled by the caller providing a valid config

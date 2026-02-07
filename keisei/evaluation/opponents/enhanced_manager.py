@@ -348,7 +348,7 @@ class EnhancedOpponentManager:
                 score = 1.0 / (1.0 + difficulty_diff * 5)  # Sharper preference
 
                 # Bonus for less recently played opponents
-                recency_bonus = 1.0 / (1.0 + data.games_since_last_played / 10.0)
+                recency_bonus = 1.0 - 1.0 / (1.0 + data.games_since_last_played / 10.0)
                 score *= 1.0 + recency_bonus * 0.3
 
                 opponent_scores.append(score)

@@ -155,7 +155,7 @@ class BenchmarkEvaluator(BaseEvaluator):
         all_game_results: List[GameResult] = []
         errors: List[str] = []
 
-        num_games_per_case = getattr(self.config, "num_games_per_benchmark_case", 1)
+        num_games_per_case = self.config.get_strategy_param("num_games_per_benchmark_case", 1)
 
         for i_case, benchmark_case_opponent_info in enumerate(self.benchmark_suite):
             try:

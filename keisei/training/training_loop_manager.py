@@ -152,21 +152,10 @@ class TrainingLoopManager:
                 # Execute step callbacks using centralized callback manager with error handling
                 self.trainer.callback_manager.execute_step_callbacks(self.trainer)
 
-                # Execute async callbacks if available
-                if self.trainer.callback_manager.has_async_callbacks():
-                    try:
-                        # Run async callbacks in the training loop without blocking
-                        async_metrics = self._run_async_callbacks_sync(self.trainer)
-                        if async_metrics:
-                            # Integrate async callback metrics into training metrics
-                            self.trainer.metrics_manager.pending_progress_updates.update(
-                                async_metrics
-                            )
-                    except Exception as e:
-                        log_both(
-                            f"[ERROR] Async callback execution failed: {e}",
-                            also_to_wandb=False,
-                        )
+                # Note: Async callbacks are only supported via run_async().
+                # The sync run() path always has a running event loop (from asyncio.run
+                # in train.py), so async callbacks cannot be bridged here. Use
+                # run_async() for full async callback support.
 
         except KeyboardInterrupt:
             log_both(
@@ -182,47 +171,6 @@ class TrainingLoopManager:
                 log_info_to_stderr("TrainingLoopManager", log_message)
             log_both(f"Training error in training loop: {e}", also_to_wandb=True)
             raise
-
-    def _run_async_callbacks_sync(
-        self, trainer: "Trainer"
-    ) -> Optional[Dict[str, float]]:
-        """
-        Execute async callbacks in a synchronous context.
-        This method safely handles async callbacks without disrupting the training loop.
-        """
-        try:
-            # Check if there's already a running event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # If we're already in an async context, we cannot use asyncio.run
-                # Instead, we'll skip async callbacks with a warning
-                if hasattr(trainer, "log_both") and trainer.log_both:
-                    trainer.log_both(
-                        "[WARNING] Skipping async callbacks due to existing event loop. "
-                        "Consider using async training loop for full async callback support.",
-                        also_to_wandb=False,
-                    )
-                return None
-            except RuntimeError:
-                # No running event loop, safe to create one
-                pass
-
-            # Create and run the async callback execution
-            async def execute_async_callbacks():
-                return await trainer.callback_manager.execute_step_callbacks_async(
-                    trainer
-                )
-
-            # Use asyncio.run to execute async callbacks
-            return asyncio.run(execute_async_callbacks())
-
-        except Exception as e:
-            if hasattr(trainer, "log_both") and trainer.log_both:
-                trainer.log_both(
-                    f"[ERROR] Failed to execute async callbacks: {e}",
-                    also_to_wandb=False,
-                )
-            return None
 
     async def run_async(self):
         """

@@ -509,7 +509,7 @@ class LadderEvaluator(BaseEvaluator):
 
         all_game_results: List[GameResult] = []
         errors: List[str] = []
-        num_games_per_match = getattr(self.config, "num_games_per_match", 2)
+        num_games_per_match = self.config.get_strategy_param("num_games_per_match", 2)
 
         for opponent_info in selected_opponents:
             try:
@@ -708,11 +708,12 @@ class LadderEvaluator(BaseEvaluator):
             )
             return []
 
-        # Basic filtering by rating range
+        # Basic filtering by rating range (exclude the agent itself by name)
+        agent_name = context.agent_info.name
         filtered_opponents = [
             opp
             for opp in self.opponent_pool
-            if opp.name != agent_rating
+            if opp.name != agent_name
             and opp.metadata.get("initial_rating", 1500) <= agent_rating + 400
             and opp.metadata.get("initial_rating", 1500) >= agent_rating - 400
         ]
@@ -723,7 +724,7 @@ class LadderEvaluator(BaseEvaluator):
         )
 
         # Select top N opponents for the ladder, where N is configurable
-        num_opponents_to_select = getattr(self.config, "num_opponents_to_select", 5)
+        num_opponents_to_select = self.config.get_strategy_param("num_opponents_to_select", 5)
         selected_opponents = filtered_opponents[:num_opponents_to_select]
 
         self.logger.info(
