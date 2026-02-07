@@ -1,1 +1,0 @@
-"""Tournament evaluation test modules."""
