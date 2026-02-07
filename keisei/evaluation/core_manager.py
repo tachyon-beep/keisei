@@ -119,50 +119,26 @@ class EvaluationManager:
             model_dir=self.model_dir,
             wandb_active=self.wandb_active,
         )
-        # FIXED: Check if we're in an async context and use appropriate method
+        # Guard against being called from an async context.
+        # Nested event loops are not supported on Python 3.12+.
         try:
-            # Check if there's a running event loop
             asyncio.get_running_loop()
-            # If we get here, we're in an async context - this shouldn't happen for evaluate_checkpoint
-            # which is designed for synchronous use. Return a sync wrapper.
-            import sys
-
-            if sys.version_info >= (3, 7):
-                # For Python 3.7+, we can create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    # CRITICAL FIX: Use performance manager for ALL evaluations
-                    if self.performance_safeguards_enabled:
-                        result = loop.run_until_complete(
-                            self.performance_manager.run_evaluation_with_safeguards(
-                                evaluator, agent_info, context
-                            )
-                        )
-                    else:
-                        result = loop.run_until_complete(
-                            evaluator.evaluate(agent_info, context)
-                        )
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
-                return result
-            else:
-                # Fallback for older Python versions
-                raise RuntimeError(
-                    "Cannot run evaluation synchronously from within async context. "
-                    "Use evaluate_checkpoint_async() instead."
-                )
         except RuntimeError:
-            # No running event loop, safe to use asyncio.run
-            if self.performance_safeguards_enabled:
-                return asyncio.run(
-                    self.performance_manager.run_evaluation_with_safeguards(
-                        evaluator, agent_info, context
-                    )
+            pass  # No running event loop — safe to proceed
+        else:
+            raise RuntimeError(
+                "evaluate_checkpoint() cannot be called from an async context. "
+                "Use evaluate_checkpoint_async() instead."
+            )
+
+        if self.performance_safeguards_enabled:
+            return asyncio.run(
+                self.performance_manager.run_evaluation_with_safeguards(
+                    evaluator, agent_info, context
                 )
-            else:
-                return asyncio.run(evaluator.evaluate(agent_info, context))
+            )
+        else:
+            return asyncio.run(evaluator.evaluate(agent_info, context))
 
     async def evaluate_checkpoint_async(
         self, agent_checkpoint: str, _opponent_checkpoint: Optional[str] = None
@@ -246,49 +222,26 @@ class EvaluationManager:
             model_dir=self.model_dir,
             wandb_active=self.wandb_active,
         )
-        # FIXED: Check if we're in an async context and use appropriate method
+        # Guard against being called from an async context.
+        # Nested event loops are not supported on Python 3.12+.
         try:
-            # Check if there's a running event loop
             asyncio.get_running_loop()
-            # If we get here, we're in an async context - this shouldn't happen for evaluate_current_agent
-            # which is designed for synchronous use from callbacks. Return a sync wrapper.
-            import sys
-
-            if sys.version_info >= (3, 7):
-                # For Python 3.7+, we can create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    # CRITICAL FIX: Use performance manager for current agent evaluation
-                    if self.performance_safeguards_enabled:
-                        result = loop.run_until_complete(
-                            self.performance_manager.run_evaluation_with_safeguards(
-                                evaluator, agent_info, context
-                            )
-                        )
-                    else:
-                        result = loop.run_until_complete(
-                            evaluator.evaluate(agent_info, context)
-                        )
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
-            else:
-                # Fallback for older Python versions
-                raise RuntimeError(
-                    "Cannot run evaluation synchronously from within async context. "
-                    "Use evaluate_current_agent_async() instead."
-                )
         except RuntimeError:
-            # No running event loop, safe to use asyncio.run
-            if self.performance_safeguards_enabled:
-                result = asyncio.run(
-                    self.performance_manager.run_evaluation_with_safeguards(
-                        evaluator, agent_info, context
-                    )
+            pass  # No running event loop — safe to proceed
+        else:
+            raise RuntimeError(
+                "evaluate_current_agent() cannot be called from an async context. "
+                "Use evaluate_current_agent_async() instead."
+            )
+
+        if self.performance_safeguards_enabled:
+            result = asyncio.run(
+                self.performance_manager.run_evaluation_with_safeguards(
+                    evaluator, agent_info, context
                 )
-            else:
-                result = asyncio.run(evaluator.evaluate(agent_info, context))
+            )
+        else:
+            result = asyncio.run(evaluator.evaluate(agent_info, context))
 
         # Restore training mode after evaluation
         if hasattr(model, "train"):

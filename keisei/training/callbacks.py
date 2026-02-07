@@ -194,44 +194,44 @@ class EvaluationCallback(Callback):
                     ),
                 )
 
-                if getattr(self.eval_cfg, "elo_registry_path", None):
-                    try:
-                        registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
-                        snapshot = {
-                            "current_id": trainer.run_name,
-                            "current_rating": registry.get_rating(trainer.run_name),
-                            "opponent_id": os.path.basename(str(opponent_ckpt)),
-                            "opponent_rating": registry.get_rating(
-                                os.path.basename(str(opponent_ckpt))
-                            ),
-                            "last_outcome": (
-                                "win"
+            # Elo tracking is independent of logging availability
+            if getattr(self.eval_cfg, "elo_registry_path", None):
+                try:
+                    registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
+                    snapshot = {
+                        "current_id": trainer.run_name,
+                        "current_rating": registry.get_rating(trainer.run_name),
+                        "opponent_id": os.path.basename(str(opponent_ckpt)),
+                        "opponent_rating": registry.get_rating(
+                            os.path.basename(str(opponent_ckpt))
+                        ),
+                        "last_outcome": (
+                            "win"
+                            if eval_results
+                            and eval_results.summary_stats.win_rate
+                            > eval_results.summary_stats.loss_rate
+                            else (
+                                "loss"
                                 if eval_results
-                                and eval_results.summary_stats.win_rate
-                                > eval_results.summary_stats.loss_rate
-                                else (
-                                    "loss"
-                                    if eval_results
-                                    and eval_results.summary_stats.loss_rate
-                                    > eval_results.summary_stats.win_rate
-                                    else "draw"
-                                )
-                            ),
-                            "top_ratings": sorted(
-                                registry.ratings.items(),
-                                key=lambda x: x[1],
-                                reverse=True,
-                            )[:3],
-                        }
-                        trainer.evaluation_elo_snapshot = snapshot
-                    except (OSError, RuntimeError, ValueError, AttributeError) as e:
-                        if trainer.log_both is not None:
-                            trainer.log_both(
-                                f"[ERROR] Failed to update Elo registry: {type(e).__name__}: {e}",
-                                also_to_wandb=True,
+                                and eval_results.summary_stats.loss_rate
+                                > eval_results.summary_stats.win_rate
+                                else "draw"
                             )
-                        trainer.evaluation_elo_snapshot = None
-            # EvaluationManager always handles model mode switching; nothing else to do
+                        ),
+                        "top_ratings": sorted(
+                            registry.ratings.items(),
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )[:3],
+                    }
+                    trainer.evaluation_elo_snapshot = snapshot
+                except (OSError, RuntimeError, ValueError, AttributeError) as e:
+                    if trainer.log_both is not None:
+                        trainer.log_both(
+                            f"[ERROR] Failed to update Elo registry: {type(e).__name__}: {e}",
+                            also_to_wandb=True,
+                        )
+                    trainer.evaluation_elo_snapshot = None
 
 
 class AsyncEvaluationCallback(AsyncCallback):
@@ -312,44 +312,44 @@ class AsyncEvaluationCallback(AsyncCallback):
                     ),
                 )
 
-                # Handle Elo registry updates
-                if getattr(self.eval_cfg, "elo_registry_path", None):
-                    try:
-                        registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
-                        snapshot = {
-                            "current_id": trainer.run_name,
-                            "current_rating": registry.get_rating(trainer.run_name),
-                            "opponent_id": os.path.basename(str(opponent_ckpt)),
-                            "opponent_rating": registry.get_rating(
-                                os.path.basename(str(opponent_ckpt))
-                            ),
-                            "last_outcome": (
-                                "win"
+            # Elo tracking is independent of logging availability
+            if getattr(self.eval_cfg, "elo_registry_path", None):
+                try:
+                    registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
+                    snapshot = {
+                        "current_id": trainer.run_name,
+                        "current_rating": registry.get_rating(trainer.run_name),
+                        "opponent_id": os.path.basename(str(opponent_ckpt)),
+                        "opponent_rating": registry.get_rating(
+                            os.path.basename(str(opponent_ckpt))
+                        ),
+                        "last_outcome": (
+                            "win"
+                            if eval_results
+                            and eval_results.summary_stats.win_rate
+                            > eval_results.summary_stats.loss_rate
+                            else (
+                                "loss"
                                 if eval_results
-                                and eval_results.summary_stats.win_rate
-                                > eval_results.summary_stats.loss_rate
-                                else (
-                                    "loss"
-                                    if eval_results
-                                    and eval_results.summary_stats.loss_rate
-                                    > eval_results.summary_stats.win_rate
-                                    else "draw"
-                                )
-                            ),
-                            "top_ratings": sorted(
-                                registry.ratings.items(),
-                                key=lambda x: x[1],
-                                reverse=True,
-                            )[:3],
-                        }
-                        trainer.evaluation_elo_snapshot = snapshot
-                    except (OSError, RuntimeError, ValueError, AttributeError) as e:
-                        if trainer.log_both is not None:
-                            trainer.log_both(
-                                f"[ERROR] Failed to update Elo registry: {type(e).__name__}: {e}",
-                                also_to_wandb=True,
+                                and eval_results.summary_stats.loss_rate
+                                > eval_results.summary_stats.win_rate
+                                else "draw"
                             )
-                        trainer.evaluation_elo_snapshot = None
+                        ),
+                        "top_ratings": sorted(
+                            registry.ratings.items(),
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )[:3],
+                    }
+                    trainer.evaluation_elo_snapshot = snapshot
+                except (OSError, RuntimeError, ValueError, AttributeError) as e:
+                    if trainer.log_both is not None:
+                        trainer.log_both(
+                            f"[ERROR] Failed to update Elo registry: {type(e).__name__}: {e}",
+                            also_to_wandb=True,
+                        )
+                    trainer.evaluation_elo_snapshot = None
 
             # Return summary metrics for integration with training metrics
             if eval_results and hasattr(eval_results, "summary_stats"):

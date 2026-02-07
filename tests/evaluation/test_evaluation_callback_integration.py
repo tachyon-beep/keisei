@@ -76,3 +76,20 @@ def test_evaluation_callback_updates_elo(tmp_path):
     assert trainer.evaluation_elo_snapshot is not None
     assert trainer.evaluation_elo_snapshot["current_rating"] != 1500.0
     assert len(reg.ratings) == 2  # agent and opponent
+
+
+def test_elo_tracking_works_without_logging(tmp_path):
+    """Regression test for P1-13: Elo tracking must work when log_both is None.
+
+    Previously, the Elo registry update was nested inside an
+    `if trainer.log_both is not None:` guard, so disabling logging
+    silently stopped all Elo tracking.
+    """
+    trainer = DummyTrainer(tmp_path)
+    trainer.log_both = None  # Simulate logging unavailable
+    cb = EvaluationCallback(trainer.config.evaluation, interval=1)
+    cb.on_step_end(trainer)  # type: ignore
+    reg = EloRegistry(Path(trainer.config.evaluation.elo_registry_path))
+    assert trainer.evaluation_elo_snapshot is not None
+    assert trainer.evaluation_elo_snapshot["current_rating"] != 1500.0
+    assert len(reg.ratings) == 2

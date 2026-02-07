@@ -226,3 +226,47 @@ def test_evaluation_error_propagation(monkeypatch):
 
     manager.model_weight_manager.clear_cache()
     assert hasattr(manager, "model_weight_manager")
+
+
+def test_sync_eval_raises_in_async_context(monkeypatch):
+    """Calling sync evaluate_current_agent from async context raises a clear error.
+
+    Regression test for P1-14: The original code had a broad `except RuntimeError`
+    that caught both "no running event loop" and genuine evaluator failures,
+    silently swallowing real errors when called from within a running event loop.
+    The fix rejects async-context calls with a clear message instead.
+    """
+    import asyncio
+
+    from keisei.evaluation.core import create_evaluation_config
+    from keisei.evaluation.core_manager import EvaluationManager, EvaluatorFactory
+    from tests.evaluation.factories import EvaluationTestFactory
+
+    class DummyEvaluator:
+        def __init__(self, config):
+            self.config = config
+
+        def set_runtime_context(self, **kwargs):
+            pass
+
+        async def evaluate(self, agent_info, context):
+            return None  # Should never be reached
+
+    monkeypatch.setattr(EvaluatorFactory, "create", lambda cfg: DummyEvaluator(cfg))
+    cfg = create_evaluation_config(strategy="single_opponent", num_games=1)
+    manager = EvaluationManager(
+        cfg, run_name="async_guard", pool_size=1, elo_registry_path=None
+    )
+    test_agent = EvaluationTestFactory.create_test_agent()
+    manager.setup(
+        device="cpu",
+        policy_mapper=test_agent.config.env,
+        model_dir=".",
+        wandb_active=False,
+    )
+
+    async def call_from_async():
+        with pytest.raises(RuntimeError, match="cannot be called from an async context"):
+            manager.evaluate_current_agent(test_agent)
+
+    asyncio.run(call_from_async())
