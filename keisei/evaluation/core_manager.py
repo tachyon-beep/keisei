@@ -90,9 +90,8 @@ class EvaluationManager:
         try:
             import torch
 
-            # Use weights_only=False for evaluation checkpoint validation (trusted source)
             checkpoint_data = torch.load(
-                agent_checkpoint, map_location="cpu", weights_only=False
+                agent_checkpoint, map_location="cpu", weights_only=True
             )
             # Basic validation - should be a dictionary with expected keys
             if not isinstance(checkpoint_data, dict):
@@ -177,9 +176,8 @@ class EvaluationManager:
         try:
             import torch
 
-            # Use weights_only=False for evaluation checkpoint validation (trusted source)
             checkpoint_data = torch.load(
-                agent_checkpoint, map_location="cpu", weights_only=False
+                agent_checkpoint, map_location="cpu", weights_only=True
             )
             # Basic validation - should be a dictionary with expected keys
             if not isinstance(checkpoint_data, dict):

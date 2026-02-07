@@ -359,8 +359,15 @@ class TestModelManagerCheckpointHandling:
         # Create ModelManager
         manager = ModelManager(minimal_model_manager_config, args, device, logger_func)
 
-        # Create mock agent
+        # Create mock agent with realistic load_model return value
         mock_agent = Mock()
+        mock_agent.load_model.return_value = {
+            "global_timestep": 100,
+            "total_episodes_completed": 10,
+            "black_wins": 5,
+            "white_wins": 3,
+            "draws": 2,
+        }
 
         # Test checkpoint resume
         result = manager.handle_checkpoint_resume(mock_agent, temp_dir)
@@ -445,8 +452,15 @@ class TestModelManagerCheckpointHandling:
         # Create ModelManager
         manager = ModelManager(minimal_model_manager_config, args, device, logger_func)
 
-        # Create mock agent
+        # Create mock agent with realistic load_model return value
         mock_agent = Mock()
+        mock_agent.load_model.return_value = {
+            "global_timestep": 100,
+            "total_episodes_completed": 10,
+            "black_wins": 5,
+            "white_wins": 3,
+            "draws": 2,
+        }
 
         # Test checkpoint resume
         result = manager.handle_checkpoint_resume(mock_agent, temp_dir)

@@ -344,6 +344,10 @@ class ModelManager:
 
         if latest_ckpt:
             self.checkpoint_data = agent.load_model(latest_ckpt)
+            if "error" in self.checkpoint_data:
+                raise RuntimeError(
+                    f"Failed to load checkpoint {latest_ckpt}: {self.checkpoint_data['error']}"
+                )
             self.resumed_from_checkpoint = latest_ckpt
             self.logger_func(f"Resumed from latest checkpoint: {latest_ckpt}")
             return True
@@ -360,6 +364,10 @@ class ModelManager:
         if os.path.exists(resume_path):
             self.logger_func(f"Path exists! Loading model from {resume_path}")
             self.checkpoint_data = agent.load_model(resume_path)
+            if "error" in self.checkpoint_data:
+                raise RuntimeError(
+                    f"Failed to load checkpoint {resume_path}: {self.checkpoint_data['error']}"
+                )
             self.resumed_from_checkpoint = resume_path
             self.logger_func(f"Resumed from specified checkpoint: {resume_path}")
             return True

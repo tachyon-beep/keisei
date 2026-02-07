@@ -500,8 +500,8 @@ class PPOAgent:
             }
         try:
             checkpoint = torch.load(
-                file_path, map_location=self.device
-            )  # Reverted: removed weights_only=False
+                file_path, map_location=self.device, weights_only=True
+            )
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             # Load scheduler state if present

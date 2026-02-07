@@ -109,7 +109,7 @@ class ModelWeightManager:
                 raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
             checkpoint = torch.load(
-                checkpoint_path, map_location="cpu", weights_only=False
+                checkpoint_path, map_location="cpu", weights_only=True
             )
 
             # Extract model weights from checkpoint
@@ -425,7 +425,7 @@ class ModelWeightManager:
                     logits = logits.masked_fill(legal_mask == 0, float("-inf"))
 
                 probs = Categorical(logits=logits)
-                return probs.log_prob(actions), value.squeeze(-1), probs.entropy()
+                return probs.log_prob(actions), probs.entropy(), value.squeeze(-1)
 
         return DynamicActorCritic(
             input_channels, total_actions, conv_out_channels, flattened_size

@@ -29,7 +29,7 @@ def _validate_checkpoint(checkpoint_path: str) -> bool:
     """
     try:
         # Attempt minimal load to check file integrity
-        torch.load(checkpoint_path, map_location="cpu")
+        torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         return True
     except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as e:
         log_error_to_stderr(

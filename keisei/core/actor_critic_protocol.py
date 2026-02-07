@@ -59,7 +59,7 @@ class ActorCriticProtocol(Protocol):
             legal_mask: Optional boolean tensor indicating legal actions
 
         Returns:
-            Tuple of (log_probs, values, entropy)
+            Tuple of (log_probs, entropy, value)
         """
         ...
 

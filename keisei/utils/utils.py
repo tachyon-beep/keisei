@@ -511,7 +511,7 @@ class TrainingLogger:
         full_message = f"[{timestamp}] {message}"
 
         if self.log_file:
-            self.log_file.write(full_message + "\\n")
+            self.log_file.write(full_message + "\n")
             self.log_file.flush()
 
         if self.rich_console and self.rich_log_panel is not None:
@@ -558,7 +558,7 @@ class EvaluationLogger:
         full_message = f"[{timestamp}] {message}"
 
         if self.log_file:
-            self.log_file.write(full_message + "\\n")
+            self.log_file.write(full_message + "\n")
             self.log_file.flush()
 
         if self.also_stdout:

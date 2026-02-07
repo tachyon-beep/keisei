@@ -91,14 +91,15 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
 
         # Check for NaNs in probs, which can happen if all logits were -inf
         if torch.isnan(probs).any():
-            # This is a fallback: if probs are NaN (e.g. all legal actions masked out and all logits became -inf),
-            # distribute probability uniformly over all actions to avoid erroring out in Categorical.
-            # A better solution is for the caller to handle "no legal actions" gracefully.
             log_error_to_stderr(
                 self.__class__.__name__,
-                "NaNs in probabilities in get_action_and_value. Check legal_mask and logits. Defaulting to uniform.",
+                "NaNs in probabilities in get_action_and_value. Check legal_mask and logits. Defaulting to uniform for affected rows.",
             )
-            probs = torch.ones_like(policy_logits) / policy_logits.shape[-1]
+            if probs.dim() > 1:
+                nan_rows = torch.isnan(probs).any(dim=-1)
+                probs[nan_rows] = torch.ones(probs.shape[-1], device=probs.device) / probs.shape[-1]
+            else:
+                probs = torch.ones_like(probs) / probs.shape[-1]
 
         dist = torch.distributions.Categorical(probs=probs)
 
