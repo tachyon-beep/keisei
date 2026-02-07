@@ -427,17 +427,17 @@ def test_generate_neural_network_observation_max_hands_and_promoted_board():
     # White has 7 pawns, 1 rook, 2 bishops, 2 golds, 2 silvers, 2 knights, 2 lances
 
     # Check Black hand planes (current player hand)
-    # Hand counts are normalized by dividing by 18.0
+    # Hand counts are normalized by per-type maximums (P:18, L/N/S/G:4, B:2, R:2)
     assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 0], 7 / 18.0)  # PAWN (7/18)
-    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 4], 2 / 18.0)  # GOLD (2/18)
-    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 5], 2 / 18.0)  # BISHOP (2/18)
-    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 6], 1 / 18.0)  # ROOK (1/18)
+    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 4], 2 / 4.0)  # GOLD (2/4)
+    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 5], 2 / 2.0)  # BISHOP (2/2)
+    assert np.allclose(obs[OBS_CURR_PLAYER_HAND_START + 6], 1 / 2.0)  # ROOK (1/2)
 
     # Check White hand planes (opponent hand)
     assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 0], 7 / 18.0)  # PAWN (7/18)
-    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 4], 2 / 18.0)  # GOLD (2/18)
-    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 5], 2 / 18.0)  # BISHOP (2/18)
-    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 6], 1 / 18.0)  # ROOK (1/18)
+    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 4], 2 / 4.0)  # GOLD (2/4)
+    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 5], 2 / 2.0)  # BISHOP (2/2)
+    assert np.allclose(obs[OBS_OPP_PLAYER_HAND_START + 6], 1 / 2.0)  # ROOK (1/2)
 
 
 def test_generate_neural_network_observation_move_count_normalization(

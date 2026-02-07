@@ -136,17 +136,18 @@ class TrainingLoopManager:
 
                 if self.episode_state and self.episode_state.current_obs is not None:
                     self.trainer.metrics_manager.set_processing(True)
-                    self.trainer.perform_ppo_update(
-                        self.episode_state.current_obs, log_both
-                    )
-                    self.trainer.metrics_manager.set_processing(False)
+                    try:
+                        self.trainer.perform_ppo_update(
+                            self.episode_state.current_obs, log_both
+                        )
+                    finally:
+                        self.trainer.metrics_manager.set_processing(False)
                 else:
                     log_both(
                         "[WARNING] Skipping PPO update due to missing current_obs in episode_state. "
                         f"(Timestep: {self.trainer.metrics_manager.global_timestep})",
                         also_to_wandb=True,
                     )
-                    self.trainer.metrics_manager.set_processing(False)
 
                 # Execute step callbacks using centralized callback manager with error handling
                 self.trainer.callback_manager.execute_step_callbacks(self.trainer)
@@ -281,17 +282,18 @@ class TrainingLoopManager:
 
                 if self.episode_state and self.episode_state.current_obs is not None:
                     self.trainer.metrics_manager.set_processing(True)
-                    self.trainer.perform_ppo_update(
-                        self.episode_state.current_obs, log_both
-                    )
-                    self.trainer.metrics_manager.set_processing(False)
+                    try:
+                        self.trainer.perform_ppo_update(
+                            self.episode_state.current_obs, log_both
+                        )
+                    finally:
+                        self.trainer.metrics_manager.set_processing(False)
                 else:
                     log_both(
                         "[WARNING] Skipping PPO update due to missing current_obs in episode_state. "
                         f"(Timestep: {self.trainer.metrics_manager.global_timestep})",
                         also_to_wandb=True,
                     )
-                    self.trainer.metrics_manager.set_processing(False)
 
                 # Execute sync step callbacks first
                 self.trainer.callback_manager.execute_step_callbacks(self.trainer)

@@ -108,7 +108,7 @@ def test_get_observation_hand_pieces_white_one_rook(
     obs = game_with_white_rook_in_hand.get_observation()
     hand_types_order = get_unpromoted_types()
     rook_hand_channel_index = 35 + hand_types_order.index(PieceType.ROOK)
-    expected_value = 1 / 18.0
+    expected_value = 1 / 2.0
     assert np.allclose(
         obs[rook_hand_channel_index], expected_value
     ), f"White rook hand plane incorrect. Expected {expected_value}, got {obs[rook_hand_channel_index][0][0]}"
@@ -142,7 +142,7 @@ def test_get_observation_multiple_hand_pieces_mixed_players(
     pawn_idx_black = 28 + hand_types_order.index(PieceType.PAWN)
     gold_idx_black = 28 + hand_types_order.index(PieceType.GOLD)
     expected_pawn_black = 3 / 18.0
-    expected_gold_black = 1 / 18.0
+    expected_gold_black = 1 / 4.0
     assert np.allclose(
         obs[pawn_idx_black], expected_pawn_black
     ), f"Black 3 pawns hand plane incorrect. Expected {expected_pawn_black}, got {obs[pawn_idx_black][0][0]}"
@@ -153,8 +153,8 @@ def test_get_observation_multiple_hand_pieces_mixed_players(
     # White's hand
     bishop_idx_white = 35 + hand_types_order.index(PieceType.BISHOP)
     silver_idx_white = 35 + hand_types_order.index(PieceType.SILVER)
-    expected_bishop_white = 2 / 18.0
-    expected_silver_white = 1 / 18.0
+    expected_bishop_white = 2 / 2.0
+    expected_silver_white = 1 / 4.0
     assert np.allclose(
         obs[bishop_idx_white], expected_bishop_white
     ), f"White 2 bishops hand plane incorrect. Expected {expected_bishop_white}, got {obs[bishop_idx_white][0][0]}"

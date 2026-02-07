@@ -127,10 +127,12 @@ class EvaluationCallback(Callback):
 
                 # Run evaluation against random opponent to bootstrap Elo system
                 current_model.eval()  # Set the agent's model to eval mode
-                eval_results = trainer.evaluation_manager.evaluate_current_agent(
-                    trainer.agent
-                )
-                current_model.train()  # Set model back to train mode
+                try:
+                    eval_results = trainer.evaluation_manager.evaluate_current_agent(
+                        trainer.agent
+                    )
+                finally:
+                    current_model.train()  # Set model back to train mode
 
                 if trainer.log_both is not None:
                     trainer.log_both(
@@ -144,13 +146,22 @@ class EvaluationCallback(Callback):
                     )
 
                 # Save current model as first checkpoint for future evaluations
-                ckpt_path = trainer.model_manager.save_checkpoint(
-                    trainer.agent,
-                    trainer.metrics_manager.global_timestep + 1,
-                    trainer.session_manager.run_artifact_dir,
-                    "initial_eval_checkpoint",
+                game_stats = {
+                    "black_wins": trainer.metrics_manager.black_wins,
+                    "white_wins": trainer.metrics_manager.white_wins,
+                    "draws": trainer.metrics_manager.draws,
+                }
+                success, ckpt_path = trainer.model_manager.save_checkpoint(
+                    agent=trainer.agent,
+                    model_dir=trainer.session_manager.run_artifact_dir,
+                    timestep=trainer.metrics_manager.global_timestep + 1,
+                    episode_count=trainer.metrics_manager.total_episodes_completed,
+                    stats=game_stats,
+                    run_name=trainer.run_name,
+                    is_wandb_active=trainer.is_train_wandb_active,
+                    checkpoint_name_prefix="initial_eval_checkpoint_ts",
                 )
-                if ckpt_path and hasattr(trainer, "evaluation_manager"):
+                if success and ckpt_path and hasattr(trainer, "evaluation_manager"):
                     trainer.evaluation_manager.opponent_pool.add_checkpoint(ckpt_path)
                     if trainer.log_both:
                         trainer.log_both(
@@ -166,10 +177,12 @@ class EvaluationCallback(Callback):
                 )
 
             current_model.eval()  # Set the agent's model to eval mode
-            eval_results = trainer.evaluation_manager.evaluate_current_agent(
-                trainer.agent
-            )
-            current_model.train()  # Set model back to train mode
+            try:
+                eval_results = trainer.evaluation_manager.evaluate_current_agent(
+                    trainer.agent
+                )
+            finally:
+                current_model.train()  # Set model back to train mode
             if trainer.log_both is not None:
                 trainer.log_both(
                     f"Periodic evaluation finished. Results: {eval_results}",

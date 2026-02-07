@@ -503,6 +503,17 @@ def generate_neural_network_observation(game: "ShogiGame") -> np.ndarray:
         get_unpromoted_types()
     )  # Use the imported function
 
+    # Per-type maximum hand counts for normalization
+    hand_max_counts: Dict[PieceType, float] = {
+        PieceType.PAWN: 18.0,
+        PieceType.LANCE: 4.0,
+        PieceType.KNIGHT: 4.0,
+        PieceType.SILVER: 4.0,
+        PieceType.GOLD: 4.0,
+        PieceType.BISHOP: 2.0,
+        PieceType.ROOK: 2.0,
+    }
+
     # Current player's hand
     for i, piece_type_enum_player in enumerate(hand_piece_order):
         player_hand_count: int = game.hands[game.current_player.value].get(
@@ -511,8 +522,8 @@ def generate_neural_network_observation(game: "ShogiGame") -> np.ndarray:
         if player_hand_count > 0:
             player_ch: int = OBS_CURR_PLAYER_HAND_START + i
             obs[player_ch, :, :] = (
-                player_hand_count / 18.0
-            )  # Normalize (e.g., by max pawns)
+                player_hand_count / hand_max_counts[piece_type_enum_player]
+            )
 
     # Opponent's hand
     opponent_color_val: int = (
@@ -524,7 +535,9 @@ def generate_neural_network_observation(game: "ShogiGame") -> np.ndarray:
         )
         if opponent_hand_count > 0:
             opponent_ch: int = OBS_OPP_PLAYER_HAND_START + i
-            obs[opponent_ch, :, :] = opponent_hand_count / 18.0
+            obs[opponent_ch, :, :] = (
+                opponent_hand_count / hand_max_counts[piece_type_enum_opponent]
+            )
 
     # Current player indicator plane
     obs[OBS_CURR_PLAYER_INDICATOR, :, :] = (
