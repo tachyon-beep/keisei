@@ -502,30 +502,6 @@ def generate_all_legal_moves(
                             move_tuple, is_simulation=True
                         )
 
-                        # --- Commented out unused trace code ---
-                        king_pos_trace = find_king(game, original_player_color)
-                        king_r_trace, king_c_trace = (
-                            king_pos_trace if king_pos_trace else (-1, -1)
-                        )
-                        opponent_color_trace = (
-                            Color.WHITE
-                            if original_player_color == Color.BLACK
-                            else Color.BLACK
-                        )
-                        is_attacked_after_sim = False  # Default if king not found
-                        if king_pos_trace:  # Only check if king exists
-                            is_attacked_after_sim = check_if_square_is_attacked(
-                                game, king_r_trace, king_c_trace, opponent_color_trace
-                            )
-
-                        target_square_content_after_sim = game.get_piece(r_to, c_to)
-                        king_is_safe_eval = not is_attacked_after_sim
-
-                        # print(f"TRACE_SIM_BOARD_MOVE: Player {original_player_color}, Move {move_tuple}, Piece {piece}, Promoted: {promote_option}")
-                        # print(f"  King at ({king_r_trace},{king_c_trace}), Target sq ({r_to},{c_to}) content after sim: {target_square_content_after_sim}")
-                        # print(f"  Is king attacked after sim? {is_attacked_after_sim}. Final king_is_safe: {king_is_safe_eval}")
-                        # --- TRACE PRINT BLOCK END ---
-
                         king_is_safe = not is_king_in_check_after_simulated_move(
                             game, original_player_color
                         )
@@ -563,34 +539,6 @@ def generate_all_legal_moves(
                         simulation_details_drop = game.make_move(
                             drop_move_tuple, is_simulation=True
                         )
-
-                        # --- Commented out unused trace code for drops ---
-                        king_pos_trace_drop = find_king(game, original_player_color)
-                        king_r_trace_drop, king_c_trace_drop = (
-                            king_pos_trace_drop if king_pos_trace_drop else (-1, -1)
-                        )
-                        opponent_color_trace_drop = (
-                            Color.WHITE
-                            if original_player_color == Color.BLACK
-                            else Color.BLACK
-                        )
-                        is_attacked_after_drop_sim = False  # Default if king not found
-                        if king_pos_trace_drop:  # Only check if king exists
-                            is_attacked_after_drop_sim = check_if_square_is_attacked(
-                                game,
-                                king_r_trace_drop,
-                                king_c_trace_drop,
-                                opponent_color_trace_drop,
-                            )
-                        target_square_content_after_drop_sim = game.get_piece(
-                            r_to_drop, c_to_drop
-                        )
-                        # king_is_safe_eval_drop = not is_attacked_after_drop_sim
-
-                        # print(f"TRACE_SIM_DROP_MOVE: Player {original_player_color}, Drop {drop_move_tuple}")
-                        # print(f"  King at ({king_r_trace_drop},{king_c_trace_drop}), Target sq ({r_to_drop},{c_to_drop}) content after sim: {target_square_content_after_drop_sim}")
-                        # print(f"  Is king attacked after drop sim? {is_attacked_after_drop_sim}. Final king_is_safe: {king_is_safe_eval_drop}")
-                        # --- TRACE PRINT BLOCK END (DROP) ---
 
                         king_is_safe_after_drop = (
                             not is_king_in_check_after_simulated_move(
