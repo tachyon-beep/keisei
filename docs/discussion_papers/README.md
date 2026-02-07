@@ -1,1 +1,0 @@
-This folder contains interesting observations and insights that Gemini or ChatGPT have expanded into a 'discussion paper'.
