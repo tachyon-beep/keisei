@@ -7,7 +7,6 @@ import json
 import os
 import pickle
 import random
-import sys
 from typing import Optional
 
 import numpy as np

@@ -262,26 +262,32 @@ class Trainer:
             last_value_pred_for_gae = self.agent.get_value(current_obs_np)
 
         self.experience_buffer.compute_advantages_and_returns(last_value_pred_for_gae)
-        # Track weight updates by comparing state before and after learn()
-        model_any: Any = getattr(self.agent, "model", None)
-        old_state = (
-            {
-                name: p.detach().clone()
-                for name, p in cast(Any, model_any).named_parameters()
-            }
-            if model_any is not None
-            else {}
-        )
+        # Only clone weights for delta tracking when WebUI needs it
+        if self.webui_manager is not None:
+            model_any: Any = getattr(self.agent, "model", None)
+            old_state = (
+                {
+                    name: p.detach().clone()
+                    for name, p in cast(Any, model_any).named_parameters()
+                }
+                if model_any is not None
+                else {}
+            )
         learn_metrics = self.agent.learn(self.experience_buffer)
-        new_state = (
-            {name: p.detach() for name, p in cast(Any, model_any).named_parameters()}
-            if model_any is not None
-            else {}
-        )
-        self.last_weight_updates = {
-            name: (new_state[name] - old_state[name]).norm().item()
-            for name in old_state.keys()
-        }
+        if self.webui_manager is not None:
+            model_any = getattr(self.agent, "model", None)
+            new_state = (
+                {
+                    name: p.detach()
+                    for name, p in cast(Any, model_any).named_parameters()
+                }
+                if model_any is not None
+                else {}
+            )
+            self.last_weight_updates = {
+                name: (new_state[name] - old_state[name]).norm().item()
+                for name in old_state.keys()
+            }
         self.last_gradient_norm = getattr(self.agent, "last_gradient_norm", 0.0)
         self.experience_buffer.clear()
 

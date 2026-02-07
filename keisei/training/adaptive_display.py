@@ -15,7 +15,6 @@ from keisei.config_schema import DisplayConfig
 class TerminalInfo:
     width: int
     height: int
-    unicode_ok: bool
 
 
 class AdaptiveDisplayManager:
@@ -39,12 +38,7 @@ class AdaptiveDisplayManager:
 
     def get_terminal_info(self, console: Console) -> TerminalInfo:
         width, height = self._get_terminal_size(console)
-        try:
-            "▁".encode(console.encoding or "utf-8")
-            unicode_ok = True
-        except UnicodeEncodeError:
-            unicode_ok = False
-        return TerminalInfo(width=width, height=height, unicode_ok=unicode_ok)
+        return TerminalInfo(width=width, height=height)
 
     def choose_layout(self, console: Console) -> str:
         info = self.get_terminal_info(console)

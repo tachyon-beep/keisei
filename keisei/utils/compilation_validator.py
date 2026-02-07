@@ -9,7 +9,7 @@ import warnings
 import sys
 from typing import Dict, Any, Optional, Callable, Tuple, Union
 from dataclasses import dataclass
-from functools import wraps
+
 
 import torch
 import torch.nn as nn
@@ -360,39 +360,3 @@ def safe_compile_model(
 
     result = validator.compile_model(model, sample_input, model_name)
     return result.compiled_model, result
-
-
-def create_compilation_decorator(
-    config_training, logger_func: Optional[Callable[[str], None]] = None
-):
-    """
-    Create a decorator for automatic model compilation with validation.
-
-    Usage:
-        @create_compilation_decorator(config_training)
-        def create_model():
-            return MyModel()
-    """
-
-    def decorator(model_factory_func):
-        @wraps(model_factory_func)
-        def wrapper(*args, **kwargs):
-            model = model_factory_func(*args, **kwargs)
-
-            # Skip compilation if disabled
-            if not getattr(config_training, "enable_torch_compile", True):
-                return model
-
-            # Need sample input for validation - this would need to be provided
-            # by the calling context or through additional parameters
-            validator = CompilationValidator(
-                config_training=config_training, logger_func=logger_func
-            )
-
-            # Note: This decorator approach has limitations without sample input
-            # The main safe_compile_model function is recommended instead
-            return model
-
-        return wrapper
-
-    return decorator

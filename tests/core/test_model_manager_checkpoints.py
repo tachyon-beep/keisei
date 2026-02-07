@@ -3,6 +3,7 @@ Unit tests for ModelManager checkpoint handling and loading functionality.
 """
 
 import os
+import sys
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -710,8 +711,9 @@ class TestModelManagerEnhancedCheckpointHandling:
             }
             
             # Mock WandB to prevent network calls during test
-            with patch('keisei.training.model_manager.wandb') as mock_wandb:
-                mock_wandb.run = None  # Disable WandB during test
+            mock_wandb = Mock()
+            mock_wandb.run = None  # Disable WandB during test
+            with patch.dict(sys.modules, {"wandb": mock_wandb}):
                 result = manager.save_checkpoint(
                     agent=mock_agent,
                     model_dir=nonexistent_model_dir,

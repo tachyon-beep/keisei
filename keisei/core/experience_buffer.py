@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 import torch  # Ensure torch is imported
 
+from keisei.constants import CORE_OBSERVATION_CHANNELS, FULL_ACTION_SPACE, SHOGI_BOARD_SIZE
 from keisei.utils.unified_logger import log_warning_to_stderr
 
 
@@ -27,7 +28,14 @@ class ExperienceBuffer:
     """Experience buffer for storing transitions during RL training."""
 
     def __init__(
-        self, buffer_size: int, gamma: float, lambda_gae: float, device: str = "cpu"
+        self,
+        buffer_size: int,
+        gamma: float,
+        lambda_gae: float,
+        device: str = "cpu",
+        obs_channels: int = CORE_OBSERVATION_CHANNELS,
+        board_size: int = SHOGI_BOARD_SIZE,
+        num_actions: int = FULL_ACTION_SPACE,
     ):
         self.buffer_size = buffer_size
         self.gamma = gamma
@@ -35,9 +43,11 @@ class ExperienceBuffer:
         self.device = torch.device(device)  # Store as torch.device
 
         # Pre-allocate tensors for improved memory efficiency
-        # Observations: (buffer_size, 46, 9, 9) - Shogi board representation
+        # Observations: (buffer_size, C, H, W) - Board representation
         self.obs = torch.zeros(
-            (buffer_size, 46, 9, 9), dtype=torch.float32, device=self.device
+            (buffer_size, obs_channels, board_size, board_size),
+            dtype=torch.float32,
+            device=self.device,
         )
         # Actions: (buffer_size,) - Action indices
         self.actions = torch.zeros(buffer_size, dtype=torch.int64, device=self.device)
@@ -51,9 +61,9 @@ class ExperienceBuffer:
         self.values = torch.zeros(buffer_size, dtype=torch.float32, device=self.device)
         # Done flags: (buffer_size,) - Episode termination flags
         self.dones = torch.zeros(buffer_size, dtype=torch.bool, device=self.device)
-        # Legal masks: (buffer_size, 13527) - Legal action masks
+        # Legal masks: (buffer_size, num_actions) - Legal action masks
         self.legal_masks = torch.zeros(
-            (buffer_size, 13527), dtype=torch.bool, device=self.device
+            (buffer_size, num_actions), dtype=torch.bool, device=self.device
         )
         # Advantages and returns: populated by compute_advantages_and_returns
         self.advantages = torch.zeros(

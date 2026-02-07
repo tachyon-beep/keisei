@@ -56,27 +56,6 @@ class PerformanceMonitor:
         """Fast timer context manager with minimal overhead."""
         return _FastTimerContext(self, operation_name)
 
-    @contextmanager
-    def _timer_context(self, operation_name: str):
-        """Internal timer context manager."""
-        start_time = time.perf_counter()
-        try:
-            yield
-        finally:
-            end_time = time.perf_counter()
-            duration = end_time - start_time
-
-            # Optimize: pre-initialize list to avoid repeated dict lookups
-            if operation_name not in self.timings:
-                self.timings[operation_name] = []
-            self.timings[operation_name].append(duration)
-
-            # Only log debug if debug logging is enabled (avoid string formatting overhead)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Operation '%s' took %.4f seconds", operation_name, duration
-                )
-
     def increment_counter(self, counter_name: str, value: int = 1):
         """Increment a named counter."""
         if counter_name not in self.counters:

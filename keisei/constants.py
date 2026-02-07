@@ -33,14 +33,6 @@ TEST_CONFIG_TOWER_DEPTH = 3
 TEST_CONFIG_TOWER_WIDTH = 64
 
 
-class GameTerminationReason:
-    """Enumeration of common game termination reasons."""
-
-    INVALID_MOVE = "invalid_move"
-    STALEMATE = "stalemate"
-    POLICY_ERROR = "policy_error"
-
-
 # Parallel training defaults
 
 # Timeout and retry constants

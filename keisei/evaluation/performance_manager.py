@@ -282,33 +282,3 @@ class EvaluationResourceError(Exception):
     pass
 
 
-class PerformanceGuard:
-    """Context manager for evaluation performance safeguards."""
-
-    def __init__(self, performance_manager: EvaluationPerformanceManager):
-        self.performance_manager = performance_manager
-        self.start_time = None
-
-    async def __aenter__(self):
-        """Enter the performance guard context."""
-        self.start_time = time.time()
-        self.performance_manager.resource_monitor.start_monitoring()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Exit the performance guard context."""
-        if exc_type is not None:
-            logger.error(f"Evaluation failed with {exc_type.__name__}: {exc_val}")
-
-        # Log final performance metrics
-        end_time = time.time()
-        latency_ms = (end_time - self.start_time) * 1000
-        memory_overhead = (
-            self.performance_manager.resource_monitor.get_memory_overhead()
-        )
-
-        logger.info(
-            f"Evaluation completed in {latency_ms:.1f}ms with {memory_overhead:.1f}MB memory overhead"
-        )
-
-        return False  # Don't suppress exceptions

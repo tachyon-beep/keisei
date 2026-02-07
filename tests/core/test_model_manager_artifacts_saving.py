@@ -3,6 +3,7 @@ Unit tests for ModelManager artifact creation and saving functionality.
 """
 
 import os
+import sys
 import tempfile
 from unittest.mock import Mock, patch
 
@@ -193,10 +194,8 @@ class TestModelManagerArtifacts:
 
     @patch("keisei.training.model_manager.features.FEATURE_SPECS")
     @patch("keisei.training.model_manager.model_factory")
-    @patch("keisei.training.model_manager.wandb")
     def test_create_model_artifact_success(
         self,
-        mock_wandb,
         mock_model_factory,
         mock_features,
         minimal_model_manager_config,
@@ -220,26 +219,28 @@ class TestModelManagerArtifacts:
         with open(model_path, "w", encoding="utf-8") as f:
             f.write("test model content")
 
-        # Setup WandB mocks
-        mock_wandb.run = Mock()
+        # Setup WandB mock via sys.modules (lazy import in create_model_artifact)
+        mock_wandb = Mock()
         mock_artifact = Mock()
         mock_wandb.Artifact.return_value = mock_artifact
+        mock_wandb.run = Mock()
 
-        # Create ModelManager
-        manager = ModelManager(
-            minimal_model_manager_config, mock_args, device, logger_func
-        )
+        with patch.dict(sys.modules, {"wandb": mock_wandb}):
+            # Create ModelManager
+            manager = ModelManager(
+                minimal_model_manager_config, mock_args, device, logger_func
+            )
 
-        # Test artifact creation
-        result = manager.create_model_artifact(
-            model_path=model_path,
-            artifact_name="test-model",
-            run_name="test_run",
-            is_wandb_active=True,
-            description="Test model",
-            metadata={"test": "value"},
-            aliases=["latest"],
-        )
+            # Test artifact creation
+            result = manager.create_model_artifact(
+                model_path=model_path,
+                artifact_name="test-model",
+                run_name="test_run",
+                is_wandb_active=True,
+                description="Test model",
+                metadata={"test": "value"},
+                aliases=["latest"],
+            )
 
         # Verify artifact created
         assert result is True
@@ -288,17 +289,15 @@ class TestModelManagerArtifacts:
 
     @patch("keisei.training.model_manager.features.FEATURE_SPECS")
     @patch("keisei.training.model_manager.model_factory")
-    @patch("keisei.training.model_manager.wandb")
     def test_create_model_artifact_file_missing(
         self,
-        mock_wandb,
         mock_model_factory,
         mock_features,
         minimal_model_manager_config,
         mock_args,
         device,
         logger_func,
-    ):  # pylint: disable=too-many-positional-arguments
+    ):
         """Test artifact creation when model file is missing."""
         # Setup mocks
         mock_feature_spec = Mock()
@@ -309,21 +308,23 @@ class TestModelManagerArtifacts:
         mock_model.to.return_value = mock_model
         mock_model_factory.return_value = mock_model
 
-        # Mock W&B to simulate active state
-        mock_wandb.run = Mock()  # Mock run object to simulate active W&B
+        # Setup WandB mock via sys.modules (lazy import)
+        mock_wandb = Mock()
+        mock_wandb.run = Mock()
 
-        # Create ModelManager
-        manager = ModelManager(
-            minimal_model_manager_config, mock_args, device, logger_func
-        )
+        with patch.dict(sys.modules, {"wandb": mock_wandb}):
+            # Create ModelManager
+            manager = ModelManager(
+                minimal_model_manager_config, mock_args, device, logger_func
+            )
 
-        # Test artifact creation with missing file
-        result = manager.create_model_artifact(
-            model_path="/nonexistent/model.pth",
-            artifact_name="test-model",
-            run_name="test_run",
-            is_wandb_active=True,
-        )
+            # Test artifact creation with missing file
+            result = manager.create_model_artifact(
+                model_path="/nonexistent/model.pth",
+                artifact_name="test-model",
+                run_name="test_run",
+                is_wandb_active=True,
+            )
 
         # Verify artifact not created
         assert result is False
@@ -539,8 +540,9 @@ class TestModelManagerSaving:
             }
             
             # Mock WandB to prevent network calls during test
-            with patch('keisei.training.model_manager.wandb') as mock_wandb:
-                mock_wandb.run = None  # Disable WandB during test
+            mock_wandb = Mock()
+            mock_wandb.run = None  # Disable WandB during test
+            with patch.dict(sys.modules, {"wandb": mock_wandb}):
                 result = manager.save_checkpoint(
                     agent=mock_agent,
                     model_dir=nonexistent_model_dir,

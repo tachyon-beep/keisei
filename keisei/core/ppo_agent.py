@@ -3,7 +3,6 @@ Minimal PPOAgent for DRL Shogi Client.
 """
 
 import os
-import sys  # For stderr
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np

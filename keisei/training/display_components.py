@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter, deque
 from time import monotonic
-from typing import Dict, List, Optional, Protocol, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from rich import box
 from rich.align import Align
@@ -17,14 +17,6 @@ from rich.text import Text
 
 from keisei.shogi.shogi_core_definitions import Color
 from keisei.utils import _coords_to_square_name
-
-
-class DisplayComponent(Protocol):
-    """Protocol for display components used by :class:`TrainingDisplay`."""
-
-    def render(self) -> RenderableType:
-        """Return a Rich renderable representing this component."""
-        raise NotImplementedError
 
 
 class HorizontalSeparator:
@@ -129,10 +121,6 @@ class ShogiBoard:
 
     def _get_shogi_notation(self, row: int, col: int) -> str:
         return _coords_to_square_name(row, col)
-
-    def _pad_symbol(self, symbol: str) -> str:
-        """Return the symbol unchanged. Used for consistent symbol formatting."""
-        return symbol
 
     def _create_cell_panel(
         self, piece, r_idx: int, c_idx: int, hot_squares: Optional[set]
@@ -420,7 +408,7 @@ class MultiMetricSparkline:
     def __init__(self, width: int, metrics: List[str]) -> None:
         self.width = width
         self.metrics = metrics
-        self.data: Dict[str, List[float]] = {m: [] for m in metrics}
+        self.data: Dict[str, deque] = {m: deque(maxlen=width) for m in metrics}
         self.spark = Sparkline(width=width)
 
     def add_data_point(self, metric_name: str, value: float) -> None:
@@ -430,8 +418,8 @@ class MultiMetricSparkline:
     def render_with_trendlines(self) -> RenderableType:
         lines: List[str] = []
         for name in self.metrics:
-            values = self.data.get(name, [])
-            spark = self.spark.generate(values[-self.width :])
+            values = self.data.get(name, deque())
+            spark = self.spark.generate(list(values))
             lines.append(f"{name}: {spark}")
         return Text("\n".join(lines), style="cyan")
 

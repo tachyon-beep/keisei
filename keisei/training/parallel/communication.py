@@ -55,9 +55,6 @@ class WorkerCommunicator:
             mp.Queue(maxsize=10) for _ in range(num_workers)  # Control commands
         ]
 
-        # Shared memory for efficient model weight transfer
-        self._shared_model_data: Optional[Dict[str, Any]] = None
-
         logger.info("Initialized worker communication for %d workers", num_workers)
 
     def send_model_weights(

@@ -3,7 +3,6 @@ web_server.py: HTTP server for serving WebUI static files.
 """
 
 import os
-import signal
 import socket
 import threading
 from pathlib import Path
