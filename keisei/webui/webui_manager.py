@@ -157,8 +157,10 @@ class WebUIManager:
                     self.event_loop.call_soon_threadsafe(self.event_loop.stop)
                 self.thread.join(timeout=1.0)
 
-        if self.event_loop and not self.event_loop.is_closed():
+        if self.event_loop and not self.event_loop.is_closed() and not self.event_loop.is_running():
             self.event_loop.close()
+        elif self.event_loop and self.event_loop.is_running():
+            self._logger.warning("Event loop still running after join timeout, skipping close()")
 
         self.event_loop = None
         self.thread = None

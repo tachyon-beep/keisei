@@ -5,7 +5,6 @@ E2E tests for train.py.
 import subprocess
 import sys
 import tempfile
-import time
 import os
 from pathlib import Path
 
@@ -13,33 +12,26 @@ import pytest
 
 TRAIN_PATH = Path(__file__).parent.parent.parent / "train.py"
 
-@pytest.fixture
-def mock_wandb_disabled(monkeypatch):
-    """Mock wandb to disable real API calls during testing."""
-    from unittest.mock import MagicMock
-    import sys
-    
-    mock_wandb = MagicMock()
-    
-    # Mock wandb imports directly in sys.modules
-    sys.modules['wandb'] = mock_wandb
-    
-    # Simulate disabled wandb
-    mock_wandb.run = None
-    mock_wandb.init.return_value = None
-    mock_wandb.config = {}
-    mock_wandb.log = MagicMock()
-    
-    # Set environment variable to disable wandb
-    monkeypatch.setenv("WANDB_DISABLED", "true")
-    
-    yield mock_wandb
+# Common CLI args appended to every subprocess training invocation to ensure
+# tests are isolated: WandB disabled via config override, WebUI disabled to
+# avoid port conflicts.
+_ISOLATION_OVERRIDES = [
+    "--override", "wandb.enabled=false",
+    "--override", "webui.enabled=false",
+]
+
+
+def _make_test_env():
+    """Build a subprocess environment with WandB properly disabled."""
+    env = os.environ.copy()
+    env["WANDB_MODE"] = "disabled"
+    return env
 
 
 def check_training_outputs(result, expected_timesteps):
     """Check common training outputs."""
     assert result.returncode == 0, f"Training failed: {result.stderr}"
-    
+
     # Check that we actually trained for the expected timesteps
     # Look for timestep progress in the formatted output
     assert f"Steps: {expected_timesteps}/{expected_timesteps}" in result.stderr or \
@@ -48,7 +40,7 @@ def check_training_outputs(result, expected_timesteps):
 
 
 @pytest.mark.e2e
-def test_train_cli_help(mock_wandb_disabled):
+def test_train_cli_help():
     """Test that train.py train --help runs and prints usage."""
     result = subprocess.run(
         [sys.executable, TRAIN_PATH, "train", "--help"],
@@ -62,67 +54,53 @@ def test_train_cli_help(mock_wandb_disabled):
 
 
 @pytest.mark.e2e
-def test_train_resume_autodetect(tmp_path, mock_wandb_disabled):
+def test_train_resume_autodetect(tmp_path):
     """
     Test that train.py can auto-detect a checkpoint from parent directory and resume training.
 
     This test verifies the parent directory checkpoint search functionality:
-    1. Save a checkpoint directly in savedir (tmp_path)
-    2. Run train.py with --resume latest and --savedir tmp_path
-    3. Verify ModelManager finds the checkpoint in parent dir, copies it to run dir, and resumes
+    1. Run an initial short training to produce a real checkpoint
+    2. Move the checkpoint to the parent (savedir) directory
+    3. Run train.py with --resume latest and --savedir tmp_path
+    4. Verify ModelManager finds the checkpoint in parent dir, copies it to run dir, and resumes
     """
-    # Step 1: Create a minimal checkpoint file in the parent directory (tmp_path)
-    import torch
-    checkpoint_path = tmp_path / "checkpoint_ts1.pth"
-    
-    # Create a checkpoint with minimal required structure
-    checkpoint_data = {
-        'model': {},  # Minimal model state_dict
-        'optimizer': {},
-        'scheduler': {},
-        'global_timestep': 1,
-        'episode_count': 0,
-        'best_reward': float('-inf'),
-        'config': {
-            'training': {
-                'model_type': 'resnet',
-                'total_timesteps': 10,
-                'steps_per_epoch': 2,
-                'checkpoint_interval_timesteps': 5,
-            },
-            'model': {
-                'input_features': 'core_46_channels',
-                'tower_depth': 1,
-                'tower_width': 16,
-                'se_ratio': 0.25,
-            },
-            'ppo': {
-                'learning_rate': 1e-4,
-            },
-            'env': {
-                'seed': 42,
-                'tensorboard_log_dir': None,
-                'log_tensorboard': False,
-            },
-            'logging': {
-                'wandb_enabled': False,
-                'run_name': None,
-            },
-            'device': {
-                'device': 'cpu',
-            },
-            'evaluation': {},
-        }
-    }
-    
-    torch.save(checkpoint_data, checkpoint_path)
-    print(f"Created checkpoint: {checkpoint_path}")
+    import shutil
 
-    # Step 2: Run train.py with --resume latest and --savedir tmp_path
-    # The ModelManager should find the checkpoint in parent dir, copy to run dir, and resume
-    env = os.environ.copy()
-    env['WANDB_DISABLED'] = 'true'
-    
+    env = _make_test_env()
+
+    # Step 1: Run a short initial training to produce a valid checkpoint
+    result_initial = subprocess.run(
+        [
+            sys.executable,
+            TRAIN_PATH,
+            "train",
+            "--savedir", str(tmp_path),
+            "--total-timesteps", "10",
+            "--seed", "42",
+            "--device", "cpu",
+            *_ISOLATION_OVERRIDES,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert result_initial.returncode == 0, f"Initial training failed: {result_initial.stderr}"
+
+    # Step 2: Find the checkpoint from the initial run and copy to parent dir
+    run_dirs = list(tmp_path.glob("keisei_*"))
+    assert run_dirs, f"No run directory created in {tmp_path}"
+    initial_run_dir = run_dirs[0]
+
+    checkpoints = list(initial_run_dir.glob("*.pth"))
+    assert checkpoints, f"No checkpoint produced in {initial_run_dir}"
+    # Copy first checkpoint to parent directory (savedir)
+    src_ckpt = checkpoints[0]
+    parent_ckpt = tmp_path / "checkpoint_ts1.pth"
+    shutil.copy2(str(src_ckpt), str(parent_ckpt))
+    print(f"Copied checkpoint {src_ckpt} -> {parent_ckpt}")
+
+    # Step 3: Run train.py with --resume latest, expecting it to find checkpoint in parent dir
     result = subprocess.run(
         [
             sys.executable,
@@ -133,41 +111,35 @@ def test_train_resume_autodetect(tmp_path, mock_wandb_disabled):
             "--total-timesteps", "10",
             "--seed", "42",
             "--device", "cpu",
+            *_ISOLATION_OVERRIDES,
         ],
         capture_output=True,
         text=True,
         env=env,
-        timeout=300,  # 5 minute timeout for E2E tests (accounts for model compilation, WandB setup, etc.)
+        timeout=300,
     )
-    
+
     print(f"Return code: {result.returncode}")
     print(f"Stdout: {result.stdout}")
     print(f"Stderr: {result.stderr}")
 
-    # Step 3: Verify that a run directory was created 
-    run_dirs = list(tmp_path.glob("keisei_*"))
-    assert run_dirs, f"No run directory created in {tmp_path}"
-    
-    run_dir = run_dirs[0]
-    print(f"Found run directory: {run_dir}")
-    
+    # Step 4: Verify results
+    # A new run directory should have been created (2 total now)
+    all_run_dirs = list(tmp_path.glob("keisei_*"))
+    assert len(all_run_dirs) >= 2, f"Expected at least 2 run directories, got {len(all_run_dirs)}"
+
     # Verify that training completed successfully
     check_training_outputs(result, 10)
-    
-    # Verify that checkpoints were created in the run directory
-    checkpoints = list(run_dir.glob("checkpoint_ts*.pth"))
-    assert checkpoints, "No checkpoints found in run directory"
 
 
 @pytest.mark.e2e
-def test_train_runs_minimal(mock_wandb_disabled):
+def test_train_runs_minimal():
     """Test that train.py runs with minimal configuration."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        
-        env = os.environ.copy()
-        env['WANDB_DISABLED'] = 'true'
-        
+
+        env = _make_test_env()
+
         result = subprocess.run(
             [
                 sys.executable,
@@ -177,13 +149,14 @@ def test_train_runs_minimal(mock_wandb_disabled):
                 "--savedir", str(tmp_path),
                 "--seed", "42",
                 "--device", "cpu",
+                *_ISOLATION_OVERRIDES,
             ],
             capture_output=True,
             text=True,
             env=env,
-            timeout=300,  # 5 minute timeout for E2E tests (accounts for model compilation, WandB setup, etc.)
+            timeout=300,
         )
-        
+
         print(f"Return code: {result.returncode}")
         print(f"Stdout: {result.stdout}")
         print(f"Stderr: {result.stderr}")
@@ -191,23 +164,22 @@ def test_train_runs_minimal(mock_wandb_disabled):
         # Check that a run directory was created
         run_dirs = list(tmp_path.glob("keisei_*"))
         assert run_dirs, "No run directory created"
-        
+
         run_dir = run_dirs[0]
         print(f"Found run directory: {run_dir}")
-        
+
         # Verify that training completed successfully
         check_training_outputs(result, 10)
 
 
 @pytest.mark.e2e
-def test_train_config_override(mock_wandb_disabled):
+def test_train_config_override():
     """Test that train.py handles config overrides correctly."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        
-        env = os.environ.copy()
-        env['WANDB_DISABLED'] = 'true'
-        
+
+        env = _make_test_env()
+
         result = subprocess.run(
             [
                 sys.executable,
@@ -219,34 +191,34 @@ def test_train_config_override(mock_wandb_disabled):
                 "--device", "cpu",
                 "--override", "training.tower_width=32",
                 "--override", "training.learning_rate=0.001",
+                *_ISOLATION_OVERRIDES,
             ],
             capture_output=True,
             text=True,
             env=env,
-            timeout=300,  # 5 minute timeout for E2E tests (accounts for model compilation, WandB setup, etc.)
+            timeout=300,
         )
-        
+
         print(f"Return code: {result.returncode}")
         print(f"Stdout: {result.stdout}")
         print(f"Stderr: {result.stderr}")
-        
+
         # Check that a run directory was created
         run_dirs = list(tmp_path.glob("keisei_*"))
         assert run_dirs, "No run directory created for config override test"
-        
+
         # Verify that training completed successfully
         check_training_outputs(result, 10)
 
 
 @pytest.mark.e2e
-def test_train_run_name_and_savedir(mock_wandb_disabled):
+def test_train_run_name_and_savedir():
     """Test that train.py respects custom run names and save directories."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        
-        env = os.environ.copy()
-        env['WANDB_DISABLED'] = 'true'
-        
+
+        env = _make_test_env()
+
         # Test with a custom run name prefix
         result = subprocess.run(
             [
@@ -260,135 +232,106 @@ def test_train_run_name_and_savedir(mock_wandb_disabled):
                 "--input_features", "testfeats",
                 "--seed", "42",
                 "--device", "cpu",
+                *_ISOLATION_OVERRIDES,
             ],
             capture_output=True,
             text=True,
             env=env,
-            timeout=300,  # 5 minute timeout for E2E tests (accounts for model compilation, WandB setup, etc.)
+            timeout=300,
         )
-        
+
         print(f"Return code: {result.returncode}")
         print(f"Stdout: {result.stdout}")
         print(f"Stderr: {result.stderr}")
-        
+
         # When --run-name is explicitly provided, the directory uses that name exactly
         # (not combining with model/feature parameters)
         run_dirs = list(tmp_path.glob("mytestrunprefix*"))
         assert run_dirs, f"Expected run directory starting with 'mytestrunprefix' not found in {tmp_path}"
-        
+
         # Find the run directory that starts with our custom run name
         run_dir = None
         for d in run_dirs:
             if d.is_dir() and d.name.startswith("mytestrunprefix"):
                 run_dir = d
                 break
-        
+
         assert run_dir is not None, f"No run directory starting with 'mytestrunprefix' found in {tmp_path}"
-        
+
         print(f"Found run directory: {run_dir}")
-        
+
         # Verify that training completed successfully
         check_training_outputs(result, 10)
 
 
 @pytest.mark.e2e
-def test_train_explicit_resume(tmp_path, mock_wandb_disabled):
+def test_train_explicit_resume(tmp_path):
     """
     Test explicit checkpoint resuming with train.py.
-    
+
     This test verifies explicit checkpoint path functionality:
-    1. Create a checkpoint file at a specific location
+    1. Run an initial short training to produce a real checkpoint
     2. Run train.py with --resume pointing to that specific checkpoint
     3. Verify training resumes from the checkpoint
     """
-    # Step 1: Create initial checkpoint
-    import torch
-    
-    # Create the initial save directory
-    initial_save_dir = tmp_path / "initial_save_dir"
-    initial_save_dir.mkdir()
-    
-    checkpoint_path = initial_save_dir / "my_explicit_checkpoint_ts100.pth"
-    
-    # Create a checkpoint with specific timestep
-    checkpoint_data = {
-        'model': {},
-        'optimizer': {},
-        'scheduler': {},
-        'global_timestep': 100,  # Start from timestep 100
-        'episode_count': 5,
-        'best_reward': 10.5,
-        'config': {
-            'training': {
-                'model_type': 'resnet',
-                'total_timesteps': 150,  # Train to timestep 150
-                'steps_per_epoch': 2,
-                'checkpoint_interval_timesteps': 5,
-            },
-            'model': {
-                'input_features': 'core_46_channels',
-                'tower_depth': 1,
-                'tower_width': 16,
-                'se_ratio': 0.25,
-            },
-            'ppo': {
-                'learning_rate': 1e-4,
-            },
-            'env': {
-                'seed': 42,
-                'tensorboard_log_dir': None,
-                'log_tensorboard': False,
-            },
-            'logging': {
-                'wandb_enabled': False,
-                'run_name': None,
-            },
-            'device': {
-                'device': 'cpu',
-            },
-            'evaluation': {},
-        }
-    }
-    
-    torch.save(checkpoint_data, checkpoint_path)
-    print(f"Created checkpoint: {checkpoint_path}")
+    env = _make_test_env()
 
-    env = os.environ.copy()
-    env['WANDB_DISABLED'] = 'true'
+    # Step 1: Run a short initial training to produce a valid checkpoint
+    result_initial = subprocess.run(
+        [
+            sys.executable,
+            TRAIN_PATH,
+            "train",
+            "--savedir", str(tmp_path),
+            "--total-timesteps", "10",
+            "--seed", "42",
+            "--device", "cpu",
+            *_ISOLATION_OVERRIDES,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert result_initial.returncode == 0, f"Initial training failed: {result_initial.stderr}"
 
-    # Step 2: Run train.py with explicit checkpoint path
+    # Step 2: Find the checkpoint from the initial run
+    run_dirs = list(tmp_path.glob("keisei_*"))
+    assert run_dirs, f"No run directory created in {tmp_path}"
+    initial_run_dir = run_dirs[0]
+
+    checkpoints = list(initial_run_dir.glob("*.pth"))
+    assert checkpoints, f"No checkpoint produced in {initial_run_dir}"
+    checkpoint_path = checkpoints[0]
+    print(f"Using checkpoint: {checkpoint_path}")
+
+    # Step 3: Run train.py with explicit checkpoint path
     result = subprocess.run(
         [
             sys.executable,
             TRAIN_PATH,
             "train",
-            "--resume", str(checkpoint_path),  # Explicit path
+            "--resume", str(checkpoint_path),
             "--savedir", str(tmp_path),
-            "--total-timesteps", "150",
+            "--total-timesteps", "20",
             "--seed", "42",
             "--device", "cpu",
+            *_ISOLATION_OVERRIDES,
         ],
         capture_output=True,
         text=True,
         env=env,
-        timeout=300,  # 5 minute timeout for E2E tests (accounts for model compilation, WandB setup, etc.)
+        timeout=300,
     )
-    
+
     print(f"Return code: {result.returncode}")
     print(f"Stdout: {result.stdout}")
     print(f"Stderr: {result.stderr}")
 
-    # Step 3: Verify that a new run directory was created
-    run_dirs = list(tmp_path.glob("keisei_*"))
-    assert run_dirs, f"No run directory created in {tmp_path}"
-    
-    run_dir = run_dirs[0]
-    print(f"Found run directory: {run_dir}")
-    
+    # Step 4: Verify results
+    # A new run directory should have been created (2 total now)
+    all_run_dirs = list(tmp_path.glob("keisei_*"))
+    assert len(all_run_dirs) >= 2, f"Expected at least 2 run directories, got {len(all_run_dirs)}"
+
     # Verify that training completed successfully
-    check_training_outputs(result, 150)
-    
-    # When using explicit checkpoint resume, the original checkpoint is used directly
-    # but new checkpoints should be created in the run directory during training
-    new_checkpoints = list(run_dir.glob("checkpoint_ts*.pth"))
-    assert new_checkpoints, f"No new checkpoints found in run directory: {run_dir}. Files: {list(run_dir.iterdir())}"
+    check_training_outputs(result, 20)

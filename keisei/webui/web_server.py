@@ -42,37 +42,52 @@ class WebUIHTTPRequestHandler(SimpleHTTPRequestHandler):
 
 class WebUIHTTPServer:
     """HTTP server for serving WebUI static files."""
-    
+
     def __init__(self, host: str = "0.0.0.0", port: int = 8766):
         self.host = host
         self.port = port
         self.server = None
         self.thread = None
         self._running = False
+        self._startup_event = threading.Event()
+        self._startup_success = False
         self._logger = logging.getLogger(__name__)
-        
+
         # Find static directory
         self.static_dir = Path(__file__).parent / "static"
         if not self.static_dir.exists():
             self._logger.error(f"Static directory not found: {self.static_dir}")
-        
+
         # Register cleanup handler
         atexit.register(self.stop)
-    
-    def start(self):
-        """Start the HTTP server in a background thread."""
+
+    def start(self, timeout: float = 5.0):
+        """Start the HTTP server in a background thread.
+
+        Blocks until the server socket is bound or startup fails.
+
+        Returns:
+            True if the server started and is listening, False otherwise.
+        """
         if self._running:
             return True
-            
+
         if not self.static_dir.exists():
             self._logger.error("Cannot start HTTP server: static directory not found")
             return False
-            
-        self._running = True
+
+        self._startup_event.clear()
+        self._startup_success = False
         self.thread = threading.Thread(target=self._run_server, daemon=True)
         self.thread.start()
-        
-        self._logger.info(f"WebUI HTTP server starting on http://{self.host}:{self.port}")
+
+        self._startup_event.wait(timeout=timeout)
+        if not self._startup_success:
+            self._logger.error(f"WebUI HTTP server failed to start on {self.host}:{self.port}")
+            self._running = False
+            return False
+
+        self._logger.info(f"WebUI HTTP server listening on http://{self.host}:{self.port}")
         return True
     
     def stop(self):
@@ -94,25 +109,32 @@ class WebUIHTTPServer:
             # Create handler with static directory
             def handler(*args, **kwargs):
                 return WebUIHTTPRequestHandler(*args, static_dir=str(self.static_dir), **kwargs)
-            
+
             self.server = HTTPServer((self.host, self.port), handler)
             self.server.timeout = 0.5  # Short timeout so _running flag is checked promptly
 
             # Enable socket reuse to prevent "Address already in use" errors
             self.server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            self._logger.info(f"WebUI HTTP server started on http://{self.host}:{self.port}")
+            # Signal successful startup now that the socket is bound
+            self._running = True
+            self._startup_success = True
+            self._startup_event.set()
 
             while self._running:
                 self.server.handle_request()
-                
+
         except OSError as e:
             if e.errno == 98:  # Address already in use
                 self._logger.error(f"Port {self.port} already in use. Try a different port or kill the process using it.")
             else:
                 self._logger.error(f"HTTP server socket error: {e}")
+            self._startup_success = False
+            self._startup_event.set()
         except Exception as e:
             self._logger.error(f"HTTP server error: {e}")
+            self._startup_success = False
+            self._startup_event.set()
         finally:
             self._running = False
             if self.server:
