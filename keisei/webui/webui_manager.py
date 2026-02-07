@@ -64,15 +64,25 @@ class WebSocketConnectionManager:
 
     async def message_broadcaster(self):
         """Background task that broadcasts queued messages."""
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         while True:
             try:
                 message = await self.message_queue.get()
                 await self.broadcast(message)
                 self.message_queue.task_done()
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                consecutive_errors += 1
                 self._logger.error(f"Error in message broadcaster: {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    self._logger.error(
+                        f"Message broadcaster hit {max_consecutive_errors} consecutive errors, shutting down"
+                    )
+                    break
+                await asyncio.sleep(0.1 * consecutive_errors)
 
 
 class WebUIManager:
@@ -86,8 +96,10 @@ class WebUIManager:
         self.event_loop: Optional[asyncio.AbstractEventLoop] = None
         self.thread: Optional[threading.Thread] = None
         self._running = False
+        self._startup_event = threading.Event()
+        self._startup_success = False
         self._logger = logging.getLogger(__name__)
-        
+
         # Rate limiting - increased intervals for better browser stability
         self.last_board_update = 0.0
         self.last_metrics_update = 0.0
@@ -100,44 +112,72 @@ class WebUIManager:
         if not WEBSOCKETS_AVAILABLE:
             self._logger.warning("WebSockets not available. Install 'websockets' package to enable WebUI.")
 
-    def start(self):
-        """Start the WebUI server in a background thread."""
+    def start(self, timeout: float = 5.0):
+        """Start the WebUI server in a background thread.
+
+        Returns True only after the server has bound successfully,
+        or False if startup fails or times out.
+        """
         if not WEBSOCKETS_AVAILABLE:
             self._logger.error("Cannot start WebUI: websockets package not available")
             return False
-            
+
         if self._running:
             return True
-            
+
+        self._startup_event.clear()
+        self._startup_success = False
         self._running = True
         self.thread = threading.Thread(target=self._run_server, daemon=True)
         self.thread.start()
-        
-        # Give the server a moment to start
-        time.sleep(0.1)
-        self._logger.info(f"WebUI server starting on {self.config.host}:{self.config.port}")
-        return True
 
-    def stop(self):
-        """Stop the WebUI server."""
+        # Wait for the server to confirm bind (or fail)
+        self._startup_event.wait(timeout=timeout)
+        if self._startup_success:
+            self._logger.info(f"WebUI server started on ws://{self.config.host}:{self.config.port}")
+            return True
+
+        self._logger.error(f"WebUI server failed to start on {self.config.host}:{self.config.port}")
         self._running = False
-        
+        return False
+
+    def stop(self, timeout: float = 5.0):
+        """Stop the WebUI server, join the thread, and close the event loop."""
+        self._running = False
+
         if self.event_loop and not self.event_loop.is_closed():
-            # Cancel tasks
-            if self.server_task:
-                self.event_loop.call_soon_threadsafe(self.server_task.cancel)
             if self.broadcaster_task:
                 self.event_loop.call_soon_threadsafe(self.broadcaster_task.cancel)
+
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=timeout)
+            if self.thread.is_alive():
+                self._logger.warning("WebUI thread stuck, force-stopping loop")
+                if self.event_loop and not self.event_loop.is_closed():
+                    self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+                self.thread.join(timeout=1.0)
+
+        if self.event_loop and not self.event_loop.is_closed():
+            self.event_loop.close()
+
+        self.event_loop = None
+        self.thread = None
+        self.server_task = None
+        self.broadcaster_task = None
 
     def _run_server(self):
         """Run the WebSocket server in the background thread."""
         self.event_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.event_loop)
-        
+
         try:
             self.event_loop.run_until_complete(self._start_server())
         except Exception as e:
             self._logger.error(f"WebUI server error: {e}")
+            # Ensure startup event is signalled even on unexpected errors
+            if not self._startup_event.is_set():
+                self._startup_success = False
+                self._startup_event.set()
 
     async def _start_server(self):
         """Start the WebSocket server and message broadcaster."""
@@ -169,15 +209,19 @@ class WebUIManager:
 
         try:
             async with serve(handle_client, self.config.host, self.config.port):
-                self._logger.info(f"WebUI server started on ws://{self.config.host}:{self.config.port}")
-                
-                # Keep server running
+                # Signal successful bind to the calling thread
+                self._startup_success = True
+                self._startup_event.set()
+
+                # Keep server running until told to stop
                 while self._running:
                     await asyncio.sleep(0.1)
-                    
+
         except Exception as e:
             self._logger.error(f"Failed to start WebSocket server: {e}")
             self._running = False
+            self._startup_success = False
+            self._startup_event.set()
 
     def _should_update_board(self) -> bool:
         """Check if enough time has passed for board update."""
