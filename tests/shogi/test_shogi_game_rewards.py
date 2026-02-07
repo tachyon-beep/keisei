@@ -121,7 +121,6 @@ def test_make_move_returns_correct_reward_on_checkmate(
     game.game_over = False
     game.winner = None
     game.move_count = 10  # Arbitrary move count
-    game.board_history = [game._board_state_hash()]  # Initialize board history
 
     # Move: Black Gold (2,0) -> (1,0) delivering checkmate
     checkmating_move: MoveTuple = (2, 0, 1, 0, False)
@@ -168,7 +167,6 @@ def test_make_move_returns_perspective_specific_reward(
     game.game_over = False
     game.winner = None
     game.move_count = 10  # Arbitrary move count
-    game.board_history = [game._board_state_hash()]  # Initialize board history
 
     # Move: White Gold (6,0) -> (7,0) delivering checkmate
     checkmating_move: MoveTuple = (6, 0, 7, 0, False)

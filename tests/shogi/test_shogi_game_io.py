@@ -389,12 +389,12 @@ def test_game_to_kif_checkmate_and_hands():
     assert "#KIF version=2.0" in kif_content_str
     assert "*Player Sente: SentePlayer" in kif_content_str
     assert "*Player Gote: GotePlayer" in kif_content_str
-    # UPDATED ASSERTIONS to match the verbose KIF output for hands P2p:
-    # Black (Sente) has 1 Pawn, represented as 01FU in the verbose line.
-    assert "P+00HI00KA00KI00GI00KE00KY01FU" in kif_content_str
-    # White (Gote) has 2 Pawns, represented as 02FU in the verbose line.
-    assert "P-00HI00KA00KI00GI00KE00KY02FU" in kif_content_str
+    # HIRATE initial hands are always empty
+    assert "P+00HI00KA00KI00GI00KE00KY00FU" in kif_content_str
+    assert "P-00HI00KA00KI00GI00KE00KY00FU" in kif_content_str
     assert "RESULT:SENTE_WIN" in kif_content_str
+    # Verify the mating move is recorded in SFEN notation
+    assert "1 9c9b" in kif_content_str
 
     # ---- write to file and verify ----
     game_to_kif(

@@ -47,7 +47,6 @@ class ShogiGame:
         self.winner: Optional[Color] = None
         self.termination_reason: Optional[str] = None
         self.move_history: List[Dict[str, Any]] = []
-        self.board_history: List[Tuple] = []  # Added board_history
         self._max_moves_this_game = max_moves_per_game
         self._initial_board_setup_done = False
         self._seed_value: Optional[Any] = None  # Added for seeding
@@ -123,9 +122,7 @@ class ShogiGame:
         self.winner = None
         self.termination_reason = None
         self.move_history = []
-        self.board_history = [
-            self._board_state_hash()
-        ]  # Initialize with starting position hash
+
         self._initial_board_setup_done = True
         return self.get_observation()  # MODIFIED: Return observation
 
@@ -137,8 +134,11 @@ class ShogiGame:
 
     def set_piece(self, row: int, col: int, piece: Optional[Piece]) -> None:
         """Sets or removes a piece at the specified position on the board."""
-        if self.is_on_board(row, col):
-            self.board[row][col] = piece
+        if not self.is_on_board(row, col):
+            raise ValueError(
+                f"set_piece: coordinates ({row}, {col}) are out of bounds for 9x9 board"
+            )
+        self.board[row][col] = piece
 
     def to_string(self) -> str:
         """Returns a string representation of the current board state."""
@@ -162,11 +162,9 @@ class ShogiGame:
         result.game_over = self.game_over
         result.winner = self.winner
         result.termination_reason = self.termination_reason
-        result.move_history = []
+        result.move_history = copy.deepcopy(self.move_history, memo)
         result._max_moves_this_game = self._max_moves_this_game
         result._initial_board_setup_done = self._initial_board_setup_done
-        # Ensure all attributes are set on result before calling _board_state_hash
-        result.board_history = [result._board_state_hash()]
 
         return result
 
@@ -318,15 +316,12 @@ class ShogiGame:
             Color.WHITE.value: {ptype: 0 for ptype in get_unpromoted_types()},
         }
         game.move_history = []  # SFEN does not contain history
-        game.board_history = []  # Will be initialized after board setup
 
         shogi_game_io.populate_board_from_sfen_segment(game.board, board_sfen)
         shogi_game_io.populate_hands_from_sfen_segment(game.hands, hands_sfen)
 
         game._initial_board_setup_done = True
-        game.board_history.append(
-            game._board_state_hash()
-        )  # Add current state to history
+
 
         # Evaluate termination conditions for the loaded position.
         # The `player_who_just_moved` for from_sfen is tricky. If the game is over,
@@ -651,7 +646,6 @@ class ShogiGame:
             current_state_hash = self._board_state_hash()
             move_details_for_history["state_hash"] = current_state_hash
             self.move_history.append(move_details_for_history)
-            self.board_history.append(current_state_hash)
             self._check_and_update_termination_status(player_who_made_the_move)
 
         if is_simulation:
@@ -766,9 +760,6 @@ class ShogiGame:
                 return
 
             last_move_details = self.move_history.pop()
-            if self.board_history:
-                self.board_history.pop()
-
             self.current_player = last_move_details["player_who_made_the_move"]
             self.move_count = last_move_details["move_count_before_move"]
 

@@ -642,10 +642,7 @@ def game_to_kif(
         lines.append("P8 * +KA * * * * * +HI * ")
         lines.append("P9+KY+KE+GI+KI+OU+KI+GI+KE+KY")
 
-        # --- Initial Hands (KIF format: P+00FU00KY... for Sente, P-00FU00KY... for Gote) ---
-        # This assumes starting with empty hands for a standard game from initial board setup.
-        sente_hand_str: str = "P+"
-        gote_hand_str: str = "P-"
+        # --- Initial Hands (HIRATE starts with empty hands) ---
         hand_order_for_kif: List[PieceType] = [
             PieceType.ROOK,
             PieceType.BISHOP,
@@ -654,59 +651,37 @@ def game_to_kif(
             PieceType.KNIGHT,
             PieceType.LANCE,
             PieceType.PAWN,
-        ]  # Common KIF hand order
-
-        initial_sente_hand: Dict[PieceType, int] = game.hands[Color.BLACK.value]
-        initial_gote_hand: Dict[PieceType, int] = game.hands[Color.WHITE.value]
-
+        ]
+        sente_hand_str: str = "P+"
+        gote_hand_str: str = "P-"
         for pt in hand_order_for_kif:
-            sente_hand_str += (
-                f"{initial_sente_hand.get(pt, 0):02d}{KIF_PIECE_SYMBOLS.get(pt, '??')}"
-            )
-            gote_hand_str += (
-                f"{initial_gote_hand.get(pt, 0):02d}{KIF_PIECE_SYMBOLS.get(pt, '??')}"
-            )
-        lines.append(f"{sente_hand_str}")
-        lines.append(f"{gote_hand_str}")
+            sente_hand_str += f"00{KIF_PIECE_SYMBOLS.get(pt, '??')}"
+            gote_hand_str += f"00{KIF_PIECE_SYMBOLS.get(pt, '??')}"
+        lines.append(sente_hand_str)
+        lines.append(gote_hand_str)
 
-        # --- Player to move first ---
-        lines.append(
-            f"{'+' if game.current_player == Color.BLACK else '-'}"
-        )  # + for Sente, - for Gote
+        # --- Player to move first (HIRATE: always Sente) ---
+        lines.append("+")
 
         lines.append("moves")  # Start of the moves section
 
-        # --- Moves ---
+        # --- Moves (SFEN notation) ---
         for i, move_entry in enumerate(game.move_history):
-            move_obj: Optional[MoveTuple] = move_entry.get(
-                "move"
-            )  # Your internal move object/tuple
+            move_obj: Optional[MoveTuple] = move_entry.get("move")
             if not move_obj:
                 continue
-            # Defensive: ensure all indices are not None
-            if (
-                move_obj[0] is None
-                or move_obj[1] is None
-                or move_obj[2] is None
-                or move_obj[3] is None
-            ):
-                continue  # Skip malformed move
-            usi_move_str: str = (
-                f"{move_obj[0]+1}{chr(move_obj[1]+ord('a'))}{move_obj[2]+1}{chr(move_obj[3]+ord('a'))}"
-            )
-            if move_obj[4]:  # Promote flag
-                usi_move_str += "+"
-            lines.append(f"{i+1} {usi_move_str}")
+            sfen_move_str = encode_move_to_sfen_string(move_obj)
+            lines.append(f"{i+1} {sfen_move_str}")
 
         # --- Game Termination ---
         if game.game_over:
             termination_map: Dict[str, str] = {
-                "Tsumi": "詰み",
-                "Toryo": "投了",
-                "Sennichite": "千日手",
-                "Stalemate": "持将棋",
-                "Max moves reached": "持将棋",  # Or "最大手数" or similar
-                # Add other mappings for values set in game.termination_reason
+                TerminationReason.CHECKMATE.value: "詰み",
+                TerminationReason.RESIGNATION.value: "投了",
+                TerminationReason.REPETITION.value: "千日手",
+                TerminationReason.STALEMATE.value: "持将棋",
+                TerminationReason.MAX_MOVES_EXCEEDED.value: "持将棋",
+                TerminationReason.IMPASSE.value: "持将棋",
             }
             reason_str: Optional[str] = game.termination_reason
             kif_termination_reason_display: str

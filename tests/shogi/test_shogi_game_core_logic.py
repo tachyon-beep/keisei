@@ -1158,7 +1158,7 @@ def test_game_termination_sennichite(
 
     assert (
         not game.game_over
-    ), f"Game should not be over before the sennichite-triggering move. SFEN: {game.to_sfen_string()}, History: {game.board_history.count(game.get_board_state_hash())}"
+    ), f"Game should not be over before the sennichite-triggering move. SFEN: {game.to_sfen_string()}, Move count: {game.move_count}"
 
     # This is the first move of the 4th repetition cycle for Black.
     sennichite_triggering_move = move_sequence[0]  # (5,0,5,1,False) - Black Rook a3-b3
@@ -1174,7 +1174,7 @@ def test_game_termination_sennichite(
 
     assert (
         game.game_over
-    ), f"Game should be over due to Sennichite. Termination: {game.termination_reason}, SFEN: {game.to_sfen_string()}, Hash count for current state: {game.board_history.count(game.get_board_state_hash())}"
+    ), f"Game should be over due to Sennichite. Termination: {game.termination_reason}, SFEN: {game.to_sfen_string()}, Move count: {game.move_count}"
     assert game.winner is None
     assert game.termination_reason == "Sennichite"
 
