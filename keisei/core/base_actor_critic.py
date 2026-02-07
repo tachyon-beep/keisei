@@ -5,7 +5,6 @@ This module provides a shared base class that implements the common ActorCritic
 methods to reduce code duplication between different model architectures.
 """
 
-import sys
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
@@ -78,28 +77,31 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
                 policy_logits,
                 torch.tensor(float("-inf"), device=policy_logits.device),
             )
-            # Handle case where all masked_logits are -inf to prevent NaN in softmax
-            if not torch.any(legal_mask):  # Or check if masked_logits are all -inf
-                # If no legal moves, softmax over original logits might be one option,
-                # or let it produce NaNs which should be caught upstream.
-                # For now, this will lead to NaNs if all are masked.
-                # This situation should ideally be caught by the caller (e.g. PPOAgent)
-                pass  # Let it proceed, PPOAgent should handle no legal moves.
+            # No legal actions → terminal state; return safe dummy values.
+            if not torch.any(legal_mask):
+                log_error_to_stderr(
+                    self.__class__.__name__,
+                    "No legal actions in get_action_and_value — "
+                    "caller should not request actions for terminal states.",
+                )
+                if policy_logits.dim() > 1:
+                    batch = policy_logits.shape[0]
+                    action = torch.zeros(
+                        batch, dtype=torch.long, device=policy_logits.device
+                    )
+                    log_prob = torch.zeros(batch, device=policy_logits.device)
+                else:
+                    action = torch.tensor(
+                        0, dtype=torch.long, device=policy_logits.device
+                    )
+                    log_prob = torch.tensor(0.0, device=policy_logits.device)
+                if value.dim() > 1 and value.shape[-1] == 1:
+                    value = value.squeeze(-1)
+                return action, log_prob, value
+
             probs = F.softmax(masked_logits, dim=-1)
         else:
             probs = F.softmax(policy_logits, dim=-1)
-
-        # Check for NaNs in probs, which can happen if all logits were -inf
-        if torch.isnan(probs).any():
-            log_error_to_stderr(
-                self.__class__.__name__,
-                "NaNs in probabilities in get_action_and_value. Check legal_mask and logits. Defaulting to uniform for affected rows.",
-            )
-            if probs.dim() > 1:
-                nan_rows = torch.isnan(probs).any(dim=-1)
-                probs[nan_rows] = torch.ones(probs.shape[-1], device=probs.device) / probs.shape[-1]
-            else:
-                probs = torch.ones_like(probs) / probs.shape[-1]
 
         dist = torch.distributions.Categorical(probs=probs)
 
@@ -145,38 +147,42 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
         # This is a common approach. To calculate entropy strictly over the legal action space
         # for each state in the batch, legal masks for each observation in obs_minibatch
         # would need to be stored in the experience buffer and passed here.
+        all_masked = None
         if legal_mask is not None:
-            # Apply the legal mask for calculating probabilities and entropy correctly
-            # Ensure legal_mask has the same shape as policy_logits or is broadcastable
-
-            # The shape of legal_mask should be (batch_size, num_actions)
-            # The shape of policy_logits is (batch_size, num_actions)
-            # No unsqueezing or broadcasting adjustment should be needed here if shapes are consistent.
-            # The previous check for legal_mask.ndim == 1 was more for get_action_and_value with batch_size=1.
-            # Here, we expect legal_mask to match policy_logits if provided.
-
             masked_logits = torch.where(
                 legal_mask,
                 policy_logits,
                 torch.tensor(float("-inf"), device=policy_logits.device),
             )
+
+            # Detect rows where all actions are masked (terminal states in batch).
+            # Replace with uniform logits to avoid NaN from softmax; the
+            # resulting log_probs and entropy are zeroed out below.
+            all_masked = ~legal_mask.any(dim=-1)
+            if all_masked.any():
+                log_error_to_stderr(
+                    self.__class__.__name__,
+                    "All-masked rows in evaluate_actions — "
+                    "terminal states should not appear in experience buffer.",
+                )
+                masked_logits = masked_logits.clone()
+                masked_logits[all_masked] = 0.0
+
             probs = F.softmax(masked_logits, dim=-1)
         else:
             probs = F.softmax(policy_logits, dim=-1)
 
-        # Check for NaNs in probs (e.g. if all logits in a row were -inf due to masking)
-        # Replace NaNs with uniform distribution for stability in entropy calculation for those rows
-        if torch.isnan(probs).any():
-            log_error_to_stderr(
-                self.__class__.__name__,
-                "NaNs in probabilities in evaluate_actions. Check legal_mask and logits. Defaulting to uniform for affected rows.",
-            )
-            nan_rows = torch.isnan(probs).any(dim=1)
-            probs[nan_rows] = torch.ones_like(probs[nan_rows]) / policy_logits.shape[-1]
-
         dist = torch.distributions.Categorical(probs=probs)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
+
+        # Zero out log_probs and entropy for all-masked rows so PPO ratio
+        # is exp(0-0)=1 (no gradient signal for terminal states).
+        if all_masked is not None and all_masked.any():
+            log_probs = log_probs.clone()
+            entropy = entropy.clone()
+            log_probs[all_masked] = 0.0
+            entropy[all_masked] = 0.0
 
         # Handle value squeezing - some models squeeze in forward, others don't
         if value.dim() > 1 and value.shape[-1] == 1:

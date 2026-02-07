@@ -197,7 +197,7 @@ class TestGetActionAndValue:
         assert not torch.isnan(value).any()
 
     def test_all_false_legal_mask_nan_handling(self, model, obs_single):
-        """Test handling of all-False legal mask (NaN case)."""
+        """Test handling of all-False legal mask returns safe dummy values."""
         # Create legal mask with all actions masked out
         legal_mask = torch.zeros(100, dtype=torch.bool)
 
@@ -210,13 +210,12 @@ class TestGetActionAndValue:
 
         # Check that error was logged
         stderr_content = captured_stderr.getvalue()
-        assert "NaNs in probabilities in get_action_and_value" in stderr_content
-        assert "Defaulting to uniform" in stderr_content
+        assert "No legal actions in get_action_and_value" in stderr_content
         assert "[ActorCriticResTower] ERROR:" in stderr_content
 
-        # Action should still be valid (0-99)
-        assert 0 <= action.item() < 100
-        assert not torch.isnan(log_prob).any()
+        # Early return with safe dummy values
+        assert action.item() == 0
+        assert log_prob.item() == 0.0
         assert not torch.isnan(value).any()
 
     def test_device_consistency(self, model):
@@ -306,14 +305,15 @@ class TestEvaluateActions:
 
         # Check that error was logged
         stderr_content = captured_stderr.getvalue()
-        assert "NaNs in probabilities in evaluate_actions" in stderr_content
-        assert "Defaulting to uniform for affected rows" in stderr_content
+        assert "All-masked rows in evaluate_actions" in stderr_content
         assert "[ActorCriticResTower] ERROR:" in stderr_content
 
-        # Results should still be valid (no NaNs)
+        # All-masked rows get zeroed out (no gradient signal)
         assert not torch.isnan(log_probs).any()
         assert not torch.isnan(entropy).any()
         assert not torch.isnan(value).any()
+        assert (log_probs == 0.0).all()
+        assert (entropy == 0.0).all()
 
     def test_consistency_with_get_action_and_value(self, model, obs_single):
         """Test consistency between get_action_and_value and evaluate_actions."""
