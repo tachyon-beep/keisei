@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from torch.cuda.amp import GradScaler
 
-import wandb
 from keisei.config_schema import AppConfig
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.ppo_agent import PPOAgent
@@ -431,6 +430,8 @@ class ModelManager:
         Returns:
             bool: True if artifact was created successfully, False otherwise
         """
+        import wandb  # Lazy import: optional dependency
+
         if not (is_wandb_active and wandb.run):
             return False
 
@@ -509,6 +510,8 @@ class ModelManager:
         Raises:
             Exception: Re-raises the last exception if all retries fail
         """
+        import wandb  # Lazy import: optional dependency
+
         for attempt in range(max_retries):
             try:
                 wandb.log_artifact(artifact, aliases=aliases)

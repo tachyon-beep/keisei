@@ -13,7 +13,6 @@ from typing import Optional
 import numpy as np
 import torch
 
-import wandb
 from keisei.config_schema import AppConfig
 from keisei.utils.unified_logger import log_error_to_stderr, log_info_to_stderr
 
@@ -162,6 +161,8 @@ def apply_wandb_sweep_config():
                        Empty dict if no W&B sweep is active.
     """
     try:
+        import wandb  # Lazy import: optional dependency
+
         if wandb.run is None:
             return {}
         sweep_config = wandb.config
