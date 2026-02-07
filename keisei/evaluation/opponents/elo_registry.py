@@ -101,17 +101,14 @@ class EloRegistry:
 
         score2 = len(results) - score1
 
-        # Expected scores
+        # Expected score per game
         expected1 = 1.0 / (1.0 + 10.0 ** ((rating2 - rating1) / 400.0))
         expected2 = 1.0 - expected1
 
-        # Actual scores (normalized)
-        actual1 = score1 / len(results)
-        actual2 = score2 / len(results)
-
-        # Update ratings
-        new_rating1 = rating1 + self.k_factor * (actual1 - expected1)
-        new_rating2 = rating2 + self.k_factor * (actual2 - expected2)
+        # Update ratings: K * (actual_total - N * expected_per_game)
+        n = len(results)
+        new_rating1 = rating1 + self.k_factor * (score1 - n * expected1)
+        new_rating2 = rating2 + self.k_factor * (score2 - n * expected2)
 
         self.set_rating(player1_id, new_rating1)
         self.set_rating(player2_id, new_rating2)

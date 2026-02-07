@@ -16,17 +16,8 @@ FULL_ACTION_SPACE = 13527  # Full Shogi action space (12960 + 567)
 CORE_OBSERVATION_CHANNELS = 46  # Standard 46-channel observation
 EXTENDED_OBSERVATION_CHANNELS = 51  # Extended observation with additional features
 
-# Observation channel layout constants
-OBS_CURRENT_PLAYER_UNPROMOTED_START = 0
-OBS_CURRENT_PLAYER_PROMOTED_START = 8
-OBS_OPPONENT_UNPROMOTED_START = 14
-OBS_OPPONENT_PROMOTED_START = 22
-OBS_CURRENT_PLAYER_HAND_START = 28
-OBS_OPPONENT_HAND_START = 35
-OBS_CURRENT_PLAYER_INDICATOR = 42
-OBS_MOVE_COUNT = 43
-OBS_RESERVED_1 = 44
-OBS_RESERVED_2 = 45
+# Observation channel layout constants (OBS_CURR_*, OBS_OPP_*, etc.)
+# are defined in shogi.shogi_core_definitions — import from there.
 
 # Training constants
 
@@ -72,7 +63,7 @@ TEST_MAX_DEPENDENCY_ISSUES = 20  # Updated from magic number 15
 # Common test dimensions
 TEST_BUFFER_SIZE = 4  # Small buffer size for testing
 TEST_SMALL_BUFFER = 8
-TEST_BATCH_SIZE = 16
+TEST_BATCH_SIZE = 32
 
 # Default seed values
 SEED_OFFSET_MULTIPLIER = 1000
@@ -149,7 +140,6 @@ TEST_PARAMETER_FILL_VALUE = 999.0  # Fill value for model parameter testing
 TEST_TIMEOUT_SECONDS = 10.0  # Timeout for async operations
 TEST_NUM_WORKERS = 4  # Number of workers for parallel tests
 TEST_SYNC_INTERVAL = 100  # Sync interval for distributed training
-TEST_BATCH_SIZE = 32  # Batch size for training tests
 TEST_DEMO_MODE_DELAY = 0.5  # Delay for demo mode testing
 TEST_WATCH_LOG_FREQ = 1000  # Logging frequency for wandb tests
 TEST_EVALUATION_INTERVAL = 1000  # Evaluation interval for training tests
