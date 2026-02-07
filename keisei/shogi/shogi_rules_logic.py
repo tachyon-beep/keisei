@@ -293,11 +293,10 @@ def check_for_uchi_fu_zume(
     # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Current player in initial game: {game.current_player}")
 
     opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
-    original_current_player = game.current_player  # Store original current player
+    original_current_player = game.current_player
 
     # Ensure the square is empty (pre-condition)
     if game.get_piece(drop_row, drop_col) is not None:
-        # print("DEBUG_UCHI_FU_ZUME_DETAILED: Target square not empty. Returning False.")
         return False
 
     # Ensure the player has a pawn in hand
@@ -305,58 +304,38 @@ def check_for_uchi_fu_zume(
         PieceType.PAWN in game.hands[color.value]
         and game.hands[color.value][PieceType.PAWN] > 0
     ):
-        # print("DEBUG_UCHI_FU_ZUME_DETAILED: No pawn in hand to drop. Returning False.")
         return False
 
-    # Simulate the pawn drop directly on the 'game' object
-    # No deepcopy needed; we will manually revert the changes.
+    # Simulate the pawn drop directly on the 'game' object.
+    # Use try/finally to guarantee state restoration even if an exception occurs.
     game.set_piece(drop_row, drop_col, Piece(PieceType.PAWN, color))
     game.hands[color.value][PieceType.PAWN] -= 1
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Game state after pawn drop (SFEN): {game.to_sfen_string()}")
+    try:
+        opp_king_pos = find_king(game, opp_color)
 
-    # Find the opponent's king
-    opp_king_pos = find_king(game, opp_color)
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Opponent color: {opp_color}, Opponent king pos: {opp_king_pos}")
+        if not opp_king_pos:
+            return False
 
-    if not opp_king_pos:
-        # print("DEBUG_UCHI_FU_ZUME_DETAILED: Opponent king not found. Reverting drop and returning False.")
-        # Revert pawn drop before returning
-        game.set_piece(drop_row, drop_col, None)  # Corrected: Use set_piece with None
-        game.hands[color.value][PieceType.PAWN] += 1
-        game.current_player = original_current_player  # Restore original player
-        return False
+        # 1. Check if the drop delivers check to the opponent's king.
+        drop_delivers_check = check_if_square_is_attacked(
+            game, opp_king_pos[0], opp_king_pos[1], color
+        )
 
-    # 1. Check if the drop delivers check to the opponent's king.
-    drop_delivers_check = check_if_square_is_attacked(
-        game, opp_king_pos[0], opp_king_pos[1], color
-    )
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Drop by {color} delivers check to {opp_color} king: {drop_delivers_check}")
+        if not drop_delivers_check:
+            return False
 
-    if not drop_delivers_check:
-        # print("DEBUG_UCHI_FU_ZUME_DETAILED: Drop does not deliver check. Reverting drop and returning False.")
-        # Revert pawn drop before returning
-        game.set_piece(drop_row, drop_col, None)  # Corrected: Use set_piece with None
+        # 2. Check if the opponent has any legal moves to escape the check.
+        game.current_player = opp_color
+        opponent_legal_moves = generate_all_legal_moves(
+            game, is_uchi_fu_zume_check=True
+        )
+
+        # If no legal moves, the opponent is checkmated by the pawn drop (uchi_fu_zume).
+        return not opponent_legal_moves
+    finally:
+        game.set_piece(drop_row, drop_col, None)
         game.hands[color.value][PieceType.PAWN] += 1
         game.current_player = original_current_player
-        return False
-
-    # 2. Check if the opponent's king has any legal moves to escape the check.
-    #    Temporarily switch current player in the game to opponent to generate their legal moves.
-    game.current_player = opp_color  # Now it's opponent's turn to find escapes
-
-    opponent_legal_moves = generate_all_legal_moves(game, is_uchi_fu_zume_check=True)
-
-    # print(f\"DEBUG_UCHI_FU_ZUME_DETAILED: Opponent ({opp_color}) legal moves found: {len(opponent_legal_moves)} moves: {opponent_legal_moves}\")
-    # Revert pawn drop and restore original player *before* returning the result
-    game.set_piece(drop_row, drop_col, None)  # Corrected: Use set_piece with None
-    game.hands[color.value][PieceType.PAWN] += 1
-    game.current_player = original_current_player  # Restore original player
-
-    # If opponent_legal_moves is empty, it means the opponent is checkmated by the pawn drop.
-    # Therefore, it IS uchi_fu_zume.
-    result = not opponent_legal_moves
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Returning {result} (is uchi_fu_zume if True)")
-    return result
 
 
 def is_king_in_check_after_simulated_move(

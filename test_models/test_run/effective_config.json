@@ -146,5 +146,14 @@
             "policy_head",
             "value_head"
         ]
+    },
+    "webui": {
+        "enabled": false,
+        "port": 8765,
+        "host": "0.0.0.0",
+        "update_rate_hz": 2.0,
+        "max_connections": 10,
+        "board_update_rate_hz": 5.0,
+        "metrics_update_rate_hz": 1.0
     }
 }

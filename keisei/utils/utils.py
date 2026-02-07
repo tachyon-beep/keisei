@@ -106,6 +106,15 @@ def _map_flat_overrides(overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return mapped
 
 
+def _deep_merge(base: dict, overrides: dict) -> None:
+    """Recursively merge overrides into base dict, preserving unspecified keys."""
+    for k, v in overrides.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+
 def load_config(
     config_path: Optional[str] = None, cli_overrides: Optional[Dict[str, Any]] = None
 ) -> AppConfig:
@@ -139,8 +148,7 @@ def load_config(
             mapped_overrides = _map_flat_overrides(override_data)
             _merge_overrides(config_data, mapped_overrides)
         else:
-            for k, v in override_data.items():
-                config_data[k] = v
+            _deep_merge(config_data, override_data)
     if cli_overrides:
         mapped_overrides = _map_flat_overrides(cli_overrides)
         _merge_overrides(config_data, mapped_overrides)
