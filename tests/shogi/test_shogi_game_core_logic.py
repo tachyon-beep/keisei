@@ -1401,3 +1401,40 @@ def test_illegal_movement_pattern_raises_valueerror(
 
 
 # --- END ADDED TEST ---
+
+
+def test_deepcopy_preserves_move_history():
+    """Regression test for P2-01: __deepcopy__ must preserve move_history.
+
+    Previously, __deepcopy__ reset move_history to [] instead of copying it,
+    causing simulations and tree searches to lose all game history.
+    """
+    import copy
+
+    game = ShogiGame()
+    game.reset()
+    # Make a move to populate move_history
+    legal_moves = game.get_legal_moves()
+    assert len(legal_moves) > 0
+    game.make_move(legal_moves[0])
+    assert len(game.move_history) == 1
+
+    cloned = copy.deepcopy(game)
+    assert len(cloned.move_history) == 1
+    # Verify it's a deep copy, not a shared reference
+    assert cloned.move_history is not game.move_history
+    assert cloned.move_history[0] == game.move_history[0]
+
+
+@pytest.mark.parametrize("row,col", [(-1, 0), (9, 0), (0, -1), (0, 9), (10, 10)])
+def test_set_piece_rejects_out_of_bounds(row, col):
+    """Regression test for P2-02: set_piece must raise on out-of-bounds coordinates.
+
+    Previously, set_piece silently ignored out-of-bounds coordinates,
+    masking bugs in callers.
+    """
+    game = ShogiGame()
+    game.reset()
+    piece = Piece(PieceType.PAWN, Color.BLACK)
+    with pytest.raises(ValueError, match="out of bounds"):
+        game.set_piece(row, col, piece)
