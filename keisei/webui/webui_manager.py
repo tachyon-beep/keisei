@@ -177,6 +177,7 @@ class WebUIManager:
                     
         except Exception as e:
             self._logger.error(f"Failed to start WebSocket server: {e}")
+            self._running = False
 
     def _should_update_board(self) -> bool:
         """Check if enough time has passed for board update."""

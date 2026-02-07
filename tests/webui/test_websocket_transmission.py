@@ -15,8 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from keisei.config_schema import WebUIConfig
 from keisei.webui.webui_manager import WebUIManager
 
-# Import mock objects
-from demo_webui import MockTrainer
+# Import mock objects (demo_webui is a standalone script, only available when run directly)
+try:
+    from demo_webui import MockTrainer
+except ImportError:
+    MockTrainer = None  # Not available when run via pytest
 
 async def websocket_client_test():
     """Test client to verify WebSocket messages."""
@@ -121,7 +124,11 @@ def simulate_training_with_advanced_data(webui_manager, trainer):
 def main():
     print("🧪 WebSocket Advanced Data Transmission Test")
     print("=" * 50)
-    
+
+    if MockTrainer is None:
+        print("❌ demo_webui module not found. Run this script from the project root.")
+        return
+
     # Create WebUI manager
     config = WebUIConfig(
         enabled=True,

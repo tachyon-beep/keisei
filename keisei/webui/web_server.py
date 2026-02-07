@@ -22,11 +22,17 @@ class WebUIHTTPRequestHandler(SimpleHTTPRequestHandler):
     def translate_path(self, path):
         """Translate URL path to static file path."""
         if self.static_dir:
+            # Strip query string and fragment
+            path = path.split('?', 1)[0].split('#', 1)[0]
             # Remove leading slash and join with static directory
             path = path.lstrip('/')
             if not path:  # Root path
                 path = 'index.html'
-            return os.path.join(self.static_dir, path)
+            full_path = os.path.normpath(os.path.join(self.static_dir, path))
+            # Prevent directory traversal — resolved path must stay within static_dir
+            if not full_path.startswith(os.path.normpath(self.static_dir) + os.sep) and full_path != os.path.normpath(self.static_dir):
+                return os.path.join(self.static_dir, 'index.html')
+            return full_path
         return super().translate_path(path)
     
     def log_message(self, format, *args):
@@ -72,17 +78,15 @@ class WebUIHTTPServer:
     def stop(self):
         """Stop the HTTP server."""
         self._running = False
-        if self.server:
-            try:
-                self.server.shutdown()
-                self.server.server_close()
-                self._logger.info(f"WebUI HTTP server stopped on port {self.port}")
-            except Exception as e:
-                self._logger.error(f"Error stopping HTTP server: {e}")
-        
-        # Wait for thread to finish
+        # Don't call server.shutdown() — it blocks waiting for serve_forever()
+        # which we don't use. Setting _running=False causes the handle_request()
+        # loop to exit, and server_close() is called in _run_server()'s finally block.
+
+        # Wait for thread to finish (handle_request timeout ensures prompt exit)
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
+            self.thread.join(timeout=3.0)
+            if not self.thread.is_alive():
+                self._logger.info(f"WebUI HTTP server stopped on port {self.port}")
     
     def _run_server(self):
         """Run the HTTP server."""
@@ -92,12 +96,13 @@ class WebUIHTTPServer:
                 return WebUIHTTPRequestHandler(*args, static_dir=str(self.static_dir), **kwargs)
             
             self.server = HTTPServer((self.host, self.port), handler)
-            
+            self.server.timeout = 0.5  # Short timeout so _running flag is checked promptly
+
             # Enable socket reuse to prevent "Address already in use" errors
             self.server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
+
             self._logger.info(f"WebUI HTTP server started on http://{self.host}:{self.port}")
-            
+
             while self._running:
                 self.server.handle_request()
                 

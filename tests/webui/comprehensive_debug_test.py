@@ -15,7 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from keisei.config_schema import WebUIConfig
 from keisei.webui.webui_manager import WebUIManager
 from keisei.webui.web_server import WebUIHTTPServer
-from demo_webui import MockTrainer
+# Import mock objects (demo_webui is a standalone script, only available when run directly)
+try:
+    from demo_webui import MockTrainer
+except ImportError:
+    MockTrainer = None  # Not available when run via pytest
 
 def comprehensive_training_simulation(webui_manager, trainer, duration=15):
     """Comprehensive training simulation with varied data."""

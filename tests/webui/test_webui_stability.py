@@ -133,7 +133,7 @@ def test_memory_stability():
             update_count += 1
             
             # Brief delay to simulate realistic update frequency
-            await asyncio.sleep(0.01)  # 100 Hz simulation
+            time.sleep(0.01)  # 100 Hz simulation
             
             # Log progress periodically
             if i % 100 == 0:
