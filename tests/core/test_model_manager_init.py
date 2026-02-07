@@ -398,6 +398,34 @@ class TestModelManagerInitialization:
         )  # Use approximate comparison for float
         assert manager.obs_shape == (20, 9, 9)
 
+    @patch("keisei.training.model_manager.features.FEATURE_SPECS")
+    @patch("keisei.training.model_manager.model_factory")
+    def test_falsy_args_override_not_ignored(
+        self,
+        mock_model_factory,
+        mock_feature_specs,
+        minimal_model_manager_config,
+        device,
+        logger_func,
+    ):
+        """Regression test for P2-08: se_ratio=0 must not fall through to config default.
+
+        The `getattr(args, ...) or config_default` pattern treats valid falsy
+        values (0, 0.0) as "not provided" and silently uses the config default.
+        """
+        mock_feature_specs.__getitem__.return_value = Mock(num_planes=46)
+        mock_model_factory.return_value = Mock()
+
+        # se_ratio=0 means "disable SE blocks" — a valid architectural choice
+        args_with_zero = MockArgs(se_ratio=0)
+
+        manager = ModelManager(
+            minimal_model_manager_config, args_with_zero, device, logger_func
+        )
+
+        # Must be 0, not the config default (0.25)
+        assert manager.se_ratio == 0
+
     @patch("keisei.training.model_manager.GradScaler")
     @patch("keisei.training.model_manager.features.FEATURE_SPECS")
     @patch("keisei.training.model_manager.model_factory")
