@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from keisei.core.experience_buffer import ExperienceBuffer
     from keisei.core.ppo_agent import PPOAgent
     from keisei.training.callbacks import Callback
-    from keisei.training.display import TrainingDisplay
+    from keisei.training.display_manager import DisplayManager
     from keisei.training.parallel import ParallelManager
     from keisei.training.step_manager import (  # Added StepResult
         EpisodeState,

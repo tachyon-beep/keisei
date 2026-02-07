@@ -16,6 +16,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from keisei.core.ppo_agent import PPOAgent
 from keisei.training.trainer import Trainer
 
 
@@ -39,13 +40,11 @@ class TestTrainerTrainingLoopIntegration:
     @patch("builtins.open", create=True)
     @patch("os.makedirs")
     @patch("torch.save")
-    @patch("torch.load")
     @patch("os.path.exists")
     @pytest.mark.slow
     def test_run_training_loop_with_checkpoint_resume_logging(
         self,
         mock_path_exists,
-        mock_torch_load,
         _mock_torch_save,
         _mock_makedirs,
         _mock_open,
@@ -60,16 +59,12 @@ class TestTrainerTrainingLoopIntegration:
 
         Uses real components with minimal mocking of external dependencies only.
         """
-        # Mock external file operations and WandB
-        mock_torch_load.return_value = {
-            "model_state_dict": {},
-            "optimizer_state_dict": {},
+        checkpoint_data = {
             "global_timestep": 1500,
             "total_episodes_completed": 100,
             "black_wins": 40,
             "white_wins": 35,
             "draws": 25,
-            "config": integration_test_config.model_dump(),
         }
 
         # Create trainer with resume
@@ -90,77 +85,59 @@ class TestTrainerTrainingLoopIntegration:
         # Mock file existence for checkpoint loading
         mock_path_exists.return_value = True
 
-        # Create trainer - this will trigger checkpoint loading during initialization
-        trainer = Trainer(config, args)
+        # Mock load_model at class level BEFORE Trainer.__init__ triggers
+        # checkpoint resume (which calls agent.load_model internally)
+        with patch.object(
+            PPOAgent, "load_model", return_value=checkpoint_data
+        ):
+            trainer = Trainer(config, args)
 
-        # Mock the agent's load_model method to return the expected checkpoint data
-        # without trying to load into actual PyTorch models
-        def mock_load_model(path):
-            return {
-                "global_timestep": 1500,
-                "total_episodes_completed": 100,
-                "black_wins": 40,
-                "white_wins": 35,
-                "draws": 25,
-            }
+        # Mock only the step execution to control training length and avoid errors
+        with patch.object(
+            trainer.step_manager, "execute_step"
+        ) as mock_execute_step:
+            # Mock successful step execution that terminates quickly
+            def mock_step_execution(**kwargs):
+                episode_state = kwargs.get("episode_state")
+                import torch
 
-        with patch.object(trainer.agent, "load_model", side_effect=mock_load_model):
-            # Re-trigger checkpoint loading with working mock
-            trainer.setup_manager.handle_checkpoint_resume(
-                trainer.model_manager,
-                trainer.agent,
-                trainer.model_dir,
-                args.resume,
-                trainer.metrics_manager,
-                trainer.logger,
-            )
+                from keisei.training.step_manager import StepResult
 
-            # Mock only the step execution to control training length and avoid errors
-            with patch.object(
-                trainer.step_manager, "execute_step"
-            ) as mock_execute_step:
-                # Mock successful step execution that terminates quickly
-                def mock_step_execution(**kwargs):
-                    episode_state = kwargs.get("episode_state")
-                    import torch
+                # Handle case where episode_state might be None or incomplete
+                if episode_state and hasattr(episode_state, "current_obs"):
+                    next_obs = episode_state.current_obs
+                    next_obs_tensor = episode_state.current_obs_tensor
+                else:
+                    # Fallback values for testing
+                    next_obs = np.zeros((8, 8, 12), dtype=np.float32)
+                    next_obs_tensor = torch.zeros(1, 8, 8, 12)
 
-                    from keisei.training.step_manager import StepResult
+                return StepResult(
+                    next_obs=next_obs,
+                    next_obs_tensor=next_obs_tensor,
+                    reward=1.0,
+                    done=True,  # End episode quickly
+                    info={"winner": "black", "reason": "checkmate"},
+                    selected_move=(0, 0, 0, 0),
+                    policy_index=0,
+                    log_prob=-1.0,
+                    value_pred=0.5,
+                    success=True,
+                )
 
-                    # Handle case where episode_state might be None or incomplete
-                    if episode_state and hasattr(episode_state, "current_obs"):
-                        next_obs = episode_state.current_obs
-                        next_obs_tensor = episode_state.current_obs_tensor
-                    else:
-                        # Fallback values for testing
-                        next_obs = np.zeros((8, 8, 12), dtype=np.float32)
-                        next_obs_tensor = torch.zeros(1, 8, 8, 12)
+            mock_execute_step.side_effect = mock_step_execution
 
-                    return StepResult(
-                        next_obs=next_obs,
-                        next_obs_tensor=next_obs_tensor,
-                        reward=1.0,
-                        done=True,  # End episode quickly
-                        info={"winner": "black", "reason": "checkmate"},
-                        selected_move=(0, 0, 0, 0),
-                        policy_index=0,
-                        log_prob=-1.0,
-                        value_pred=0.5,
-                        success=True,
-                    )
+            # Run the training loop
+            trainer.run_training_loop()
 
-                mock_execute_step.side_effect = mock_step_execution
-
-                # Run the training loop
-                trainer.run_training_loop()
-
-                # Verify checkpoint data was loaded correctly
-                assert trainer.metrics_manager.global_timestep == 1500
-                assert (
-                    trainer.metrics_manager.total_episodes_completed >= 100
-                )  # Should be maintained from checkpoint
-                assert trainer.metrics_manager.black_wins == 40
-                assert trainer.metrics_manager.white_wins == 35
-                assert trainer.metrics_manager.draws == 25
+            # Verify checkpoint data was loaded correctly
+            assert trainer.metrics_manager.global_timestep == 1500
+            assert (
+                trainer.metrics_manager.total_episodes_completed >= 100
+            )  # Should be maintained from checkpoint
+            assert trainer.metrics_manager.black_wins == 40
+            assert trainer.metrics_manager.white_wins == 35
+            assert trainer.metrics_manager.draws == 25
 
     @patch("keisei.evaluation.performance_manager.ResourceMonitor", autospec=True)
     @patch("wandb.init")
@@ -429,11 +406,9 @@ class TestTrainerTrainingLoopIntegration:
     @patch("builtins.open", create=True)
     @patch("os.makedirs")
     @patch("torch.save")
-    @patch("torch.load")
     @pytest.mark.slow
     def test_training_loop_state_consistency_throughout_execution(
         self,
-        mock_torch_load,
         _mock_torch_save,
         _mock_makedirs,
         _mock_open,
@@ -448,18 +423,13 @@ class TestTrainerTrainingLoopIntegration:
 
         Uses real components to test actual state management behavior.
         """
-        # Mock checkpoint data for resume test
         checkpoint_data = {
-            "model_state_dict": {},
-            "optimizer_state_dict": {},
             "global_timestep": 2000,
             "total_episodes_completed": 150,
             "black_wins": 60,
             "white_wins": 55,
             "draws": 35,
-            "config": integration_test_config.model_dump(),
         }
-        mock_torch_load.return_value = checkpoint_data
 
         # Create trainer with resume to test state preservation
         checkpoint_path = f"{tmp_path}/state_consistency_checkpoint.pth"
@@ -474,42 +444,23 @@ class TestTrainerTrainingLoopIntegration:
         config.training.total_timesteps = 2010  # Just a bit more than checkpoint
         config.training.steps_per_epoch = 5
 
-        # Mock file existence for checkpoint loading
-        with patch("os.path.exists", return_value=True):
+        # Mock load_model at class level and path.exists BEFORE Trainer.__init__
+        # triggers checkpoint resume
+        with patch("os.path.exists", return_value=True), patch.object(
+            PPOAgent, "load_model", return_value=checkpoint_data
+        ):
             trainer = Trainer(config, args)
 
-            # Mock the agent's load_model method to return the expected checkpoint data
-            # without trying to load into actual PyTorch models
-            def mock_load_model(path):
-                return {
-                    "global_timestep": 2000,
-                    "total_episodes_completed": 150,
-                    "black_wins": 60,
-                    "white_wins": 55,
-                    "draws": 35,
-                }
+        # Verify initial state after checkpoint resume
+        initial_global_timestep = trainer.metrics_manager.global_timestep
+        initial_episodes = trainer.metrics_manager.total_episodes_completed
+        initial_black_wins = trainer.metrics_manager.black_wins
+        initial_white_wins = trainer.metrics_manager.white_wins
+        initial_draws = trainer.metrics_manager.draws
 
-            with patch.object(trainer.agent, "load_model", side_effect=mock_load_model):
-                # Re-trigger checkpoint loading with working mock
-                trainer.setup_manager.handle_checkpoint_resume(
-                    trainer.model_manager,
-                    trainer.agent,
-                    trainer.model_dir,
-                    args.resume,
-                    trainer.metrics_manager,
-                    trainer.logger,
-                )
-
-            # Verify initial state after checkpoint resume
-            initial_global_timestep = trainer.metrics_manager.global_timestep
-            initial_episodes = trainer.metrics_manager.total_episodes_completed
-            initial_black_wins = trainer.metrics_manager.black_wins
-            initial_white_wins = trainer.metrics_manager.white_wins
-            initial_draws = trainer.metrics_manager.draws
-
-            assert initial_global_timestep == 2000
-            assert initial_episodes == 150
-            assert initial_black_wins == 60
+        assert initial_global_timestep == 2000
+        assert initial_episodes == 150
+        assert initial_black_wins == 60
         assert initial_white_wins == 55
         assert initial_draws == 35
 

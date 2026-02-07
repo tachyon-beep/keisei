@@ -60,10 +60,6 @@ class TrainingConfig(BaseModel):
         1,
         description="Update expensive display elements (metrics, logs) every N steps to reduce flicker.",
     )
-    refresh_per_second: int = Field(4, description="Rich Live refresh rate per second.")
-    enable_spinner: bool = Field(
-        True, description="Enable spinner column in progress bar (looks cool!)."
-    )
     # --- Model/feature config additions ---
     input_features: str = Field(
         "core46",
@@ -594,65 +590,24 @@ class DemoConfig(BaseModel):
 
 
 class DisplayConfig(BaseModel):
-    """Configuration for optional TUI display features."""
+    """Retained display settings consumed by MetricsManager, StepManager, and Streamlit."""
 
-    enable_board_display: bool = Field(True, description="Show ASCII board panel")
-    enable_trend_visualization: bool = Field(True, description="Show metric trends")
-    enable_elo_ratings: bool = Field(True, description="Show Elo rating panel")
-    enable_enhanced_layout: bool = Field(
-        True, description="Use enhanced dashboard layout"
+    trend_history_length: int = Field(
+        100, description="Number of history points to keep for MetricsManager"
+    )
+    elo_initial_rating: float = Field(1500.0, description="Initial Elo rating")
+    elo_k_factor: float = Field(32.0, description="Elo K-factor")
+    log_layer_keyword_filters: List[str] = Field(
+        ["stem", "policy_head", "value_head"],
+        description="Keywords to filter layers in Streamlit Model Evolution panel",
     )
     display_moves: bool = Field(
         False,
-        description="Show full move descriptions and delay between turns",
+        description="Show full move descriptions and delay between turns (demo mode)",
     )
     turn_tick: float = Field(
         0.5,
         description="Delay in seconds between turns when display_moves is enabled",
-    )
-    board_unicode_pieces: bool = Field(True, description="Use Unicode pieces")
-    board_cell_width: int = Field(5, description="Board cell width in characters")
-    board_cell_height: int = Field(3, description="Board cell height in lines")
-    board_highlight_last_move: bool = Field(True, description="Highlight last move")
-    sparkline_width: int = Field(15, description="Sparkline width in characters")
-    trend_history_length: int = Field(
-        100, description="Number of history points to keep"
-    )
-    elo_initial_rating: float = Field(1500.0, description="Initial Elo rating")
-    elo_k_factor: float = Field(32.0, description="Elo K-factor")
-    dashboard_height_ratio: int = Field(2, description="Layout ratio for dashboard")
-    progress_bar_height: int = Field(4, description="Progress bar height")
-    show_text_moves: bool = Field(
-        True,
-        description="Display recent moves under the board when demo mode is active",
-    )
-    move_list_length: int = Field(10, description="Number of recent moves to display")
-    moves_latest_top: bool = Field(
-        True,
-        description="Display newest move at top of recent moves panel",
-    )
-    moves_flash_ms: int = Field(
-        500,
-        description="Highlight newest move for N milliseconds (0 disables)",
-    )
-    show_moves_trend: bool = Field(True, description="Display moves per game trend")
-    show_completion_rate: bool = Field(True, description="Display game completion rate")
-    show_enhanced_win_rates: bool = Field(
-        True, description="Display win/loss/draw breakdown"
-    )
-    show_turns_trend: bool = Field(True, description="Display average turns trend")
-    metrics_window_size: int = Field(100, description="Rolling window size for metrics")
-    trend_smoothing_factor: float = Field(
-        0.1, description="Smoothing factor for trend arrows"
-    )
-    metrics_panel_height: int = Field(6, description="Height of metrics panel")
-    enable_trendlines: bool = Field(True, description="Show trendlines in sparklines")
-    log_layer_keyword_filters: List[str] = Field(
-        ["stem", "policy_head", "value_head"],
-        description=(
-            "Keywords to filter layers in Model Evolution panel "
-            "(layers containing any of these keywords will be displayed)"
-        ),
     )
 
 
@@ -662,21 +617,22 @@ def _create_display_config() -> DisplayConfig:
 
 
 class WebUIConfig(BaseModel):
-    """Configuration for WebUI streaming service for Twitch/demo streaming."""
-    enabled: bool = Field(False, description="Enable WebUI streaming")
-    port: int = Field(8765, description="WebUI server port")
-    host: str = Field("0.0.0.0", description="WebUI server host (0.0.0.0 for all interfaces)")
+    """Configuration for the Streamlit training dashboard."""
+    enabled: bool = Field(False, description="Enable Streamlit training dashboard")
+    port: int = Field(8501, description="Streamlit server port")
+    host: str = Field("0.0.0.0", description="Server host (0.0.0.0 for all interfaces)")
     update_rate_hz: float = Field(
-        2.0, description="Update frequency in Hz for real-time data"
+        2.0, description="State file update frequency in Hz"
     )
+    # Legacy fields kept for YAML backward compatibility
     max_connections: int = Field(
-        10, description="Maximum concurrent WebSocket connections"
+        10, description="(Legacy) Maximum concurrent connections"
     )
     board_update_rate_hz: float = Field(
-        5.0, description="Board state update frequency (higher for smoother moves)"
+        5.0, description="(Legacy) Board state update frequency"
     )
     metrics_update_rate_hz: float = Field(
-        1.0, description="Metrics update frequency"
+        1.0, description="(Legacy) Metrics update frequency"
     )
 
 

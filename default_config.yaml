@@ -176,12 +176,6 @@ training:
   # Update frequency for expensive UI elements to reduce flicker
   render_every_steps: 1
 
-  # Rich Live display refresh rate (updates per second)
-  refresh_per_second: 2
-
-  # Enable animated spinner in progress display
-  enable_spinner: true
-
   # --- Learning Rate Scheduling Configuration ---
   # Type of learning rate scheduler: "linear", "cosine", "exponential", "step", or null to disable
   lr_schedule_type: null
@@ -476,176 +470,52 @@ parallel:
 # =============================================================================
 # DISPLAY CONFIGURATION (DisplayConfig)
 # =============================================================================
-# Settings controlling optional TUI enhancements.
+# Retained settings consumed by MetricsManager, StepManager, and Streamlit.
+# The former Rich TUI settings have been removed; all visualization now lives
+# in the Streamlit dashboard (see webui section).
 display:
-  enable_board_display: true        # Show ASCII board panel
-  enable_trend_visualization: true  # Show sparkline metric trends
-  enable_elo_ratings: true          # Display Elo rating information
-  enable_enhanced_layout: true      # Use multi-panel dashboard layout
-  board_unicode_pieces: true        # Use Unicode pieces for board rendering
-  board_cell_width: 7               # Width of each board cell (increased for Unicode)
-  board_cell_height: 3              # Height of each board cell (increased to match width for square cells)
-  board_highlight_last_move: true   # Highlight the last move made
-  sparkline_width: 15               # Width of sparkline graphs
-  trend_history_length: 100         # Number of data points to keep
+  trend_history_length: 100         # Number of data points to keep for metrics
   elo_initial_rating: 1500.0        # Starting Elo rating
   elo_k_factor: 32.0                # K-factor for Elo updates
-  dashboard_height_ratio: 2         # Relative height for dashboard section
-  progress_bar_height: 4            # Height of progress bar section
-  display_moves:  true              # Show expanded move log with delays
+  display_moves: true               # Show expanded move log with delays (demo mode)
   turn_tick: 0.1                    # Delay in seconds between turns
-  show_text_moves: true             # Display recent moves under board
-  move_list_length: 6               # Number of moves to show
-  show_moves_trend: true            # Display moves per game trend
-  show_completion_rate: true        # Display games per hour
-  show_enhanced_win_rates: true     # Show win/loss/draw breakdown
-  show_turns_trend: true            # Display average turns per game
-  metrics_window_size: 100          # Rolling window size
-  trend_smoothing_factor: 0.1       # Smoothing factor for trends
-  metrics_panel_height: 6           # Height of metrics panel
-  enable_trendlines: true           # Enable trendline rendering
 
-  # =============================================================================
-  # MODEL EVOLUTION LAYER DISPLAY CONFIGURATION
-  # =============================================================================
-  # Controls which neural network layers are displayed in the Model Evolution panel
-  # during training. The panel shows weight statistics (mean, std, min, max) and
-  # trends for layers matching the specified keywords.
-  #
-  # USAGE EXAMPLES:
-  # Default (ResNet): ["stem", "policy_head", "value_head"]
-  # Transformer: ["attention", "feedforward", "embedding", "position"]
-  # Custom CNN: ["conv", "fc", "output"]
-  # All layers: ["weight"]  # Shows all weight parameters
-  # Specific layers: ["layer1", "layer2", "final"]
-  #
-  # HOW IT WORKS:
-  # - Filters model parameters containing ".weight" in the name
-  # - Shows layers where ANY keyword appears in the parameter name
-  # - Case-sensitive matching (use lowercase for standard PyTorch naming)
-  # - Updates in real-time during training with trend indicators
-  #
-  # PERFORMANCE IMPACT:
-  # - More layers = more computation per update
-  # - Recommended: 3-10 keywords for optimal performance
-  # - Use specific keywords to avoid showing too many layers
+  # Keywords to filter layers in Streamlit Model Evolution panel
   log_layer_keyword_filters:
-    - "stem"             # First convolutional layers (ResNet stem)
-    - "res_blocks.0"     # ResNet block 0
-    - "res_blocks.1"     # ResNet block 1
-    - "res_blocks.2"     # ResNet block 2
-    - "res_blocks.3"     # ResNet block 3
-    - "policy_head"      # Policy network output layers
-    - "value_head"       # Value network output layers
-
-
-# =============================================================================
-# CONFIGURATION EXAMPLES FOR MODEL EVOLUTION DISPLAY
-# =============================================================================
-# The following examples show how to customize the log_layer_keyword_filters
-# for different model architectures and debugging scenarios.
-#
-# TO USE THESE EXAMPLES:
-# 1. Copy the desired filter list
-# 2. Replace the log_layer_keyword_filters section above
-# 3. Restart training to see the new layer selection
-#
-# EXAMPLE 1: Transformer/Attention Models
-# ----------------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "attention"      # Multi-head attention layers
-#     - "feedforward"    # Feed-forward network layers
-#     - "embedding"      # Token/position embedding layers
-#     - "norm"           # Layer normalization
-#     - "output"         # Final output layers
-#
-# EXAMPLE 2: Custom CNN Architecture
-# -----------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "conv1"          # First convolutional block
-#     - "conv2"          # Second convolutional block
-#     - "fc"             # Fully connected layers
-#     - "classifier"     # Classification head
-#     - "regressor"      # Regression head
-#
-# EXAMPLE 3: Standard ResNet with More Detail
-# -----------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "stem"           # Initial convolution
-#     - "layer1"         # ResNet stage 1
-#     - "layer2"         # ResNet stage 2
-#     - "layer3"         # ResNet stage 3
-#     - "layer4"         # ResNet stage 4
-#     - "policy_head"    # Policy output
-#     - "value_head"     # Value output
-#
-# EXAMPLE 4: Debugging Mode (Show All Layers)
-# ---------------------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "weight"         # Shows ALL weight parameters
-#
-# EXAMPLE 5: Minimal Mode (Performance Focused)
-# -----------------------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "policy_head"    # Only policy output
-#     - "value_head"     # Only value output
-#
-# EXAMPLE 6: EfficientNet/MobileNet Style
-# ----------------------------------------
-# display:
-#   log_layer_keyword_filters:
-#     - "features"       # Feature extraction layers
-#     - "se"             # Squeeze-and-excitation blocks
-#     - "classifier"     # Classification head
-#     - "head"           # Various head layers
-#
-# PERFORMANCE GUIDELINES:
-# - Fewer keywords = faster updates, less memory usage
-# - More keywords = detailed monitoring, slower updates
-# - Optimal range: 3-10 keywords
-# - Use specific names to avoid catching too many layers
-# - Test different configurations to find the right balance
-#
-# TROUBLESHOOTING:
-# - No layers shown? Check that your keywords match actual layer names
-# - Too many layers? Use more specific keywords
-# - Slow performance? Reduce the number of keywords
-# - Missing important layers? Add broader keywords like "head" or "output"
+    - "stem"
+    - "res_blocks.0"
+    - "res_blocks.1"
+    - "res_blocks.2"
+    - "res_blocks.3"
+    - "policy_head"
+    - "value_head"
 
 
 # =============================================================================
 # WEBUI CONFIGURATION (WebUIConfig)
 # =============================================================================
-# Real-time WebUI for streaming training data via WebSocket (ideal for Twitch/demo)
-# Runs parallel to the Rich console display without impacting training performance
+# Streamlit-based training dashboard. Launches a Streamlit subprocess that
+# reads training state from a JSON file written by the training thread.
+# Runs parallel to the Rich console display without impacting training performance.
+# Requires: pip install keisei[webui]   (or pip install streamlit>=1.33.0)
 webui:
-  # Enable WebUI streaming service for Twitch/demo streaming
+  # Enable Streamlit training dashboard
   enabled: true
-  
-  # WebSocket server port for real-time data streaming
-  port: 8765
-  
+
+  # Streamlit server port
+  port: 8501
+
   # Host binding - use "0.0.0.0" for all interfaces (remote access), "localhost" for local only
   host: "0.0.0.0"
-  
-  # Update frequency in Hz for real-time data
+
+  # State file update frequency in Hz
   update_rate_hz: 2.0
-  
-  # Maximum concurrent WebSocket connections
+
+  # Legacy fields (kept for YAML backward compatibility)
   max_connections: 10
-  
-  # Board state update frequency (higher for smoother moves)
   board_update_rate_hz: 5.0
-  
-  # Metrics update frequency
   metrics_update_rate_hz: 1.0
-  
-# Access URLs (when enabled):
-# - WebSocket: ws://YOUR_SERVER_IP:8765 (for real-time data)
-# - Dashboard: http://YOUR_SERVER_IP:8766 (HTTP server runs on port+1)
-# - Local access: http://localhost:8766
+
+# Access URL (when enabled):
+# - Dashboard: http://YOUR_SERVER_IP:8501
+# - Local access: http://localhost:8501

@@ -76,46 +76,34 @@ class Trainer:
 
         # Initialize managers
         self.display_manager = DisplayManager(config, self.log_file_path)
-        self.rich_console = self.display_manager.get_console()
-        self.rich_log_messages = self.display_manager.get_log_messages()
-        self.logger = TrainingLogger(
-            self.log_file_path,
-            self.rich_console,
-            self.rich_log_messages,
-            also_stdout=False,
-        )
+        self.logger = TrainingLogger(self.log_file_path, also_stdout=False)
 
         # Initialize WebUI manager if enabled
         self.webui_manager = None
-        self.webui_http_server = None
         if config.webui.enabled:
             try:
-                from keisei.webui.webui_manager import WebUIManager
-                from keisei.webui.web_server import WebUIHTTPServer
-                
-                self.webui_manager = WebUIManager(config.webui)
-                self.webui_http_server = WebUIHTTPServer(
-                    host=config.webui.host,
-                    port=config.webui.port + 1  # HTTP server on port+1
+                from keisei.webui.streamlit_manager import (
+                    STREAMLIT_AVAILABLE,
+                    StreamlitManager,
                 )
-                
-                # Start WebUI servers
-                if self.webui_manager.start():
-                    self.logger.log("WebUI WebSocket server started successfully")
+
+                if STREAMLIT_AVAILABLE:
+                    self.webui_manager = StreamlitManager(config.webui)
+                    if self.webui_manager.start():
+                        self.logger.log(
+                            f"Streamlit dashboard launched on "
+                            f"http://{config.webui.host}:{config.webui.port}"
+                        )
+                    else:
+                        self.logger.log("Failed to start Streamlit dashboard")
+                        self.webui_manager = None
                 else:
-                    self.logger.log("Failed to start WebUI WebSocket server")
-                    self.webui_manager = None
-                    
-                if self.webui_http_server.start():
-                    self.logger.log(f"WebUI HTTP server available at http://{config.webui.host}:{config.webui.port + 1}")
-                else:
-                    self.logger.log("Failed to start WebUI HTTP server")
-                    self.webui_http_server = None
-                    
+                    self.logger.log(
+                        "Streamlit not available. Install 'streamlit' to enable the dashboard."
+                    )
             except ImportError as e:
                 self.logger.log(f"WebUI not available: {e}")
                 self.webui_manager = None
-                self.webui_http_server = None
         self.model_manager = ModelManager(config, args, self.device, self.logger.log)
         self.env_manager = EnvManager(config, self.logger.log)
         self.metrics_manager = MetricsManager(
@@ -198,9 +186,7 @@ class Trainer:
             self.policy_output_mapper,
             self.action_space_size,
             self.obs_space_shape,
-        ) = self.setup_manager.setup_game_components(
-            self.env_manager, self.rich_console
-        )
+        ) = self.setup_manager.setup_game_components(self.env_manager)
 
         # Setup training components
         self.model, self.agent, self.experience_buffer = (
@@ -406,19 +392,12 @@ class Trainer:
         # Cleanup WebUI if enabled
         if self.webui_manager:
             self.webui_manager.stop()
-        if self.webui_http_server:
-            self.webui_http_server.stop()
 
     def run_training_loop(self):
         """Executes the main training loop by delegating to TrainingLoopManager."""
         self.session_manager.log_session_start()
 
-        with TrainingLogger(
-            self.log_file_path,
-            rich_console=self.rich_console,
-            rich_log_panel=self.rich_log_messages,
-            also_stdout=False,
-        ) as logger:
+        with TrainingLogger(self.log_file_path, also_stdout=False) as logger:
 
             def log_both_impl(
                 message: str,

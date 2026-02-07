@@ -9,8 +9,6 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from rich.console import Console
-
 
 class UnifiedLogger:
     """
@@ -18,8 +16,7 @@ class UnifiedLogger:
 
     This logger automatically handles output to multiple targets:
     - File logging with timestamps
-    - Rich console display (if available)
-    - stderr fallback for error messages
+    - stderr output
 
     Designed to replace inconsistent print statements throughout the codebase.
     """
@@ -28,7 +25,6 @@ class UnifiedLogger:
         self,
         name: str,
         log_file_path: Optional[str] = None,
-        rich_console: Optional[Console] = None,
         enable_stderr: bool = True,
     ):
         """
@@ -37,12 +33,10 @@ class UnifiedLogger:
         Args:
             name: Logger name (typically module name)
             log_file_path: Optional path to log file
-            rich_console: Optional Rich console for styled output
-            enable_stderr: Whether to output to stderr as fallback
+            enable_stderr: Whether to output to stderr
         """
         self.name = name
         self.log_file_path = log_file_path
-        self.rich_console = rich_console
         self.enable_stderr = enable_stderr
 
     def _format_message(self, level: str, message: str) -> str:
@@ -64,16 +58,9 @@ class UnifiedLogger:
                     file=sys.stderr,
                 )
 
-    def _write_to_console(
-        self, formatted_message: str, style: Optional[str] = None
-    ) -> None:
-        """Write message to rich console or stderr fallback."""
-        if self.rich_console:
-            if style:
-                self.rich_console.print(f"[{style}]{formatted_message}[/{style}]")
-            else:
-                self.rich_console.print(formatted_message)
-        elif self.enable_stderr:
+    def _write_to_console(self, formatted_message: str) -> None:
+        """Write message to stderr."""
+        if self.enable_stderr:
             print(formatted_message, file=sys.stderr)
 
     def info(self, message: str) -> None:
@@ -86,21 +73,20 @@ class UnifiedLogger:
         """Log a warning-level message."""
         formatted_message = self._format_message("WARNING", message)
         self._write_to_file(formatted_message)
-        self._write_to_console(formatted_message, style="bold yellow")
+        self._write_to_console(formatted_message)
 
     def error(self, message: str) -> None:
         """Log an error-level message."""
         formatted_message = self._format_message("ERROR", message)
         self._write_to_file(formatted_message)
-        self._write_to_console(formatted_message, style="bold red")
+        self._write_to_console(formatted_message)
 
     def debug(self, message: str) -> None:
         """Log a debug-level message."""
         formatted_message = self._format_message("DEBUG", message)
         self._write_to_file(formatted_message)
-        # Debug messages typically don't go to console unless explicitly requested
-        if self.rich_console:
-            self.rich_console.print(f"[dim]{formatted_message}[/dim]")
+        if self.enable_stderr:
+            print(formatted_message, file=sys.stderr)
 
     def log(self, message: str, level: str = "INFO") -> None:
         """
@@ -124,7 +110,6 @@ class UnifiedLogger:
 def create_module_logger(
     module_name: str,
     log_file_path: Optional[str] = None,
-    rich_console: Optional[Console] = None,
 ) -> UnifiedLogger:
     """
     Create a logger for a specific module.
@@ -132,7 +117,6 @@ def create_module_logger(
     Args:
         module_name: Name of the module (e.g., "SetupManager", "SessionManager")
         log_file_path: Optional path to log file
-        rich_console: Optional Rich console for styled output
 
     Returns:
         UnifiedLogger instance configured for the module
@@ -140,7 +124,6 @@ def create_module_logger(
     return UnifiedLogger(
         name=module_name,
         log_file_path=log_file_path,
-        rich_console=rich_console,
         enable_stderr=True,
     )
 
@@ -150,9 +133,6 @@ def log_error_to_stderr(
 ) -> None:
     """
     Utility function for consistent error logging to stderr.
-
-    This function provides a standardized way to log errors across the codebase,
-    replacing inconsistent print statements.
 
     Args:
         component: Name of the component reporting the error

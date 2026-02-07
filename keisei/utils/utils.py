@@ -22,9 +22,6 @@ from typing import (
 import torch
 import yaml  # type: ignore[import]
 from pydantic import ValidationError
-from rich.console import Console
-from rich.text import Text
-
 from keisei.config_schema import AppConfig
 from keisei.shogi.shogi_core_definitions import (
     BoardMoveTuple,
@@ -476,33 +473,25 @@ class PolicyOutputMapper:
 
 
 class TrainingLogger:
-    """Handles logging of training progress to a file and optionally to stdout."""
+    """Handles logging of training progress to a file and stderr."""
 
     def __init__(
         self,
         log_file_path: str,
-        rich_console: Optional[Console] = None,
-        rich_log_panel: Optional[List[Text]] = None,
-        also_stdout: Optional[bool] = None,  # Added also_stdout argument
-        **_kwargs: Any,  # Added to accept arbitrary keyword arguments
+        also_stdout: Optional[bool] = None,
+        **_kwargs: Any,
     ):
         """
         Initializes the TrainingLogger.
 
         Args:
             log_file_path: Path to the log file.
-            rich_console: An optional rich.console.Console instance for TUI output.
-            rich_log_panel: An optional list to which rich.text.Text log messages can be appended for TUI display.
-            also_stdout: Whether to also print log messages to stdout (used if rich_console is None).
-            **kwargs: To catch unexpected keyword arguments.
+            also_stdout: Whether to also print log messages to stderr.
+            **_kwargs: Accepts (and ignores) extra keyword arguments for compatibility.
         """
         self.log_file_path = log_file_path
         self.log_file: Optional[TextIO] = None
-        self.rich_console = rich_console
-        self.rich_log_panel = rich_log_panel  # This will be a list of Text objects
-        # If rich_console is not provided, this flag determines if logs go to stdout.
-        # If rich_console IS provided, stdout is typically handled by the rich Live display.
-        self.also_stdout_if_no_rich = also_stdout if also_stdout is not None else True
+        self.also_stdout = also_stdout if also_stdout is not None else True
 
     def __enter__(self) -> "TrainingLogger":
         self.log_file = open(self.log_file_path, "a", encoding="utf-8")
@@ -514,7 +503,7 @@ class TrainingLogger:
             self.log_file = None
 
     def log(self, message: str) -> None:
-        """Logs a message to the file and to the rich log panel if configured."""
+        """Logs a message to the file and optionally to stderr."""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         full_message = f"[{timestamp}] {message}"
 
@@ -522,17 +511,8 @@ class TrainingLogger:
             self.log_file.write(full_message + "\n")
             self.log_file.flush()
 
-        if self.rich_console and self.rich_log_panel is not None:
-            # Create a Rich Text object for the message
-            rich_message = Text(full_message)
-            self.rich_log_panel.append(rich_message)
-            # The Live display will handle the update. We don't print directly here.
-        elif self.also_stdout_if_no_rich:
-            # Fallback to stdout if rich components are not provided
-            try:
-                log_info_to_stderr("TrainingLogger", full_message)
-            except ImportError:
-                log_info_to_stderr("TrainingLogger", full_message)
+        if self.also_stdout:
+            log_info_to_stderr("TrainingLogger", full_message)
 
 
 class EvaluationLogger:

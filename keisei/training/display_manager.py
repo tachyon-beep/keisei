@@ -1,177 +1,101 @@
 """
-training/display_manager.py: Manages Rich UI display components and logging.
+training/display_manager.py: Barebones CLI display — prints throttled one-line
+summaries to stderr. All rich visualization lives in the Streamlit dashboard.
 """
 
 import sys
-from typing import Any, List, Optional
-
-from rich.console import Console, Text
-from rich.live import Live
-
-from keisei.utils.unified_logger import log_error_to_stderr
-
-from . import display
+import time
+from contextlib import contextmanager
+from typing import Any, List
 
 
 class DisplayManager:
-    """Manages Rich console display, logging, and UI components."""
+    """Plain stderr display manager replacing the former Rich TUI."""
 
     def __init__(self, config: Any, log_file_path: str):
-        """
-        Initialize the DisplayManager.
-
-        Args:
-            config: Training configuration
-            log_file_path: Path to the log file
-        """
         self.config = config
         self.log_file_path = log_file_path
+        self.log_messages: List[str] = []
+        self._last_progress_time: float = 0.0
 
-        # Initialize Rich console components with explicit unicode support
-        self.rich_console = Console(
-            file=sys.stderr,
-            record=True,
-            force_terminal=True,
-            color_system="truecolor",  # Enable full color support
-            emoji=True,  # Enable emoji/unicode support
-            markup=True,  # Enable rich markup
-            legacy_windows=False,  # Disable legacy Windows mode that might break Unicode
-        )
-        self.rich_log_messages: List[Text] = []
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
-        # Display will be initialized when needed
-        self.display: Optional[display.TrainingDisplay] = None
+    def setup_display(self, trainer: Any) -> "DisplayManager":
+        """Return *self* — no separate display object needed."""
+        return self
 
-    def setup_display(self, trainer) -> display.TrainingDisplay:
-        """
-        Setup the training display.
+    # ------------------------------------------------------------------
+    # Progress / dashboard
+    # ------------------------------------------------------------------
 
-        Args:
-            trainer: The trainer instance
+    def update_progress(self, trainer: Any, speed: float, pending_updates: dict) -> None:
+        """Print a throttled one-line progress summary to stderr."""
+        now = time.time()
+        if now - self._last_progress_time < 2.0:
+            return
+        self._last_progress_time = now
 
-        Returns:
-            The configured TrainingDisplay
-        """
-        self.display = display.TrainingDisplay(self.config, trainer, self.rich_console)
-        return self.display
+        mm = trainer.metrics_manager
+        total = trainer.config.training.total_timesteps
+        step = mm.global_timestep
+        pct = (step / total * 100) if total > 0 else 0.0
 
-    def get_console(self) -> Console:
-        """
-        Get the Rich console instance.
+        ep_metrics = pending_updates.get("ep_metrics", "")
+        bw = pending_updates.get("black_win_rate", 0.0)
+        ww = pending_updates.get("white_win_rate", 0.0)
+        dr = pending_updates.get("draw_rate", 0.0)
+        ppo = pending_updates.get("ppo_metrics", "")
 
-        Returns:
-            The Rich console
-        """
-        return self.rich_console
+        parts = [f"Step {step}/{total} ({pct:.1f}%)", f"{speed:.1f} it/s"]
+        if ep_metrics:
+            parts.append(f"Ep {ep_metrics}")
+        parts.append(f"B:{bw:.0%} W:{ww:.0%} D:{dr:.0%}")
+        if ppo:
+            parts.append(ppo)
 
-    def get_log_messages(self) -> List[Text]:
-        """
-        Get the log messages list.
+        print(" | ".join(parts), file=sys.stderr)
 
-        Returns:
-            List of Rich Text log messages
-        """
-        return self.rich_log_messages
+    def refresh_dashboard_panels(self, trainer: Any) -> None:
+        """No-op — Streamlit handles visualization."""
 
-    def add_log_message(self, message: str) -> None:
-        """
-        Add a log message to the Rich log panel.
+    # ------------------------------------------------------------------
+    # Context manager (replaces Rich Live)
+    # ------------------------------------------------------------------
 
-        Args:
-            message: The message to add
-        """
-        rich_message = Text(message)
-        self.rich_log_messages.append(rich_message)
+    @contextmanager
+    def start(self):
+        """Yield a no-op context manager (replaces Rich Live)."""
+        yield
 
-    def update_progress(self, trainer, speed: float, pending_updates: dict) -> None:
-        """
-        Update the progress display.
-
-        Args:
-            trainer: The trainer instance
-            speed: Training speed in steps/second
-            pending_updates: Dictionary of pending progress updates
-        """
-        if self.display:
-            self.display.update_progress(trainer, speed, pending_updates)
-
-    def refresh_dashboard_panels(self, trainer) -> None:
-        """
-        Update the log panel display.
-
-        Args:
-            trainer: The trainer instance
-        """
-        if self.display:
-            self.display.refresh_dashboard_panels(trainer)
-
-    def start_live_display(self) -> Optional[Live]:
-        """
-        Start the Rich Live display context manager.
-
-        Returns:
-            Live context manager if display is available, None otherwise
-        """
-        if self.display:
-            return self.display.start()
-        return None
+    # ------------------------------------------------------------------
+    # Console output helpers
+    # ------------------------------------------------------------------
 
     def save_console_output(self, output_dir: str) -> bool:
-        """
-        Save the Rich console output to HTML.
+        """No HTML export — return False."""
+        return False
 
-        Args:
-            output_dir: Directory to save the output
+    def print_rule(self, title: str, style: str = "") -> None:
+        print(f"{'=' * 60}", file=sys.stderr)
+        print(f"  {title}", file=sys.stderr)
+        print(f"{'=' * 60}", file=sys.stderr)
 
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            import os
-
-            console_log_path = os.path.join(output_dir, "full_console_output_rich.html")
-            self.rich_console.save_html(console_log_path)
-            log_error_to_stderr(
-                "DisplayManager",
-                f"Full Rich console output saved to {console_log_path}",
-            )
-            return True
-        except OSError as e:
-            log_error_to_stderr("DisplayManager", f"Error saving Rich console log: {e}")
-            return False
-
-    def print_rule(self, title: str, style: str = "bold green") -> None:
-        """
-        Print a rule with title to the console.
-
-        Args:
-            title: The title for the rule
-            style: Style for the rule
-        """
-        self.rich_console.rule(f"[{style}]{title}[/{style}]")
-
-    def print_message(self, message: str, style: str = "bold green") -> None:
-        """
-        Print a styled message to the console.
-
-        Args:
-            message: The message to print
-            style: Style for the message
-        """
-        self.rich_console.print(f"[{style}]{message}[/{style}]")
+    def print_message(self, message: str, style: str = "") -> None:
+        print(message, file=sys.stderr)
 
     def finalize_display(self, run_name: str, run_artifact_dir: str) -> None:
-        """
-        Finalize the display and save console output.
-
-        Args:
-            run_name: Name of the training run
-            run_artifact_dir: Directory for run artifacts
-        """
-        # Save console output
-        self.save_console_output(run_artifact_dir)
-
-        # Final messages
         self.print_rule("Run Finished")
         self.print_message(f"Run '{run_name}' processing finished.")
         self.print_message(f"Output and logs are in: {run_artifact_dir}")
+
+    # ------------------------------------------------------------------
+    # Log message accumulator (used by TrainingLogger)
+    # ------------------------------------------------------------------
+
+    def get_log_messages(self) -> List[str]:
+        return self.log_messages
+
+    def add_log_message(self, message: str) -> None:
+        self.log_messages.append(message)

@@ -1,0 +1,70 @@
+{
+  "timestamp": 1707400000.0,
+  "speed": 245.3,
+  "board_state": {
+    "board": [
+      [{"type": "lance", "color": "white", "promoted": false}, {"type": "knight", "color": "white", "promoted": false}, {"type": "silver", "color": "white", "promoted": false}, {"type": "gold", "color": "white", "promoted": false}, {"type": "king", "color": "white", "promoted": false}, {"type": "gold", "color": "white", "promoted": false}, {"type": "silver", "color": "white", "promoted": false}, {"type": "knight", "color": "white", "promoted": false}, {"type": "lance", "color": "white", "promoted": false}],
+      [null, {"type": "rook", "color": "white", "promoted": false}, null, null, null, null, null, {"type": "bishop", "color": "white", "promoted": false}, null],
+      [{"type": "pawn", "color": "white", "promoted": false}, {"type": "pawn", "color": "white", "promoted": false}, {"type": "pawn", "color": "white", "promoted": false}, null, {"type": "pawn", "color": "white", "promoted": false}, {"type": "pawn", "color": "white", "promoted": false}, null, {"type": "pawn", "color": "white", "promoted": false}, {"type": "pawn", "color": "white", "promoted": false}],
+      [null, null, null, {"type": "pawn", "color": "white", "promoted": false}, null, null, {"type": "pawn", "color": "white", "promoted": false}, null, null],
+      [null, null, null, null, null, null, null, null, null],
+      [null, null, {"type": "pawn", "color": "black", "promoted": false}, null, null, null, null, null, null],
+      [{"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}, null, {"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}, {"type": "pawn", "color": "black", "promoted": false}],
+      [null, {"type": "bishop", "color": "black", "promoted": false}, null, null, null, null, null, {"type": "rook", "color": "black", "promoted": false}, null],
+      [{"type": "lance", "color": "black", "promoted": false}, {"type": "knight", "color": "black", "promoted": false}, {"type": "silver", "color": "black", "promoted": false}, {"type": "gold", "color": "black", "promoted": false}, {"type": "king", "color": "black", "promoted": false}, {"type": "gold", "color": "black", "promoted": false}, {"type": "silver", "color": "black", "promoted": false}, {"type": "knight", "color": "black", "promoted": false}, {"type": "lance", "color": "black", "promoted": false}]
+    ],
+    "current_player": "black",
+    "move_count": 4,
+    "game_over": false,
+    "winner": null,
+    "black_hand": {},
+    "white_hand": {}
+  },
+  "metrics": {
+    "global_timestep": 12500,
+    "total_episodes": 85,
+    "black_wins": 35,
+    "white_wins": 30,
+    "draws": 20,
+    "processing": false,
+    "learning_curves": {
+      "policy_losses": [2.1, 1.9, 1.8, 1.7, 1.65, 1.6, 1.55, 1.5, 1.48, 1.45, 1.42, 1.4, 1.38, 1.35, 1.33, 1.3, 1.28, 1.25, 1.23, 1.2, 1.18, 1.15, 1.13, 1.1, 1.08, 1.05, 1.03, 1.0, 0.98, 0.95, 0.93, 0.9, 0.88, 0.86, 0.84, 0.82, 0.8, 0.79, 0.78, 0.77, 0.76, 0.75, 0.74, 0.73, 0.72, 0.71, 0.7, 0.69, 0.68, 0.67],
+      "value_losses": [3.0, 2.8, 2.6, 2.5, 2.4, 2.3, 2.2, 2.1, 2.0, 1.95, 1.9, 1.85, 1.8, 1.75, 1.7, 1.65, 1.6, 1.55, 1.5, 1.48, 1.45, 1.42, 1.4, 1.38, 1.35, 1.33, 1.3, 1.28, 1.25, 1.23, 1.2, 1.18, 1.15, 1.13, 1.1, 1.08, 1.05, 1.03, 1.0, 0.98, 0.96, 0.94, 0.92, 0.9, 0.88, 0.86, 0.84, 0.82, 0.8, 0.78],
+      "entropies": [9.5, 9.4, 9.3, 9.2, 9.1, 9.0, 8.9, 8.8, 8.7, 8.6, 8.5, 8.4, 8.3, 8.2, 8.1, 8.0, 7.9, 7.8, 7.7, 7.6, 7.5, 7.4, 7.3, 7.2, 7.1, 7.0, 6.9, 6.8, 6.7, 6.6, 6.5, 6.4, 6.3, 6.2, 6.1, 6.0, 5.9, 5.8, 5.7, 5.6, 5.5, 5.4, 5.3, 5.2, 5.1, 5.0, 4.9, 4.8, 4.7, 4.6],
+      "kl_divergences": [0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015, 0.014, 0.013, 0.012, 0.011, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015, 0.014, 0.013, 0.012, 0.011, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015, 0.014, 0.013, 0.012, 0.011, 0.01, 0.011, 0.012, 0.013, 0.014, 0.015, 0.014, 0.013, 0.012, 0.011, 0.01],
+      "clip_fractions": [0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12, 0.11, 0.1, 0.09, 0.1, 0.11, 0.12],
+      "learning_rates": [0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003, 0.0003],
+      "episode_lengths": [200, 180, 220, 195, 210, 185, 190, 205, 215, 200, 195, 185, 210, 220, 190, 205, 200, 195, 185, 210, 220, 190, 205, 200, 195, 185, 210, 220, 190, 205, 200, 195, 185, 210, 220, 190, 205, 200, 195, 185, 150, 160, 170, 155, 165, 145, 150, 155, 160, 148],
+      "episode_rewards": [0.1, -0.2, 0.3, 0.0, -0.1, 0.4, 0.2, -0.3, 0.1, 0.5, -0.1, 0.2, 0.3, -0.2, 0.4, 0.1, 0.0, -0.1, 0.5, 0.2, -0.3, 0.1, 0.4, -0.2, 0.3, 0.0, 0.2, -0.1, 0.5, 0.3, -0.2, 0.4, 0.1, 0.0, -0.1, 0.5, 0.2, -0.3, 0.1, 0.4, 0.6, 0.3, 0.5, 0.7, 0.4, 0.6, 0.8, 0.5, 0.7, 0.9]
+    },
+    "win_rates_history": [
+      {"win_rate_black": 45.0, "win_rate_white": 35.0, "win_rate_draw": 20.0},
+      {"win_rate_black": 44.0, "win_rate_white": 36.0, "win_rate_draw": 20.0},
+      {"win_rate_black": 43.0, "win_rate_white": 35.0, "win_rate_draw": 22.0},
+      {"win_rate_black": 42.0, "win_rate_white": 36.0, "win_rate_draw": 22.0},
+      {"win_rate_black": 41.2, "win_rate_white": 35.3, "win_rate_draw": 23.5}
+    ],
+    "hot_squares": ["5e", "7f", "3d"]
+  },
+  "step_info": {
+    "move_log": [
+      "P7g-7f", "P3c-3d", "P2g-2f", "P8c-8d",
+      "B8h-2b+", "S3a-2b", "S7i-6h", "S7a-6b",
+      "G4i-5h", "G4a-3b", "P5g-5f", "P5c-5d",
+      "K5i-4h", "G6a-5b", "P3g-3f", "K5a-4a"
+    ],
+    "sente_capture_count": 1,
+    "gote_capture_count": 1,
+    "sente_drop_count": 0,
+    "gote_drop_count": 0,
+    "sente_promo_count": 1,
+    "gote_promo_count": 0
+  },
+  "buffer_info": {
+    "size": 1024,
+    "capacity": 2048
+  },
+  "model_info": {
+    "gradient_norm": 0.35
+  }
+}

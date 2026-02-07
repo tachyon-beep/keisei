@@ -35,13 +35,12 @@ class SetupManager:
         self.config = config
         self.device = device
 
-    def setup_game_components(self, env_manager, rich_console):
+    def setup_game_components(self, env_manager):
         """
         Initialize game environment and policy mapper using EnvManager.
 
         Args:
             env_manager: Environment manager instance
-            rich_console: Rich console for error display
 
         Returns:
             Tuple of (game, policy_output_mapper, action_space_size, obs_space_shape)
@@ -62,8 +61,9 @@ class SetupManager:
             return game, policy_output_mapper, action_space_size, obs_space_shape
 
         except (RuntimeError, ValueError, OSError) as e:
-            rich_console.print(
-                f"[bold red]Error initializing game components: {e}. Aborting.[/bold red]"
+            print(
+                f"Error initializing game components: {e}. Aborting.",
+                file=sys.stderr,
             )
             raise RuntimeError(f"Failed to initialize game components: {e}") from e
 
