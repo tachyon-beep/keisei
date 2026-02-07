@@ -38,10 +38,9 @@ pytest -m performance       # Performance benchmarks
 pytest -m slow              # Slow tests
 
 # Run specific test directories
-pytest tests/core/           # Core RL component tests
-pytest tests/shogi/          # Shogi game engine tests
-pytest tests/evaluation/     # Evaluation system tests
-pytest tests/training/       # Training manager tests
+pytest tests/unit/            # Unit tests (fast, isolated)
+pytest tests/integration/     # Integration tests (multi-component)
+pytest tests/e2e/             # End-to-end tests (full workflows)
 
 # Code quality
 black keisei/              # Code formatting
@@ -66,21 +65,21 @@ python train.py evaluate \
   --wandb_log_eval
 ```
 
-### WebUI (Twitch Streaming)
+### WebUI (Streamlit Dashboard)
 ```bash
-# Enable WebUI for streaming/demo
+# Enable Streamlit dashboard during training
 python train.py train --override webui.enabled=true
 
-# Custom WebUI configuration
-python train.py train --override webui.enabled=true --override webui.port=8765
+# Custom port (default: 8501)
+python train.py train --override webui.enabled=true --override webui.port=8501
 
-# WebUI demo with mock data
-python demo_webui.py
+# Run Streamlit dashboard standalone (demo mode with sample data)
+streamlit run keisei/webui/streamlit_app.py
 
-# Access WebUI dashboard
-# WebSocket: ws://0.0.0.0:8765 (accessible from any IP)
-# Dashboard: http://YOUR_SERVER_IP:8766
-# Local access: http://localhost:8766
+# Run with a specific state file
+streamlit run keisei/webui/streamlit_app.py -- --state-file path/to/state.json
+
+# Access dashboard: http://localhost:8501
 ```
 
 ## High-Level Architecture
@@ -93,12 +92,12 @@ The system uses a manager-based architecture with 9 core specialized components 
 4. **StepManager**: Step execution, episode management, experience collection
 5. **TrainingLoopManager**: Main training loop, PPO updates, callbacks
 6. **MetricsManager**: Statistics collection, progress tracking, formatting
-7. **DisplayManager**: Rich console UI, progress bars, logging
+7. **DisplayManager**: Barebones stderr logging (throttled one-line summaries)
 8. **CallbackManager**: Event system, evaluation scheduling, checkpoints
 9. **SetupManager**: Component initialization, validation, dependencies
 
 **Optional Components:**
-- **WebUIManager**: Real-time WebSocket streaming for Twitch/demo (parallel to DisplayManager)
+- **StreamlitManager**: Streamlit training dashboard (parallel to DisplayManager, communicates via atomic JSON state file)
 
 ### Key Design Patterns
 
@@ -106,7 +105,7 @@ The system uses a manager-based architecture with 9 core specialized components 
 - **Pydantic configuration**: Type-safe config with YAML loading and CLI overrides
 - **Manager separation**: Each manager handles a single responsibility
 - **Experience buffer**: Efficient storage with GAE computation
-- **Rich console UI**: Real-time training visualization and logging
+- **Streamlit dashboard**: Optional real-time training visualization via atomic JSON state file
 
 ### Critical Implementation Details
 
@@ -124,32 +123,33 @@ The system uses a manager-based architecture with 9 core specialized components 
 - **Training**: `training/trainer.py`, `training/train.py`
 - **Models**: `training/models/resnet_tower.py`, `core/neural_network.py`
 - **Utils**: `utils/unified_logger.py`, `utils/checkpoint.py`
-- **WebUI**: `webui/webui_manager.py`, `webui/static/index.html`
+- **WebUI**: `webui/streamlit_manager.py`, `webui/streamlit_app.py`, `webui/state_snapshot.py`
 
 ### Development Notes
 
-- Always use the unified logger (`utils/unified_logger.py`) for consistent Rich-formatted output
+- Always use the unified logger (`utils/unified_logger.py`) for consistent logging output
 - Model checkpoints include optimizer state, training metadata, and configuration
 - The game engine supports full Shogi rules including drops, promotions, and special rules
 - Experience collection can be parallelized using `training/parallel/` components
-- Evaluation system supports multiple opponent types (random, heuristic, trained agents)
-- WebUI system runs parallel to console display without impacting training performance
-- WebUI requires `websockets` package: `pip install websockets`
+- Evaluation system supports 5 strategies: single opponent, tournament, ladder, benchmark, custom
+- Streamlit dashboard runs as a subprocess, communicating via atomic JSON state file
+- WebUI requires `streamlit` package: `pip install keisei[webui]` or `pip install streamlit`
 
 ## Development Environment Setup
 
 ### Installation
 ```bash
-# Create virtual environment
-python3 -m venv env
-source env/bin/activate  # Linux/Mac
-# or
-env\Scripts\activate     # Windows
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-pip install -e .
+# Create virtual environment and install dependencies
+uv venv .venv
+source .venv/bin/activate
+
+# Install project with dev dependencies
+uv pip install -e ".[dev]"
+
+# Dependencies are defined in pyproject.toml (requirements.txt is stale)
 ```
 
 ### Project Structure
@@ -163,10 +163,10 @@ keisei/
 │   ├── models/              # Neural network architectures
 │   └── parallel/            # Multi-process experience collection
 ├── evaluation/              # Evaluation system with multiple strategies
-├── webui/                   # WebUI streaming system for Twitch/demo
-│   ├── static/              # HTML/CSS/JS frontend files
-│   ├── webui_manager.py     # WebSocket streaming manager
-│   └── web_server.py        # HTTP server for static files
+├── webui/                   # Streamlit training dashboard
+│   ├── streamlit_app.py     # Standalone Streamlit dashboard app
+│   ├── streamlit_manager.py # Manager that launches/bridges to Streamlit
+│   └── state_snapshot.py    # Atomic JSON state file builder
 └── utils/                   # Utilities (logging, checkpoints, profiling)
 ```
 
@@ -175,9 +175,11 @@ keisei/
 - **Schema validation**: `config_schema.py` using Pydantic models
 - **CLI overrides**: `python train.py train --override training.learning_rate=0.001`
 - **Environment variables**: Load from `.env` file for W&B API keys
+- **Dependency management**: `pyproject.toml` is the source of truth (managed with `uv`)
 
 ### Testing Strategy
-- **Unit tests**: Fast, isolated component testing with pytest markers
-- **Integration tests**: Multi-component interaction testing  
-- **Performance tests**: Benchmarking and regression detection
-- **CI/CD**: Automated testing with GitHub Actions and local CI script
+- **Unit tests** (`tests/unit/`): Fast, isolated component testing
+- **Integration tests** (`tests/integration/`): Multi-component interaction testing
+- **E2E tests** (`tests/e2e/`): Full workflow tests (CLI, checkpoint resume)
+- **Markers**: Defined in `pytest.ini` (unit, integration, e2e, slow, performance) but not yet applied to test functions — use directory-based test selection instead
+- **CI/CD**: Local CI via `./scripts/run_local_ci.sh` (GitHub Actions CI is currently disabled)
