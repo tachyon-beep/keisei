@@ -10,14 +10,11 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from keisei.utils.unified_logger import log_error_to_stderr
 
-from .actor_critic_protocol import ActorCriticProtocol
 
-
-class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
+class BaseActorCriticModel(nn.Module, ABC):
     """
     Abstract base class for Actor-Critic models that implements shared methods.
 
@@ -60,17 +57,12 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
             log_prob: Log probability of the chosen action.
             value: Value estimate tensor.
         """
-        policy_logits, value = self.forward(obs)
+        policy_logits, value = self(obs)
 
         if legal_mask is not None:
             # Apply the legal mask: set logits of illegal actions to -infinity
-            # Ensure legal_mask has the same shape as policy_logits or is broadcastable
-            if (
-                legal_mask.ndim == 1
-                and policy_logits.ndim == 2
-                and policy_logits.shape[0] == 1
-            ):
-                legal_mask = legal_mask.unsqueeze(0)  # Adapt for batch size 1
+            if legal_mask.ndim == 1 and policy_logits.ndim == 2:
+                legal_mask = legal_mask.unsqueeze(0)
 
             neg_inf = torch.finfo(policy_logits.dtype).min
             masked_logits = torch.where(legal_mask, policy_logits, neg_inf)
@@ -96,14 +88,14 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
                     value = value.squeeze(-1)
                 return action, log_prob, value
 
-            probs = F.softmax(masked_logits, dim=-1)
+            logits = masked_logits
         else:
-            probs = F.softmax(policy_logits, dim=-1)
+            logits = policy_logits
 
-        dist = torch.distributions.Categorical(probs=probs)
+        dist = torch.distributions.Categorical(logits=logits)
 
         if deterministic:
-            action = torch.argmax(probs, dim=-1)
+            action = torch.argmax(logits, dim=-1)
         else:
             action = dist.sample()
 
@@ -136,21 +128,18 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
             entropy: Entropy of the action distribution.
             value: Value estimate tensor.
         """
-        policy_logits, value = self.forward(obs)
+        policy_logits, value = self(obs)
 
         # If legal_mask is None (e.g., when called from PPOAgent.learn during batch processing),
-        # the policy distribution (probs) and entropy are calculated over all possible actions,
+        # the policy distribution and entropy are calculated over all possible actions,
         # not just those that were legal in the specific states from which 'actions' were sampled.
-        # This is a common approach. To calculate entropy strictly over the legal action space
-        # for each state in the batch, legal masks for each observation in obs_minibatch
-        # would need to be stored in the experience buffer and passed here.
         all_masked = None
         if legal_mask is not None:
             neg_inf = torch.finfo(policy_logits.dtype).min
             masked_logits = torch.where(legal_mask, policy_logits, neg_inf)
 
             # Detect rows where all actions are masked (terminal states in batch).
-            # Replace with uniform logits to avoid NaN from softmax; the
+            # Replace with uniform logits to avoid NaN from log_softmax; the
             # resulting log_probs and entropy are zeroed out below.
             all_masked = ~legal_mask.any(dim=-1)
             if all_masked.any():
@@ -162,11 +151,11 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
                 masked_logits = masked_logits.clone()
                 masked_logits[all_masked] = 0.0
 
-            probs = F.softmax(masked_logits, dim=-1)
+            logits = masked_logits
         else:
-            probs = F.softmax(policy_logits, dim=-1)
+            logits = policy_logits
 
-        dist = torch.distributions.Categorical(probs=probs)
+        dist = torch.distributions.Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
 
