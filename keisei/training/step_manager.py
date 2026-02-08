@@ -533,33 +533,6 @@ class StepManager:
             episode_length=episode_state.episode_length + 1,
         )
 
-    def _prepare_demo_info(self, legal_shogi_moves) -> Optional[Any]:
-        """
-        Prepare piece information for demo mode display.
-
-        Args:
-            legal_shogi_moves: List of legal moves
-
-        Returns:
-            Piece information for the first legal move, or None if unavailable
-        """
-        if not legal_shogi_moves or legal_shogi_moves[0] is None:
-            return None
-
-        try:
-            sample_move = legal_shogi_moves[0]
-            if (
-                len(sample_move) == 5
-                and sample_move[0] is not None
-                and sample_move[1] is not None
-            ):
-                from_r, from_c = sample_move[0], sample_move[1]
-                return self.game.get_piece(from_r, from_c)
-        except (AttributeError, IndexError, ValueError):
-            pass  # Silently ignore errors in demo mode preparation
-
-        return None
-
     def _handle_demo_mode(
         self,
         selected_move: Tuple,

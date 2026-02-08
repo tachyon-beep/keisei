@@ -42,43 +42,32 @@ class MetricsHistory:
 
     def __init__(self, max_history: int = 1000) -> None:
         self.max_history = max_history
-        self.win_rates_history: List[Dict[str, float]] = []
-        self.learning_rates: List[float] = []
-        self.policy_losses: List[float] = []
-        self.value_losses: List[float] = []
-        self.kl_divergences: List[float] = []
-        self.entropies: List[float] = []
-        self.clip_fractions: List[float] = []
-        self.episode_lengths: List[int] = []
-        self.episode_rewards: List[float] = []
-
-    def _trim(self, values: List[Any]) -> None:
-        while len(values) > self.max_history:
-            values.pop(0)
+        self.win_rates_history: Deque[Dict[str, float]] = deque(maxlen=max_history)
+        self.learning_rates: Deque[float] = deque(maxlen=max_history)
+        self.policy_losses: Deque[float] = deque(maxlen=max_history)
+        self.value_losses: Deque[float] = deque(maxlen=max_history)
+        self.kl_divergences: Deque[float] = deque(maxlen=max_history)
+        self.entropies: Deque[float] = deque(maxlen=max_history)
+        self.clip_fractions: Deque[float] = deque(maxlen=max_history)
+        self.episode_lengths: Deque[int] = deque(maxlen=max_history)
+        self.episode_rewards: Deque[float] = deque(maxlen=max_history)
 
     def add_episode_data(self, win_rates: Dict[str, float]) -> None:
         self.win_rates_history.append(win_rates)
-        self._trim(self.win_rates_history)
 
     def add_ppo_data(self, metrics: Dict[str, float]) -> None:
         if self.PPO_LEARNING_RATE in metrics:
             self.learning_rates.append(metrics[self.PPO_LEARNING_RATE])
-            self._trim(self.learning_rates)
         if self.PPO_POLICY_LOSS in metrics:
             self.policy_losses.append(metrics[self.PPO_POLICY_LOSS])
-            self._trim(self.policy_losses)
         if self.PPO_VALUE_LOSS in metrics:
             self.value_losses.append(metrics[self.PPO_VALUE_LOSS])
-            self._trim(self.value_losses)
         if self.PPO_KL_DIVERGENCE in metrics:
             self.kl_divergences.append(metrics[self.PPO_KL_DIVERGENCE])
-            self._trim(self.kl_divergences)
         if self.PPO_ENTROPY in metrics:
             self.entropies.append(metrics[self.PPO_ENTROPY])
-            self._trim(self.entropies)
         if self.PPO_CLIP_FRACTION in metrics:
             self.clip_fractions.append(metrics[self.PPO_CLIP_FRACTION])
-            self._trim(self.clip_fractions)
 
 
 class MetricsManager:
