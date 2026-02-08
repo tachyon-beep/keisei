@@ -4,6 +4,16 @@
 
 No opening books, no hardcoded heuristics — strategies emerge purely from reinforcement learning.
 
+## Project Intent
+
+Keisei has three legs with clear priority:
+
+1. **Primary:** Showcase Shogi as a rich, competitive game worthy of continuous public exhibition.
+2. **Primary:** Showcase deep reinforcement learning as a first-class AI paradigm, not as an accessory to LLM workflows.
+3. **Subordinate:** Evaluate how effective LLMs are at building and evolving this system.
+
+The first two define what we are building. The third measures how we build it.
+
 ## Features
 
 - **Complete Shogi engine** with full rule support (drops, promotions, repetition)

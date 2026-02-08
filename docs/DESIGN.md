@@ -13,6 +13,16 @@
 *   The AI discovers strategies solely through self-play and reinforcement learning
 *   Focus on emergent gameplay through deep neural networks and PPO optimization
 
+### **1.1 Product Intent Hierarchy**
+
+Keisei is built around three goals with explicit priority:
+
+1. **Primary:** Showcase Shogi as a game through visible, ongoing competitive play.
+2. **Primary:** Showcase deep reinforcement learning as a first-class AI approach.
+3. **Subordinate:** Assess how effective LLM-assisted coding is in delivering and maintaining this system.
+
+The first two goals define system direction and architecture. The third is an evaluation lens on the development process.
+
 ## **2. Current System Architecture (Post-Refactoring)**
 
 The Keisei system has evolved from a monolithic design to a highly modular, manager-based architecture that separates concerns and improves maintainability, testability, and scalability.
