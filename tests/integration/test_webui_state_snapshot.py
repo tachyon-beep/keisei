@@ -1,7 +1,8 @@
 """Integration tests: WebUI state snapshot building.
 
 Verifies that the state_snapshot module correctly extracts data from
-real training components into a JSON-serializable snapshot.
+real training components into a JSON-serializable snapshot that conforms
+to the v1 BroadcastStateEnvelope contract.
 """
 
 import time
@@ -23,6 +24,7 @@ from keisei.webui.state_snapshot import (
     extract_metrics,
     extract_step_info,
 )
+from keisei.webui.view_contracts import SCHEMA_VERSION, validate_envelope
 
 
 # Module-level no-op logger
@@ -101,7 +103,7 @@ class TestBoardStateExtraction:
 
 
 class TestBuildSnapshot:
-    """build_snapshot assembles data from all training components."""
+    """build_snapshot assembles a v1 BroadcastStateEnvelope."""
 
     def test_snapshot_contains_all_sections(
         self,
@@ -111,7 +113,7 @@ class TestBuildSnapshot:
         session_policy_mapper,
         experience_buffer,
     ):
-        """Full snapshot has board_state, metrics, step_info, buffer_info, model_info."""
+        """Envelope has required top-level keys and training sub-keys."""
         mm = MetricsManager()
         sm = StepManager(
             config=integration_config,
@@ -124,14 +126,45 @@ class TestBuildSnapshot:
 
         snapshot = build_snapshot(trainer, speed=10.5, pending_updates={"epoch": 1})
 
+        # Envelope-level keys
+        assert snapshot["schema_version"] == SCHEMA_VERSION
         assert "timestamp" in snapshot
-        assert "speed" in snapshot
         assert snapshot["speed"] == 10.5
-        assert "board_state" in snapshot
-        assert "metrics" in snapshot
-        assert "step_info" in snapshot
-        assert "buffer_info" in snapshot
-        assert "model_info" in snapshot
+        assert "mode" in snapshot
+        assert snapshot["active_views"] == ["training"]
+        assert "health" in snapshot
+        assert snapshot["pending_updates"] == {"epoch": 1}
+
+        # Training view sub-keys
+        training = snapshot["training"]
+        assert "board_state" in training
+        assert "metrics" in training
+        assert "step_info" in training
+        assert "buffer_info" in training
+        assert "model_info" in training
+
+    def test_snapshot_validates_against_contract(
+        self,
+        integration_config,
+        shogi_game,
+        ppo_agent,
+        session_policy_mapper,
+        experience_buffer,
+    ):
+        """Snapshot passes validate_envelope() with zero errors."""
+        mm = MetricsManager()
+        sm = StepManager(
+            config=integration_config,
+            game=shogi_game,
+            agent=ppo_agent,
+            policy_mapper=session_policy_mapper,
+            experience_buffer=experience_buffer,
+        )
+        trainer = _make_trainer_stub(shogi_game, mm, sm, experience_buffer)
+
+        snapshot = build_snapshot(trainer, speed=10.5, pending_updates={"epoch": 1})
+        errors = validate_envelope(snapshot)
+        assert errors == [], f"Envelope validation errors: {errors}"
 
     def test_snapshot_updates_after_gameplay(
         self,
@@ -157,7 +190,7 @@ class TestBuildSnapshot:
 
         # Snapshot before any moves
         snap_before = build_snapshot(trainer)
-        assert snap_before["board_state"]["move_count"] == 0
+        assert snap_before["training"]["board_state"]["move_count"] == 0
 
         # Play a few steps
         episode_state = sm.reset_episode()
@@ -170,8 +203,8 @@ class TestBuildSnapshot:
 
         # Snapshot after moves
         snap_after = build_snapshot(trainer)
-        assert snap_after["board_state"]["move_count"] > 0
-        assert snap_after["buffer_info"]["size"] > 0
+        assert snap_after["training"]["board_state"]["move_count"] > 0
+        assert snap_after["training"]["buffer_info"]["size"] > 0
 
     def test_step_info_tracks_move_log(
         self,

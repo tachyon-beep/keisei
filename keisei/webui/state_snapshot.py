@@ -2,8 +2,10 @@
 state_snapshot.py: Clean state extraction for the Streamlit dashboard.
 
 Builds a JSON-serializable snapshot of training state that the Streamlit app
-reads via a shared state file. Uses the actual game API directly — no hasattr
-probing or random fallbacks.
+reads via a shared state file.  Output conforms to the v1
+``BroadcastStateEnvelope`` contract defined in ``view_contracts.py``.
+
+Uses the actual game API directly — no hasattr probing or random fallbacks.
 """
 
 import json
@@ -12,6 +14,12 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .view_contracts import (
+    SCHEMA_VERSION,
+    make_health_map,
+    sanitize_pending_updates,
+)
 
 
 def extract_board_state(game: Any) -> Dict[str, Any]:
@@ -119,55 +127,79 @@ def extract_buffer_info(experience_buffer: Any) -> Dict[str, int]:
     }
 
 
+def _resolve_mode(trainer: Any) -> str:
+    """Derive the broadcast mode from the trainer's config.
+
+    Returns ``"training_only"`` when periodic evaluation is disabled,
+    otherwise the configured evaluation strategy string.
+    """
+    config = getattr(trainer, "config", None)
+    if config is None:
+        return "training_only"
+    eval_cfg = getattr(config, "evaluation", None)
+    if eval_cfg is None:
+        return "training_only"
+    if not getattr(eval_cfg, "enable_periodic_evaluation", True):
+        return "training_only"
+    return getattr(eval_cfg, "strategy", "training_only")
+
+
+def _build_training_view(trainer: Any) -> Dict[str, Any]:
+    """Assemble the ``TrainingViewState`` payload from the trainer."""
+    training: Dict[str, Any] = {}
+
+    # Board state
+    if trainer.game is not None:
+        training["board_state"] = extract_board_state(trainer.game)
+    else:
+        training["board_state"] = None
+
+    # Metrics (always present)
+    training["metrics"] = extract_metrics(trainer.metrics_manager)
+
+    # Step info
+    if trainer.step_manager is not None:
+        training["step_info"] = extract_step_info(trainer.step_manager)
+    else:
+        training["step_info"] = None
+
+    # Buffer info
+    if trainer.experience_buffer is not None:
+        training["buffer_info"] = extract_buffer_info(trainer.experience_buffer)
+    else:
+        training["buffer_info"] = None
+
+    # Model info (always present)
+    training["model_info"] = {
+        "gradient_norm": getattr(trainer, "last_gradient_norm", 0.0),
+    }
+
+    return training
+
+
 def build_snapshot(
     trainer: Any,
     speed: float = 0.0,
     pending_updates: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assemble a full JSON-serializable snapshot from the trainer.
+    """Assemble a v1 ``BroadcastStateEnvelope`` from the trainer.
 
-    This is the single entry point called by StreamlitManager.
+    This is the single entry point called by StreamlitManager.  The output
+    conforms to the contract in ``view_contracts.py`` and passes
+    ``validate_envelope()``.
     """
-    snapshot: Dict[str, Any] = {
+    training = _build_training_view(trainer)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
         "timestamp": time.time(),
         "speed": speed,
+        "mode": _resolve_mode(trainer),
+        "active_views": ["training"],
+        "health": make_health_map(training="ok"),
+        "training": training,
+        "pending_updates": sanitize_pending_updates(pending_updates),
     }
-
-    # Board state
-    if trainer.game is not None:
-        snapshot["board_state"] = extract_board_state(trainer.game)
-    else:
-        snapshot["board_state"] = None
-
-    # Metrics
-    snapshot["metrics"] = extract_metrics(trainer.metrics_manager)
-
-    # Step info
-    if trainer.step_manager is not None:
-        snapshot["step_info"] = extract_step_info(trainer.step_manager)
-    else:
-        snapshot["step_info"] = None
-
-    # Buffer info
-    if trainer.experience_buffer is not None:
-        snapshot["buffer_info"] = extract_buffer_info(trainer.experience_buffer)
-    else:
-        snapshot["buffer_info"] = None
-
-    # Model info
-    snapshot["model_info"] = {
-        "gradient_norm": getattr(trainer, "last_gradient_norm", 0.0),
-    }
-
-    # Pending updates passthrough
-    if pending_updates:
-        snapshot["pending_updates"] = {
-            k: v
-            for k, v in pending_updates.items()
-            if isinstance(v, (int, float, str, bool, type(None)))
-        }
-
-    return snapshot
 
 
 def write_snapshot_atomic(snapshot: Dict[str, Any], path: Path) -> None:
