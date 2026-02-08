@@ -5,6 +5,8 @@ This module contains the foundational classes and abstractions for the
 evaluation system, including contexts, results, and base evaluator classes.
 """
 
+from typing import Optional
+
 from .base_evaluator import (
     BaseEvaluator,
     EvaluatorFactory,
@@ -35,9 +37,9 @@ def create_evaluation_config(
     max_concurrent_games: int = 4,
     timeout_per_game: float = 60.0,
     randomize_positions: bool = True,
-    random_seed: int = None,
+    random_seed: Optional[int] = None,
     save_games: bool = True,
-    save_path: str = None,
+    save_path: Optional[str] = None,
     log_level: str = "INFO",
     wandb_logging: bool = False,
     update_elo: bool = True,

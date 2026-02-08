@@ -83,28 +83,31 @@ class ExperienceBuffer:
         value: float,
         done: bool,
         legal_mask: torch.Tensor,  # Added legal_mask
-    ):
+    ) -> bool:
         """
         Add a transition to the buffer.
         'obs' is expected to be a PyTorch tensor of shape (C, H, W) on self.device.
         'legal_mask' is expected to be a PyTorch tensor on self.device.
+
+        Returns:
+            True if the experience was added, False if the buffer was full.
         """
-        if self.ptr < self.buffer_size:
-            # Store data using tensor indexing for better performance
-            self.obs[self.ptr] = obs.to(self.device)
-            self.actions[self.ptr] = action
-            self.rewards[self.ptr] = reward
-            self.log_probs[self.ptr] = log_prob
-            self.values[self.ptr] = value
-            self.dones[self.ptr] = done
-            self.legal_masks[self.ptr] = legal_mask.to(self.device)
-            self.ptr += 1
-        else:
-            # This case should ideally be handled by the training loop,
-            # which calls learn() and then clear() when buffer is full.
+        if self.ptr >= self.buffer_size:
             log_warning_to_stderr(
                 "ExperienceBuffer", "Buffer is full. Cannot add new experience."
             )
+            return False
+
+        # Store data using tensor indexing for better performance
+        self.obs[self.ptr] = obs.to(self.device)
+        self.actions[self.ptr] = action
+        self.rewards[self.ptr] = reward
+        self.log_probs[self.ptr] = log_prob
+        self.values[self.ptr] = value
+        self.dones[self.ptr] = done
+        self.legal_masks[self.ptr] = legal_mask.to(self.device)
+        self.ptr += 1
+        return True
 
     def compute_advantages_and_returns(
         self, last_value: float
@@ -218,18 +221,19 @@ class ExperienceBuffer:
         """Maximum capacity of the buffer."""
         return self.buffer_size
 
-    def add_batch(self, experiences: List[Experience]) -> None:
+    def add_batch(self, experiences: List[Experience]) -> int:
         """
         Add a batch of experiences to the buffer for parallel collection.
 
         Args:
             experiences: List of Experience objects to add
-        """
-        for exp in experiences:
-            if self.ptr >= self.buffer_size:
-                break  # Don't exceed buffer size
 
-            self.add(
+        Returns:
+            Number of experiences actually added.
+        """
+        added = 0
+        for exp in experiences:
+            if not self.add(
                 obs=exp.obs,
                 action=exp.action,
                 reward=exp.reward,
@@ -237,22 +241,31 @@ class ExperienceBuffer:
                 value=exp.value,
                 done=exp.done,
                 legal_mask=exp.legal_mask,
-            )
+            ):
+                dropped = len(experiences) - added
+                log_warning_to_stderr(
+                    "ExperienceBuffer",
+                    f"Buffer full during add_batch: {added} added, {dropped} dropped.",
+                )
+                break
+            added += 1
+        return added
 
-    def add_from_worker_batch(self, worker_data: Dict[str, torch.Tensor]) -> None:
+    def add_from_worker_batch(self, worker_data: Dict[str, torch.Tensor]) -> int:
         """
         Add experiences from worker batch data (optimized for parallel collection).
 
         Args:
             worker_data: Dictionary containing batched tensors from workers
+
+        Returns:
+            Number of experiences actually added.
         """
         batch_size = worker_data["obs"].shape[0]
+        added = 0
 
         for i in range(batch_size):
-            if self.ptr >= self.buffer_size:
-                break
-
-            self.add(
+            if not self.add(
                 obs=worker_data["obs"][i],
                 action=int(worker_data["actions"][i].item()),
                 reward=worker_data["rewards"][i].item(),
@@ -260,7 +273,15 @@ class ExperienceBuffer:
                 value=worker_data["values"][i].item(),
                 done=bool(worker_data["dones"][i].item()),
                 legal_mask=worker_data["legal_masks"][i],
-            )
+            ):
+                dropped = batch_size - added
+                log_warning_to_stderr(
+                    "ExperienceBuffer",
+                    f"Buffer full during worker batch add: {added} added, {dropped} dropped.",
+                )
+                break
+            added += 1
+        return added
 
     def get_worker_batch_format(self) -> Optional[Dict[str, torch.Tensor]]:
         """
@@ -284,23 +305,25 @@ class ExperienceBuffer:
 
     def merge_from_parallel_buffers(
         self, parallel_buffers: List["ExperienceBuffer"]
-    ) -> None:
+    ) -> int:
         """
         Merge experiences from multiple parallel buffers.
 
         Args:
             parallel_buffers: List of ExperienceBuffer instances from workers
+
+        Returns:
+            Number of experiences actually merged.
         """
+        total_added = 0
+        total_available = sum(b.ptr for b in parallel_buffers)
+
         for buffer in parallel_buffers:
             if buffer.ptr == 0:
                 continue
 
-            # Add all experiences from this buffer
             for i in range(buffer.ptr):
-                if self.ptr >= self.buffer_size:
-                    return  # Main buffer is full
-
-                self.add(
+                if not self.add(
                     obs=buffer.obs[i],
                     action=int(buffer.actions[i].item()),
                     reward=float(buffer.rewards[i].item()),
@@ -308,4 +331,13 @@ class ExperienceBuffer:
                     value=float(buffer.values[i].item()),
                     done=bool(buffer.dones[i].item()),
                     legal_mask=buffer.legal_masks[i],
-                )
+                ):
+                    dropped = total_available - total_added
+                    log_warning_to_stderr(
+                        "ExperienceBuffer",
+                        f"Buffer full during merge: {total_added} merged, {dropped} dropped.",
+                    )
+                    return total_added
+                total_added += 1
+
+        return total_added
