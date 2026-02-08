@@ -8,3 +8,4 @@
 
 - `docs/architecture/league-first-architecture-evolution.md`
 - `docs/architecture/three-view-broadcast-architecture.md`
+- `docs/architecture/moves-1-3-execution-readiness-spikes.md`
