@@ -36,9 +36,7 @@ if [ -z "$VIRTUAL_ENV" ]; then
 fi
 
 echo "1. Installing dependencies..."
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-pip install -e .
+uv pip install -e ".[dev]"
 print_status $? "Dependency installation"
 
 echo
@@ -51,7 +49,7 @@ print_status $? "Flake8 critical errors"
 
 # Flake8 - all errors (non-critical)
 echo "  - Running flake8 (all errors)..."
-flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics > /dev/null 2>&1
+flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics > /dev/null 2>&1
 print_status $? "Flake8 full check"
 
 echo
@@ -70,26 +68,20 @@ print_status 0 "Security scan"
 
 echo
 echo "5. Running unit tests..."
-pytest tests/ -v --tb=short
+pytest tests/unit/ -v --tb=short
 print_status $? "Unit tests"
 
 echo
-echo "6. Running test coverage..."
+echo "6. Running integration tests..."
+pytest tests/integration/ -v --tb=short
+print_status $? "Integration tests"
+
+echo
+echo "7. Running test coverage..."
 pytest tests/ --cov=keisei --cov-report=term-missing --cov-report=html
 print_status $? "Test coverage"
 
 echo
-echo "7. Running integration smoke test..."
-pytest tests/test_integration_smoke.py -v --tb=short
-print_status $? "Integration smoke test"
-
-echo
 echo -e "${GREEN}=== Local CI checks completed! ===${NC}"
-echo
-echo "Optional: Run parallel system smoke test:"
-echo "  pytest tests/test_parallel_smoke.py -v --tb=short"
-echo
-echo "Optional: Run performance profiling:"
-echo "  python scripts/profile_training.py --timesteps 1000 --report"
 echo
 echo "Coverage report generated in htmlcov/index.html"

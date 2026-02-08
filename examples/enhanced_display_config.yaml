@@ -1,18 +1,26 @@
-# Example configuration enabling the enhanced TUI dashboard
+# Example: Common training overrides
+#
+# Usage:
+#   python train.py train --config examples/enhanced_display_config.yaml
+#
+# Only overridden keys need to be specified; defaults come from default_config.yaml.
 
-# Load defaults first, then override display settings below
+training:
+  learning_rate: 0.0003
+  total_timesteps: 200000
+  steps_per_epoch: 2048
+  ppo_epochs: 4
+  mixed_precision: true
 
-# Note: only overridden keys need to be specified
+evaluation:
+  enable_periodic_evaluation: true
+  evaluation_interval_timesteps: 50000
+  num_games: 20
 
-display:
-  enable_board_display: true
-  enable_trend_visualization: true
-  enable_elo_ratings: true
-  enable_enhanced_layout: true
-  sparkline_width: 20
-  dashboard_height_ratio: 3
-  progress_bar_height: 5
-  show_moves_trend: true
-  show_completion_rate: true
-  show_enhanced_win_rates: true
-  show_turns_trend: true
+webui:
+  enabled: true
+  port: 8501
+
+wandb:
+  enabled: true
+  project: "keisei-shogi"

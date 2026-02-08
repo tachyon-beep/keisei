@@ -1,18 +1,13 @@
-# train.py: Thin shim to call the real trainer in keisei.train
+# train.py: Thin shim to call the real trainer in keisei.training.train
 
-import sys
-import os
 import asyncio
 import multiprocessing
-from dotenv import load_dotenv  # Add this import
-from keisei.training.train import main  # Moved import to the top
 
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+from dotenv import load_dotenv
+from keisei.training.train import main
 
 load_dotenv()  # Load environment variables from .env file
 
 if __name__ == "__main__":
-    # Fix B6: Add multiprocessing.freeze_support() for Windows compatibility
     multiprocessing.freeze_support()
-    # Run the async main function
     asyncio.run(main())

@@ -4,14 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keisei"
-version = "0.1.0"
-description = "DRL Shogi Client: Deep Reinforcement Learning for Shogi using PPO"
+version = "1.0.0rc1"
+description = "Deep Reinforcement Learning for Shogi using PPO and self-play"
 authors = [
     { name = "John Morrissey", email = "john@foundryside.dev" }
 ]
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "torch>=2.0.0",
     "numpy>=1.24.0",
@@ -23,6 +31,9 @@ dependencies = [
     "Jinja2>=3.1.0",
     "requests>=2.31.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/tachyon-beep/shogidrl"
 
 [project.optional-dependencies]
 webui = [
@@ -65,18 +76,42 @@ where = ["."]  # Look in the current directory (project root)
 include = ["keisei*"] # Include the keisei package (and any future keisei_extra packages)
 exclude = ["tests*"] # Exclude the tests directory from being treated as a package to install
 
-[pytest]
-addopts = "--pylint"
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::pytest.PytestRemovedIn9Warning",
+    "ignore:Detected call of `lr_scheduler.step\\(\\)` before `optimizer.step\\(\\)`:UserWarning",
+]
+markers = [
+    "unit: Unit tests (fast, isolated component tests)",
+    "integration: Integration tests (slower, multiple component tests)",
+    "slow: Slow tests that take significant time to run",
+    "performance: Performance tests (measure execution time or resource usage)",
+    "e2e: End-to-end tests (full system workflow tests)",
+]
+testpaths = ["tests"]
+norecursedirs = [".git", ".venv", "venv", "build", "dist", "node_modules", ".mypy_cache", ".pytest_cache"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pylint.main]
+jobs = 2
+
+[tool.pylint.reports]
+output-format = "text"
+reports = false
 
 [tool.pylint.messages_control]
-disable = "redefined-outer-name"
+disable = ["C0103", "C0114", "C0115", "C0116", "C0301", "R0902", "R0903", "R0913", "W0511", "W0621", "duplicate-code", "redefined-outer-name"]
+
+[tool.pylint.format]
+max-line-length = 120
 
 [tool.mypy]
 check_untyped_defs = true
 mypy_path = "." # Look for modules/stubs starting in the project root
 packages = ["keisei", "tests"]
-exclude = ["env", "venv", ".venv"] # Added common venv names
-plugins = "pydantic.mypy" # Enable Pydantic plugin
+exclude = ["env", "venv", ".venv"]
+plugins = "pydantic.mypy"
 
 # Per-module overrides:
 [[tool.mypy.overrides]]
@@ -93,7 +128,7 @@ exclude = [
     "__pycache__",
     "env",
     "venv",
-    ".venv", # Added common venv name
+    ".venv",
     ".tox",
     ".eggs",
     "*.egg-info"

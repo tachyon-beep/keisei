@@ -8,8 +8,6 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-env/
-venv/
 build/
 develop-eggs/
 dist/
@@ -26,8 +24,6 @@ var/
 *.egg
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -80,10 +76,6 @@ Thumbs.db
 # Weights & Biases
 wandb/
 
-# SonarLint
-.sonarlint
-src/
-
 # Codacy / VS Code AI rules
 .github/copilot-instructions.md
 .github/instructions/codacy.instructions.md
@@ -91,9 +83,11 @@ src/
 # Test models and checkpoints
 /test_models/
 
-# Analysis outputs
-analytics_output/
-humantools/*.xml
+# Tournament results
+tournament_results/
+
+# uv cache
+.uv-cache/
 
 # Temp/scratch files in root
 /*.png
@@ -101,3 +95,5 @@ humantools/*.xml
 
 # Virtual environments
 .venv/
+env/
+venv/

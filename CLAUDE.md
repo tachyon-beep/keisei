@@ -133,7 +133,7 @@ The system uses a manager-based architecture with 9 core specialized components 
 - Experience collection can be parallelized using `training/parallel/` components
 - Evaluation system supports 5 strategies: single opponent, tournament, ladder, benchmark, custom
 - Streamlit dashboard runs as a subprocess, communicating via atomic JSON state file
-- WebUI requires `streamlit` package: `pip install keisei[webui]` or `pip install streamlit`
+- WebUI requires `streamlit` package: `uv pip install keisei[webui]` or `uv pip install streamlit`
 
 ## Development Environment Setup
 
@@ -149,7 +149,7 @@ source .venv/bin/activate
 # Install project with dev dependencies
 uv pip install -e ".[dev]"
 
-# Dependencies are defined in pyproject.toml (requirements.txt is stale)
+# Dependencies are defined in pyproject.toml
 ```
 
 ### Project Structure
@@ -181,5 +181,5 @@ keisei/
 - **Unit tests** (`tests/unit/`): Fast, isolated component testing
 - **Integration tests** (`tests/integration/`): Multi-component interaction testing
 - **E2E tests** (`tests/e2e/`): Full workflow tests (CLI, checkpoint resume)
-- **Markers**: Defined in `pytest.ini` (unit, integration, e2e, slow, performance) but not yet applied to test functions — use directory-based test selection instead
+- **Markers**: Defined in `pyproject.toml` (unit, integration, e2e, slow, performance) but not yet applied to test functions — use directory-based test selection instead
 - **CI/CD**: Local CI via `./scripts/run_local_ci.sh` (GitHub Actions CI is currently disabled)
