@@ -9,16 +9,14 @@ This module handles environment-related concerns including:
 - Observation space setup
 """
 
-import sys
-from typing import Any, Callable, Optional, Tuple  # Added Optional
+from typing import Callable, Optional, Tuple
 
-import numpy as np  # Added for type hinting
+import numpy as np
 
 from keisei.config_schema import AppConfig
+from keisei.constants import SHOGI_BOARD_SIZE
 from keisei.shogi import ShogiGame
 from keisei.utils import PolicyOutputMapper
-
-# Callable already imported via the line above
 
 
 class EnvManager:
@@ -62,7 +60,7 @@ class EnvManager:
                     self.logger_func(f"Warning: Failed to seed environment: {e}")
 
             # Setup observation space shape
-            self.obs_space_shape = (self.config.env.input_channels, 9, 9)
+            self.obs_space_shape = (self.config.env.input_channels, SHOGI_BOARD_SIZE, SHOGI_BOARD_SIZE)
 
         except (RuntimeError, ValueError, OSError) as e:
             self.logger_func(f"Error initializing ShogiGame: {e}. Aborting.")

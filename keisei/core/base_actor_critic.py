@@ -72,11 +72,8 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
             ):
                 legal_mask = legal_mask.unsqueeze(0)  # Adapt for batch size 1
 
-            masked_logits = torch.where(
-                legal_mask,
-                policy_logits,
-                torch.tensor(float("-inf"), device=policy_logits.device),
-            )
+            neg_inf = torch.finfo(policy_logits.dtype).min
+            masked_logits = torch.where(legal_mask, policy_logits, neg_inf)
             # No legal actions → terminal state; return safe dummy values.
             if not torch.any(legal_mask):
                 log_error_to_stderr(
@@ -149,11 +146,8 @@ class BaseActorCriticModel(nn.Module, ActorCriticProtocol, ABC):
         # would need to be stored in the experience buffer and passed here.
         all_masked = None
         if legal_mask is not None:
-            masked_logits = torch.where(
-                legal_mask,
-                policy_logits,
-                torch.tensor(float("-inf"), device=policy_logits.device),
-            )
+            neg_inf = torch.finfo(policy_logits.dtype).min
+            masked_logits = torch.where(legal_mask, policy_logits, neg_inf)
 
             # Detect rows where all actions are masked (terminal states in batch).
             # Replace with uniform logits to avoid NaN from softmax; the
