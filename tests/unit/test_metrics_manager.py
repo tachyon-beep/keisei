@@ -335,6 +335,8 @@ class TestGetFinalStats:
             "draws",
             "total_episodes_completed",
             "global_timestep",
+            "elo_state",
+            "metrics_history",
         }
         assert set(result.keys()) == expected_keys
 
@@ -440,6 +442,62 @@ class TestRestoreFromCheckpoint:
         assert new_manager.stats.black_wins == 1
         assert new_manager.stats.white_wins == 1
         assert new_manager.stats.draws == 1
+
+    def test_roundtrip_preserves_elo_state(self, manager):
+        """Elo ratings survive a save/restore roundtrip."""
+        # Play some games to move Elo ratings away from default
+        manager.update_episode_stats(Color.BLACK)
+        manager.update_episode_stats(Color.BLACK)
+        manager.update_episode_stats(Color.WHITE)
+        original_black = manager.elo_system.black_rating
+        original_white = manager.elo_system.white_rating
+
+        saved = manager.get_final_stats()
+        new_manager = MetricsManager()
+        new_manager.restore_from_checkpoint(saved)
+
+        assert new_manager.elo_system.black_rating == original_black
+        assert new_manager.elo_system.white_rating == original_white
+        assert len(new_manager.elo_system.rating_history) == 3
+
+    def test_roundtrip_preserves_metrics_history(self, manager):
+        """PPO trend history survives a save/restore roundtrip."""
+        manager.history.add_ppo_data({
+            "ppo/policy_loss": 0.5,
+            "ppo/value_loss": 1.2,
+            "ppo/entropy": 3.0,
+        })
+        manager.history.add_ppo_data({
+            "ppo/policy_loss": 0.4,
+            "ppo/value_loss": 1.0,
+            "ppo/entropy": 2.8,
+        })
+
+        saved = manager.get_final_stats()
+        new_manager = MetricsManager()
+        new_manager.restore_from_checkpoint(saved)
+
+        assert list(new_manager.history.policy_losses) == [0.5, 0.4]
+        assert list(new_manager.history.value_losses) == [1.2, 1.0]
+        assert list(new_manager.history.entropies) == [3.0, 2.8]
+
+    def test_restore_old_checkpoint_without_elo_or_history(self, manager):
+        """Old checkpoints without elo_state/metrics_history restore gracefully."""
+        old_checkpoint = {
+            "global_timestep": 1000,
+            "total_episodes_completed": 50,
+            "black_wins": 20,
+            "white_wins": 20,
+            "draws": 10,
+        }
+        manager.restore_from_checkpoint(old_checkpoint)
+
+        # Basic stats restored
+        assert manager.global_timestep == 1000
+        # Elo stays at defaults
+        assert manager.elo_system.black_rating == 1500.0
+        # History stays empty
+        assert len(manager.history.policy_losses) == 0
 
 
 # ---------------------------------------------------------------------------

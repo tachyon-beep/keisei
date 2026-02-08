@@ -340,12 +340,12 @@ class MetricsManager:
 
     # === State Management ===
 
-    def get_final_stats(self) -> Dict[str, int]:
+    def get_final_stats(self) -> Dict[str, Any]:
         """
         Get final game statistics for saving with model.
 
         Returns:
-            Dictionary with final statistics
+            Dictionary with final statistics including Elo and trend history
         """
         return {
             "black_wins": self.stats.black_wins,
@@ -353,6 +353,18 @@ class MetricsManager:
             "draws": self.stats.draws,
             "total_episodes_completed": self.stats.total_episodes_completed,
             "global_timestep": self.stats.global_timestep,
+            "elo_state": self.elo_system.to_dict(),
+            "metrics_history": {
+                "policy_losses": list(self.history.policy_losses),
+                "value_losses": list(self.history.value_losses),
+                "entropies": list(self.history.entropies),
+                "kl_divergences": list(self.history.kl_divergences),
+                "clip_fractions": list(self.history.clip_fractions),
+                "learning_rates": list(self.history.learning_rates),
+                "episode_lengths": list(self.history.episode_lengths),
+                "episode_rewards": list(self.history.episode_rewards),
+                "win_rates_history": list(self.history.win_rates_history),
+            },
         }
 
     def restore_from_checkpoint(self, checkpoint_data: Dict[str, Any]) -> None:
@@ -369,6 +381,33 @@ class MetricsManager:
         self.stats.black_wins = checkpoint_data.get("black_wins", 0)
         self.stats.white_wins = checkpoint_data.get("white_wins", 0)
         self.stats.draws = checkpoint_data.get("draws", 0)
+
+        # Restore Elo state (absent in old checkpoints — gracefully defaults)
+        elo_state = checkpoint_data.get("elo_state")
+        if isinstance(elo_state, dict):
+            self.elo_system.restore_from_dict(elo_state)
+
+        # Restore trend history (absent in old checkpoints — gracefully defaults)
+        hist = checkpoint_data.get("metrics_history")
+        if isinstance(hist, dict):
+            for val in hist.get("policy_losses", []):
+                self.history.policy_losses.append(val)
+            for val in hist.get("value_losses", []):
+                self.history.value_losses.append(val)
+            for val in hist.get("entropies", []):
+                self.history.entropies.append(val)
+            for val in hist.get("kl_divergences", []):
+                self.history.kl_divergences.append(val)
+            for val in hist.get("clip_fractions", []):
+                self.history.clip_fractions.append(val)
+            for val in hist.get("learning_rates", []):
+                self.history.learning_rates.append(val)
+            for val in hist.get("episode_lengths", []):
+                self.history.episode_lengths.append(val)
+            for val in hist.get("episode_rewards", []):
+                self.history.episode_rewards.append(val)
+            for val in hist.get("win_rates_history", []):
+                self.history.win_rates_history.append(val)
 
     def increment_timestep(self) -> None:
         """Increment the global timestep counter."""

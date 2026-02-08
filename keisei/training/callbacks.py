@@ -43,11 +43,7 @@ class CheckpointCallback(Callback):
                     )
                 return
 
-            game_stats = {
-                "black_wins": trainer.metrics_manager.black_wins,
-                "white_wins": trainer.metrics_manager.white_wins,
-                "draws": trainer.metrics_manager.draws,
-            }
+            game_stats = trainer.metrics_manager.get_final_stats()
 
             # Use the consolidated save_checkpoint method from ModelManager
             success, ckpt_save_path = trainer.model_manager.save_checkpoint(
@@ -146,11 +142,7 @@ class EvaluationCallback(Callback):
                     )
 
                 # Save current model as first checkpoint for future evaluations
-                game_stats = {
-                    "black_wins": trainer.metrics_manager.black_wins,
-                    "white_wins": trainer.metrics_manager.white_wins,
-                    "draws": trainer.metrics_manager.draws,
-                }
+                game_stats = trainer.metrics_manager.get_final_stats()
                 success, ckpt_path = trainer.model_manager.save_checkpoint(
                     agent=trainer.agent,
                     model_dir=trainer.session_manager.run_artifact_dir,

@@ -52,6 +52,24 @@ class EloRatingSystem:
             "rating_difference": self.black_rating - self.white_rating,
         }
 
+    def to_dict(self) -> Dict[str, object]:
+        """Serialize Elo state for checkpoint saving."""
+        return {
+            "black_rating": self.black_rating,
+            "white_rating": self.white_rating,
+            "initial_rating": self.initial_rating,
+            "k_factor": self.k_factor,
+            "rating_history": self.rating_history,
+        }
+
+    def restore_from_dict(self, data: Dict[str, object]) -> None:
+        """Restore Elo state from checkpoint data."""
+        self.black_rating = float(data.get("black_rating", self.initial_rating))
+        self.white_rating = float(data.get("white_rating", self.initial_rating))
+        history = data.get("rating_history")
+        if isinstance(history, list):
+            self.rating_history = history
+
     def get_strength_assessment(self) -> str:
         diff = abs(self.black_rating - self.white_rating)
         if diff < 50:

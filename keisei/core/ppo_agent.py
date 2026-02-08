@@ -515,6 +515,8 @@ class PPOAgent:
                 "draws": checkpoint.get("draws", 0),
                 "lr_schedule_type": checkpoint.get("lr_schedule_type", None),
                 "lr_schedule_step_on": checkpoint.get("lr_schedule_step_on", "epoch"),
+                "elo_state": checkpoint.get("elo_state"),
+                "metrics_history": checkpoint.get("metrics_history"),
             }
         except (KeyError, RuntimeError, EOFError) as e:
             raise RuntimeError(
