@@ -95,6 +95,130 @@ class StepManager:
         self.sente_promo_count: int = 0
         self.gote_promo_count: int = 0
 
+    def _obs_to_tensor(self, obs: np.ndarray) -> torch.Tensor:
+        """Convert a numpy observation to a batched torch tensor on the correct device."""
+        return torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+    def _clear_episode_counters(self) -> None:
+        """Reset all per-episode tracking fields (move history, capture/drop/promo counters)."""
+        self.move_history.clear()
+        self.move_log.clear()
+        self.sente_best_capture = None
+        self.sente_best_capture_value = 0
+        self.gote_best_capture = None
+        self.gote_best_capture_value = 0
+        self.sente_capture_count = 0
+        self.gote_capture_count = 0
+        self.sente_drop_count = 0
+        self.gote_drop_count = 0
+        self.sente_promo_count = 0
+        self.gote_promo_count = 0
+
+    def _track_move_stats(
+        self,
+        moving_player: Color,
+        selected_move: Tuple,
+        info: Dict[str, Any],
+    ) -> None:
+        """Track capture, drop, and promotion statistics for the current move."""
+        is_drop = selected_move[0] is None and selected_move[1] is None
+        is_promotion = isinstance(selected_move[4], bool) and selected_move[4]
+
+        captured_name = info.get("captured_piece_type")
+        if captured_name:
+            if moving_player == Color.BLACK:
+                self.sente_capture_count += 1
+            else:
+                self.gote_capture_count += 1
+
+            value_map = {
+                "PAWN": 1,
+                "LANCE": 3,
+                "KNIGHT": 3,
+                "SILVER": 5,
+                "GOLD": 6,
+                "BISHOP": 8,
+                "ROOK": 10,
+            }
+            base_name = captured_name.replace("PROMOTED_", "")
+            captured_value = value_map.get(base_name, 0)
+            if moving_player == Color.BLACK:
+                if captured_value > self.sente_best_capture_value:
+                    self.sente_best_capture = base_name.title()
+                    self.sente_best_capture_value = captured_value
+            else:
+                if captured_value > self.gote_best_capture_value:
+                    self.gote_best_capture = base_name.title()
+                    self.gote_best_capture_value = captured_value
+
+        if is_drop:
+            if moving_player == Color.BLACK:
+                self.sente_drop_count += 1
+            else:
+                self.gote_drop_count += 1
+
+        if is_promotion:
+            if moving_player == Color.BLACK:
+                self.sente_promo_count += 1
+            else:
+                self.gote_promo_count += 1
+
+    def _reset_and_fail(
+        self,
+        error_msg: str,
+        done: bool,
+        info: Dict[str, Any],
+        fallback_obs: Optional[np.ndarray] = None,
+        fallback_obs_tensor: Optional[torch.Tensor] = None,
+        logger_func: Optional[Callable] = None,
+    ) -> StepResult:
+        """Reset the game and return a failure StepResult.
+
+        If the reset itself fails:
+        - If fallback observations are provided, log the double-failure and return
+          a StepResult with the fallback observations and done=True.
+        - If no fallback is provided, re-raise the exception.
+        """
+        try:
+            reset_obs = self.game.reset()
+            return StepResult(
+                next_obs=reset_obs,
+                next_obs_tensor=self._obs_to_tensor(reset_obs),
+                reward=0.0,
+                done=done,
+                info=info,
+                selected_move=None,
+                policy_index=0,
+                log_prob=0.0,
+                value_pred=0.0,
+                success=False,
+                error_message=error_msg,
+            )
+        except Exception as reset_error:
+            if fallback_obs is not None and fallback_obs_tensor is not None:
+                double_error = f"{error_msg}; Reset also failed: {reset_error}"
+                if logger_func is not None:
+                    logger_func(
+                        f"CRITICAL: Reset failed during error recovery: {reset_error}",
+                        True,
+                        None,
+                        "error",
+                    )
+                return StepResult(
+                    next_obs=fallback_obs,
+                    next_obs_tensor=fallback_obs_tensor,
+                    reward=0.0,
+                    done=True,
+                    info={},
+                    selected_move=None,
+                    policy_index=0,
+                    log_prob=0.0,
+                    value_pred=0.0,
+                    success=False,
+                    error_message=double_error,
+                )
+            raise
+
     def execute_step(
         self,
         episode_state: EpisodeState,
@@ -124,31 +248,14 @@ class StepManager:
                 )
                 logger_func(
                     f"TERMINAL: {error_msg} Resetting episode.",
-                    True,  # also_to_wandb
-                    None,  # wandb_data
-                    "info",  # log_level
+                    True,
+                    None,
+                    "info",
                 )
-
-                # Reset game and return failure result
-                reset_obs = self.game.reset()
-                reset_tensor = torch.tensor(
-                    reset_obs,
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(0)
-
-                return StepResult(
-                    next_obs=reset_obs,
-                    next_obs_tensor=reset_tensor,
-                    reward=0.0,
-                    done=True,  # Terminal state
+                return self._reset_and_fail(
+                    error_msg,
+                    done=True,
                     info={"terminal_reason": "no_legal_moves"},
-                    selected_move=None,
-                    policy_index=0,
-                    log_prob=0.0,
-                    value_pred=0.0,
-                    success=False,
-                    error_message=error_msg,
                 )
 
             legal_mask_tensor = self.policy_mapper.get_legal_mask(
@@ -162,46 +269,26 @@ class StepManager:
                 )
             )
 
-            # Check if agent failed to select a move
+            # Check if agent failed to select a move.
+            # Note: done=False here is intentional — the caller
+            # (training_loop_manager) unconditionally calls reset_episode()
+            # on success=False, so it handles the actual reset.
             if selected_shogi_move is None:
                 error_msg = (
                     f"Agent failed to select a move at timestep {global_timestep}"
                 )
                 logger_func(
                     f"CRITICAL: {error_msg}. Resetting episode.",
-                    True,  # also_to_wandb
-                    None,  # wandb_data
-                    "error",  # log_level
+                    True,
+                    None,
+                    "error",
                 )
+                return self._reset_and_fail(error_msg, done=False, info={})
 
-                # Reset game and return failure result
-                reset_obs = self.game.reset()
-                reset_tensor = torch.tensor(
-                    reset_obs,
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(0)
-
-                return StepResult(
-                    next_obs=reset_obs,
-                    next_obs_tensor=reset_tensor,
-                    reward=0.0,
-                    done=False,
-                    info={},
-                    selected_move=None,
-                    policy_index=0,
-                    log_prob=0.0,
-                    value_pred=0.0,
-                    success=False,
-                    error_message=error_msg,
-                )
-
-            # --- START: CORRECTED LOGGING LOGIC ---
-            # Get piece info for the ACTUAL selected move (not the first legal move)
+            # Get piece info for demo display
             piece_info_for_demo = None
             if self.config.display.display_moves:
                 try:
-                    # Check if it's a board move (not a drop) to get piece from square
                     if (
                         selected_shogi_move[0] is not None
                         and selected_shogi_move[1] is not None
@@ -209,11 +296,8 @@ class StepManager:
                         from_r, from_c = selected_shogi_move[0], selected_shogi_move[1]
                         piece_info_for_demo = self.game.get_piece(from_r, from_c)
                 except (AttributeError, IndexError, ValueError):
-                    pass  # Silently ignore errors, will fall back to a generic name
-            # --- END: CORRECTED LOGGING LOGIC ---
+                    pass
 
-            # Handle display move logging and delay
-            if self.config.display.display_moves:
                 self._handle_demo_mode(
                     selected_shogi_move,
                     episode_state.episode_length,
@@ -222,52 +306,12 @@ class StepManager:
 
             # Execute the move in the environment
             moving_player = self.game.current_player
-            is_drop = selected_shogi_move[0] is None and selected_shogi_move[1] is None
-            is_promotion = (
-                isinstance(selected_shogi_move[4], bool) and selected_shogi_move[4]
-            )
             move_result = self.game.make_move(selected_shogi_move)
             if not (isinstance(move_result, tuple) and len(move_result) == 4):
                 raise ValueError(f"Invalid move result: {type(move_result)}")
 
             next_obs_np, reward, done, info = move_result
-            captured_name = info.get("captured_piece_type")
-            if captured_name:
-                if moving_player == Color.BLACK:
-                    self.sente_capture_count += 1
-                else:
-                    self.gote_capture_count += 1
-                value_map = {
-                    "PAWN": 1,
-                    "LANCE": 3,
-                    "KNIGHT": 3,
-                    "SILVER": 5,
-                    "GOLD": 6,
-                    "BISHOP": 8,
-                    "ROOK": 10,
-                }
-                base_name = captured_name.replace("PROMOTED_", "")
-                captured_value = value_map.get(base_name, 0)
-                if moving_player == Color.BLACK:
-                    if captured_value > self.sente_best_capture_value:
-                        self.sente_best_capture = base_name.title()
-                        self.sente_best_capture_value = captured_value
-                else:
-                    if captured_value > self.gote_best_capture_value:
-                        self.gote_best_capture = base_name.title()
-                        self.gote_best_capture_value = captured_value
-
-            if is_drop:
-                if moving_player == Color.BLACK:
-                    self.sente_drop_count += 1
-                else:
-                    self.gote_drop_count += 1
-
-            if is_promotion:
-                if moving_player == Color.BLACK:
-                    self.sente_promo_count += 1
-                else:
-                    self.gote_promo_count += 1
+            self._track_move_stats(moving_player, selected_shogi_move, info)
 
             # Add experience to buffer
             self.experience_buffer.add(
@@ -280,16 +324,9 @@ class StepManager:
                 legal_mask_tensor,
             )
 
-            # Create next observation tensor
-            next_obs_tensor = torch.tensor(
-                next_obs_np,
-                dtype=torch.float32,
-                device=self.device,
-            ).unsqueeze(0)
-
             return StepResult(
                 next_obs=next_obs_np,
-                next_obs_tensor=next_obs_tensor,
+                next_obs_tensor=self._obs_to_tensor(next_obs_np),
                 reward=reward,
                 done=done,
                 info=info,
@@ -300,52 +337,22 @@ class StepManager:
                 success=True,
             )
 
-        except ValueError as e:
+        except (ValueError, RuntimeError, TypeError, IndexError) as e:
             error_msg = f"Error during training step: {e}"
             logger_func(
                 f"CRITICAL: {error_msg}. Resetting episode.",
-                True,  # also_to_wandb
-                None,  # wandb_data
-                "error",  # log_level
+                True,
+                None,
+                "error",
             )
-
-            # Reset game and return failure result
-            try:
-                reset_obs = self.game.reset()
-                reset_tensor = torch.tensor(
-                    reset_obs,
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(0)
-
-                return StepResult(
-                    next_obs=reset_obs,
-                    next_obs_tensor=reset_tensor,
-                    reward=0.0,
-                    done=False,
-                    info={},
-                    selected_move=None,
-                    policy_index=0,
-                    log_prob=0.0,
-                    value_pred=0.0,
-                    success=False,
-                    error_message=error_msg,
-                )
-            except Exception as reset_error:
-                # If reset also fails, return a minimal failure result
-                return StepResult(
-                    next_obs=episode_state.current_obs,
-                    next_obs_tensor=episode_state.current_obs_tensor,
-                    reward=0.0,
-                    done=True,  # Force episode end
-                    info={},
-                    selected_move=None,
-                    policy_index=0,
-                    log_prob=0.0,
-                    value_pred=0.0,
-                    success=False,
-                    error_message=f"{error_msg}; Reset also failed: {reset_error}",
-                )
+            return self._reset_and_fail(
+                error_msg,
+                done=False,
+                info={},
+                fallback_obs=episode_state.current_obs,
+                fallback_obs_tensor=episode_state.current_obs_tensor,
+                logger_func=logger_func,
+            )
 
     def handle_episode_end(
         self,
@@ -436,37 +443,8 @@ class StepManager:
 
         # Reset game for next episode
         try:
-            reset_result = self.game.reset()
-            if not isinstance(reset_result, np.ndarray):
-                raise RuntimeError("Game reset failed after episode end")
-
-            reset_obs_tensor = torch.tensor(
-                reset_result,
-                dtype=torch.float32,
-                device=self.device,
-            ).unsqueeze(0)
-
-            self.move_history.clear()
-            self.move_log.clear()
-            self.sente_best_capture = None
-            self.sente_best_capture_value = 0
-            self.gote_best_capture = None
-            self.gote_best_capture_value = 0
-            self.sente_capture_count = 0
-            self.gote_capture_count = 0
-            self.sente_drop_count = 0
-            self.gote_drop_count = 0
-            self.sente_promo_count = 0
-            self.gote_promo_count = 0
-
-            new_episode_state = EpisodeState(
-                current_obs=reset_result,
-                current_obs_tensor=reset_obs_tensor,
-                episode_reward=0.0,
-                episode_length=0,
-            )
+            new_episode_state = self.reset_episode()
             return new_episode_state, final_winner_color
-
         except (RuntimeError, ValueError, OSError) as e:
             logger_func(
                 f"CRITICAL: Game reset failed after episode end: {e}",
@@ -475,10 +453,7 @@ class StepManager:
                 "error",
             )
             # Return current state to allow caller to handle the error
-            return (
-                episode_state,
-                final_winner_color,
-            )  # Return winner color even on reset failure
+            return episode_state, final_winner_color
 
     def reset_episode(self) -> EpisodeState:
         """
@@ -488,27 +463,10 @@ class StepManager:
             New EpisodeState for a fresh episode
         """
         reset_obs = self.game.reset()
-        reset_tensor = torch.tensor(
-            reset_obs,
-            dtype=torch.float32,
-            device=self.device,
-        ).unsqueeze(0)
-        self.move_history.clear()
-        self.move_log.clear()
-        self.sente_best_capture = None
-        self.sente_best_capture_value = 0
-        self.gote_best_capture = None
-        self.gote_best_capture_value = 0
-        self.sente_capture_count = 0
-        self.gote_capture_count = 0
-        self.sente_drop_count = 0
-        self.gote_drop_count = 0
-        self.sente_promo_count = 0
-        self.gote_promo_count = 0
-
+        self._clear_episode_counters()
         return EpisodeState(
             current_obs=reset_obs,
-            current_obs_tensor=reset_tensor,
+            current_obs_tensor=self._obs_to_tensor(reset_obs),
             episode_reward=0.0,
             episode_length=0,
         )
