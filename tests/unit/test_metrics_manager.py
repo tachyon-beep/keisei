@@ -287,9 +287,10 @@ class TestFormatPpoMetrics:
         assert "Ent:" in result
         assert "CF:" in result
 
-    def test_stores_data_in_history(self, manager, ppo_metrics):
+    def test_does_not_store_data_in_history(self, manager, ppo_metrics):
+        """format_ppo_metrics is a pure query — it does not record to history."""
         manager.format_ppo_metrics(ppo_metrics)
-        assert len(manager.history.policy_losses) == 1
+        assert len(manager.history.policy_losses) == 0
 
     def test_empty_metrics_returns_empty_string(self, manager):
         result = manager.format_ppo_metrics({})

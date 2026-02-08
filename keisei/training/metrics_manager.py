@@ -219,14 +219,22 @@ class MetricsManager:
         return count / time_window_hours if time_window_hours > 0 else 0.0
 
     def get_win_loss_draw_rates(self, window_size: int = 100) -> Dict[str, float]:
-        recent = sorted(self.win_loss_draw_history, key=lambda t: t[1])[-window_size:]
+        """Get recent win/loss/draw rates as percentages (0-100).
+
+        The deque is already in chronological order, so we slice from the end.
+        """
+        recent = list(self.win_loss_draw_history)[-window_size:]
         if not recent:
             return {"win": 0.0, "loss": 0.0, "draw": 0.0}
         total = len(recent)
         wins = sum(1 for r, _ in recent if r == "win")
         losses = sum(1 for r, _ in recent if r == "loss")
         draws = sum(1 for r, _ in recent if r == "draw")
-        return {"win": wins / total, "loss": losses / total, "draw": draws / total}
+        return {
+            "win": (wins / total) * 100,
+            "loss": (losses / total) * 100,
+            "draw": (draws / total) * 100,
+        }
 
     def get_average_turns_trend(self, window_size: int = 100) -> Sequence[int]:
         data: List[int] = list(self.turns_per_game)[-window_size:]
@@ -289,7 +297,6 @@ class MetricsManager:
             ppo_metrics_parts.append(
                 f"CF:{learn_metrics[self.history.PPO_CLIP_FRACTION]:.2f}"
             )
-        self.history.add_ppo_data(learn_metrics)
         return " ".join(ppo_metrics_parts)
 
     def format_ppo_metrics_for_logging(self, learn_metrics: Dict[str, float]) -> str:

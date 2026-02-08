@@ -285,7 +285,8 @@ class Trainer:
         self.last_gradient_norm = getattr(self.agent, "last_gradient_norm", 0.0)
         self.experience_buffer.clear()
 
-        # Format PPO metrics for display using MetricsManager
+        # Record PPO metrics to history, then format for display
+        self.metrics_manager.history.add_ppo_data(learn_metrics)
         ppo_metrics_display = self.metrics_manager.format_ppo_metrics(learn_metrics)
         self.metrics_manager.update_progress_metrics("ppo_metrics", ppo_metrics_display)
 

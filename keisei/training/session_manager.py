@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
 import wandb
-from keisei.config_schema import AppConfig
+from keisei.config_schema import AppConfig, EvaluationConfig
 from keisei.utils.unified_logger import log_error_to_stderr, log_warning_to_stderr
 from keisei.utils.utils import generate_run_name
 
@@ -161,7 +161,7 @@ class SessionManager:
             self._is_wandb_active = False
             return False
 
-    def setup_evaluation_logging(self, eval_config) -> None:
+    def setup_evaluation_logging(self, eval_config: EvaluationConfig) -> None:
         """
         Extend existing WandB session for evaluation.
 
@@ -385,14 +385,10 @@ class SessionManager:
             run_title += f" (W&B: {wandb.run.url})"
 
         logger_func(run_title)
-        logger_func(f"Run directory: {self._run_artifact_dir}")
+        logger_func(f"Run directory: {self.run_artifact_dir}")
 
-        # Ensure directory exists before constructing paths
-        if self._run_artifact_dir:
-            config_path = os.path.join(self._run_artifact_dir, "effective_config.json")
-            logger_func(f"Effective config saved to: {config_path}")
-        else:
-            logger_func("Warning: Run artifact directory not set")
+        config_path = os.path.join(self.run_artifact_dir, "effective_config.json")
+        logger_func(f"Effective config saved to: {config_path}")
 
         # Configuration information
         if self.config.env.seed is not None:
@@ -440,52 +436,15 @@ class SessionManager:
     def finalize_session(self) -> None:
         """Finalize the training session."""
         if self._is_wandb_active and wandb.run:
-            try:
-                # Use cross-platform threading.Timer instead of POSIX signal
-                import threading
+            import threading
 
-                timeout_occurred = threading.Event()
+            thread = threading.Thread(target=wandb.finish, daemon=True)
+            thread.start()
+            thread.join(timeout=10.0)
 
-                def timeout_handler():
-                    timeout_occurred.set()
-
-                # Set up timeout (10 seconds) - cross-platform compatible
-                timer = threading.Timer(10.0, timeout_handler)
-                timer.start()
-
-                try:
-                    # Check periodically if timeout occurred
-                    import time
-
-                    start_time = time.time()
-                    while (
-                        not timeout_occurred.is_set()
-                        and (time.time() - start_time) < 10
-                    ):
-                        try:
-                            wandb.finish()
-                            break  # Success, exit loop
-                        except Exception:
-                            time.sleep(0.1)  # Brief wait before retry
-
-                    if timeout_occurred.is_set():
-                        raise TimeoutError("WandB finalization timed out")
-
-                finally:
-                    timer.cancel()  # Cancel the timer
-
-            except (KeyboardInterrupt, TimeoutError):
+            if thread.is_alive():
                 log_warning_to_stderr(
-                    "SessionManager", "WandB finalization interrupted or timed out"
-                )
-                try:
-                    # Force finish without waiting
-                    wandb.finish(exit_code=1)
-                except Exception:
-                    pass
-            except Exception as e:  # Catch all exceptions for WandB finalization
-                log_warning_to_stderr(
-                    "SessionManager", f"WandB finalization failed: {e}"
+                    "SessionManager", "WandB finalization timed out"
                 )
 
     def setup_seeding(self) -> None:
