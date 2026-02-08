@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 from keisei.config_schema import AppConfig
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
@@ -319,7 +319,7 @@ class PPOAgent:
                 # over legal actions only.
                 if self.use_mixed_precision and isinstance(self.scaler, GradScaler):
                     # Mixed precision forward pass
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast("cuda"):
                         new_log_probs, entropy, new_values = (
                             self.model.evaluate_actions(
                                 obs_minibatch,

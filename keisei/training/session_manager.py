@@ -11,6 +11,7 @@ This module handles session-level concerns including:
 """
 
 import os
+import re
 import sys
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
@@ -52,6 +53,9 @@ class SessionManager:
         else:
             self._run_name = generate_run_name(config, None)
 
+        # Sanitize run_name to prevent path traversal
+        self._run_name = self._sanitize_run_name(self._run_name)
+
         # Initialize paths - will be set by setup_directories()
         self._run_artifact_dir: Optional[str] = None
         self._model_dir: Optional[str] = None
@@ -60,6 +64,18 @@ class SessionManager:
 
         # WandB state
         self._is_wandb_active: Optional[bool] = None
+
+    @staticmethod
+    def _sanitize_run_name(name: str) -> str:
+        """Sanitize run name to prevent path traversal and invalid characters."""
+        # Strip path separators and parent directory references
+        name = os.path.basename(name)
+        # Keep only alphanumeric, hyphens, underscores, dots
+        name = re.sub(r"[^\w\-.]", "_", name)
+        # Collapse multiple underscores/dots and strip leading dots
+        name = re.sub(r"\.{2,}", ".", name)
+        name = name.lstrip(".")
+        return name or "unnamed_run"
 
     @property
     def run_name(self) -> str:

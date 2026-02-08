@@ -47,8 +47,6 @@ def decompress_array(data: Dict[str, Any]) -> np.ndarray:
             shape = data["shape"]
             return np.frombuffer(decompressed_bytes, dtype=dtype).reshape(shape)
         return data["data"]
-    except Exception as e:
-        # Log the exception for debugging purposes
-        logging.error("Decompression failed. Returning raw data.", exc_info=True)
-        # Fall back to returning the raw data as a numpy array
-        return np.asarray(data["data"])
+    except Exception:
+        logging.error("Decompression failed for array with shape=%s", data.get("shape"), exc_info=True)
+        raise

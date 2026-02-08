@@ -97,8 +97,24 @@ class OpponentPerformanceData:
         if len(self.recent_win_rates) > 10:
             self.recent_win_rates.pop(0)
 
+        # Update Elo estimate from win rate against this opponent
+        self._update_elo_estimate()
+
         # Update performance trend
         self._update_performance_trend()
+
+    def _update_elo_estimate(self) -> None:
+        """Re-estimate opponent Elo from the agent's win rate against them."""
+        if self.total_games < 2:
+            return
+        wr = self.win_rate_against
+        if wr <= 0.0:
+            self.elo_rating = 2000.0  # Agent never wins → opponent is very strong
+        elif wr >= 1.0:
+            self.elo_rating = 800.0  # Agent always wins → opponent is weak
+        else:
+            # Invert the logistic: if agent wins wr fraction, opponent Elo ≈ 1200 - 400·log10(wr/(1-wr))
+            self.elo_rating = 1200.0 - 400.0 * math.log10(wr / (1.0 - wr))
 
     def _update_performance_trend(self) -> None:
         """Update performance trend based on recent games."""

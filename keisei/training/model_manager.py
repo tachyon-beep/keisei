@@ -17,7 +17,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 from keisei.config_schema import AppConfig
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
