@@ -6,6 +6,7 @@ common evaluation strategy used during training.
 """
 
 import logging
+import statistics
 import uuid
 from typing import (  # Ensure Union is imported; Added List
     TYPE_CHECKING,
@@ -858,14 +859,14 @@ class SingleOpponentEvaluator(BaseEvaluator):
         if moves_list:
             analytics["min_game_length"] = min(moves_list)
             analytics["max_game_length"] = max(moves_list)
-            analytics["median_game_length"] = sorted(moves_list)[len(moves_list) // 2]
+            analytics["median_game_length"] = statistics.median(moves_list)
 
         # Duration statistics
         durations = [g.duration_seconds for g in games]
         if durations:
             analytics["min_duration"] = min(durations)
             analytics["max_duration"] = max(durations)
-            analytics["median_duration"] = sorted(durations)[len(durations) // 2]
+            analytics["median_duration"] = statistics.median(durations)
 
         return analytics
 

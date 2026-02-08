@@ -41,8 +41,13 @@ class GameResult:
 
     @property
     def is_draw(self) -> bool:
-        """True if the game was a draw."""
-        return self.winner is None
+        """True if the game was a draw (not an error)."""
+        return self.winner is None and "error" not in self.metadata
+
+    @property
+    def is_error(self) -> bool:
+        """True if the game ended due to an error."""
+        return "error" in self.metadata
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert GameResult to a dictionary for serialization."""
@@ -111,11 +116,27 @@ class SummaryStats:
                 avg_duration_seconds=0.0,
             )
 
-        agent_wins = sum(1 for g in games if g.is_agent_win)
-        opponent_wins = sum(1 for g in games if g.is_opponent_win)
-        draws = sum(1 for g in games if g.is_draw)
-        total_moves = sum(g.moves_count for g in games)
-        total_duration = sum(g.duration_seconds for g in games)
+        # Exclude error games from statistics
+        valid_games = [g for g in games if not g.is_error]
+        if not valid_games:
+            return cls(
+                total_games=0,
+                agent_wins=0,
+                opponent_wins=0,
+                draws=0,
+                win_rate=0.0,
+                loss_rate=0.0,
+                draw_rate=0.0,
+                avg_game_length=0.0,
+                total_moves=0,
+                avg_duration_seconds=0.0,
+            )
+        total_games = len(valid_games)
+        agent_wins = sum(1 for g in valid_games if g.is_agent_win)
+        opponent_wins = sum(1 for g in valid_games if g.is_opponent_win)
+        draws = sum(1 for g in valid_games if g.is_draw)
+        total_moves = sum(g.moves_count for g in valid_games)
+        total_duration = sum(g.duration_seconds for g in valid_games)
 
         return cls(
             total_games=total_games,

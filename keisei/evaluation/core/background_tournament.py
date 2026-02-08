@@ -378,8 +378,14 @@ class BackgroundTournamentManager:
         if tournament_id not in self._active_tournaments:
             return
 
-        async with self._tournament_locks[tournament_id]:
-            progress = self._active_tournaments[tournament_id]
+        try:
+            lock = self._tournament_locks[tournament_id]
+        except KeyError:
+            return  # Tournament already cleaned up
+        async with lock:
+            progress = self._active_tournaments.get(tournament_id)
+            if progress is None:
+                return
 
             if status:
                 progress.status = status
@@ -482,8 +488,7 @@ class BackgroundTournamentManager:
                     else:
                         raise
 
-        if tournament_id in self._tournament_locks:
-            del self._tournament_locks[tournament_id]
+        self._tournament_locks.pop(tournament_id, None)
 
     def get_tournament_progress(
         self, tournament_id: str

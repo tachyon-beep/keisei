@@ -3,9 +3,11 @@ Performance safeguards and SLA monitoring for evaluation system.
 """
 
 import asyncio
-import psutil
-import time
+import functools
 import logging
+import time
+
+import psutil
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -263,11 +265,10 @@ class MockEvaluator:
         if asyncio.iscoroutinefunction(self.evaluation_func):
             return await self.evaluation_func(*args, **kwargs)
         else:
-            # Run sync function in executor
+            # Run sync function in executor (run_in_executor doesn't support **kwargs)
             loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(
-                None, self.evaluation_func, *args, **kwargs
-            )
+            func = functools.partial(self.evaluation_func, *args, **kwargs)
+            return await loop.run_in_executor(None, func)
 
 
 class EvaluationTimeoutError(Exception):

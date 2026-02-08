@@ -486,17 +486,15 @@ class PPOAgent:
         )
 
     def load_model(self, file_path: str) -> Dict[str, Any]:
-        """Loads the model, optimizer, scheduler, and training state from a file."""
+        """Loads the model, optimizer, scheduler, and training state from a file.
+
+        Raises:
+            FileNotFoundError: If checkpoint file does not exist.
+            RuntimeError: If checkpoint is corrupted or incompatible.
+        """
         if not os.path.exists(file_path):
-            log_error_to_stderr("PPOAgent", f"Checkpoint file {file_path} not found")
-            return {
-                "global_timestep": 0,
-                "total_episodes_completed": 0,
-                "black_wins": 0,
-                "white_wins": 0,
-                "draws": 0,
-                "error": "File not found",
-            }
+            raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
+
         try:
             checkpoint = torch.load(
                 file_path, map_location=self.device, weights_only=True
@@ -507,7 +505,7 @@ class PPOAgent:
             if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-            result = {
+            return {
                 "global_timestep": checkpoint.get("global_timestep", 0),
                 "total_episodes_completed": checkpoint.get(
                     "total_episodes_completed", 0
@@ -518,19 +516,10 @@ class PPOAgent:
                 "lr_schedule_type": checkpoint.get("lr_schedule_type", None),
                 "lr_schedule_step_on": checkpoint.get("lr_schedule_step_on", "epoch"),
             }
-            return result
         except (KeyError, RuntimeError, EOFError) as e:
-            log_error_to_stderr(
-                "PPOAgent", f"Error loading checkpoint from {file_path}: {e}"
-            )
-            return {
-                "global_timestep": 0,
-                "total_episodes_completed": 0,
-                "black_wins": 0,
-                "white_wins": 0,
-                "draws": 0,
-                "error": str(e),
-            }
+            raise RuntimeError(
+                f"Failed to load checkpoint from {file_path}: {e}"
+            ) from e
 
     def get_name(self) -> str:  # Added getter for name
         return self.name
