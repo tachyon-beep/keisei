@@ -151,20 +151,20 @@ def add_evaluation_arguments(parser):
     parser.add_argument(
         "--strategy",
         type=str,
-        default="single_opponent",
+        default=None,
         choices=["single_opponent", "tournament", "ladder", "benchmark", "custom"],
         help="Evaluation strategy to use.",
     )
     parser.add_argument(
         "--num_games",
         type=int,
-        default=20,
+        default=None,
         help="Number of games to play during evaluation.",
     )
     parser.add_argument(
         "--opponent_type",
         type=str,
-        default="random",
+        default=None,
         help="Type of opponent: 'random', 'heuristic', 'ppo', etc.",
     )
     parser.add_argument(
@@ -235,11 +235,11 @@ async def run_evaluation_command(args):
         eval_config = EvaluationConfig()
 
     # Override config with CLI arguments
-    if args.strategy:
+    if args.strategy is not None:
         eval_config.strategy = args.strategy
-    if args.num_games:
+    if args.num_games is not None:
         eval_config.num_games = args.num_games
-    if args.opponent_type:
+    if args.opponent_type is not None:
         eval_config.opponent_type = args.opponent_type
     if args.wandb_log_eval:
         eval_config.wandb_log_eval = args.wandb_log_eval
@@ -249,9 +249,9 @@ async def run_evaluation_command(args):
         eval_config.save_path = args.output_dir
 
     # Configure strategy-specific parameters
-    if args.strategy == "single_opponent":
+    if eval_config.strategy == "single_opponent":
         eval_config.configure_for_single_opponent(
-            opponent_name=args.opponent_type,
+            opponent_name=args.opponent_type or eval_config.opponent_type,
             opponent_path=args.opponent_checkpoint,
         )
 

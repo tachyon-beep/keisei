@@ -505,8 +505,8 @@ webui:
   # Streamlit server port
   port: 8501
 
-  # Host binding - use "0.0.0.0" for all interfaces (remote access), "localhost" for local only
-  host: "0.0.0.0"
+  # Host binding - use "localhost" for local only, "0.0.0.0" for remote access (no auth!)
+  host: "localhost"
 
   # State file update frequency in Hz
   update_rate_hz: 2.0

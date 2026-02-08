@@ -16,11 +16,13 @@ from keisei.shogi.shogi_rules_logic import (
     can_promote_specific_piece,
     check_for_nifu,
     check_for_sennichite,
+    check_for_uchi_fu_zume,
     check_if_square_is_attacked,
     find_king,
     generate_all_legal_moves,
     generate_piece_potential_moves,
     is_in_check,
+    is_king_in_check_after_simulated_move,
     is_piece_type_sliding,
     must_promote_specific_piece,
 )
@@ -359,10 +361,27 @@ class TestUtilityFunctions:
         game = ShogiGame.from_sfen("4k4/9/9/9/9/9/9/9/9 b - 1")
         assert find_king(game, Color.BLACK) is None
 
-    def test_is_in_check_returns_true_when_king_missing(self) -> None:
-        """is_in_check returns True when the king is not found (invalid state)."""
+    def test_is_in_check_raises_when_king_missing(self) -> None:
+        """is_in_check raises ValueError when the king is not found (state corruption)."""
         game = ShogiGame.from_sfen("4k4/9/9/9/9/9/9/9/9 b - 1")
-        assert is_in_check(game, Color.BLACK) is True
+        with pytest.raises(ValueError, match="King of color.*not found"):
+            is_in_check(game, Color.BLACK)
+
+    def test_is_king_in_check_after_simulated_move_raises_when_king_missing(self) -> None:
+        """is_king_in_check_after_simulated_move raises ValueError when king is missing."""
+        game = ShogiGame.from_sfen("4k4/9/9/9/9/9/9/9/9 b - 1")
+        with pytest.raises(ValueError, match="King of color.*not found"):
+            is_king_in_check_after_simulated_move(game, Color.BLACK)
+
+    def test_check_for_uchi_fu_zume_raises_when_opponent_king_missing(self) -> None:
+        """check_for_uchi_fu_zume raises ValueError when opponent king is missing."""
+        # Start from a valid position with both kings, then remove white king
+        game = ShogiGame.from_sfen("4k4/9/9/9/9/9/9/9/4K4 b P 1")
+        # Manually remove white king to simulate corruption
+        game.set_piece(0, 4, None)
+        # Try to drop a pawn — opponent king (white) is now missing
+        with pytest.raises(ValueError, match="not found"):
+            check_for_uchi_fu_zume(game, 0, 4, Color.BLACK)
 
     def test_is_piece_type_sliding(self) -> None:
         """Sliding pieces: LANCE, BISHOP, ROOK, PROMOTED_BISHOP, PROMOTED_ROOK."""

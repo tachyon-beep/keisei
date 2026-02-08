@@ -60,7 +60,7 @@ class TestMatchingChannels:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         for key in model_src.state_dict():
             assert torch.equal(
@@ -73,7 +73,7 @@ class TestMatchingChannels:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         obs = _dummy_input(CHANNELS_46)
         model_src.eval()
@@ -103,7 +103,7 @@ class TestPaddingChannels:
 
         src_stem = model_src.state_dict()["stem.weight"].clone()
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_51)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_stem = model_dst.state_dict()["stem.weight"]
         assert torch.equal(dst_stem[:, :CHANNELS_46, :, :], src_stem), (
@@ -116,7 +116,7 @@ class TestPaddingChannels:
         model_dst = _make_resnet(CHANNELS_51)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_51)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_stem = model_dst.state_dict()["stem.weight"]
         extra = dst_stem[:, CHANNELS_46:, :, :]
@@ -130,7 +130,7 @@ class TestPaddingChannels:
         model_dst = _make_resnet(CHANNELS_51)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_51)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_stem = model_dst.state_dict()["stem.weight"]
         assert dst_stem.shape[1] == CHANNELS_51, (
@@ -151,7 +151,7 @@ class TestTruncationChannels:
 
         src_stem = model_src.state_dict()["stem.weight"].clone()
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_stem = model_dst.state_dict()["stem.weight"]
         assert torch.equal(dst_stem, src_stem[:, :CHANNELS_46, :, :]), (
@@ -164,7 +164,7 @@ class TestTruncationChannels:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_stem = model_dst.state_dict()["stem.weight"]
         assert dst_stem.shape[1] == CHANNELS_46, (
@@ -185,7 +185,7 @@ class TestNoStemLayer:
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
         # Should not raise
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
     def test_cnn_model_weights_loaded_correctly(self):
         """CNN model weights are loaded correctly even without a stem layer."""
@@ -193,7 +193,7 @@ class TestNoStemLayer:
         model_dst = _make_cnn(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         for key in model_src.state_dict():
             assert torch.equal(
@@ -206,7 +206,7 @@ class TestNoStemLayer:
         model_dst = _make_cnn(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         obs = _dummy_input(CHANNELS_46)
         model_src.eval()
@@ -232,7 +232,7 @@ class TestRawStateDictFormat:
 
         # Pass the raw state_dict directly -- no "model_state_dict" key
         checkpoint = dict(model_src.state_dict())
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
     def test_raw_state_dict_weights_loaded_correctly(self):
         """Weights are correct when loaded from a raw state_dict."""
@@ -240,7 +240,7 @@ class TestRawStateDictFormat:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = dict(model_src.state_dict())
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         for key in model_src.state_dict():
             assert torch.equal(
@@ -260,7 +260,7 @@ class TestWrappedStateDictFormat:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
     def test_wrapped_format_weights_loaded_correctly(self):
         """Weights are correct when loaded from a wrapped checkpoint."""
@@ -268,7 +268,7 @@ class TestWrappedStateDictFormat:
         model_dst = _make_resnet(CHANNELS_46)
 
         checkpoint = {"model_state_dict": model_src.state_dict()}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         for key in model_src.state_dict():
             assert torch.equal(
@@ -286,7 +286,7 @@ class TestWrappedStateDictFormat:
             "global_timestep": 500,
         }
         # Should not raise despite extra keys
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         for key in model_src.state_dict():
             assert torch.equal(
@@ -307,7 +307,7 @@ class TestNonStemWeightIntegrity:
 
         src_state = model_src.state_dict()
         checkpoint = {"model_state_dict": copy.deepcopy(src_state)}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_51)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_state = model_dst.state_dict()
         for key in src_state:
@@ -324,7 +324,7 @@ class TestNonStemWeightIntegrity:
 
         src_state = model_src.state_dict()
         checkpoint = {"model_state_dict": copy.deepcopy(src_state)}
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
 
         dst_state = model_dst.state_dict()
         for key in src_state:
@@ -357,7 +357,7 @@ class TestRoundtrip:
         # Load into a fresh model
         model_dst = _make_resnet(CHANNELS_46)
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
         model_dst.eval()
 
         with torch.no_grad():
@@ -385,7 +385,7 @@ class TestRoundtrip:
 
         model_dst = _make_resnet(CHANNELS_46)
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
         model_dst.eval()
 
         with torch.no_grad():
@@ -412,7 +412,7 @@ class TestRoundtrip:
 
         model_dst = _make_cnn(CHANNELS_46)
         checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        load_checkpoint_with_padding(model_dst, checkpoint, input_channels=CHANNELS_46)
+        load_checkpoint_with_padding(model_dst, checkpoint)
         model_dst.eval()
 
         with torch.no_grad():
@@ -423,4 +423,40 @@ class TestRoundtrip:
         )
         assert torch.allclose(val_before, val_after, atol=1e-6), (
             "CNN value predictions differ after roundtrip"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. strict=True catches architecture mismatches
+# ---------------------------------------------------------------------------
+class TestStrictLoading:
+    """Verify that strict=True raises on unexpected/missing keys."""
+
+    def test_mismatched_architecture_raises(self):
+        """Loading a ResNet checkpoint into a CNN model raises RuntimeError."""
+        model_resnet = _make_resnet(CHANNELS_46)
+        model_cnn = _make_cnn(CHANNELS_46)
+
+        checkpoint = {"model_state_dict": model_resnet.state_dict()}
+        with pytest.raises(RuntimeError, match="Missing key|Unexpected key"):
+            load_checkpoint_with_padding(model_cnn, checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# 10. Input dict not mutated
+# ---------------------------------------------------------------------------
+class TestInputNotMutated:
+    """Verify that the caller's checkpoint dict is not modified."""
+
+    def test_padding_does_not_mutate_input(self):
+        """Padding the stem should not modify the original checkpoint dict."""
+        model_src = _make_resnet(CHANNELS_46)
+        checkpoint = {"model_state_dict": model_src.state_dict()}
+        original_shape = checkpoint["model_state_dict"]["stem.weight"].shape
+
+        model_dst = _make_resnet(CHANNELS_51)
+        load_checkpoint_with_padding(model_dst, checkpoint)
+
+        assert checkpoint["model_state_dict"]["stem.weight"].shape == original_shape, (
+            "Original checkpoint dict was mutated by load_checkpoint_with_padding"
         )

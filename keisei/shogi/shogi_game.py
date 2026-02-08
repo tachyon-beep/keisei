@@ -417,7 +417,12 @@ class ShogiGame:
         #    having no legal moves.
         current_player_legal_moves = shogi_rules_logic.generate_all_legal_moves(self)
         if not current_player_legal_moves:
-            if shogi_rules_logic.is_in_check(self, self.current_player):
+            try:
+                in_check = shogi_rules_logic.is_in_check(self, self.current_player)
+            except ValueError:
+                # King missing — position is invalid, treat as game over (stalemate)
+                in_check = False
+            if in_check:
                 self.game_over = True
                 self.winner = (
                     player_who_just_moved  # The player who made the last move wins

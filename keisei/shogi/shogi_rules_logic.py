@@ -43,19 +43,14 @@ def is_in_check(
     king_pos: Optional[Tuple[int, int]] = find_king(game, player_color)
 
     if not king_pos:
-        if debug_recursion:
-            # Try to get SFEN, but game object might be in an intermediate state for this print
-            sfen_str: str = "unavailable (game object might be partial)"
-            try:
-                sfen_str = game.to_sfen_string()
-            except Exception:  # pylint: disable=broad-except
-                pass  # Keep sfen_str as unavailable
-            logger.debug(
-                "King of color %s not found. Game state (SFEN): %s. Returning True (check).",
-                player_color, sfen_str,
-            )
-        return (
-            True  # King not found implies a lost/invalid state, effectively in check.
+        sfen_str: str = "unavailable"
+        try:
+            sfen_str = game.to_sfen_string()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        raise ValueError(
+            f"King of color {player_color} not found on board. "
+            f"This indicates board state corruption. SFEN: {sfen_str}"
         )
 
     opponent_color: Color = Color.WHITE if player_color == Color.BLACK else Color.BLACK
@@ -323,7 +318,15 @@ def check_for_uchi_fu_zume(
         opp_king_pos = find_king(game, opp_color)
 
         if not opp_king_pos:
-            return False
+            sfen_str: str = "unavailable"
+            try:
+                sfen_str = game.to_sfen_string()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            raise ValueError(
+                f"Opponent king ({opp_color}) not found during uchi-fu-zume check. "
+                f"This indicates board state corruption. SFEN: {sfen_str}"
+            )
 
         # 1. Check if the drop delivers check to the opponent's king.
         drop_delivers_check = check_if_square_is_attacked(
@@ -358,12 +361,20 @@ def is_king_in_check_after_simulated_move(
     king_pos = find_king(game, player_color)
 
     if not king_pos:
-        return True
+        sfen_str: str = "unavailable"
+        try:
+            sfen_str = game.to_sfen_string()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        raise ValueError(
+            f"King of color {player_color} not found after simulated move. "
+            f"This indicates board state corruption. SFEN: {sfen_str}"
+        )
 
     opponent_color = Color.WHITE if player_color == Color.BLACK else Color.BLACK
     in_check = check_if_square_is_attacked(
         game, king_pos[0], king_pos[1], opponent_color, debug=False
-    )  # debug was from the removed flag
+    )
     return in_check
 
 
@@ -572,52 +583,16 @@ def generate_all_legal_moves(
 
 
 def check_for_sennichite(game: "ShogiGame") -> bool:
+    """Check for fourfold repetition (Sennichite).
+
+    Each move_history entry stores a state_hash computed AFTER the player switch
+    (via apply_move_to_game), so the hash represents (board, hands,
+    next_player_to_move). Sennichite is declared when the same hash appears
+    four times in the history.
     """
-    Returns True if the current board state has occurred four times (Sennichite).
-    (Formerly ShogiGame.is_sennichite)
-    Relies on game.move_history and game._board_state_hash().
-    The hash in move_history is for the state *after* a move, including whose turn it was *before* switching players.
-    Sennichite rule states: same game position (pieces on board, pieces in hand, and player to move)
-    has appeared for the fourth time.
-    """
-    # The state hash to check for repetition should represent (board, hands, current_player_to_move)
-    # In the original make_move:
-    # 1. move pieces
-    # 2. state_hash = _board_state_hash() (current_player is still P_old who made the move) -> stored in history
-    # 3. current_player is switched to P_new
-    # 4. if is_sennichite(): ... is called.
-    # Inside is_sennichite (this function):
-    # game.current_player is P_new.
-    # So, state_to_check_for_repetition = game._board_state_hash() will use P_new.
-    # This means we are checking if the state (board, hands, P_old_who_just_moved) has repeated.
-    # The history stores (board, hands, P_old_who_just_moved). This comparison is subtle.
-
-    # The problem description (II.8) implies the hash in history is the one to count.
-    # "The state_hash stored in move_history by make_move is for the board
-    # state *after* the move and includes self.current_player *before* it's switched."
-    # "is_sennichite is called *after* self.current_player is switched."
-    # "If current make_move appends hash for state *after* move & *before* player switch,
-    # then is_sennichite is called *after* player switch. The hashes won't match."
-
-    # The original `is_sennichite` code in the prompt:
-    # final_state_hash_of_move = (
-    #         game.move_history[-1].get("state_hash") if game.move_history else None
-    # ) # This is (board_after_P_old_move, hands, P_old_turn)
-    # ...
-    # count_of_this_state = 0
-    # for record in game.move_history:
-    #     if record.get("state_hash") == final_state_hash_of_move:
-    #         count_of_this_state += 1
-    # return count_of_this_state >= 4
-    # This means sennichite is declared if the state *just achieved by the previous player*
-    # (which includes that player as the one whose turn it was for that hash) has appeared 4 times.
-    # This is a common interpretation for how repetition is tracked.
-
     if not game.move_history:
         return False
 
-    # This hash represents the board state achieved by the *previous* player's move,
-    # and importantly, the game._board_state_hash() includes whose turn it *was* when that state was recorded.
     last_recorded_state_hash: Optional[Tuple] = game.move_history[-1].get("state_hash")
     if not last_recorded_state_hash:
         return False  # Should not happen if history is populated correctly
@@ -627,5 +602,4 @@ def check_for_sennichite(game: "ShogiGame") -> bool:
         if move_record.get("state_hash") == last_recorded_state_hash:
             count += 1
 
-    # If this state (board, hands, player_who_just_moved) has now occurred 4 times.
     return count >= 4
