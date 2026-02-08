@@ -53,8 +53,8 @@ class StreamlitManager:
         # Subprocess
         self._process: Optional[subprocess.Popen] = None
 
-        # Rate limiting — minimum interval between writes
-        self._min_write_interval = 0.5  # seconds
+        # Rate limiting — minimum interval between writes (derived from config Hz)
+        self._min_write_interval = 1.0 / max(config.update_rate_hz, 0.1)
         self._last_write_time = 0.0
 
     def start(self, timeout: float = 5.0) -> bool:

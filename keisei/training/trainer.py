@@ -104,75 +104,83 @@ class Trainer:
             except ImportError as e:
                 self.logger.log(f"WebUI not available: {e}")
                 self.webui_manager = None
-        self.model_manager = ModelManager(config, args, self.device, self.logger.log)
-        self.env_manager = EnvManager(config, self.logger.log)
-        self.metrics_manager = MetricsManager(
-            history_size=config.display.trend_history_length,
-            elo_initial_rating=config.display.elo_initial_rating,
-            elo_k_factor=config.display.elo_k_factor,
-        )
-        # Create evaluation config directly from central config
-        from keisei.evaluation.core import create_evaluation_config
+        # All remaining initialization is wrapped so we can clean up the
+        # Streamlit subprocess if anything fails after it was launched.
+        try:
+            self.model_manager = ModelManager(config, args, self.device, self.logger.log)
+            self.env_manager = EnvManager(config, self.logger.log)
+            self.metrics_manager = MetricsManager(
+                history_size=config.display.trend_history_length,
+                elo_initial_rating=config.display.elo_initial_rating,
+                elo_k_factor=config.display.elo_k_factor,
+            )
+            # Create evaluation config directly from central config
+            from keisei.evaluation.core import create_evaluation_config
 
-        eval_config = create_evaluation_config(
-            strategy=config.evaluation.strategy,
-            num_games=config.evaluation.num_games,
-            max_concurrent_games=config.evaluation.max_concurrent_games,
-            timeout_per_game=config.evaluation.timeout_per_game,
-            randomize_positions=config.evaluation.randomize_positions,
-            random_seed=config.evaluation.random_seed,
-            save_games=config.evaluation.save_games,
-            save_path=config.evaluation.save_path,
-            log_level=config.evaluation.log_level,
-            wandb_logging=config.evaluation.wandb_log_eval,
-            update_elo=config.evaluation.update_elo,
-            enable_in_memory_evaluation=config.evaluation.enable_in_memory_evaluation,
-            model_weight_cache_size=config.evaluation.model_weight_cache_size,
-            enable_parallel_execution=config.evaluation.enable_parallel_execution,
-            process_restart_threshold=config.evaluation.process_restart_threshold,
-            temp_agent_device=config.evaluation.temp_agent_device,
-            clear_cache_after_evaluation=config.evaluation.clear_cache_after_evaluation,
-            # Add strategy-specific parameters
-            opponent_name=config.evaluation.opponent_type,
-            strategy_params=getattr(config.evaluation, "strategy_params", {}),
-        )
-        self.evaluation_manager = EnhancedEvaluationManager(
-            eval_config,
-            self.run_name,
-            pool_size=config.evaluation.previous_model_pool_size,
-            elo_registry_path=config.evaluation.elo_registry_path,
-            enable_background_tournaments=getattr(
-                config.evaluation, "enable_background_tournaments", False
-            ),
-            enable_advanced_analytics=getattr(
-                config.evaluation, "enable_advanced_analytics", False
-            ),
-            enable_enhanced_opponents=getattr(
-                config.evaluation, "enable_enhanced_opponents", False
-            ),
-            analytics_output_dir=Path(self.model_dir) / "analytics",
-        )
-        self.evaluation_elo_snapshot: Optional[Dict[str, Any]] = None
-        self.callback_manager = CallbackManager(config, self.model_dir)
-        self.setup_manager = SetupManager(config, self.device)
+            eval_config = create_evaluation_config(
+                strategy=config.evaluation.strategy,
+                num_games=config.evaluation.num_games,
+                max_concurrent_games=config.evaluation.max_concurrent_games,
+                timeout_per_game=config.evaluation.timeout_per_game,
+                randomize_positions=config.evaluation.randomize_positions,
+                random_seed=config.evaluation.random_seed,
+                save_games=config.evaluation.save_games,
+                save_path=config.evaluation.save_path,
+                log_level=config.evaluation.log_level,
+                wandb_logging=config.evaluation.wandb_log_eval,
+                update_elo=config.evaluation.update_elo,
+                enable_in_memory_evaluation=config.evaluation.enable_in_memory_evaluation,
+                model_weight_cache_size=config.evaluation.model_weight_cache_size,
+                enable_parallel_execution=config.evaluation.enable_parallel_execution,
+                process_restart_threshold=config.evaluation.process_restart_threshold,
+                temp_agent_device=config.evaluation.temp_agent_device,
+                clear_cache_after_evaluation=config.evaluation.clear_cache_after_evaluation,
+                # Add strategy-specific parameters
+                opponent_name=config.evaluation.opponent_type,
+                strategy_params=getattr(config.evaluation, "strategy_params", {}),
+            )
+            self.evaluation_manager = EnhancedEvaluationManager(
+                eval_config,
+                self.run_name,
+                pool_size=config.evaluation.previous_model_pool_size,
+                elo_registry_path=config.evaluation.elo_registry_path,
+                enable_background_tournaments=getattr(
+                    config.evaluation, "enable_background_tournaments", False
+                ),
+                enable_advanced_analytics=getattr(
+                    config.evaluation, "enable_advanced_analytics", False
+                ),
+                enable_enhanced_opponents=getattr(
+                    config.evaluation, "enable_enhanced_opponents", False
+                ),
+                analytics_output_dir=Path(self.model_dir) / "analytics",
+            )
+            self.evaluation_elo_snapshot: Optional[Dict[str, Any]] = None
+            self.callback_manager = CallbackManager(config, self.model_dir)
+            self.setup_manager = SetupManager(config, self.device)
 
-        # Setup components using SetupManager
-        self._initialize_components()
+            # Setup components using SetupManager
+            self._initialize_components()
 
-        # Configure evaluation manager with runtime components
-        self.evaluation_manager.setup(
-            device=config.env.device,
-            policy_mapper=self.policy_output_mapper,
-            model_dir=self.model_dir,
-            wandb_active=self.is_train_wandb_active,
-        )
+            # Configure evaluation manager with runtime components
+            self.evaluation_manager.setup(
+                device=config.env.device,
+                policy_mapper=self.policy_output_mapper,
+                model_dir=self.model_dir,
+                wandb_active=self.is_train_wandb_active,
+            )
 
-        # Setup display and callbacks
-        self.display = self.display_manager.setup_display(self)
-        self.callbacks = self.callback_manager.setup_default_callbacks()
+            # Setup display and callbacks
+            self.display = self.display_manager.setup_display(self)
+            self.callbacks = self.callback_manager.setup_default_callbacks()
 
-        # Initialize TrainingLoopManager
-        self.training_loop_manager = TrainingLoopManager(trainer=self)
+            # Initialize TrainingLoopManager
+            self.training_loop_manager = TrainingLoopManager(trainer=self)
+        except Exception:
+            # Stop the Streamlit subprocess so it doesn't become orphaned
+            if self.webui_manager is not None:
+                self.webui_manager.stop()
+            raise
 
         # Variables for UI instrumentation
         self.last_gradient_norm: float = 0.0

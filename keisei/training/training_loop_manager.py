@@ -152,14 +152,19 @@ class TrainingLoopManager:
                 # Execute step callbacks using centralized callback manager with error handling
                 self.trainer.callback_manager.execute_step_callbacks(self.trainer)
 
-                # TODO: Async callbacks are silently dropped in this sync path.
-                # If a caller registers async callbacks (via use_async_evaluation())
-                # and then enters run() instead of run_async(), those callbacks will
-                # never execute. Consider raising an error at the top of run() when
-                # async callbacks are registered, or bridging them with a dedicated
-                # thread-based event loop. Currently no production caller hits this
-                # because use_async_evaluation() is only enabled alongside run_async().
-                # See also: run_async() which properly awaits async callbacks.
+                # Bridge async callbacks into this synchronous path so that
+                # features like async evaluation work even when the caller
+                # enters run() instead of run_async().
+                if self.trainer.callback_manager.has_async_callbacks():
+                    async_metrics = asyncio.run(
+                        self.trainer.callback_manager.execute_step_callbacks_async(
+                            self.trainer
+                        )
+                    )
+                    if async_metrics:
+                        self.trainer.metrics_manager.pending_progress_updates.update(
+                            async_metrics
+                        )
 
         except KeyboardInterrupt:
             log_both(
