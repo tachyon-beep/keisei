@@ -1,8 +1,9 @@
 """
 Streamlit dashboard for Keisei training visualization.
 
-Standalone app — imports NO keisei code. Reads JSON state from a file
-written atomically by the training thread.
+Reads JSON state from a file written atomically by the training thread.
+All state access goes through ``EnvelopeParser`` — rendering functions
+never access raw envelope keys directly.
 
 Usage:
     streamlit run keisei/webui/streamlit_app.py -- --state-file path/to/state.json
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
+
+from keisei.webui.envelope_parser import EnvelopeParser
 
 # ---------------------------------------------------------------------------
 # SVG piece cache — loaded once at import time
@@ -272,6 +275,35 @@ def render_buffer_bar(buffer_info: Optional[Dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_VIEW_LABELS: Dict[str, str] = {
+    "league": "League / Elo Rankings",
+    "lineage": "Model Lineage",
+    "skill_differential": "Skill Differential",
+    "model_profile": "Model Profile",
+}
+
+
+def render_optional_view_placeholders(env: EnvelopeParser) -> None:
+    """Show informative placeholders for missing optional views."""
+    missing = env.missing_optional_views()
+    if not missing:
+        return
+    with st.expander("Upcoming views (not yet available)", expanded=False):
+        for view in missing:
+            label = _VIEW_LABELS.get(view, view)
+            health = env.view_health(view)
+            st.caption(f"{label}  ({health})")
+
+
+def render_stale_warning(env: EnvelopeParser) -> None:
+    """Show a warning banner when the snapshot is stale."""
+    if env.is_stale():
+        age = int(env.age_seconds())
+        st.warning(
+            f"Training data is {age}s old — training may be paused or stopped."
+        )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Keisei Training Dashboard",
@@ -280,9 +312,9 @@ def main() -> None:
     )
 
     # Parse --state-file from Streamlit's extra args
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--state-file", default=None, help="Path to state JSON file")
-    args, _ = parser.parse_known_args()
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument("--state-file", default=None, help="Path to state JSON file")
+    args, _ = arg_parser.parse_known_args()
 
     state = load_state(args.state_file)
 
@@ -292,16 +324,15 @@ def main() -> None:
         st.rerun()
         return
 
-    # Stale detection
-    ts = state.get("timestamp", 0)
-    age = time.time() - ts
-    if age > 30:
-        st.warning(f"Training data is {int(age)}s old — training may be paused or stopped.")
+    # Parse envelope — all access goes through the parser from here
+    env = EnvelopeParser(state)
 
-    metrics = state.get("metrics", {})
-    board_state = state.get("board_state")
-    step_info = state.get("step_info")
-    buffer_info = state.get("buffer_info")
+    render_stale_warning(env)
+
+    metrics = env.metrics
+    board_state = env.board_state
+    step_info = env.step_info
+    buffer_info = env.buffer_info
 
     # --- Header metrics ---
     st.title("Keisei Training Dashboard")
@@ -316,7 +347,7 @@ def main() -> None:
         wr = f"{bw / total * 100:.1f}%" if total > 0 else "—"
         st.metric("Black Win Rate", wr)
     with c4:
-        st.metric("Speed", f"{state.get('speed', 0):.0f} steps/s")
+        st.metric("Speed", f"{env.speed:.0f} steps/s")
 
     # --- Processing indicator ---
     if metrics.get("processing"):
@@ -352,6 +383,9 @@ def main() -> None:
     with lower2:
         render_win_rate_chart(metrics)
         render_buffer_bar(buffer_info)
+
+    # --- Optional views (not yet populated in v1) ---
+    render_optional_view_placeholders(env)
 
     # --- Auto-refresh ---
     time.sleep(2)
