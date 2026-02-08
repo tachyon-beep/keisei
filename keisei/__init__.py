@@ -8,10 +8,6 @@ This package contains:
 - Training utilities
 """
 
-# Import the new evaluation manager. Legacy evaluation entrypoints are
-# available via ``keisei.evaluation.evaluate`` but are not imported here to
-# avoid heavy dependencies (e.g. ``torch``) when the top-level package is
-# imported during lightweight operations such as running unit tests.
 from .evaluation.core_manager import EvaluationManager
 
 # Re-export the main components for easy access

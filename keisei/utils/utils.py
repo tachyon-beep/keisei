@@ -135,6 +135,7 @@ def load_config(
             "evaluation",
             "logging",
             "wandb",
+            "webui",
             "demo",
             "parallel",
             "display",
@@ -550,7 +551,7 @@ class EvaluationLogger:
             self.log_file.flush()
 
         if self.also_stdout:
-            log_error_to_stderr("EvaluationLogger", full_message)
+            log_info_to_stderr("EvaluationLogger", full_message)
 
 
 def generate_run_name(config: "AppConfig", run_name: Optional[str] = None) -> str:

@@ -54,7 +54,7 @@ class Trainer:
         self.action_space_size = 0
         self.obs_space_shape = ()
         self.log_both: Optional[Callable] = None
-        self.resumed_from_checkpoint = False
+        self.resumed_from_checkpoint: Optional[str] = None
 
         # Initialize device
         self.device = torch.device(config.env.device)
@@ -456,26 +456,3 @@ class Trainer:
                 finally:
                     self._finalize_training(self.log_both)
 
-    def _handle_checkpoint_resume(self):
-        """
-        Handle checkpoint resume for backward compatibility.
-
-        This method delegates to SetupManager for consistency with the refactored architecture.
-        """
-        if not self.agent:
-            raise RuntimeError("Agent not initialized before _handle_checkpoint_resume")
-
-        # Delegate to SetupManager
-        result = self.setup_manager.handle_checkpoint_resume(
-            self.model_manager,
-            self.agent,
-            self.model_dir,
-            self.args.resume,
-            self.metrics_manager,
-            self.logger,
-        )
-
-        # Update trainer's state to match the result
-        self.resumed_from_checkpoint = result
-
-        return result

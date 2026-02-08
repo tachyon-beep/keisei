@@ -2,17 +2,14 @@
 setup_manager.py: Handles complex initialization and setup logic for the Trainer class.
 """
 
-import sys
 from datetime import datetime
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 import torch
 
 from keisei.config_schema import AppConfig
-from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.experience_buffer import ExperienceBuffer
 from keisei.core.ppo_agent import PPOAgent
-from keisei.utils import TrainingLogger
 from keisei.utils.unified_logger import log_error_to_stderr
 
 from .step_manager import StepManager
@@ -61,9 +58,9 @@ class SetupManager:
             return game, policy_output_mapper, action_space_size, obs_space_shape
 
         except (RuntimeError, ValueError, OSError) as e:
-            print(
+            log_error_to_stderr(
+                "SetupManager",
                 f"Error initializing game components: {e}. Aborting.",
-                file=sys.stderr,
             )
             raise RuntimeError(f"Failed to initialize game components: {e}") from e
 
