@@ -94,7 +94,10 @@ class EnvelopeParser:
 
     def view_health(self, view: str) -> str:
         """Health status for *view*, defaulting to ``'missing'``."""
-        return self.health.get(view, "missing")
+        h = self.health
+        if not isinstance(h, dict):
+            return "missing"
+        return h.get(view, "missing")
 
     def is_stale(self, threshold: float = STALE_THRESHOLD_SECONDS) -> bool:
         """True when the snapshot is older than *threshold* seconds."""
