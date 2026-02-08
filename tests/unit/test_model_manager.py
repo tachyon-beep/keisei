@@ -751,3 +751,356 @@ class TestLoggerFunction:
             logger_func=messages.append,
         )
         assert len(messages) > 0
+
+
+# ===========================================================================
+# SAVE: save_checkpoint()
+# ===========================================================================
+
+
+class TestSaveCheckpoint:
+    """save_checkpoint() saves periodic checkpoints to filesystem."""
+
+    def test_saves_checkpoint_file(self, manager, tmp_path):
+        """Saves checkpoint with correct filename pattern."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        success, path = manager.save_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            timestep=500,
+            episode_count=10,
+            stats={"black_wins": 5, "white_wins": 3, "draws": 2},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is True
+        assert path is not None
+        assert "checkpoint_ts500.pth" in path
+        mock_agent.save_model.assert_called_once()
+
+    def test_skips_when_already_exists(self, manager, tmp_path):
+        """Skips save when checkpoint file already exists."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+        existing = os.path.join(model_dir, "checkpoint_ts500.pth")
+        with open(existing, "w") as f:
+            f.write("existing")
+
+        mock_agent = MagicMock()
+        success, path = manager.save_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            timestep=500,
+            episode_count=10,
+            stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is True
+        assert path == existing
+        mock_agent.save_model.assert_not_called()
+
+    def test_skips_when_timestep_zero(self, manager, tmp_path):
+        """Skips save for timestep <= 0."""
+        mock_agent = MagicMock()
+        success, path = manager.save_checkpoint(
+            agent=mock_agent,
+            model_dir=str(tmp_path),
+            timestep=0,
+            episode_count=0,
+            stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is False
+        assert path is None
+
+    def test_returns_false_on_save_error(self, manager, tmp_path):
+        """Returns (False, None) when agent.save_model raises."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        mock_agent.save_model.side_effect = OSError("disk full")
+
+        success, path = manager.save_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            timestep=500,
+            episode_count=10,
+            stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is False
+        assert path is None
+
+
+# ===========================================================================
+# SAVE: save_final_model()
+# ===========================================================================
+
+
+class TestSaveFinalModel:
+    """save_final_model() saves the final trained model."""
+
+    def test_saves_final_model(self, manager, tmp_path):
+        """Saves model to final_model.pth."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        success, path = manager.save_final_model(
+            agent=mock_agent,
+            model_dir=model_dir,
+            global_timestep=1000,
+            total_episodes_completed=100,
+            game_stats={"black_wins": 40, "white_wins": 35, "draws": 25},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is True
+        assert path is not None
+        assert "final_model.pth" in path
+        mock_agent.save_model.assert_called_once()
+
+    def test_returns_false_on_save_error(self, manager, tmp_path):
+        """Returns (False, None) when save_model raises."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        mock_agent.save_model.side_effect = RuntimeError("save failed")
+
+        success, path = manager.save_final_model(
+            agent=mock_agent,
+            model_dir=model_dir,
+            global_timestep=1000,
+            total_episodes_completed=100,
+            game_stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is False
+        assert path is None
+
+
+# ===========================================================================
+# SAVE: save_final_checkpoint()
+# ===========================================================================
+
+
+class TestSaveFinalCheckpoint:
+    """save_final_checkpoint() saves a final checkpoint with game stats."""
+
+    def test_saves_final_checkpoint(self, manager, tmp_path):
+        """Saves final checkpoint to filesystem."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        success, path = manager.save_final_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            global_timestep=1000,
+            total_episodes_completed=100,
+            game_stats={"black_wins": 40, "white_wins": 35, "draws": 25},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is True
+        assert path is not None
+        assert "checkpoint_ts1000.pth" in path
+
+    def test_skips_when_already_exists(self, manager, tmp_path):
+        """Returns existing path when checkpoint already exists."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+        existing = os.path.join(model_dir, "checkpoint_ts1000.pth")
+        with open(existing, "w") as f:
+            f.write("existing")
+
+        mock_agent = MagicMock()
+        success, path = manager.save_final_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            global_timestep=1000,
+            total_episodes_completed=100,
+            game_stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is True
+        assert path == existing
+        mock_agent.save_model.assert_not_called()
+
+    def test_skips_when_timestep_zero(self, manager, tmp_path):
+        """Returns (False, None) for timestep 0."""
+        mock_agent = MagicMock()
+        success, path = manager.save_final_checkpoint(
+            agent=mock_agent,
+            model_dir=str(tmp_path),
+            global_timestep=0,
+            total_episodes_completed=0,
+            game_stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is False
+        assert path is None
+
+    def test_returns_false_on_save_error(self, manager, tmp_path):
+        """Returns (False, None) when save_model raises."""
+        model_dir = str(tmp_path / "models")
+        os.makedirs(model_dir, exist_ok=True)
+
+        mock_agent = MagicMock()
+        mock_agent.save_model.side_effect = OSError("write failed")
+
+        success, path = manager.save_final_checkpoint(
+            agent=mock_agent,
+            model_dir=model_dir,
+            global_timestep=1000,
+            total_episodes_completed=100,
+            game_stats={},
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert success is False
+        assert path is None
+
+
+# ===========================================================================
+# ARTIFACT: create_model_artifact()
+# ===========================================================================
+
+
+class TestCreateModelArtifact:
+    """create_model_artifact() creates WandB artifacts."""
+
+    def test_creates_artifact_when_wandb_active(self, manager, tmp_path):
+        """Creates and logs artifact when WandB is active."""
+        import wandb
+
+        model_path = str(tmp_path / "model.pth")
+        with open(model_path, "w") as f:
+            f.write("model data")
+
+        mock_artifact = MagicMock()
+        with patch.object(wandb, "run", MagicMock()), \
+             patch.object(wandb, "Artifact", return_value=mock_artifact), \
+             patch.object(wandb, "log_artifact"):
+            result = manager.create_model_artifact(
+                model_path=model_path,
+                artifact_name="test-model",
+                run_name="test_run",
+                is_wandb_active=True,
+            )
+
+        assert result is True
+        mock_artifact.add_file.assert_called_once_with(model_path)
+
+    def test_noop_when_wandb_inactive(self, manager, tmp_path):
+        """Returns False when WandB is not active."""
+        model_path = str(tmp_path / "model.pth")
+        with open(model_path, "w") as f:
+            f.write("model data")
+
+        result = manager.create_model_artifact(
+            model_path=model_path,
+            artifact_name="test-model",
+            run_name="test_run",
+            is_wandb_active=False,
+        )
+
+        assert result is False
+
+    def test_returns_false_for_missing_file(self, manager, tmp_path):
+        """Returns False when model file does not exist."""
+        import wandb
+
+        with patch.object(wandb, "run", MagicMock()):
+            result = manager.create_model_artifact(
+                model_path=str(tmp_path / "nonexistent.pth"),
+                artifact_name="test-model",
+                run_name="test_run",
+                is_wandb_active=True,
+            )
+
+        assert result is False
+
+    def test_handles_wandb_error(self, manager, tmp_path):
+        """Returns False when WandB raises an error."""
+        import wandb
+
+        model_path = str(tmp_path / "model.pth")
+        with open(model_path, "w") as f:
+            f.write("model data")
+
+        with patch.object(wandb, "run", MagicMock()), \
+             patch.object(wandb, "Artifact", side_effect=RuntimeError("wandb error")):
+            result = manager.create_model_artifact(
+                model_path=model_path,
+                artifact_name="test-model",
+                run_name="test_run",
+                is_wandb_active=True,
+            )
+
+        assert result is False
+
+
+# ===========================================================================
+# BENCHMARK: benchmark_model_performance()
+# ===========================================================================
+
+
+class TestBenchmarkModelPerformance:
+    """benchmark_model_performance() returns timing stats or None."""
+
+    def test_returns_none_when_no_benchmarker(self, manager):
+        """Returns None when benchmarker is not available."""
+        manager.benchmarker = None
+
+        result = manager.benchmark_model_performance()
+        assert result is None
+
+    def test_returns_none_when_no_model(self, manager):
+        """Returns None when no model available for benchmarking."""
+        manager.benchmarker = MagicMock()
+        manager.model = None
+
+        result = manager.benchmark_model_performance()
+        assert result is None
+
+    def test_returns_stats_dict(self, manager):
+        """Returns stats dict when benchmarker and model are available."""
+        mock_benchmarker = MagicMock()
+        mock_result = MagicMock()
+        mock_result.mean_time_ms = 1.5
+        mock_result.std_time_ms = 0.1
+        mock_result.memory_peak_mb = 100.0
+        mock_result.device = "cpu"
+        mock_result.num_iterations = 100
+        mock_benchmarker.benchmark_model.return_value = mock_result
+        manager.benchmarker = mock_benchmarker
+        manager.model = MagicMock()
+
+        result = manager.benchmark_model_performance(num_iterations=50)
+
+        assert result is not None
+        assert result["mean_time_ms"] == 1.5
+        assert result["std_time_ms"] == 0.1
+        assert result["compiled"] == manager.model_is_compiled
