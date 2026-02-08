@@ -3,7 +3,10 @@ Core Shogi game rules, move generation, and validation logic.
 Functions in this module operate on a ShogiGame instance.
 """
 
-from typing import TYPE_CHECKING, List, Optional, Set, Tuple  # Added Set
+import logging
+from typing import TYPE_CHECKING, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Ensure all necessary types are imported:
 from .shogi_core_definitions import (
@@ -47,8 +50,9 @@ def is_in_check(
                 sfen_str = game.to_sfen_string()
             except Exception:  # pylint: disable=broad-except
                 pass  # Keep sfen_str as unavailable
-            print(
-                f"DEBUG_IS_IN_CHECK: King of color {player_color} not found. Game state (SFEN): {sfen_str}. Returning True (check)."
+            logger.debug(
+                "King of color %s not found. Game state (SFEN): %s. Returning True (check).",
+                player_color, sfen_str,
             )
         return (
             True  # King not found implies a lost/invalid state, effectively in check.
@@ -57,8 +61,9 @@ def is_in_check(
     opponent_color: Color = Color.WHITE if player_color == Color.BLACK else Color.BLACK
 
     if debug_recursion:
-        print(
-            f"DEBUG_IS_IN_CHECK: [{player_color}] King at {king_pos}. Checking if attacked by {opponent_color}. Debug on."
+        logger.debug(
+            "[%s] King at %s. Checking if attacked by %s.",
+            player_color, king_pos, opponent_color,
         )
         # Detailed print for attack check will come from check_if_square_is_attacked
 
@@ -242,18 +247,19 @@ def check_if_square_is_attacked(
     Checks if the square (r_target, c_target) is attacked by any piece of attacker_color.
     """  # Corrected string literal
     if debug:
-        print(
-            f"DEBUG_CHECK_SQ_ATTACKED: Checking if ({r_target},{c_target}) is attacked by {attacker_color}"
+        logger.debug(
+            "Checking if (%d,%d) is attacked by %s. SFEN: %s",
+            r_target, c_target, attacker_color, game.to_sfen_string(),
         )
-        print(f"DEBUG_CHECK_SQ_ATTACKED: Game state for check: {game.to_sfen_string()}")
 
     for r_attacker in range(9):
         for c_attacker in range(9):
             piece = game.get_piece(r_attacker, c_attacker)
             if piece and piece.color == attacker_color:
                 if debug:
-                    print(
-                        f"DEBUG_CHECK_SQ_ATTACKED: Checking attacker {piece.type.name} ({piece.color.name}) at ({r_attacker},{c_attacker}) against target ({r_target},{c_target})"
+                    logger.debug(
+                        "Checking attacker %s (%s) at (%d,%d) against target (%d,%d)",
+                        piece.type.name, piece.color.name, r_attacker, c_attacker, r_target, c_target,
                     )
 
                 potential_moves_of_attacker = generate_piece_potential_moves(
@@ -261,13 +267,16 @@ def check_if_square_is_attacked(
                 )
                 if (r_target, c_target) in potential_moves_of_attacker:
                     if debug:
-                        print(
-                            f"DEBUG_CHECK_SQ_ATTACKED: ***ASSERTION TRIGGER*** YES, {piece.type.name} ({piece.color.name}) at ({r_attacker},{c_attacker}) attacks target ({r_target},{c_target}). Attacker potential moves: {potential_moves_of_attacker}. Game SFEN: {game.to_sfen_string()}"
+                        logger.debug(
+                            "YES, %s (%s) at (%d,%d) attacks target (%d,%d). SFEN: %s",
+                            piece.type.name, piece.color.name, r_attacker, c_attacker,
+                            r_target, c_target, game.to_sfen_string(),
                         )
                     return True
     if debug:
-        print(
-            f"DEBUG_CHECK_SQ_ATTACKED: NO, ({r_target},{c_target}) is NOT attacked by {attacker_color}"
+        logger.debug(
+            "NO, (%d,%d) is NOT attacked by %s",
+            r_target, c_target, attacker_color,
         )
     return False
 

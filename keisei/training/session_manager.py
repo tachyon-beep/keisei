@@ -12,7 +12,6 @@ This module handles session-level concerns including:
 
 import os
 import re
-import sys
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
@@ -442,7 +441,7 @@ class SessionManager:
         """Finalize the training session."""
         if self._is_wandb_active and wandb.run:
             try:
-                # Fix B5: Use cross-platform threading.Timer instead of POSIX signal
+                # Use cross-platform threading.Timer instead of POSIX signal
                 import threading
 
                 timeout_occurred = threading.Event()

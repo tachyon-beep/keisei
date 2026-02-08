@@ -1,9 +1,7 @@
 # shogi_game_io.py
 
 import datetime  # For KIF Date header
-import os
-import re  # Import the re module
-import sys
+import re
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -31,7 +29,6 @@ from .shogi_core_definitions import (  # Observation plane constants
     get_unpromoted_types,
 )
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 if TYPE_CHECKING:
     from .shogi_game import ShogiGame  # For type hinting the 'game' parameter
