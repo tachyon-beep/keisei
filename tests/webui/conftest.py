@@ -4,7 +4,6 @@ Fixtures here provide canonical v1 broadcast envelope payloads — both valid
 and intentionally invalid — for locking schema behaviour.
 """
 
-import copy
 import time
 
 import pytest
@@ -146,9 +145,9 @@ def _make_invalid_non_scalar_pending():
 def _make_invalid_legacy_top_level_keys():
     """Invalid: legacy top-level key layout (pre-v1 snapshot shape).
 
-    This simulates the old build_snapshot() output where board_state,
-    metrics, etc. were top-level keys instead of nested under 'training'.
-    Used to verify that the contract rejects the old shape.
+    Simulates the current build_snapshot() output where board_state,
+    metrics, etc. are top-level keys with no wrapping 'training' key.
+    The validator should catch the missing 'training' required key.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -157,10 +156,8 @@ def _make_invalid_legacy_top_level_keys():
         "mode": "single_opponent",
         "active_views": ["training"],
         "health": make_health_map(training="ok"),
-        # WRONG: training should be a dict with sub-keys, not a string
-        "training": "not_a_dict",
         "pending_updates": {},
-        # These are legacy top-level keys that should be INSIDE training
+        # Legacy: sub-keys at top level instead of nested under 'training'
         "board_state": None,
         "metrics": {},
         "step_info": None,
@@ -169,13 +166,17 @@ def _make_invalid_legacy_top_level_keys():
     }
 
 
-def _make_invalid_mode_value():
-    """Invalid (structurally valid but semantically wrong mode).
+# ---------------------------------------------------------------------------
+# Edge-case payload factories (structurally valid)
+# ---------------------------------------------------------------------------
 
-    Note: validate_envelope() only checks that mode is a string, not
-    that it's a known BroadcastMode value.  This is intentional per the
-    spike: unknown modes must be treated as opaque strings.  This fixture
-    documents the edge case.
+
+def _make_envelope_unknown_mode():
+    """Envelope with an unknown mode value (structurally valid).
+
+    validate_envelope() only checks that mode is a string, not that it's
+    a known BroadcastMode value.  This is intentional per Decision Freeze
+    #6: unknown modes must be treated as opaque strings by renderers.
     """
     env = _make_valid_envelope()
     env["mode"] = "quantum_evaluation"
@@ -183,7 +184,7 @@ def _make_invalid_mode_value():
 
 
 # ---------------------------------------------------------------------------
-# Pytest fixtures
+# Pytest fixtures — valid envelopes
 # ---------------------------------------------------------------------------
 
 
@@ -205,6 +206,11 @@ def valid_envelope_training_only():
     return _make_valid_envelope_training_only_mode()
 
 
+# ---------------------------------------------------------------------------
+# Pytest fixtures — invalid envelopes (parametrised + individual)
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture(
     params=[
         ("missing_speed", _make_invalid_missing_speed),
@@ -224,3 +230,50 @@ def invalid_envelope(request):
     """
     name, factory = request.param
     return factory()
+
+
+@pytest.fixture
+def invalid_missing_speed():
+    """Invalid envelope: missing required 'speed' field."""
+    return _make_invalid_missing_speed()
+
+
+@pytest.fixture
+def invalid_missing_schema_version():
+    """Invalid envelope: missing required 'schema_version' field."""
+    return _make_invalid_missing_schema_version()
+
+
+@pytest.fixture
+def invalid_bad_health_status():
+    """Invalid envelope: unrecognised health status value."""
+    return _make_invalid_bad_health_status()
+
+
+@pytest.fixture
+def invalid_incomplete_health():
+    """Invalid envelope: health map missing view keys."""
+    return _make_invalid_incomplete_health()
+
+
+@pytest.fixture
+def invalid_non_scalar_pending():
+    """Invalid envelope: pending_updates contains non-scalar value."""
+    return _make_invalid_non_scalar_pending()
+
+
+@pytest.fixture
+def invalid_legacy_top_level_keys():
+    """Invalid envelope: legacy top-level key layout (pre-v1 shape)."""
+    return _make_invalid_legacy_top_level_keys()
+
+
+# ---------------------------------------------------------------------------
+# Pytest fixtures — edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def envelope_unknown_mode():
+    """Envelope with unknown mode value (valid per Decision Freeze #6)."""
+    return _make_envelope_unknown_mode()

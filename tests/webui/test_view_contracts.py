@@ -73,47 +73,33 @@ class TestInvalidEnvelope:
 class TestSpecificInvalidCases:
     """Targeted tests for specific contract violations."""
 
-    def test_missing_speed_detected(self):
-        from tests.webui.conftest import _make_invalid_missing_speed
-
-        errors = validate_envelope(_make_invalid_missing_speed())
+    def test_missing_speed_detected(self, invalid_missing_speed):
+        errors = validate_envelope(invalid_missing_speed)
         assert any("speed" in e for e in errors)
 
-    def test_missing_schema_version_detected(self):
-        from tests.webui.conftest import _make_invalid_missing_schema_version
-
-        errors = validate_envelope(_make_invalid_missing_schema_version())
+    def test_missing_schema_version_detected(self, invalid_missing_schema_version):
+        errors = validate_envelope(invalid_missing_schema_version)
         assert any("schema_version" in e for e in errors)
 
-    def test_bad_health_status_detected(self):
-        from tests.webui.conftest import _make_invalid_bad_health_status
-
-        errors = validate_envelope(_make_invalid_bad_health_status())
+    def test_bad_health_status_detected(self, invalid_bad_health_status):
+        errors = validate_envelope(invalid_bad_health_status)
         assert any("invalid status" in e for e in errors)
 
-    def test_incomplete_health_detected(self):
-        from tests.webui.conftest import _make_invalid_incomplete_health
-
-        errors = validate_envelope(_make_invalid_incomplete_health())
+    def test_incomplete_health_detected(self, invalid_incomplete_health):
+        errors = validate_envelope(invalid_incomplete_health)
         assert any("missing view key" in e for e in errors)
 
-    def test_non_scalar_pending_detected(self):
-        from tests.webui.conftest import _make_invalid_non_scalar_pending
-
-        errors = validate_envelope(_make_invalid_non_scalar_pending())
+    def test_non_scalar_pending_detected(self, invalid_non_scalar_pending):
+        errors = validate_envelope(invalid_non_scalar_pending)
         assert any("non-scalar" in e for e in errors)
 
-    def test_legacy_top_level_layout_detected(self):
-        from tests.webui.conftest import _make_invalid_legacy_top_level_keys
-
-        errors = validate_envelope(_make_invalid_legacy_top_level_keys())
+    def test_legacy_top_level_layout_detected(self, invalid_legacy_top_level_keys):
+        errors = validate_envelope(invalid_legacy_top_level_keys)
         assert any("training" in e for e in errors)
 
-    def test_unknown_mode_passes_validation(self):
+    def test_unknown_mode_passes_validation(self, envelope_unknown_mode):
         """Unknown mode strings are allowed per spike Decision Freeze #6."""
-        from tests.webui.conftest import _make_invalid_mode_value
-
-        errors = validate_envelope(_make_invalid_mode_value())
+        errors = validate_envelope(envelope_unknown_mode)
         assert errors == [], (
             "Unknown mode values must NOT cause validation failure — "
             "renderers must treat them as opaque strings"
