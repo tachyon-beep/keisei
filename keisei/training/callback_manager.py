@@ -2,8 +2,9 @@
 training/callback_manager.py: Manages training callbacks and their execution.
 """
 
-import asyncio
 from typing import TYPE_CHECKING, Any, List, Dict, Optional
+
+from keisei.utils.unified_logger import log_info_to_stderr
 
 from . import callbacks
 
@@ -39,10 +40,11 @@ class CallbackManager:
         # Align checkpoint interval with steps_per_epoch to ensure callbacks fire
         checkpoint_interval = self.config.training.checkpoint_interval_timesteps
         steps_per_epoch = self.config.training.steps_per_epoch
-        if checkpoint_interval % steps_per_epoch != 0:
+        if steps_per_epoch > 0 and checkpoint_interval % steps_per_epoch != 0:
             aligned = ((checkpoint_interval // steps_per_epoch) + 1) * steps_per_epoch
-            print(
-                f"[INFO] Adjusting checkpoint_interval_timesteps from {checkpoint_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}."
+            log_info_to_stderr(
+                "CallbackManager",
+                f"Adjusting checkpoint_interval_timesteps from {checkpoint_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}.",
             )
             checkpoint_interval = aligned
 
@@ -58,10 +60,11 @@ class CallbackManager:
             else getattr(self.config.training, "evaluation_interval_timesteps", 1000)
         )
 
-        if eval_interval % steps_per_epoch != 0:
+        if steps_per_epoch > 0 and eval_interval % steps_per_epoch != 0:
             aligned = ((eval_interval // steps_per_epoch) + 1) * steps_per_epoch
-            print(
-                f"[INFO] Adjusting evaluation_interval_timesteps from {eval_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}."
+            log_info_to_stderr(
+                "CallbackManager",
+                f"Adjusting evaluation_interval_timesteps from {eval_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}.",
             )
             eval_interval = aligned
 
@@ -89,10 +92,11 @@ class CallbackManager:
         )
 
         steps_per_epoch = self.config.training.steps_per_epoch
-        if eval_interval % steps_per_epoch != 0:
+        if steps_per_epoch > 0 and eval_interval % steps_per_epoch != 0:
             aligned = ((eval_interval // steps_per_epoch) + 1) * steps_per_epoch
-            print(
-                f"[INFO] Adjusting evaluation_interval_timesteps from {eval_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}."
+            log_info_to_stderr(
+                "CallbackManager",
+                f"Adjusting evaluation_interval_timesteps from {eval_interval} to {aligned} to align with steps_per_epoch {steps_per_epoch}.",
             )
             eval_interval = aligned
 
@@ -253,7 +257,7 @@ class CallbackManager:
             )
 
             steps_per_epoch = self.config.training.steps_per_epoch
-            if eval_interval % steps_per_epoch != 0:
+            if steps_per_epoch > 0 and eval_interval % steps_per_epoch != 0:
                 aligned = ((eval_interval // steps_per_epoch) + 1) * steps_per_epoch
                 eval_interval = aligned
 

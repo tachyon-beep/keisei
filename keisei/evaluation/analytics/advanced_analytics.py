@@ -21,6 +21,21 @@ from .performance_analyzer import PerformanceAnalyzer
 logger = logging.getLogger(__name__)
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON serializer for numpy types and other non-serializable objects."""
+    import numpy as np
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 @dataclass
 class StatisticalTest:
     """Result of a statistical significance test."""
@@ -277,8 +292,11 @@ class AdvancedAnalytics:
 
         is_significant = bool(p_value < self.significance_level)
 
-        # Effect size (Cohen's h)
-        effect_size = 2 * (math.asin(math.sqrt(p2)) - math.asin(math.sqrt(p1)))
+        # Effect size (Cohen's h) — clamp proportions to [0, 1] for valid asin
+        effect_size = 2 * (
+            math.asin(math.sqrt(max(0.0, min(1.0, p2))))
+            - math.asin(math.sqrt(max(0.0, min(1.0, p1))))
+        )
 
         interpretation = self._interpret_z_test(z_stat, p_value, is_significant)
 
@@ -515,7 +533,7 @@ class AdvancedAnalytics:
         if output_file:
             try:
                 with open(output_file, "w", encoding="utf-8") as f:
-                    json.dump(report, f, indent=4)
+                    json.dump(report, f, indent=4, default=_json_default)
                 logger.info("Analysis report saved to %s", output_file)
             except (OSError, IOError) as e:
                 logger.error("Failed to save report: %s", str(e))
