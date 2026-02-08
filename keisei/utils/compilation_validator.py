@@ -37,7 +37,7 @@ class CompilationResult:
         if self.success:
             perf_str = (
                 f", {self.performance_improvement:.2f}x speedup"
-                if self.performance_improvement
+                if self.performance_improvement is not None
                 else ""
             )
             return f"Compilation SUCCESS{perf_str}"
@@ -223,6 +223,7 @@ class CompilationValidator:
         sample_input: torch.Tensor,
     ) -> Tuple[bool, Dict[str, Any]]:
         """Validate that compiled model produces equivalent outputs."""
+        original_was_training = original_model.training
         try:
             original_model.eval()
             compiled_model.eval()
@@ -271,6 +272,9 @@ class CompilationValidator:
         except Exception as e:
             self.logger_func(f"Validation error: {str(e)}")
             return False, {"error": str(e)}
+        finally:
+            if original_was_training:
+                original_model.train()
 
     def _benchmark_compilation(
         self,

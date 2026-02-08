@@ -18,7 +18,6 @@ import warnings
 
 import torch
 import torch.nn as nn
-from torch.profiler import profile, ProfilerActivity
 
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 
@@ -144,6 +143,7 @@ class PerformanceBenchmarker:
         metadata = metadata or {}
 
         # Ensure model is in eval mode for consistent results
+        was_training = model.training
         model.eval()
 
         # Warmup phase
@@ -213,6 +213,10 @@ class PerformanceBenchmarker:
             model_type=model_type,
             metadata=metadata,
         )
+
+        # Restore original training mode
+        if was_training:
+            model.train()
 
         self.results[name] = result
         self.logger_func(f"Completed {name}: {result}")

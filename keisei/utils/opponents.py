@@ -71,7 +71,7 @@ class SimpleHeuristicOpponent(BaseOpponent):
                         is_pawn_move_no_promo = True
             if is_capture:
                 capturing_moves.append(move_tuple)
-            if is_pawn_move_no_promo:
+            elif is_pawn_move_no_promo:
                 non_promoting_pawn_moves.append(move_tuple)
             else:
                 other_moves.append(move_tuple)
