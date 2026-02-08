@@ -156,11 +156,7 @@ class TrainingLoopManager:
                 # features like async evaluation work even when the caller
                 # enters run() instead of run_async().
                 if self.trainer.callback_manager.has_async_callbacks():
-                    async_metrics = asyncio.run(
-                        self.trainer.callback_manager.execute_step_callbacks_async(
-                            self.trainer
-                        )
-                    )
+                    async_metrics = self._run_async_callbacks()
                     if async_metrics:
                         self.trainer.metrics_manager.pending_progress_updates.update(
                             async_metrics
@@ -280,6 +276,29 @@ class TrainingLoopManager:
                 log_info_to_stderr("TrainingLoopManager", log_message)
             log_both(f"Training error in async training loop: {e}", also_to_wandb=True)
             raise
+
+    def _run_async_callbacks(self) -> Optional[Dict[str, Any]]:
+        """Execute async callbacks, handling both standalone and nested event-loop contexts.
+
+        When ``run()`` is called from within an already-running event loop
+        (e.g. async host/service integration), ``asyncio.run()`` would raise
+        ``RuntimeError``.  In that case we offload the coroutine to a worker
+        thread where a fresh event loop can be created safely.
+        """
+        coro = self.trainer.callback_manager.execute_step_callbacks_async(
+            self.trainer
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run()
+            return asyncio.run(coro)
+
+        # Running inside an existing event loop; execute in a separate thread.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
     def _run_epoch(self, log_both):
         """

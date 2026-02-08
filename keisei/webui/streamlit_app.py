@@ -68,7 +68,13 @@ _SAMPLE_STATE_PATH = Path(__file__).parent / "sample_state.json"
 
 
 def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Load state from JSON file, with fallback to sample data."""
+    """Load state from JSON file, with fallback to sample data.
+
+    When *state_file* is explicitly provided but the file does not exist yet
+    (e.g. training hasn't written its first snapshot), ``None`` is returned so
+    the caller can display a "waiting" message rather than misleading demo data.
+    Demo / sample data is only used when no *state_file* was requested at all.
+    """
     path = Path(state_file) if state_file else None
 
     if path and path.exists():
@@ -78,7 +84,12 @@ def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             return None
 
-    # Demo mode: use sample state
+    # An explicit state-file was given but not (yet) present — do not fall
+    # back to demo data as that would display fabricated metrics.
+    if path is not None:
+        return None
+
+    # Demo mode (no --state-file): use sample state
     if _SAMPLE_STATE_PATH.exists():
         with open(_SAMPLE_STATE_PATH) as f:
             return json.load(f)

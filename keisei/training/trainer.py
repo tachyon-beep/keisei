@@ -78,35 +78,35 @@ class Trainer:
         self.display_manager = DisplayManager(config, self.log_file_path)
         self.logger = TrainingLogger(self.log_file_path, also_stdout=False)
 
-        # Initialize WebUI manager if enabled
+        # Initialize WebUI manager if enabled.  The outer try/except ensures
+        # the Streamlit subprocess is stopped on *any* later init failure.
         self.webui_manager = None
-        if config.webui.enabled:
-            try:
-                from keisei.webui.streamlit_manager import (
-                    STREAMLIT_AVAILABLE,
-                    StreamlitManager,
-                )
-
-                if STREAMLIT_AVAILABLE:
-                    self.webui_manager = StreamlitManager(config.webui)
-                    if self.webui_manager.start():
-                        self.logger.log(
-                            f"Streamlit dashboard launched on "
-                            f"http://{config.webui.host}:{config.webui.port}"
-                        )
-                    else:
-                        self.logger.log("Failed to start Streamlit dashboard")
-                        self.webui_manager = None
-                else:
-                    self.logger.log(
-                        "Streamlit not available. Install 'streamlit' to enable the dashboard."
-                    )
-            except ImportError as e:
-                self.logger.log(f"WebUI not available: {e}")
-                self.webui_manager = None
-        # All remaining initialization is wrapped so we can clean up the
-        # Streamlit subprocess if anything fails after it was launched.
         try:
+            if config.webui.enabled:
+                try:
+                    from keisei.webui.streamlit_manager import (
+                        STREAMLIT_AVAILABLE,
+                        StreamlitManager,
+                    )
+
+                    if STREAMLIT_AVAILABLE:
+                        self.webui_manager = StreamlitManager(config.webui)
+                        if self.webui_manager.start():
+                            self.logger.log(
+                                f"Streamlit dashboard launched on "
+                                f"http://{config.webui.host}:{config.webui.port}"
+                            )
+                        else:
+                            self.logger.log("Failed to start Streamlit dashboard")
+                            self.webui_manager = None
+                    else:
+                        self.logger.log(
+                            "Streamlit not available. Install 'streamlit' to enable the dashboard."
+                        )
+                except ImportError as e:
+                    self.logger.log(f"WebUI not available: {e}")
+                    self.webui_manager = None
+
             self.model_manager = ModelManager(config, args, self.device, self.logger.log)
             self.env_manager = EnvManager(config, self.logger.log)
             self.metrics_manager = MetricsManager(
