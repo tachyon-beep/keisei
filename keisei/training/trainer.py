@@ -14,6 +14,7 @@ from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.experience_buffer import ExperienceBuffer
 from keisei.core.ppo_agent import PPOAgent
 from keisei.evaluation.enhanced_manager import EnhancedEvaluationManager
+from keisei.lineage.registry import LineageRegistry
 from keisei.utils import TrainingLogger
 
 from .callback_manager import CallbackManager
@@ -108,6 +109,20 @@ class Trainer:
                     self.webui_manager = None
 
             self.model_manager = ModelManager(config, args, self.device, self.logger.log)
+
+            # Wire lineage registry if enabled
+            self.lineage_registry = None
+            if config.lineage.enabled:
+                lineage_path = config.lineage.storage_path
+                if lineage_path is None:
+                    lineage_path = str(
+                        Path(self.model_dir) / "lineage.jsonl"
+                    )
+                self.lineage_registry = LineageRegistry(Path(lineage_path))
+                self.model_manager.set_lineage_registry(
+                    self.lineage_registry, self.run_name
+                )
+
             self.env_manager = EnvManager(config, self.logger.log)
             self.metrics_manager = MetricsManager(
                 history_size=config.display.trend_history_length,
@@ -215,6 +230,17 @@ class Trainer:
             self.metrics_manager,
             self.logger,
         )
+
+        # Emit lineage lifecycle event
+        if self.resumed_from_checkpoint:
+            global_ts = self.metrics_manager.global_timestep
+            self.model_manager._emit_training_resumed(
+                self.resumed_from_checkpoint, global_ts
+            )
+        else:
+            self.model_manager._emit_training_started(
+                self.config.model_dump()
+            )
 
     def _initialize_game_state(self, log_both) -> EpisodeState:
         """Initialize the game state for training using EnvManager."""
