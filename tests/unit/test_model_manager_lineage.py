@@ -5,7 +5,6 @@ Validates that checkpoint saves, training start, and training resume
 correctly emit lineage events through the registry.
 """
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -322,7 +321,7 @@ class TestTrainingLifecycleEvents:
     def test_emit_training_started(self, tmp_path):
         mm, registry, _ = _make_model_manager(tmp_path)
 
-        mm._emit_training_started({"learning_rate": 0.001})
+        mm.emit_training_started({"learning_rate": 0.001})
 
         assert registry.event_count == 1
         event = registry.load_all()[0]
@@ -333,7 +332,7 @@ class TestTrainingLifecycleEvents:
     def test_emit_training_resumed(self, tmp_path):
         mm, registry, _ = _make_model_manager(tmp_path)
 
-        mm._emit_training_resumed("/tmp/checkpoint_ts5000.pth", 5000)
+        mm.emit_training_resumed("/tmp/checkpoint_ts5000.pth", 5000)
 
         assert registry.event_count == 1
         event = registry.load_all()[0]
@@ -346,8 +345,8 @@ class TestTrainingLifecycleEvents:
         """Lifecycle events are silently skipped when no registry is wired."""
         mm, _, _ = _make_model_manager(tmp_path, lineage_enabled=False)
         # These should not raise
-        mm._emit_training_started({"lr": 0.01})
-        mm._emit_training_resumed("/tmp/ckpt.pth", 100)
+        mm.emit_training_started({"lr": 0.01})
+        mm.emit_training_resumed("/tmp/ckpt.pth", 100)
 
 
 # ---------------------------------------------------------------------------

@@ -234,11 +234,11 @@ class Trainer:
         # Emit lineage lifecycle event
         if self.resumed_from_checkpoint:
             global_ts = self.metrics_manager.global_timestep
-            self.model_manager._emit_training_resumed(
+            self.model_manager.emit_training_resumed(
                 self.resumed_from_checkpoint, global_ts
             )
         else:
-            self.model_manager._emit_training_started(
+            self.model_manager.emit_training_started(
                 self.config.model_dump()
             )
 

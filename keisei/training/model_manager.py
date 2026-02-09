@@ -202,7 +202,7 @@ class ModelManager:
         except ValueError as exc:
             _lineage_logger.warning("Failed to emit lineage event: %s", exc)
 
-    def _emit_training_started(self, config_snapshot: Dict[str, Any]) -> None:
+    def emit_training_started(self, config_snapshot: Dict[str, Any]) -> None:
         """Emit a ``training_started`` lineage event for a fresh run."""
         if self._lineage_registry is None or self._run_name is None:
             return
@@ -223,7 +223,7 @@ class ModelManager:
         except ValueError as exc:
             _lineage_logger.warning("Failed to emit lineage event: %s", exc)
 
-    def _emit_training_resumed(
+    def emit_training_resumed(
         self, checkpoint_path: str, global_timestep: int
     ) -> None:
         """Emit a ``training_resumed`` lineage event after loading a checkpoint."""
