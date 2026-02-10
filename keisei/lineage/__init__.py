@@ -20,6 +20,7 @@ from keisei.lineage.event_schema import (
     make_model_id,
     validate_event,
 )
+from keisei.lineage.graph import LineageGraph, MatchRecord, ModelNode, PromotionRecord
 from keisei.lineage.registry import LineageRegistry
 
 __all__ = [
@@ -37,4 +38,8 @@ __all__ = [
     "make_model_id",
     "validate_event",
     "LineageRegistry",
+    "LineageGraph",
+    "ModelNode",
+    "MatchRecord",
+    "PromotionRecord",
 ]
