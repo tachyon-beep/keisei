@@ -223,6 +223,68 @@ class ModelManager:
         except ValueError as exc:
             _lineage_logger.warning("Failed to emit lineage event: %s", exc)
 
+    def emit_match_completed(
+        self,
+        opponent_model_id: str,
+        result: str,
+        num_games: int,
+        win_rate: float,
+        agent_rating: float,
+        opponent_rating: float,
+        global_timestep: int,
+    ) -> None:
+        """Emit a ``match_completed`` lineage event after an evaluation match set."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="match_completed",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "opponent_model_id": opponent_model_id,
+                "result": result,
+                "num_games": num_games,
+                "win_rate": win_rate,
+                "agent_rating": agent_rating,
+                "opponent_rating": opponent_rating,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
+    def emit_model_promoted(
+        self,
+        from_rating: float,
+        to_rating: float,
+        promotion_reason: str,
+        global_timestep: int,
+    ) -> None:
+        """Emit a ``model_promoted`` lineage event when a rating improvement occurs."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="model_promoted",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "from_rating": from_rating,
+                "to_rating": to_rating,
+                "promotion_reason": promotion_reason,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
     def emit_training_resumed(
         self, checkpoint_path: str, global_timestep: int
     ) -> None:

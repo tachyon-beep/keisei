@@ -1,8 +1,8 @@
 """
 Tests for lineage event emission in ModelManager.
 
-Validates that checkpoint saves, training start, and training resume
-correctly emit lineage events through the registry.
+Validates that checkpoint saves, training start/resume, match completion,
+and model promotion correctly emit lineage events through the registry.
 """
 
 from pathlib import Path
@@ -347,6 +347,182 @@ class TestTrainingLifecycleEvents:
         # These should not raise
         mm.emit_training_started({"lr": 0.01})
         mm.emit_training_resumed("/tmp/ckpt.pth", 100)
+
+
+# ---------------------------------------------------------------------------
+# match_completed emission
+# ---------------------------------------------------------------------------
+
+
+class TestMatchCompletedEmission:
+    def test_emit_match_completed(self, tmp_path):
+        mm, registry, _ = _make_model_manager(tmp_path)
+
+        mm.emit_match_completed(
+            opponent_model_id="opponent_ts5000",
+            result="win",
+            num_games=20,
+            win_rate=0.65,
+            agent_rating=1520.0,
+            opponent_rating=1500.0,
+            global_timestep=10000,
+        )
+
+        assert registry.event_count == 1
+        event = registry.load_all()[0]
+        assert event["event_type"] == "match_completed"
+        assert event["payload"]["opponent_model_id"] == "opponent_ts5000"
+        assert event["payload"]["result"] == "win"
+        assert event["payload"]["num_games"] == 20
+        assert event["payload"]["win_rate"] == 0.65
+        assert event["payload"]["agent_rating"] == 1520.0
+        assert event["payload"]["opponent_rating"] == 1500.0
+        assert validate_event(event) == []
+
+    def test_emit_match_completed_loss(self, tmp_path):
+        mm, registry, _ = _make_model_manager(tmp_path)
+
+        mm.emit_match_completed(
+            opponent_model_id="strong_opponent",
+            result="loss",
+            num_games=10,
+            win_rate=0.2,
+            agent_rating=1480.0,
+            opponent_rating=1600.0,
+            global_timestep=20000,
+        )
+
+        event = registry.load_all()[0]
+        assert event["payload"]["result"] == "loss"
+        assert event["payload"]["win_rate"] == 0.2
+
+    def test_emit_match_completed_draw(self, tmp_path):
+        mm, registry, _ = _make_model_manager(tmp_path)
+
+        mm.emit_match_completed(
+            opponent_model_id="equal_opponent",
+            result="draw",
+            num_games=50,
+            win_rate=0.5,
+            agent_rating=1500.0,
+            opponent_rating=1500.0,
+            global_timestep=30000,
+        )
+
+        event = registry.load_all()[0]
+        assert event["payload"]["result"] == "draw"
+        assert event["model_id"] == "test-run::checkpoint_ts30000"
+
+    def test_no_emission_without_registry(self, tmp_path):
+        mm, _, _ = _make_model_manager(tmp_path, lineage_enabled=False)
+        # Should not raise
+        mm.emit_match_completed(
+            opponent_model_id="opp",
+            result="win",
+            num_games=10,
+            win_rate=0.7,
+            agent_rating=1500.0,
+            opponent_rating=1500.0,
+            global_timestep=5000,
+        )
+
+
+# ---------------------------------------------------------------------------
+# model_promoted emission
+# ---------------------------------------------------------------------------
+
+
+class TestModelPromotedEmission:
+    def test_emit_model_promoted(self, tmp_path):
+        mm, registry, _ = _make_model_manager(tmp_path)
+
+        mm.emit_model_promoted(
+            from_rating=1500.0,
+            to_rating=1532.0,
+            promotion_reason="elo_improvement",
+            global_timestep=15000,
+        )
+
+        assert registry.event_count == 1
+        event = registry.load_all()[0]
+        assert event["event_type"] == "model_promoted"
+        assert event["payload"]["from_rating"] == 1500.0
+        assert event["payload"]["to_rating"] == 1532.0
+        assert event["payload"]["promotion_reason"] == "elo_improvement"
+        assert validate_event(event) == []
+
+    def test_model_id_includes_timestep(self, tmp_path):
+        mm, registry, _ = _make_model_manager(tmp_path)
+
+        mm.emit_model_promoted(
+            from_rating=1500.0,
+            to_rating=1550.0,
+            promotion_reason="elo_improvement",
+            global_timestep=25000,
+        )
+
+        event = registry.load_all()[0]
+        assert event["model_id"] == "test-run::checkpoint_ts25000"
+
+    def test_no_emission_without_registry(self, tmp_path):
+        mm, _, _ = _make_model_manager(tmp_path, lineage_enabled=False)
+        # Should not raise
+        mm.emit_model_promoted(
+            from_rating=1500.0,
+            to_rating=1520.0,
+            promotion_reason="elo_improvement",
+            global_timestep=5000,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mixed event types accumulate correctly
+# ---------------------------------------------------------------------------
+
+
+class TestMixedEventAccumulation:
+    def test_checkpoint_then_match_then_promotion(self, tmp_path):
+        """All three event types can coexist in the same registry."""
+        mm, registry, _ = _make_model_manager(tmp_path)
+        model_dir = str(tmp_path / "models")
+
+        agent = MagicMock()
+        agent.save_model = _mock_agent_save
+
+        # Checkpoint
+        mm.save_checkpoint(
+            agent=agent,
+            model_dir=model_dir,
+            timestep=5000,
+            episode_count=100,
+            stats={},
+            run_name="test-run",
+            is_wandb_active=False,
+        )
+
+        # Match
+        mm.emit_match_completed(
+            opponent_model_id="opp_ts3000",
+            result="win",
+            num_games=20,
+            win_rate=0.7,
+            agent_rating=1520.0,
+            opponent_rating=1500.0,
+            global_timestep=5000,
+        )
+
+        # Promotion
+        mm.emit_model_promoted(
+            from_rating=1500.0,
+            to_rating=1520.0,
+            promotion_reason="elo_improvement",
+            global_timestep=5000,
+        )
+
+        assert registry.event_count == 3
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert types == ["checkpoint_created", "match_completed", "model_promoted"]
 
 
 # ---------------------------------------------------------------------------
