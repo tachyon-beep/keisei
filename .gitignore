@@ -97,3 +97,7 @@ tournament_results/
 .venv/
 env/
 venv/
+
+# Issue trackers
+.filigree/
+.beads/
