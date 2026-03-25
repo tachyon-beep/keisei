@@ -73,6 +73,7 @@ class TestLineageExtraction:
 
         events = [
             {
+                "schema_version": "v1.0.0",
                 "event_id": "evt-001",
                 "event_type": "training_started",
                 "model_id": "run::init",
@@ -82,6 +83,7 @@ class TestLineageExtraction:
                 "payload": {},
             },
             {
+                "schema_version": "v1.0.0",
                 "event_id": "evt-002",
                 "event_type": "checkpoint_created",
                 "model_id": "run::cp1",
