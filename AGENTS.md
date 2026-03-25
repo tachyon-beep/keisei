@@ -1,16 +1,6 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
-
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
-```
+This project uses `filigree` for issue tracking. Use the Filigree section below for commands and workflow.
 
 ## Landing the Plane (Session Completion)
 
@@ -24,7 +14,6 @@ bd sync               # Sync with git
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
