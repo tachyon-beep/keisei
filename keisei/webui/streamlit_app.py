@@ -283,6 +283,51 @@ _VIEW_LABELS: Dict[str, str] = {
 }
 
 
+def render_lineage_panel(env: EnvelopeParser) -> None:
+    """Render the model lineage panel when lineage data is available."""
+    lineage = env.lineage
+    if lineage is None:
+        return
+
+    st.subheader("Model Lineage")
+
+    # Summary metrics
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Generation", lineage.get("generation", 0))
+    with c2:
+        rating = lineage.get("latest_rating")
+        st.metric("Elo Rating", f"{rating:.0f}" if rating is not None else "\u2014")
+    with c3:
+        st.metric("Events", lineage.get("event_count", 0))
+
+    # Current model info
+    model_id = lineage.get("model_id", "\u2014")
+    parent_id = lineage.get("parent_id", "\u2014")
+    run_name = lineage.get("run_name", "\u2014")
+    st.text(f"Model:  {model_id}")
+    st.text(f"Parent: {parent_id}")
+    st.text(f"Run:    {run_name}")
+
+    # Ancestor chain
+    ancestors = lineage.get("ancestor_chain", [])
+    if ancestors:
+        with st.expander(f"Ancestor chain ({len(ancestors)} models)", expanded=False):
+            for i, ancestor_id in enumerate(ancestors):
+                prefix = "\u2514\u2500\u2500 " if i == len(ancestors) - 1 else "\u251c\u2500\u2500 "
+                st.text(f"{prefix}{ancestor_id}")
+
+    # Recent events
+    recent = lineage.get("recent_events", [])
+    if recent:
+        with st.expander(f"Recent events ({len(recent)})", expanded=False):
+            for event in reversed(recent):
+                ts = event.get("emitted_at", "?")
+                etype = event.get("event_type", "?")
+                mid = event.get("model_id", "?")
+                st.text(f"{ts}  {etype}  {mid}")
+
+
 def render_optional_view_placeholders(env: EnvelopeParser) -> None:
     """Show informative placeholders for missing optional views."""
     missing = env.missing_optional_views()
@@ -384,7 +429,9 @@ def main() -> None:
         render_win_rate_chart(metrics)
         render_buffer_bar(buffer_info)
 
-    # --- Optional views (not yet populated in v1) ---
+    # --- Optional views ---
+    if env.has_view("lineage"):
+        render_lineage_panel(env)
     render_optional_view_placeholders(env)
 
     # --- Auto-refresh ---
