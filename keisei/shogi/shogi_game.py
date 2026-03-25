@@ -798,14 +798,12 @@ class ShogiGame:
         if piece_type not in get_unpromoted_types():
             # Attempting to remove a promoted type from hand, which is invalid.
             # Or, piece_type is KING, which cannot be in hand.
-            # print(f\"Warning: Attempted to remove invalid piece type '{piece_type}' from hand.\")
             return False  # Or raise error
 
         hand_to_modify = self.hands[color.value]
         if hand_to_modify.get(piece_type, 0) > 0:
             hand_to_modify[piece_type] -= 1
             return True
-        # print(f\"Warning: Attempted to remove {piece_type} from {color}\'s hand, but not available.\")
         return False
 
     def get_pieces_in_hand(self, color: Color) -> Dict[PieceType, int]:

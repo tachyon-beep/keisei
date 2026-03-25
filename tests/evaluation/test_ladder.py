@@ -14,6 +14,8 @@ from keisei.config_schema import EvaluationConfig
 from keisei.evaluation.core.evaluation_context import AgentInfo, OpponentInfo
 from keisei.evaluation.strategies.ladder import LadderEvaluator
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
 # Helper

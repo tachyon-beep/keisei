@@ -14,6 +14,8 @@ import pytest
 from keisei.shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
 from keisei.shogi.shogi_game import ShogiGame
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

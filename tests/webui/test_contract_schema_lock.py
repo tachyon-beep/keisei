@@ -26,6 +26,8 @@ from keisei.webui.view_contracts import (
     validate_envelope,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Constant locks

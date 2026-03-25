@@ -11,7 +11,7 @@ This module provides systematic performance measurement infrastructure for:
 import time
 import gc
 import statistics
-from typing import Dict, List, Optional, Tuple, Any, Callable, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any, Callable, Union
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 import warnings
@@ -19,7 +19,8 @@ import warnings
 import torch
 import torch.nn as nn
 
-from keisei.core.actor_critic_protocol import ActorCriticProtocol
+if TYPE_CHECKING:
+    from keisei.core.actor_critic_protocol import ActorCriticProtocol
 
 
 @dataclass
@@ -116,7 +117,7 @@ class PerformanceBenchmarker:
 
     def benchmark_model(
         self,
-        model: ActorCriticProtocol,
+        model: "ActorCriticProtocol",
         input_tensor: torch.Tensor,
         name: str,
         model_type: str = "unknown",
@@ -224,8 +225,8 @@ class PerformanceBenchmarker:
 
     def compare_models(
         self,
-        baseline_model: ActorCriticProtocol,
-        optimized_model: ActorCriticProtocol,
+        baseline_model: "ActorCriticProtocol",
+        optimized_model: "ActorCriticProtocol",
         input_tensor: torch.Tensor,
         baseline_name: str = "baseline",
         optimized_name: str = "optimized",
@@ -273,8 +274,8 @@ class PerformanceBenchmarker:
 
     def validate_numerical_equivalence(
         self,
-        baseline_model: ActorCriticProtocol,
-        optimized_model: ActorCriticProtocol,
+        baseline_model: "ActorCriticProtocol",
+        optimized_model: "ActorCriticProtocol",
         input_tensor: torch.Tensor,
         tolerance: float = 1e-5,
         num_samples: int = 10,
@@ -345,7 +346,7 @@ class PerformanceBenchmarker:
         return is_equivalent, max_difference, detailed_differences
 
     def _warmup_model(
-        self, model: ActorCriticProtocol, input_tensor: torch.Tensor, enable_grad: bool
+        self, model: "ActorCriticProtocol", input_tensor: torch.Tensor, enable_grad: bool
     ) -> None:
         """Perform warmup iterations to stabilize model performance."""
         with torch.set_grad_enabled(enable_grad):

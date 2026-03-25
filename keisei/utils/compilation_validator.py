@@ -7,14 +7,16 @@ torch.compile integration, ensuring both performance and correctness.
 
 import warnings
 import sys
-from typing import Dict, Any, Optional, Callable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Any, Optional, Callable, Tuple, Union
 from dataclasses import dataclass
 
 
 import torch
 import torch.nn as nn
 
-from keisei.core.actor_critic_protocol import ActorCriticProtocol
+if TYPE_CHECKING:
+    from keisei.core.actor_critic_protocol import ActorCriticProtocol
+
 from keisei.utils.performance_benchmarker import (
     PerformanceBenchmarker,
     ComparisonResult,
@@ -102,7 +104,7 @@ class CompilationValidator:
 
     def compile_model(
         self,
-        model: ActorCriticProtocol,
+        model: "ActorCriticProtocol",
         sample_input: torch.Tensor,
         model_name: str = "model",
     ) -> CompilationResult:
@@ -218,7 +220,7 @@ class CompilationValidator:
 
     def _validate_compiled_model(
         self,
-        original_model: ActorCriticProtocol,
+        original_model: "ActorCriticProtocol",
         compiled_model: nn.Module,
         sample_input: torch.Tensor,
     ) -> Tuple[bool, Dict[str, Any]]:
@@ -278,7 +280,7 @@ class CompilationValidator:
 
     def _benchmark_compilation(
         self,
-        original_model: ActorCriticProtocol,
+        original_model: "ActorCriticProtocol",
         compiled_model: nn.Module,
         sample_input: torch.Tensor,
         model_name: str,
@@ -335,7 +337,7 @@ class CompilationValidator:
 
 
 def safe_compile_model(
-    model: ActorCriticProtocol,
+    model: "ActorCriticProtocol",
     sample_input: torch.Tensor,
     config_training,
     logger_func: Optional[Callable[[str], None]] = None,

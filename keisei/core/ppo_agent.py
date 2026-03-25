@@ -239,30 +239,19 @@ class PPOAgent:
             )
         return float(value_estimate.item())
 
-    def learn(self, experience_buffer: ExperienceBuffer) -> Dict[str, float]:
-        """
-        Perform PPO update using experiences from the buffer.
-        Returns a dictionary of logging metrics.
-        """
-        self.model.train()
-
-        batch_data = experience_buffer.get_batch()
-        # It's good practice for ExperienceBuffer.get_batch() to already place tensors on self.device
-        # or for the buffer itself to live on self.device if memory allows.
-        # If not, the .to(self.device) calls below are necessary.
-
-        current_lr = self.optimizer.param_groups[0]["lr"]
-
-        if not batch_data or batch_data["obs"].shape[0] == 0:
-            log_error_to_stderr("PPOAgent", "learn called with empty batch_data")
-            return {
-                "ppo/policy_loss": 0.0,
-                "ppo/value_loss": 0.0,
-                "ppo/entropy": 0.0,
-                "ppo/kl_divergence_approx": self.last_kl_div,
-                "ppo/learning_rate": current_lr,
-            }
-
+    def _prepare_batch_data(
+        self, batch_data: Dict[str, Any]
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        np.ndarray,
+    ]:
+        """Transfer batch tensors to device, normalize advantages, and build index array."""
         obs_batch = batch_data["obs"].to(self.device)
         actions_batch = batch_data["actions"].to(self.device)
         old_log_probs_batch = batch_data["log_probs"].to(self.device)
@@ -284,11 +273,71 @@ class PPOAgent:
         num_samples = obs_batch.shape[0]
         indices = np.arange(num_samples)
 
-        total_policy_loss_epoch, total_value_loss_epoch, total_entropy_epoch = (
-            0.0,
-            0.0,
-            0.0,
+        return (
+            obs_batch,
+            actions_batch,
+            old_log_probs_batch,
+            old_values_batch,
+            advantages_batch,
+            returns_batch,
+            legal_masks_batch,
+            indices,
         )
+
+    def _compute_gradient_and_step(self, loss: torch.Tensor) -> None:
+        """Run optimizer zero_grad, backward pass, gradient clipping, and step."""
+        self.optimizer.zero_grad()
+
+        if self.use_mixed_precision and isinstance(self.scaler, GradScaler):
+            # Mixed precision backward pass
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.gradient_clip_max_norm,
+            )
+            self._record_gradient_norm()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            # Standard precision backward pass
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                max_norm=self.gradient_clip_max_norm,
+            )
+            self._record_gradient_norm()
+            self.optimizer.step()
+
+        # Step scheduler on minibatch update if configured
+        if self.scheduler is not None and self.lr_schedule_step_on == "update":
+            self.scheduler.step()
+
+    def _record_gradient_norm(self) -> None:
+        """Compute and store the current gradient norm."""
+        total = 0.0
+        for param in self.model.parameters():
+            if param.grad is not None:
+                norm_val = param.grad.detach().data.norm(2).item()
+                total += norm_val * norm_val
+        self.last_gradient_norm = total**0.5
+
+    def _run_minibatch_update(
+        self,
+        obs_batch: torch.Tensor,
+        actions_batch: torch.Tensor,
+        old_log_probs_batch: torch.Tensor,
+        old_values_batch: torch.Tensor,
+        advantages_batch: torch.Tensor,
+        returns_batch: torch.Tensor,
+        legal_masks_batch: torch.Tensor,
+        indices: np.ndarray,
+    ) -> Tuple[float, float, float, float, float, int]:
+        """Run the epoch/minibatch loop and return accumulated losses."""
+        num_samples = obs_batch.shape[0]
+        total_policy_loss_epoch = 0.0
+        total_value_loss_epoch = 0.0
+        total_entropy_epoch = 0.0
         total_kl_div = 0.0
         total_clip_frac = 0.0
         num_updates = 0
@@ -315,10 +364,7 @@ class PPOAgent:
                         obs_minibatch = self.scaler(obs_minibatch)
 
                 # Get new log_probs, entropy, and value from the model
-                # Note on entropy: legal_mask is now passed here. Entropy is calculated
-                # over legal actions only.
                 if self.use_mixed_precision and isinstance(self.scaler, GradScaler):
-                    # Mixed precision forward pass
                     with torch.amp.autocast("cuda"):
                         new_log_probs, entropy, new_values = (
                             self.model.evaluate_actions(
@@ -328,7 +374,6 @@ class PPOAgent:
                             )
                         )
                 else:
-                    # Standard precision forward pass
                     new_log_probs, entropy, new_values = self.model.evaluate_actions(
                         obs_minibatch,
                         actions_minibatch,
@@ -381,52 +426,72 @@ class PPOAgent:
                     + self.entropy_coef * entropy_loss
                 )
 
-                self.optimizer.zero_grad()
-
-                # Fix B4: Use mixed precision for backward pass if enabled
-                if self.use_mixed_precision and isinstance(self.scaler, GradScaler):
-                    # Mixed precision backward pass
-                    self.scaler.scale(loss).backward()
-                    # Unscale gradients before clipping
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        max_norm=self.gradient_clip_max_norm,
-                    )
-                    # Compute gradient norm after unscaling and clipping
-                    total = 0.0
-                    for param in self.model.parameters():
-                        if param.grad is not None:
-                            norm_val = param.grad.detach().data.norm(2).item()
-                            total += norm_val * norm_val
-                    self.last_gradient_norm = total**0.5
-                    # Update with scaler
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    # Standard precision backward pass
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        max_norm=self.gradient_clip_max_norm,
-                    )
-                    total = 0.0
-                    for param in self.model.parameters():
-                        if param.grad is not None:
-                            norm_val = param.grad.detach().data.norm(2).item()
-                            total += norm_val * norm_val
-                    self.last_gradient_norm = total**0.5
-                    self.optimizer.step()
-
-                # Step scheduler on minibatch update if configured
-                if self.scheduler is not None and self.lr_schedule_step_on == "update":
-                    self.scheduler.step()
+                self._compute_gradient_and_step(loss)
 
                 total_policy_loss_epoch += policy_loss.item()
                 total_value_loss_epoch += value_loss.item()
                 total_entropy_epoch += entropy_loss.item()
                 total_kl_div += kl_div.item()
                 num_updates += 1
+
+        return (
+            total_policy_loss_epoch,
+            total_value_loss_epoch,
+            total_entropy_epoch,
+            total_kl_div,
+            total_clip_frac,
+            num_updates,
+        )
+
+    def learn(self, experience_buffer: ExperienceBuffer) -> Dict[str, float]:
+        """
+        Perform PPO update using experiences from the buffer.
+        Returns a dictionary of logging metrics.
+        """
+        self.model.train()
+
+        batch_data = experience_buffer.get_batch()
+
+        current_lr = self.optimizer.param_groups[0]["lr"]
+
+        if not batch_data or batch_data["obs"].shape[0] == 0:
+            log_error_to_stderr("PPOAgent", "learn called with empty batch_data")
+            return {
+                "ppo/policy_loss": 0.0,
+                "ppo/value_loss": 0.0,
+                "ppo/entropy": 0.0,
+                "ppo/kl_divergence_approx": self.last_kl_div,
+                "ppo/learning_rate": current_lr,
+            }
+
+        (
+            obs_batch,
+            actions_batch,
+            old_log_probs_batch,
+            old_values_batch,
+            advantages_batch,
+            returns_batch,
+            legal_masks_batch,
+            indices,
+        ) = self._prepare_batch_data(batch_data)
+
+        (
+            total_policy_loss_epoch,
+            total_value_loss_epoch,
+            total_entropy_epoch,
+            total_kl_div,
+            total_clip_frac,
+            num_updates,
+        ) = self._run_minibatch_update(
+            obs_batch,
+            actions_batch,
+            old_log_probs_batch,
+            old_values_batch,
+            advantages_batch,
+            returns_batch,
+            legal_masks_batch,
+            indices,
+        )
 
         # Step scheduler on epoch if configured
         if self.scheduler is not None and self.lr_schedule_step_on == "epoch":

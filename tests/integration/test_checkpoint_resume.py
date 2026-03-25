@@ -14,6 +14,8 @@ from keisei.core.ppo_agent import PPOAgent
 from keisei.shogi.shogi_game import ShogiGame
 from keisei.training.step_manager import StepManager
 
+pytestmark = pytest.mark.integration
+
 
 # Module-level no-op logger
 def _noop_logger(msg, also_to_wandb=False, wandb_data=None, log_level="info"):

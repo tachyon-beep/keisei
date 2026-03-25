@@ -16,6 +16,8 @@ from keisei.shogi.shogi_core_definitions import PieceType
 from keisei.shogi.shogi_game_io import encode_move_to_sfen_string, sfen_to_move_tuple
 from keisei.utils.utils import PolicyOutputMapper
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture(scope="module")
 def mapper():

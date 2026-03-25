@@ -15,6 +15,8 @@ from keisei.evaluation.core.evaluation_context import AgentInfo, OpponentInfo
 from keisei.evaluation.core.evaluation_result import SummaryStats
 from keisei.evaluation.strategies.tournament import TournamentEvaluator
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
 # Helper to run async evaluate() in sync tests

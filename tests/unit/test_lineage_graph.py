@@ -8,6 +8,10 @@ queries, promotion chain, model profile, and WebUI snapshot generation.
 from keisei.lineage.event_schema import make_event, make_model_id
 from keisei.lineage.graph import LineageGraph, MatchRecord, ModelNode, PromotionRecord
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -21,6 +21,8 @@ from keisei.lineage.event_schema import (
     validate_event,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Constants lock

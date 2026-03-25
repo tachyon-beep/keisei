@@ -26,6 +26,8 @@ from keisei.webui.state_snapshot import (
 )
 from keisei.webui.view_contracts import SCHEMA_VERSION, validate_envelope
 
+pytestmark = pytest.mark.integration
+
 
 # Module-level no-op logger
 def _noop_logger(msg, also_to_wandb=False, wandb_data=None, log_level="info"):

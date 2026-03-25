@@ -11,6 +11,8 @@ import yaml
 from keisei.config_schema import AppConfig, EnvConfig, TrainingConfig
 from keisei.utils.utils import load_config
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

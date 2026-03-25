@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import uuid4
 
 # Import strategies to ensure they register with the factory
+from keisei.utils.unified_logger import log_error_to_stderr
 from . import strategies  # pylint: disable=unused-import
 from .core import (
     AgentInfo,
@@ -362,7 +363,7 @@ class EvaluationManager:
 
         except (ValueError, FileNotFoundError, RuntimeError) as e:
             # Fallback to file-based evaluation on error
-            print(f"In-memory evaluation failed, falling back to async file-based: {e}")
+            log_error_to_stderr("evaluation", f"In-memory evaluation failed, falling back to async file-based: {e}")
             return await self.evaluate_current_agent_async(agent)
 
     async def _run_in_memory_evaluation(

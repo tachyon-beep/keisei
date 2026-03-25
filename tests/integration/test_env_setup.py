@@ -14,6 +14,8 @@ from keisei.training.env_manager import EnvManager
 from keisei.training.setup_manager import SetupManager
 from keisei.utils.utils import PolicyOutputMapper
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
 # EnvManager setup

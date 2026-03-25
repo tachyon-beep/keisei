@@ -6,6 +6,10 @@ from unittest.mock import patch
 
 from keisei.training.display_manager import DisplayManager
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 def _make_config():
     """Build a minimal config namespace for DisplayManager."""

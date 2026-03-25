@@ -25,6 +25,8 @@ from keisei.shogi.shogi_move_execution import (
     revert_last_applied_move,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def new_game() -> ShogiGame:

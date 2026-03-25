@@ -9,6 +9,8 @@ import torch
 
 from keisei.training.step_manager import EpisodeState, StepManager, StepResult
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

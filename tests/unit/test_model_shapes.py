@@ -9,6 +9,8 @@ from keisei.core.neural_network import ActorCritic
 from keisei.training.models.resnet_tower import ActorCriticResTower
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 
+pytestmark = pytest.mark.unit
+
 NUM_ACTIONS = 13527
 INPUT_CHANNELS = 46
 BOARD_SIZE = 9

@@ -9,6 +9,8 @@ import torch
 
 from keisei.core.neural_network import ActorCritic
 
+pytestmark = pytest.mark.unit
+
 NUM_ACTIONS = 13527
 INPUT_CHANNELS = 46
 BOARD_SIZE = 9

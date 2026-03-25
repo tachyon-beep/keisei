@@ -15,6 +15,8 @@ from keisei.training.callbacks import (
     EvaluationCallback,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

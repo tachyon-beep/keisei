@@ -8,6 +8,8 @@ import pytest
 
 from keisei.training.env_manager import EnvManager
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -20,6 +20,8 @@ from keisei.training.utils import (
     setup_seeding,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # find_latest_checkpoint tests

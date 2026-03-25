@@ -36,6 +36,8 @@ from keisei.shogi.shogi_core_definitions import (
     get_unpromoted_types,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ===========================================================================
 # 1. Color enum (~5 tests)

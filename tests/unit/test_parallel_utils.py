@@ -5,6 +5,8 @@ import pytest
 
 from keisei.training.parallel.utils import compress_array, decompress_array
 
+pytestmark = pytest.mark.unit
+
 
 class TestCompressDecompressRoundTrip:
     """Tests that compression followed by decompression preserves array data."""

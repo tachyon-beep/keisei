@@ -2,6 +2,10 @@
 
 from keisei.shogi.features import FEATURE_SPECS, FeatureSpec
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 class TestFeatureSpec:
     """Tests for the FeatureSpec dataclass."""

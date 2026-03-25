@@ -12,15 +12,13 @@ from keisei.utils.opponents import (
 from keisei.utils.unified_logger import log_error_to_stderr, log_info_to_stderr
 
 
-def load_evaluation_agent(
-    checkpoint_path: str,
+def _build_evaluation_config(
     device_str: str,
     policy_mapper,
     input_channels: int,
     input_features: Optional[str] = "core46",
 ) -> Any:
-    import torch  # pylint: disable=import-outside-toplevel
-
+    """Build a minimal AppConfig suitable for loading an evaluation agent."""
     from keisei.config_schema import (  # pylint: disable=import-outside-toplevel
         AppConfig,
         DemoConfig,
@@ -32,20 +30,8 @@ def load_evaluation_agent(
         TrainingConfig,
         WandBConfig,
     )
-    from keisei.core.neural_network import (  # pylint: disable=import-outside-toplevel
-        ActorCritic,
-    )
-    from keisei.core.ppo_agent import (  # pylint: disable=import-outside-toplevel
-        PPOAgent,
-    )
 
-    if not os.path.isfile(checkpoint_path):
-        log_error_to_stderr(
-            "AgentLoading", f"Checkpoint file {checkpoint_path} not found"
-        )
-        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found.")
-    # Use dummy configs for required fields
-    config = AppConfig(
+    return AppConfig(
         parallel=ParallelConfig(
             enabled=False,
             num_workers=1,
@@ -67,7 +53,7 @@ def load_evaluation_agent(
             total_timesteps=1,
             steps_per_epoch=1,
             ppo_epochs=1,
-            minibatch_size=2,  # Updated from 1 to 2
+            minibatch_size=2,
             learning_rate=1e-4,
             gamma=0.99,
             clip_epsilon=0.2,
@@ -89,38 +75,38 @@ def load_evaluation_agent(
             evaluation_interval_timesteps=50000,
             weight_decay=0.0,
             normalize_advantages=True,
-            enable_value_clipping=False,  # Added
+            enable_value_clipping=False,
             lr_schedule_type=None,
             lr_schedule_kwargs=None,
             lr_schedule_step_on="epoch",
         ),
         evaluation=EvaluationConfig(
-            enable_periodic_evaluation=False,  # Moved up
+            enable_periodic_evaluation=False,
             evaluation_interval_timesteps=50000,
-            strategy="single_opponent",  # Added
+            strategy="single_opponent",
             num_games=1,
-            max_concurrent_games=4,  # Added
-            timeout_per_game=None,  # Added
+            max_concurrent_games=4,
+            timeout_per_game=None,
             opponent_type="random",
             max_moves_per_game=500,
-            randomize_positions=True,  # Added
-            random_seed=None,  # Added
-            save_games=True,  # Added
-            save_path=None,  # Added
+            randomize_positions=True,
+            random_seed=None,
+            save_games=True,
+            save_path=None,
             log_file_path_eval="/tmp/eval.log",
-            log_level="INFO",  # Added
+            log_level="INFO",
             wandb_log_eval=False,
-            update_elo=True,  # Added
-            elo_registry_path="elo_ratings.json",  # Added
-            agent_id=None,  # Added
-            opponent_id=None,  # Added
-            previous_model_pool_size=5,  # Added
-            enable_in_memory_evaluation=True,  # Added
-            model_weight_cache_size=5,  # Added
-            enable_parallel_execution=True,  # Added
-            process_restart_threshold=100,  # Added
-            temp_agent_device="cpu",  # Added
-            clear_cache_after_evaluation=True,  # Added
+            update_elo=True,
+            elo_registry_path="elo_ratings.json",
+            agent_id=None,
+            opponent_id=None,
+            previous_model_pool_size=5,
+            enable_in_memory_evaluation=True,
+            model_weight_cache_size=5,
+            enable_parallel_execution=True,
+            process_restart_threshold=100,
+            temp_agent_device="cpu",
+            clear_cache_after_evaluation=True,
         ),
         logging=LoggingConfig(
             log_file="/tmp/eval.log", model_dir="/tmp/", run_name="eval-run"
@@ -136,7 +122,7 @@ def load_evaluation_agent(
             log_model_artifact=False,
         ),
         demo=DemoConfig(enable_demo_mode=False, demo_mode_delay=0.0),
-        display=DisplayConfig(  # Added with default values
+        display=DisplayConfig(
             enable_board_display=True,
             enable_trend_visualization=True,
             enable_elo_ratings=True,
@@ -169,19 +155,69 @@ def load_evaluation_agent(
         ),
     )
 
-    # Create temporary model for loading
+
+def _load_model_from_checkpoint(
+    checkpoint_path: str,
+    device_str: str,
+    policy_mapper,
+    input_channels: int,
+) -> Any:
+    """Create a model and load weights from a checkpoint file."""
+    import torch  # pylint: disable=import-outside-toplevel
+
+    from keisei.core.neural_network import (  # pylint: disable=import-outside-toplevel
+        ActorCritic,
+    )
+
     device = torch.device(device_str)
     temp_model = ActorCritic(input_channels, policy_mapper.get_total_actions()).to(
         device
     )
+    return temp_model, device
 
-    # Create agent with model (dependency injection)
-    agent = PPOAgent(
-        model=temp_model, config=config, device=device, name="EvaluationAgent"
+
+def _create_ppo_agent(
+    model: Any,
+    config: Any,
+    device: Any,
+    checkpoint_path: str,
+) -> Any:
+    """Instantiate a PPOAgent, load checkpoint, and set to eval mode."""
+    from keisei.core.ppo_agent import (  # pylint: disable=import-outside-toplevel
+        PPOAgent,
     )
 
+    agent = PPOAgent(
+        model=model, config=config, device=device, name="EvaluationAgent"
+    )
     agent.load_model(checkpoint_path)
     agent.model.eval()
+    return agent
+
+
+def load_evaluation_agent(
+    checkpoint_path: str,
+    device_str: str,
+    policy_mapper,
+    input_channels: int,
+    input_features: Optional[str] = "core46",
+) -> Any:
+    if not os.path.isfile(checkpoint_path):
+        log_error_to_stderr(
+            "AgentLoading", f"Checkpoint file {checkpoint_path} not found"
+        )
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found.")
+
+    config = _build_evaluation_config(
+        device_str, policy_mapper, input_channels, input_features
+    )
+
+    temp_model, device = _load_model_from_checkpoint(
+        checkpoint_path, device_str, policy_mapper, input_channels
+    )
+
+    agent = _create_ppo_agent(temp_model, config, device, checkpoint_path)
+
     log_info_to_stderr(
         "AgentLoading",
         f"Loaded agent from {checkpoint_path} on device {device_str} for evaluation",

@@ -3,10 +3,11 @@ training/display_manager.py: Barebones CLI display — prints throttled one-line
 summaries to stderr. All rich visualization lives in the Streamlit dashboard.
 """
 
-import sys
 import time
 from contextlib import contextmanager
 from typing import Any, List
+
+from keisei.utils.unified_logger import log_info_to_stderr
 
 
 class DisplayManager:
@@ -55,7 +56,7 @@ class DisplayManager:
         if ppo:
             parts.append(ppo)
 
-        print(" | ".join(parts), file=sys.stderr)
+        log_info_to_stderr("display", " | ".join(parts))
 
     def refresh_dashboard_panels(self, trainer: Any) -> None:
         """No-op — Streamlit handles visualization."""
@@ -78,12 +79,12 @@ class DisplayManager:
         return False
 
     def print_rule(self, title: str, style: str = "") -> None:
-        print(f"{'=' * 60}", file=sys.stderr)
-        print(f"  {title}", file=sys.stderr)
-        print(f"{'=' * 60}", file=sys.stderr)
+        log_info_to_stderr("display", f"{'=' * 60}")
+        log_info_to_stderr("display", f"  {title}")
+        log_info_to_stderr("display", f"{'=' * 60}")
 
     def print_message(self, message: str, style: str = "") -> None:
-        print(message, file=sys.stderr)
+        log_info_to_stderr("display", message)
 
     def finalize_display(self, run_name: str, run_artifact_dir: str) -> None:
         self.print_rule("Run Finished")
