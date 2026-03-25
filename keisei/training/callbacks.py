@@ -168,6 +168,17 @@ class EvaluationCallback(Callback):
                     also_to_wandb=True,
                 )
 
+            # Capture pre-evaluation Elo baseline for promotion detection
+            pre_eval_rating = None
+            if getattr(self.eval_cfg, "elo_registry_path", None):
+                try:
+                    pre_eval_registry = EloRegistry(
+                        Path(self.eval_cfg.elo_registry_path)
+                    )
+                    pre_eval_rating = pre_eval_registry.get_rating(trainer.run_name)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+
             current_model.eval()  # Set the agent's model to eval mode
             try:
                 eval_results = trainer.evaluation_manager.evaluate_current_agent(
@@ -253,11 +264,11 @@ class EvaluationCallback(Callback):
                     }
                     trainer.evaluation_elo_snapshot = snapshot
 
-                    # Emit model_promoted if rating improved
+                    # Emit model_promoted if rating improved vs pre-evaluation baseline
                     new_rating = registry.get_rating(trainer.run_name)
-                    if new_rating > old_rating:
+                    if pre_eval_rating is not None and new_rating > pre_eval_rating:
                         trainer.model_manager.emit_model_promoted(
-                            from_rating=old_rating,
+                            from_rating=pre_eval_rating,
                             to_rating=new_rating,
                             promotion_reason="elo_improvement",
                             global_timestep=step,
@@ -329,6 +340,17 @@ class AsyncEvaluationCallback(AsyncCallback):
                 f"Starting async periodic evaluation at timestep {step}...",
                 also_to_wandb=True,
             )
+
+        # Capture pre-evaluation Elo baseline for promotion detection
+        pre_eval_rating = None
+        if getattr(self.eval_cfg, "elo_registry_path", None):
+            try:
+                pre_eval_registry = EloRegistry(
+                    Path(self.eval_cfg.elo_registry_path)
+                )
+                pre_eval_rating = pre_eval_registry.get_rating(trainer.run_name)
+            except (OSError, RuntimeError, ValueError):
+                pass
 
         try:
             # Use async evaluation to avoid event loop conflicts
@@ -415,11 +437,11 @@ class AsyncEvaluationCallback(AsyncCallback):
                     }
                     trainer.evaluation_elo_snapshot = snapshot
 
-                    # Emit model_promoted if rating improved
+                    # Emit model_promoted if rating improved vs pre-evaluation baseline
                     new_rating = registry.get_rating(trainer.run_name)
-                    if new_rating > old_rating:
+                    if pre_eval_rating is not None and new_rating > pre_eval_rating:
                         trainer.model_manager.emit_model_promoted(
-                            from_rating=old_rating,
+                            from_rating=pre_eval_rating,
                             to_rating=new_rating,
                             promotion_reason="elo_improvement",
                             global_timestep=step,

@@ -13,7 +13,8 @@ import pytest
 
 from keisei.lineage.event_schema import validate_event
 from keisei.lineage.registry import LineageRegistry
-from keisei.training.callbacks import EvaluationCallback
+from keisei.evaluation.opponents.elo_registry import EloRegistry
+from keisei.training.callbacks import AsyncEvaluationCallback, EvaluationCallback
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +246,31 @@ class TestEvalCallbackMatchCompleted:
 # ---------------------------------------------------------------------------
 
 
+def _make_elo_registry_with_ratings(tmp_path, pre_eval_rating, post_eval_rating, run_name="test-run"):
+    """Write an Elo registry file and return a factory that simulates pre/post eval reads.
+
+    First instantiation returns pre_eval_rating, subsequent ones return post_eval_rating.
+    This simulates the evaluation updating ratings on disk between reads.
+    """
+    import json
+
+    elo_path = tmp_path / "elo_ratings.json"
+    call_count = {"n": 0}
+    original_init = EloRegistry.__init__
+
+    def side_effect_init(self_elo, file_path, initial_rating=1500.0, k_factor=32.0):
+        original_init(self_elo, file_path, initial_rating, k_factor)
+        call_count["n"] += 1
+        if call_count["n"] <= 1:
+            # Pre-evaluation read
+            self_elo.ratings[run_name] = pre_eval_rating
+        else:
+            # Post-evaluation read (after eval updated the file)
+            self_elo.ratings[run_name] = post_eval_rating
+
+    return elo_path, side_effect_init
+
+
 class TestEvalCallbackModelPromoted:
     def test_no_promotion_without_elo_registry(self, tmp_path):
         """Without elo_registry_path, no promotion event is emitted."""
@@ -266,3 +292,150 @@ class TestEvalCallbackModelPromoted:
         types = [e["event_type"] for e in events]
         assert "model_promoted" not in types
         assert "match_completed" in types
+
+    def test_promotion_fires_on_elo_improvement(self, tmp_path):
+        """Promotion event fires when evaluation improves Elo rating."""
+        trainer, registry = _make_trainer(tmp_path)
+        eval_cfg = _make_eval_cfg(tmp_path, elo_enabled=True)
+        callback = EvaluationCallback(eval_cfg, interval=1000)
+
+        eval_results = _make_eval_results(win_rate=0.8, loss_rate=0.1)
+        _, side_effect = _make_elo_registry_with_ratings(
+            tmp_path, pre_eval_rating=1000.0, post_eval_rating=1050.0
+        )
+
+        with (
+            patch.object(
+                trainer.evaluation_manager,
+                "evaluate_current_agent",
+                return_value=eval_results,
+            ),
+            patch.object(EloRegistry, "__init__", side_effect),
+        ):
+            callback.on_step_end(trainer)
+
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert "model_promoted" in types
+        promoted = [e for e in events if e["event_type"] == "model_promoted"][0]
+        assert promoted["payload"]["from_rating"] == 1000.0
+        assert promoted["payload"]["to_rating"] == 1050.0
+        assert promoted["payload"]["promotion_reason"] == "elo_improvement"
+
+    def test_no_promotion_when_rating_unchanged(self, tmp_path):
+        """Promotion does NOT fire when rating stays the same."""
+        trainer, registry = _make_trainer(tmp_path)
+        eval_cfg = _make_eval_cfg(tmp_path, elo_enabled=True)
+        callback = EvaluationCallback(eval_cfg, interval=1000)
+
+        eval_results = _make_eval_results(win_rate=0.5, loss_rate=0.5)
+        _, side_effect = _make_elo_registry_with_ratings(
+            tmp_path, pre_eval_rating=1000.0, post_eval_rating=1000.0
+        )
+
+        with (
+            patch.object(
+                trainer.evaluation_manager,
+                "evaluate_current_agent",
+                return_value=eval_results,
+            ),
+            patch.object(EloRegistry, "__init__", side_effect),
+        ):
+            callback.on_step_end(trainer)
+
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert "model_promoted" not in types
+
+    def test_no_promotion_when_rating_worsens(self, tmp_path):
+        """Promotion does NOT fire when rating drops."""
+        trainer, registry = _make_trainer(tmp_path)
+        eval_cfg = _make_eval_cfg(tmp_path, elo_enabled=True)
+        callback = EvaluationCallback(eval_cfg, interval=1000)
+
+        eval_results = _make_eval_results(win_rate=0.2, loss_rate=0.7)
+        _, side_effect = _make_elo_registry_with_ratings(
+            tmp_path, pre_eval_rating=1000.0, post_eval_rating=950.0
+        )
+
+        with (
+            patch.object(
+                trainer.evaluation_manager,
+                "evaluate_current_agent",
+                return_value=eval_results,
+            ),
+            patch.object(EloRegistry, "__init__", side_effect),
+        ):
+            callback.on_step_end(trainer)
+
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert "model_promoted" not in types
+
+
+# ---------------------------------------------------------------------------
+# AsyncEvaluationCallback promotion tests
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncEvalCallbackModelPromoted:
+    @pytest.mark.asyncio
+    async def test_async_promotion_fires_on_elo_improvement(self, tmp_path):
+        """Async path: promotion fires when evaluation improves Elo."""
+        trainer, registry = _make_trainer(tmp_path)
+        eval_cfg = _make_eval_cfg(tmp_path, elo_enabled=True)
+        callback = AsyncEvaluationCallback(eval_cfg, interval=1000)
+
+        eval_results = _make_eval_results(win_rate=0.8, loss_rate=0.1)
+        _, side_effect = _make_elo_registry_with_ratings(
+            tmp_path, pre_eval_rating=1000.0, post_eval_rating=1050.0
+        )
+
+        async def mock_eval_async(agent):
+            return eval_results
+
+        with (
+            patch.object(
+                trainer.evaluation_manager,
+                "evaluate_current_agent_async",
+                side_effect=mock_eval_async,
+            ),
+            patch.object(EloRegistry, "__init__", side_effect),
+        ):
+            await callback.on_step_end_async(trainer)
+
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert "model_promoted" in types
+        promoted = [e for e in events if e["event_type"] == "model_promoted"][0]
+        assert promoted["payload"]["from_rating"] == 1000.0
+        assert promoted["payload"]["to_rating"] == 1050.0
+
+    @pytest.mark.asyncio
+    async def test_async_no_promotion_when_rating_unchanged(self, tmp_path):
+        """Async path: promotion does NOT fire when rating unchanged."""
+        trainer, registry = _make_trainer(tmp_path)
+        eval_cfg = _make_eval_cfg(tmp_path, elo_enabled=True)
+        callback = AsyncEvaluationCallback(eval_cfg, interval=1000)
+
+        eval_results = _make_eval_results(win_rate=0.5, loss_rate=0.5)
+        _, side_effect = _make_elo_registry_with_ratings(
+            tmp_path, pre_eval_rating=1000.0, post_eval_rating=1000.0
+        )
+
+        async def mock_eval_async(agent):
+            return eval_results
+
+        with (
+            patch.object(
+                trainer.evaluation_manager,
+                "evaluate_current_agent_async",
+                side_effect=mock_eval_async,
+            ),
+            patch.object(EloRegistry, "__init__", side_effect),
+        ):
+            await callback.on_step_end_async(trainer)
+
+        events = registry.load_all()
+        types = [e["event_type"] for e in events]
+        assert "model_promoted" not in types
