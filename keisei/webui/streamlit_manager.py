@@ -52,6 +52,7 @@ class StreamlitManager:
 
         # Subprocess
         self._process: Optional[subprocess.Popen] = None
+        self._process_failure_reported = False
 
         # Rate limiting — minimum interval between writes (derived from config Hz)
         self._min_write_interval = 1.0 / max(config.update_rate_hz, 0.1)
@@ -98,6 +99,7 @@ class StreamlitManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._process_failure_reported = False
             self._logger.info(
                 "Streamlit dashboard launched on http://%s:%s",
                 self.config.host,
@@ -120,6 +122,7 @@ class StreamlitManager:
                     self._process.kill()
                     self._process.wait(timeout=2)
             self._process = None
+            self._process_failure_reported = False
 
         # Clean up state file
         try:
@@ -127,6 +130,25 @@ class StreamlitManager:
                 self._state_path.unlink()
         except OSError:
             pass
+
+    def _ensure_process_healthy(self) -> bool:
+        """Return False after detecting that the dashboard subprocess exited."""
+        if self._process is None:
+            return not self._process_failure_reported
+
+        return_code = self._process.poll()
+        if return_code is None:
+            return True
+
+        if not self._process_failure_reported:
+            self._logger.warning(
+                "Streamlit dashboard process exited unexpectedly with code %s",
+                return_code,
+            )
+            self._process_failure_reported = True
+
+        self._process = None
+        return False
 
     def update_progress(
         self,
@@ -152,6 +174,9 @@ class StreamlitManager:
         pending_updates: Dict[str, Any],
     ) -> None:
         """Build and write a snapshot if enough time has elapsed."""
+        if not self._ensure_process_healthy():
+            return
+
         now = time.time()
         if now - self._last_write_time < self._min_write_interval:
             return

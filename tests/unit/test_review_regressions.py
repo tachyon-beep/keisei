@@ -226,3 +226,27 @@ class TestStreamlitCleanupOnInitFailure:
 
         # The critical assertion: stop() was called on the webui manager
         mock_webui.stop.assert_called_once()
+
+
+class TestStreamlitProcessLiveness:
+    """StreamlitManager should surface subprocess death and stop writing snapshots."""
+
+    def test_update_progress_logs_once_and_skips_write_after_crash(self):
+        cfg = WebUIConfig(update_rate_hz=2.0)
+        mgr = StreamlitManager(cfg)
+        trainer = MagicMock()
+        process = MagicMock()
+        process.poll.return_value = 17
+        mgr._process = process
+
+        with patch(
+            "keisei.webui.streamlit_manager.build_snapshot"
+        ) as build_snapshot, patch(
+            "keisei.webui.streamlit_manager.write_snapshot_atomic"
+        ) as write_snapshot:
+            mgr.update_progress(trainer, speed=1.0, pending_updates={})
+            mgr.update_progress(trainer, speed=1.0, pending_updates={})
+
+        build_snapshot.assert_not_called()
+        write_snapshot.assert_not_called()
+        assert mgr._process is None

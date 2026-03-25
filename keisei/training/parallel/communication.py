@@ -200,6 +200,14 @@ class WorkerCommunicator:
             "total_compressed_size": total_compressed_size,
         }
 
+    @staticmethod
+    def _safe_qsize(q: mp.Queue) -> int:
+        """Return queue size when supported, otherwise a sentinel."""
+        try:
+            return q.qsize()
+        except (AttributeError, NotImplementedError, OSError):
+            return -1
+
     def get_queue_info(self) -> Dict[str, List[int]]:
         """
         Get current queue sizes for monitoring.
@@ -208,10 +216,21 @@ class WorkerCommunicator:
             Dictionary with queue sizes for each worker
         """
         return {
-            "experience_queue_sizes": [q.qsize() for q in self.experience_queues],
-            "model_queue_sizes": [q.qsize() for q in self.model_queues],
-            "control_queue_sizes": [q.qsize() for q in self.control_queues],
+            "experience_queue_sizes": [
+                self._safe_qsize(q) for q in self.experience_queues
+            ],
+            "model_queue_sizes": [self._safe_qsize(q) for q in self.model_queues],
+            "control_queue_sizes": [self._safe_qsize(q) for q in self.control_queues],
         }
+
+    @staticmethod
+    def _drain_queue(q: mp.Queue) -> None:
+        """Drain any queued items without relying on `empty()` support."""
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                return
 
     def cleanup(self) -> None:
         """Clean up communication resources."""
@@ -224,9 +243,8 @@ class WorkerCommunicator:
         for queues in [self.experience_queues, self.model_queues, self.control_queues]:
             for q in queues:
                 try:
-                    while not q.empty():
-                        q.get_nowait()
-                except queue.Empty:
+                    self._drain_queue(q)
+                except (OSError, ValueError):
                     pass
                 q.close()
 
