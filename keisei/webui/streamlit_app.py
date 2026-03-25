@@ -338,8 +338,6 @@ def render_lineage_panel(env: EnvelopeParser) -> None:
     if lineage is None:
         return
 
-    st.subheader("Model Lineage")
-
     # Summary metrics
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -400,18 +398,9 @@ def render_stale_warning(env: EnvelopeParser) -> None:
         st.warning(f"Training data is {age}s old — training may be paused or stopped.")
 
 
-def _render_dashboard_content(env: EnvelopeParser) -> None:
-    """Render all dashboard content from a parsed envelope.
-
-    Extracted from main() so that both the live-refresh fragment and the
-    paused-state path can share the same rendering logic.
-    """
+def _render_header_metrics(env: EnvelopeParser) -> None:
+    """Render the always-visible header metrics row above the tabs."""
     metrics = env.metrics
-    board_state = env.board_state
-    step_info = env.step_info
-    buffer_info = env.buffer_info
-
-    # --- Header metrics ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Timestep", f"{metrics.get('global_timestep', 0):,}")
@@ -425,51 +414,68 @@ def _render_dashboard_content(env: EnvelopeParser) -> None:
     with c4:
         st.metric("Speed", f"{env.speed:.0f} steps/s")
 
-    # --- Processing indicator ---
     if metrics.get("processing"):
         st.info("PPO update in progress...")
 
-    # --- Main content ---
-    if board_state:
-        board_col, chart_col = st.columns([2, 3])
-        with board_col:
-            st.subheader("Board")
-            render_board(board_state)
-            render_hands(board_state)
-        with chart_col:
-            st.subheader("Training Curves")
-            render_training_charts(metrics)
-    else:
-        st.subheader("Training Curves")
-        render_training_charts(metrics)
 
-    # --- Lower panels ---
-    lower1, lower2 = st.columns(2)
-    with lower1:
-        if board_state:
-            render_game_status(board_state, step_info)
+def render_metrics_tab(env: EnvelopeParser) -> None:
+    """Render the Metrics tab: training curves, win rates, buffer."""
+    metrics = env.metrics
+    render_training_charts(metrics)
+    render_win_rate_chart(metrics)
+    render_buffer_bar(env.buffer_info)
+
+
+def render_game_tab(env: EnvelopeParser) -> None:
+    """Render the Game tab: board, hands, game status, move stats."""
+    board_state = env.board_state
+    step_info = env.step_info
+
+    if not board_state:
+        st.info("Waiting for first episode...")
+        return
+
+    board_col, status_col = st.columns([2, 3])
+    with board_col:
+        render_board(board_state)
+        render_hands(board_state)
+    with status_col:
+        render_game_status(board_state, step_info)
         if step_info:
             st.caption("Move Statistics")
-            sc, gc = step_info.get("sente_capture_count", 0), step_info.get(
-                "gote_capture_count", 0
-            )
-            sd, gd = step_info.get("sente_drop_count", 0), step_info.get(
-                "gote_drop_count", 0
-            )
-            sp, gp = step_info.get("sente_promo_count", 0), step_info.get(
-                "gote_promo_count", 0
-            )
+            sc = step_info.get("sente_capture_count", 0)
+            gc = step_info.get("gote_capture_count", 0)
+            sd = step_info.get("sente_drop_count", 0)
+            gd = step_info.get("gote_drop_count", 0)
+            sp = step_info.get("sente_promo_count", 0)
+            gp = step_info.get("gote_promo_count", 0)
             st.text(f"Captures: Black {sc} / White {gc}")
             st.text(f"Drops:    Black {sd} / White {gd}")
             st.text(f"Promos:   Black {sp} / White {gp}")
-    with lower2:
-        render_win_rate_chart(metrics)
-        render_buffer_bar(buffer_info)
 
-    # --- Optional views ---
+
+def render_lineage_tab(env: EnvelopeParser) -> None:
+    """Render the Lineage tab: generation tree, Elo, events."""
+    render_lineage_panel(env)
+
+
+def _render_dashboard_content(env: EnvelopeParser) -> None:
+    """Render header metrics + tab-based content from a parsed envelope."""
+    _render_header_metrics(env)
+
+    # Build tab list — Lineage only shown when data is available
+    tab_names = ["Metrics", "Game"]
     if env.has_view("lineage"):
-        render_lineage_panel(env)
-    render_optional_view_placeholders(env)
+        tab_names.append("Lineage")
+
+    tabs = st.tabs(tab_names)
+    with tabs[0]:
+        render_metrics_tab(env)
+    with tabs[1]:
+        render_game_tab(env)
+    if len(tabs) > 2:
+        with tabs[2]:
+            render_lineage_tab(env)
 
 
 def main() -> None:
