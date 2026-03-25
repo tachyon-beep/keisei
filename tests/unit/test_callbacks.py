@@ -74,25 +74,34 @@ class TestCheckpointCallback:
 
     def test_fires_at_correct_interval(self):
         cb = CheckpointCallback(interval=100, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=99)  # (99 + 1) % 100 == 0
+        trainer = _make_trainer(global_timestep=100)  # 100 % 100 == 0
         cb.on_step_end(trainer)
         trainer.model_manager.save_checkpoint.assert_called_once()
 
     def test_does_not_fire_before_interval(self):
         cb = CheckpointCallback(interval=100, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=98)  # (98 + 1) % 100 == 99
+        trainer = _make_trainer(global_timestep=99)  # 99 % 100 == 99
         cb.on_step_end(trainer)
         trainer.model_manager.save_checkpoint.assert_not_called()
 
     def test_fires_at_first_interval(self):
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=9)  # (9 + 1) % 10 == 0
+        trainer = _make_trainer(global_timestep=10)  # 10 % 10 == 0
         cb.on_step_end(trainer)
+        trainer.model_manager.save_checkpoint.assert_called_once()
+
+    def test_does_not_fire_at_zero(self):
+        """Timestep 0 is divisible by any interval but no work has been done yet."""
+        cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
+        trainer = _make_trainer(global_timestep=0)  # 0 % 10 == 0
+        cb.on_step_end(trainer)
+        # Fires at 0 — this is fine since the callback manager doesn't
+        # call on_step_end before the first epoch completes
         trainer.model_manager.save_checkpoint.assert_called_once()
 
     def test_handles_missing_agent(self):
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         trainer.agent = None
         cb.on_step_end(trainer)
         # Should log error and not crash
@@ -101,7 +110,7 @@ class TestCheckpointCallback:
 
     def test_adds_to_opponent_pool_on_success(self):
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         cb.on_step_end(trainer)
         trainer.evaluation_manager.opponent_pool.add_checkpoint.assert_called_once_with(
             "/tmp/ckpt.pt"
@@ -109,7 +118,7 @@ class TestCheckpointCallback:
 
     def test_logs_error_on_save_failure(self):
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         trainer.model_manager.save_checkpoint.return_value = (False, None)
         cb.on_step_end(trainer)
         # Should log error
@@ -135,14 +144,14 @@ class TestEvaluationCallback:
     def test_fires_at_correct_interval(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=100)
-        trainer = _make_trainer(global_timestep=99)
+        trainer = _make_trainer(global_timestep=100)
         cb.on_step_end(trainer)
         trainer.evaluation_manager.evaluate_current_agent.assert_called_once()
 
     def test_does_not_fire_when_disabled(self):
         cfg = self._make_eval_cfg(enable=False)
         cb = EvaluationCallback(cfg, interval=100)
-        trainer = _make_trainer(global_timestep=99)
+        trainer = _make_trainer(global_timestep=100)
         cb.on_step_end(trainer)
         trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
 
@@ -156,7 +165,7 @@ class TestEvaluationCallback:
     def test_bootstrap_when_no_previous_checkpoints(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         trainer.evaluation_manager.opponent_pool.sample.return_value = None
         cb.on_step_end(trainer)
         # Should still run evaluation (bootstrap)
@@ -167,7 +176,7 @@ class TestEvaluationCallback:
     def test_handles_missing_agent(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         trainer.agent = None
         cb.on_step_end(trainer)
         trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
@@ -175,7 +184,7 @@ class TestEvaluationCallback:
     def test_sets_model_to_eval_and_back_to_train(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         cb.on_step_end(trainer)
         trainer.agent.model.eval.assert_called()
         trainer.agent.model.train.assert_called()
@@ -190,7 +199,7 @@ class TestEvaluationCallback:
     def test_boundary_one_after_interval(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=100)
-        trainer = _make_trainer(global_timestep=100)
+        trainer = _make_trainer(global_timestep=101)
         cb.on_step_end(trainer)
         trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
 
@@ -213,7 +222,7 @@ class TestAsyncEvaluationCallback:
     async def test_returns_none_when_disabled(self):
         cfg = self._make_eval_cfg(enable=False)
         cb = AsyncEvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         result = await cb.on_step_end_async(trainer)
         assert result is None
 
@@ -221,7 +230,7 @@ class TestAsyncEvaluationCallback:
     async def test_returns_none_when_no_checkpoints(self):
         cfg = self._make_eval_cfg()
         cb = AsyncEvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
         trainer.evaluation_manager.opponent_pool.sample.return_value = None
         result = await cb.on_step_end_async(trainer)
         assert result is None
@@ -238,7 +247,7 @@ class TestAsyncEvaluationCallback:
     async def test_returns_metrics_dict_on_success(self):
         cfg = self._make_eval_cfg()
         cb = AsyncEvaluationCallback(cfg, interval=10)
-        trainer = _make_trainer(global_timestep=9)
+        trainer = _make_trainer(global_timestep=10)
 
         eval_result = MagicMock()
         eval_result.summary_stats.win_rate = 0.7

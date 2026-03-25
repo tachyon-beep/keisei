@@ -34,7 +34,7 @@ class CheckpointCallback(Callback):
         self.model_dir = model_dir
 
     def on_step_end(self, trainer: "Trainer"):
-        if (trainer.metrics_manager.global_timestep + 1) % self.interval == 0:
+        if trainer.metrics_manager.global_timestep % self.interval == 0:
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(
@@ -49,7 +49,7 @@ class CheckpointCallback(Callback):
             success, ckpt_save_path = trainer.model_manager.save_checkpoint(
                 agent=trainer.agent,
                 model_dir=self.model_dir,  # model_dir is part of CheckpointCallback's state
-                timestep=trainer.metrics_manager.global_timestep + 1,
+                timestep=trainer.metrics_manager.global_timestep,
                 episode_count=trainer.metrics_manager.total_episodes_completed,
                 stats=game_stats,
                 run_name=trainer.run_name,
@@ -69,7 +69,7 @@ class CheckpointCallback(Callback):
             else:
                 if trainer.log_both:
                     trainer.log_both(
-                        f"[ERROR] CheckpointCallback: Failed to save checkpoint via ModelManager for timestep {trainer.metrics_manager.global_timestep + 1}.",
+                        f"[ERROR] CheckpointCallback: Failed to save checkpoint via ModelManager for timestep {trainer.metrics_manager.global_timestep}.",
                         also_to_wandb=True,
                     )
 
@@ -222,7 +222,7 @@ class EvaluationCallback(Callback):
         success, ckpt_path = trainer.model_manager.save_checkpoint(
             agent=trainer.agent,
             model_dir=trainer.session_manager.run_artifact_dir,
-            timestep=trainer.metrics_manager.global_timestep + 1,
+            timestep=trainer.metrics_manager.global_timestep,
             episode_count=trainer.metrics_manager.total_episodes_completed,
             stats=game_stats,
             run_name=trainer.run_name,
@@ -240,7 +240,7 @@ class EvaluationCallback(Callback):
     def on_step_end(self, trainer: "Trainer"):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return
-        if (trainer.metrics_manager.global_timestep + 1) % self.interval == 0:
+        if trainer.metrics_manager.global_timestep % self.interval == 0:
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(
@@ -270,7 +270,7 @@ class EvaluationCallback(Callback):
 
             if trainer.log_both is not None:
                 trainer.log_both(
-                    f"Starting periodic evaluation at timestep {trainer.metrics_manager.global_timestep + 1}...",
+                    f"Starting periodic evaluation at timestep {trainer.metrics_manager.global_timestep}...",
                     also_to_wandb=True,
                 )
 
@@ -294,7 +294,7 @@ class EvaluationCallback(Callback):
                     ),
                 )
 
-            step = trainer.metrics_manager.global_timestep + 1
+            step = trainer.metrics_manager.global_timestep
             opponent_id = os.path.basename(str(opponent_ckpt))
             self._emit_match_completed(trainer, eval_results, opponent_id, step)
             self._update_elo_snapshot(
@@ -442,7 +442,7 @@ class AsyncEvaluationCallback(AsyncCallback):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return None
 
-        step = trainer.metrics_manager.global_timestep + 1
+        step = trainer.metrics_manager.global_timestep
         if step % self.interval == 0:
             return await self._run_evaluation_async(trainer, step)
         return None

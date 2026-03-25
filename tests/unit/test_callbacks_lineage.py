@@ -41,7 +41,7 @@ def _make_trainer(tmp_path, lineage_enabled=True):
     trainer.is_train_wandb_active = False
 
     # Metrics manager with controllable timestep
-    trainer.metrics_manager.global_timestep = 999  # +1 in callback = 1000
+    trainer.metrics_manager.global_timestep = 1000  # callback fires at exact interval
 
     # Agent and model
     trainer.agent = MagicMock()
@@ -224,9 +224,9 @@ class TestEvalCallbackMatchCompleted:
         assert registry.event_count == 0
 
     def test_timestep_in_event_payload(self, tmp_path):
-        """The global_timestep in the event should be the callback timestep (+1)."""
+        """The global_timestep in the event should match the current timestep."""
         trainer, registry = _make_trainer(tmp_path)
-        trainer.metrics_manager.global_timestep = 4999  # +1 = 5000
+        trainer.metrics_manager.global_timestep = 5000
         eval_cfg = _make_eval_cfg(tmp_path)
         callback = EvaluationCallback(eval_cfg, interval=5000)
 
