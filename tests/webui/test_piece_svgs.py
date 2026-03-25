@@ -87,3 +87,21 @@ class TestPieceSVGs:
                 assert _PIECE_SVG_CACHE[key].startswith(
                     "data:image/svg+xml;base64,"
                 )
+
+
+@pytest.mark.unit
+class TestSampleState:
+    def test_sample_state_passes_envelope_validation(self):
+        import json
+        from keisei.webui.view_contracts import validate_envelope
+
+        sample_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "keisei"
+            / "webui"
+            / "sample_state.json"
+        )
+        with open(sample_path) as f:
+            data = json.load(f)
+        errors = validate_envelope(data)
+        assert errors == [], f"Validation errors: {errors}"
