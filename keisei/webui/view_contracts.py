@@ -222,15 +222,20 @@ class LeagueViewState(TypedDict):
 
 
 class LineageViewState(TypedDict):
-    """Lineage / provenance view — placeholder, produced by Move 2.
+    """Lineage / provenance view — populated when lineage is enabled.
 
-    Backed by append-only JSONL events (Decision Freeze #4).  Not populated
-    until ``keisei-tw5`` delivers event persistence and a read model.
+    Backed by append-only JSONL events and the LineageGraph read model.
     """
 
     event_count: int
     latest_checkpoint_id: Optional[str]
     parent_id: Optional[str]
+    model_id: Optional[str]
+    run_name: Optional[str]
+    generation: int  # length of ancestor chain + 1
+    latest_rating: Optional[float]
+    recent_events: List[Dict[str, Any]]  # last 10 raw events (summary)
+    ancestor_chain: List[str]  # model_ids from parent to root
 
 
 class SkillDifferentialViewState(TypedDict):
