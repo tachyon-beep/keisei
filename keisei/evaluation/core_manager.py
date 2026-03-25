@@ -202,53 +202,49 @@ class EvaluationManager:
         # Switch to eval mode for duration of evaluation
         if hasattr(model, "eval"):
             model.eval()
-
-        agent_info = AgentInfo(
-            name=getattr(agent, "name", "current_agent"),
-            metadata={"agent_instance": agent},
-        )
-        context = EvaluationContext(
-            session_id=str(uuid4()),
-            timestamp=datetime.now(),
-            agent_info=agent_info,
-            configuration=self.config,
-            environment_info={"device": self.device},
-        )
-
-        evaluator = EvaluatorFactory.create(self.config)
-        # Set runtime context from training system
-        evaluator.set_runtime_context(
-            policy_mapper=self.policy_mapper,
-            device=self.device,
-            model_dir=self.model_dir,
-            wandb_active=self.wandb_active,
-        )
-        # Guard against being called from an async context.
-        # Nested event loops are not supported on Python 3.12+.
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass  # No running event loop — safe to proceed
-        else:
-            raise RuntimeError(
-                "evaluate_current_agent() cannot be called from an async context. "
-                "Use evaluate_current_agent_async() instead."
+            agent_info = AgentInfo(
+                name=getattr(agent, "name", "current_agent"),
+                metadata={"agent_instance": agent},
+            )
+            context = EvaluationContext(
+                session_id=str(uuid4()),
+                timestamp=datetime.now(),
+                agent_info=agent_info,
+                configuration=self.config,
+                environment_info={"device": self.device},
             )
 
-        if self.performance_safeguards_enabled:
-            result = asyncio.run(
-                self.performance_manager.run_evaluation_with_safeguards(
-                    evaluator, agent_info, context
+            evaluator = EvaluatorFactory.create(self.config)
+            # Set runtime context from training system
+            evaluator.set_runtime_context(
+                policy_mapper=self.policy_mapper,
+                device=self.device,
+                model_dir=self.model_dir,
+                wandb_active=self.wandb_active,
+            )
+            # Guard against being called from an async context.
+            # Nested event loops are not supported on Python 3.12+.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass  # No running event loop — safe to proceed
+            else:
+                raise RuntimeError(
+                    "evaluate_current_agent() cannot be called from an async context. "
+                    "Use evaluate_current_agent_async() instead."
                 )
-            )
-        else:
-            result = asyncio.run(evaluator.evaluate(agent_info, context))
 
-        # Restore training mode after evaluation
-        if hasattr(model, "train"):
-            model.train()
-
-        return result
+            if self.performance_safeguards_enabled:
+                return asyncio.run(
+                    self.performance_manager.run_evaluation_with_safeguards(
+                        evaluator, agent_info, context
+                    )
+                )
+            return asyncio.run(evaluator.evaluate(agent_info, context))
+        finally:
+            if hasattr(model, "train"):
+                model.train()
 
     async def evaluate_current_agent_async(self, agent) -> EvaluationResult:
         """Async version of evaluate_current_agent for use in async contexts."""
@@ -262,41 +258,37 @@ class EvaluationManager:
         # Switch to eval mode for duration of evaluation
         if hasattr(model, "eval"):
             model.eval()
-
-        agent_info = AgentInfo(
-            name=getattr(agent, "name", "current_agent"),
-            metadata={"agent_instance": agent},
-        )
-        context = EvaluationContext(
-            session_id=str(uuid4()),
-            timestamp=datetime.now(),
-            agent_info=agent_info,
-            configuration=self.config,
-            environment_info={"device": self.device},
-        )
-
-        evaluator = EvaluatorFactory.create(self.config)
-        # Set runtime context from training system
-        evaluator.set_runtime_context(
-            policy_mapper=self.policy_mapper,
-            device=self.device,
-            model_dir=self.model_dir,
-            wandb_active=self.wandb_active,
-        )
-
-        # CRITICAL FIX: Use performance manager for async current agent evaluation
-        if self.performance_safeguards_enabled:
-            result = await self.performance_manager.run_evaluation_with_safeguards(
-                evaluator, agent_info, context
+        try:
+            agent_info = AgentInfo(
+                name=getattr(agent, "name", "current_agent"),
+                metadata={"agent_instance": agent},
             )
-        else:
-            result = await evaluator.evaluate(agent_info, context)
+            context = EvaluationContext(
+                session_id=str(uuid4()),
+                timestamp=datetime.now(),
+                agent_info=agent_info,
+                configuration=self.config,
+                environment_info={"device": self.device},
+            )
 
-        # Restore training mode after evaluation
-        if hasattr(model, "train"):
-            model.train()
+            evaluator = EvaluatorFactory.create(self.config)
+            # Set runtime context from training system
+            evaluator.set_runtime_context(
+                policy_mapper=self.policy_mapper,
+                device=self.device,
+                model_dir=self.model_dir,
+                wandb_active=self.wandb_active,
+            )
 
-        return result
+            # CRITICAL FIX: Use performance manager for async current agent evaluation
+            if self.performance_safeguards_enabled:
+                return await self.performance_manager.run_evaluation_with_safeguards(
+                    evaluator, agent_info, context
+                )
+            return await evaluator.evaluate(agent_info, context)
+        finally:
+            if hasattr(model, "train"):
+                model.train()
 
     async def evaluate_current_agent_in_memory(
         self, agent, opponent_checkpoint: Optional[str] = None

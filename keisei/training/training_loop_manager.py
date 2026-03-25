@@ -77,6 +77,16 @@ class TrainingLoopManager:
         """Sets the initial episode state, typically provided by the Trainer."""
         self.episode_state = initial_episode_state
 
+    @staticmethod
+    def _run_coroutine_with_cleanup(coro_factory, runner):
+        """Run a coroutine produced on demand and close it if startup fails."""
+        coro = coro_factory()
+        try:
+            return runner(coro)
+        except Exception:
+            coro.close()
+            raise
+
     def run(self):
         """
         Executes the main training loop.
@@ -285,20 +295,27 @@ class TrainingLoopManager:
         ``RuntimeError``.  In that case we offload the coroutine to a worker
         thread where a fresh event loop can be created safely.
         """
-        coro = self.trainer.callback_manager.execute_step_callbacks_async(
-            self.trainer
-        )
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             # No running loop — safe to use asyncio.run()
-            return asyncio.run(coro)
+            return self._run_coroutine_with_cleanup(
+                lambda: self.trainer.callback_manager.execute_step_callbacks_async(
+                    self.trainer
+                ),
+                asyncio.run,
+            )
 
         # Running inside an existing event loop; execute in a separate thread.
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+            return self._run_coroutine_with_cleanup(
+                lambda: self.trainer.callback_manager.execute_step_callbacks_async(
+                    self.trainer
+                ),
+                lambda coro: pool.submit(asyncio.run, coro).result(),
+            )
 
     def _run_epoch(self, log_both):
         """

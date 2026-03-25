@@ -706,3 +706,25 @@ class TestProcessStepEpisodeStateNone:
 
         with pytest.raises(RuntimeError, match="StepManager"):
             tlm._process_step_and_handle_episode(trainer.log_both)
+
+
+class TestAsyncCallbackRunnerCleanup:
+    """Tests for cleanup around sync-to-async callback bridging."""
+
+    def test_run_async_callbacks_closes_coroutine_if_asyncio_run_fails(self):
+        trainer = _make_trainer()
+        tlm = _make_training_loop_manager(trainer)
+        fake_coro = MagicMock()
+        trainer.callback_manager.execute_step_callbacks_async.return_value = fake_coro
+
+        with patch(
+            "keisei.training.training_loop_manager.asyncio.get_running_loop",
+            side_effect=RuntimeError,
+        ), patch(
+            "keisei.training.training_loop_manager.asyncio.run",
+            side_effect=RuntimeError("runner failed"),
+        ):
+            with pytest.raises(RuntimeError, match="runner failed"):
+                tlm._run_async_callbacks()
+
+        fake_coro.close.assert_called_once()
