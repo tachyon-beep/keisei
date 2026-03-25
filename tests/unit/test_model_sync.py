@@ -1,6 +1,7 @@
 """Unit tests for keisei.training.parallel.model_sync.ModelSynchronizer."""
 
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -126,9 +127,16 @@ class TestRestoreModelFromSync:
 
         # Create a fresh model and restore into it
         target = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
-        result = syncer.restore_model_from_sync(sync_data, target)
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            result = syncer.restore_model_from_sync(sync_data, target)
 
         assert result is True
+        assert not [
+            w
+            for w in recorded
+            if "not writable" in str(w.message).lower()
+        ]
         for key in original_sd:
             assert torch.allclose(original_sd[key], target.state_dict()[key])
 
