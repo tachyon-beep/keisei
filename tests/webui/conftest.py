@@ -277,3 +277,44 @@ def invalid_legacy_top_level_keys():
 def envelope_unknown_mode():
     """Envelope with unknown mode value (valid per Decision Freeze #6)."""
     return _make_envelope_unknown_mode()
+
+
+# ---------------------------------------------------------------------------
+# Lineage-enabled envelope helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_lineage_view():
+    """Minimal valid LineageViewState."""
+    return {
+        "event_count": 5,
+        "latest_checkpoint_id": "run-1::checkpoint_ts5000",
+        "parent_id": "run-1::checkpoint_ts2500",
+        "model_id": "run-1::checkpoint_ts5000",
+        "run_name": "run-1",
+        "generation": 3,
+        "latest_rating": 1050.0,
+        "recent_events": [
+            {
+                "event_type": "checkpoint_created",
+                "model_id": "run-1::checkpoint_ts5000",
+                "emitted_at": "2026-03-26T10:00:00Z",
+            },
+        ],
+        "ancestor_chain": ["run-1::checkpoint_ts2500", "run-1::init"],
+    }
+
+
+def _make_valid_envelope_with_lineage(ts=None):
+    """Valid envelope with lineage view active."""
+    env = _make_valid_envelope(ts)
+    env["active_views"].append("lineage")
+    env["health"]["lineage"] = "ok"
+    env["lineage"] = _make_lineage_view()
+    return env
+
+
+@pytest.fixture
+def valid_envelope_with_lineage():
+    """Canonical valid v1 envelope with lineage view populated."""
+    return _make_valid_envelope_with_lineage()

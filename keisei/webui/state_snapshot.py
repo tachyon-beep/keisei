@@ -177,6 +177,64 @@ def _build_training_view(trainer: Any) -> Dict[str, Any]:
     return training
 
 
+def extract_lineage_summary(
+    registry: Any,
+    graph: Any,
+    current_model_id: Optional[str],
+) -> Dict[str, Any]:
+    """Extract lineage summary for the broadcast envelope.
+
+    Parameters
+    ----------
+    registry
+        The LineageRegistry (for event_count and recent events).
+    graph
+        The LineageGraph read model built from registry events.
+    current_model_id
+        The model_id of the currently active checkpoint, or None.
+    """
+    event_count = registry.event_count
+
+    if current_model_id is None or graph.get_node(current_model_id) is None:
+        return {
+            "event_count": event_count,
+            "latest_checkpoint_id": None,
+            "parent_id": None,
+            "model_id": None,
+            "run_name": None,
+            "generation": 0,
+            "latest_rating": None,
+            "recent_events": [],
+            "ancestor_chain": [],
+        }
+
+    node = graph.get_node(current_model_id)
+    ancestors = graph.ancestors(current_model_id)
+
+    # Recent events: last 10 from registry, summarised
+    all_events = registry.load_all()
+    recent = [
+        {
+            "event_type": e["event_type"],
+            "model_id": e["model_id"],
+            "emitted_at": e.get("emitted_at", ""),
+        }
+        for e in all_events[-10:]
+    ]
+
+    return {
+        "event_count": event_count,
+        "latest_checkpoint_id": current_model_id,
+        "parent_id": node.parent_model_id,
+        "model_id": current_model_id,
+        "run_name": node.run_name,
+        "generation": len(ancestors) + 1,
+        "latest_rating": node.latest_rating,
+        "recent_events": recent,
+        "ancestor_chain": [a.model_id for a in ancestors],
+    }
+
+
 def build_snapshot(
     trainer: Any,
     speed: float = 0.0,
@@ -190,16 +248,38 @@ def build_snapshot(
     """
     training = _build_training_view(trainer)
 
-    return {
+    active_views: List[str] = ["training"]
+    health_overrides: Dict[str, str] = {"training": "ok"}
+
+    # Lineage view — only when registry is available on the trainer
+    lineage_data = None
+    registry = getattr(trainer, "lineage_registry", None)
+    if registry is not None:
+        from keisei.lineage.graph import LineageGraph
+
+        graph = LineageGraph.from_events(registry.load_all())
+        current_model_id = getattr(
+            getattr(trainer, "model_manager", None), "current_model_id", None
+        )
+        lineage_data = extract_lineage_summary(registry, graph, current_model_id)
+        active_views.append("lineage")
+        health_overrides["lineage"] = "ok"
+
+    envelope: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "timestamp": time.time(),
         "speed": speed,
         "mode": _resolve_mode(trainer),
-        "active_views": ["training"],
-        "health": make_health_map(training="ok"),
+        "active_views": active_views,
+        "health": make_health_map(**health_overrides),
         "training": training,
         "pending_updates": sanitize_pending_updates(pending_updates),
     }
+
+    if lineage_data is not None:
+        envelope["lineage"] = lineage_data
+
+    return envelope
 
 
 def write_snapshot_atomic(snapshot: Dict[str, Any], path: Path) -> None:

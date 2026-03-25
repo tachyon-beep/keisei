@@ -222,15 +222,20 @@ class LeagueViewState(TypedDict):
 
 
 class LineageViewState(TypedDict):
-    """Lineage / provenance view — placeholder, produced by Move 2.
+    """Lineage / provenance view — populated when lineage is enabled.
 
-    Backed by append-only JSONL events (Decision Freeze #4).  Not populated
-    until ``keisei-tw5`` delivers event persistence and a read model.
+    Backed by append-only JSONL events and the LineageGraph read model.
     """
 
     event_count: int
     latest_checkpoint_id: Optional[str]
     parent_id: Optional[str]
+    model_id: Optional[str]
+    run_name: Optional[str]
+    generation: int  # length of ancestor chain + 1
+    latest_rating: Optional[float]
+    recent_events: List[Dict[str, Any]]  # last 10 raw events (summary)
+    ancestor_chain: List[str]  # model_ids from parent to root
 
 
 class SkillDifferentialViewState(TypedDict):
@@ -293,9 +298,7 @@ def make_health_map(**overrides: HealthStatus) -> HealthMap:
     base: HealthMap = {k: "missing" for k in VIEW_KEYS}
     for key, status in overrides.items():
         if key not in base:
-            raise ValueError(
-                f"Unknown view key {key!r}; valid keys are {VIEW_KEYS}"
-            )
+            raise ValueError(f"Unknown view key {key!r}; valid keys are {VIEW_KEYS}")
         base[key] = status
     return base
 
@@ -371,16 +374,12 @@ def validate_envelope(data: Dict[str, Any]) -> List[str]:
 
     # training must be a dict (deep validation is per-view)
     if not isinstance(data["training"], dict):
-        errors.append(
-            f"training must be a dict, got {type(data['training']).__name__}"
-        )
+        errors.append(f"training must be a dict, got {type(data['training']).__name__}")
 
     # pending_updates scalar check
     pu = data["pending_updates"]
     if not isinstance(pu, dict):
-        errors.append(
-            f"pending_updates must be a dict, got {type(pu).__name__}"
-        )
+        errors.append(f"pending_updates must be a dict, got {type(pu).__name__}")
     else:
         for pk, pv in pu.items():
             if not isinstance(pv, (int, float, str, bool, type(None))):
