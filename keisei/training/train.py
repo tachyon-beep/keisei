@@ -391,6 +391,18 @@ async def main():
         sys.exit(1)
 
 
+def _run_async_entrypoint(async_fn):
+    """Run an async entrypoint and close the coroutine if startup fails early."""
+    coro = async_fn()
+    try:
+        return asyncio.run(coro)
+    except BaseException:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        raise
+
+
 def main_sync():
     """Synchronous entry point that handles async main properly."""
     # Fix B6: Add multiprocessing.freeze_support() for Windows compatibility
@@ -410,7 +422,7 @@ def main_sync():
 
     # Run the async main function
     try:
-        asyncio.run(main())
+        _run_async_entrypoint(main)
     except KeyboardInterrupt:
         log_info_to_stderr("Main", "Process interrupted by user")
         sys.exit(1)
