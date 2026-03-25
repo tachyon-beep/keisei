@@ -116,7 +116,9 @@ def render_board(board_state: Dict[str, Any]) -> None:
     # Column headers (9 to 1, standard shogi notation)
     header = "<tr><td></td>"
     for c in range(9, 0, -1):
-        header += f'<td style="text-align:center;font-weight:bold;font-size:12px;">{c}</td>'
+        header += (
+            f'<td style="text-align:center;font-weight:bold;font-size:12px;">{c}</td>'
+        )
     header += "</tr>"
     html_rows.append(header)
 
@@ -138,10 +140,12 @@ def render_board(board_state: Dict[str, Any]) -> None:
                     if piece["promoted"]:
                         label = "+" + label
                     color = "#000" if piece["color"] == "black" else "#c00"
-                    cell_content = f'<span style="color:{color};font-weight:bold;">{label}</span>'
+                    cell_content = (
+                        f'<span style="color:{color};font-weight:bold;">{label}</span>'
+                    )
             tr += (
                 f'<td style="width:{cell_size}px;height:{cell_size}px;'
-                f'background:{bg};text-align:center;vertical-align:middle;'
+                f"background:{bg};text-align:center;vertical-align:middle;"
                 f'border:1px solid #8b7355;">{cell_content}</td>'
             )
         html_rows.append(f"<tr>{tr}</tr>")
@@ -241,7 +245,9 @@ def render_game_status(board_state: Dict[str, Any], step_info: Optional[Dict]) -
 
         if game_over:
             if winner:
-                st.success(f"Game over — {winner.capitalize()} wins! (Move {move_count})")
+                st.success(
+                    f"Game over — {winner.capitalize()} wins! (Move {move_count})"
+                )
             else:
                 st.warning(f"Game over — Draw (Move {move_count})")
         else:
@@ -314,7 +320,11 @@ def render_lineage_panel(env: EnvelopeParser) -> None:
     if ancestors:
         with st.expander(f"Ancestor chain ({len(ancestors)} models)", expanded=False):
             for i, ancestor_id in enumerate(ancestors):
-                prefix = "\u2514\u2500\u2500 " if i == len(ancestors) - 1 else "\u251c\u2500\u2500 "
+                prefix = (
+                    "\u2514\u2500\u2500 "
+                    if i == len(ancestors) - 1
+                    else "\u251c\u2500\u2500 "
+                )
                 st.text(f"{prefix}{ancestor_id}")
 
     # Recent events
@@ -344,9 +354,7 @@ def render_stale_warning(env: EnvelopeParser) -> None:
     """Show a warning banner when the snapshot is stale."""
     if env.is_stale():
         age = int(env.age_seconds())
-        st.warning(
-            f"Training data is {age}s old — training may be paused or stopped."
-        )
+        st.warning(f"Training data is {age}s old — training may be paused or stopped.")
 
 
 def main() -> None:
@@ -358,7 +366,9 @@ def main() -> None:
 
     # Parse --state-file from Streamlit's extra args
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("--state-file", default=None, help="Path to state JSON file")
+    arg_parser.add_argument(
+        "--state-file", default=None, help="Path to state JSON file"
+    )
     args, _ = arg_parser.parse_known_args()
 
     state = load_state(args.state_file)
@@ -419,9 +429,15 @@ def main() -> None:
             render_game_status(board_state, step_info)
         if step_info:
             st.caption("Move Statistics")
-            sc, gc = step_info.get("sente_capture_count", 0), step_info.get("gote_capture_count", 0)
-            sd, gd = step_info.get("sente_drop_count", 0), step_info.get("gote_drop_count", 0)
-            sp, gp = step_info.get("sente_promo_count", 0), step_info.get("gote_promo_count", 0)
+            sc, gc = step_info.get("sente_capture_count", 0), step_info.get(
+                "gote_capture_count", 0
+            )
+            sd, gd = step_info.get("sente_drop_count", 0), step_info.get(
+                "gote_drop_count", 0
+            )
+            sp, gp = step_info.get("sente_promo_count", 0), step_info.get(
+                "gote_promo_count", 0
+            )
             st.text(f"Captures: Black {sc} / White {gc}")
             st.text(f"Drops:    Black {sd} / White {gd}")
             st.text(f"Promos:   Black {sp} / White {gp}")

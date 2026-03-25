@@ -298,9 +298,7 @@ def make_health_map(**overrides: HealthStatus) -> HealthMap:
     base: HealthMap = {k: "missing" for k in VIEW_KEYS}
     for key, status in overrides.items():
         if key not in base:
-            raise ValueError(
-                f"Unknown view key {key!r}; valid keys are {VIEW_KEYS}"
-            )
+            raise ValueError(f"Unknown view key {key!r}; valid keys are {VIEW_KEYS}")
         base[key] = status
     return base
 
@@ -376,16 +374,12 @@ def validate_envelope(data: Dict[str, Any]) -> List[str]:
 
     # training must be a dict (deep validation is per-view)
     if not isinstance(data["training"], dict):
-        errors.append(
-            f"training must be a dict, got {type(data['training']).__name__}"
-        )
+        errors.append(f"training must be a dict, got {type(data['training']).__name__}")
 
     # pending_updates scalar check
     pu = data["pending_updates"]
     if not isinstance(pu, dict):
-        errors.append(
-            f"pending_updates must be a dict, got {type(pu).__name__}"
-        )
+        errors.append(f"pending_updates must be a dict, got {type(pu).__name__}")
     else:
         for pk, pv in pu.items():
             if not isinstance(pv, (int, float, str, bool, type(None))):

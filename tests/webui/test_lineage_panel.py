@@ -7,7 +7,11 @@ from typing import Any, Dict
 
 import pytest
 
-from keisei.webui.view_contracts import SCHEMA_VERSION, make_health_map, validate_envelope
+from keisei.webui.view_contracts import (
+    SCHEMA_VERSION,
+    make_health_map,
+    validate_envelope,
+)
 
 
 def _make_lineage_view() -> Dict[str, Any]:
@@ -98,9 +102,7 @@ class TestLineageExtraction:
             },
         ]
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".jsonl", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             for ev in events:
                 f.write(json.dumps(ev) + "\n")
             tmp_path = Path(f.name)
@@ -125,17 +127,13 @@ class TestLineageExtraction:
         from keisei.lineage.registry import LineageRegistry
         from keisei.webui.state_snapshot import extract_lineage_summary
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".jsonl", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             tmp_path = Path(f.name)
 
         try:
             registry = LineageRegistry(tmp_path)
             graph = LineageGraph.from_events(registry.load_all())
-            result = extract_lineage_summary(
-                registry, graph, current_model_id=None
-            )
+            result = extract_lineage_summary(registry, graph, current_model_id=None)
 
             assert result["event_count"] == 0
             assert result["model_id"] is None

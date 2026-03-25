@@ -3,11 +3,11 @@
   "timestamp": 1707400000.0,
   "speed": 245.3,
   "mode": "single_opponent",
-  "active_views": ["training"],
+  "active_views": ["training", "lineage"],
   "health": {
     "training": "ok",
     "league": "missing",
-    "lineage": "missing",
+    "lineage": "ok",
     "skill_differential": "missing",
     "model_profile": "missing"
   },
@@ -78,6 +78,20 @@
     "model_info": {
       "gradient_norm": 0.35
     }
+  },
+  "lineage": {
+    "event_count": 12,
+    "latest_checkpoint_id": "demo-run::checkpoint_ts12500",
+    "parent_id": "demo-run::checkpoint_ts10000",
+    "model_id": "demo-run::checkpoint_ts12500",
+    "run_name": "demo-run",
+    "generation": 6,
+    "latest_rating": 1120.5,
+    "recent_events": [
+      {"event_type": "checkpoint_created", "model_id": "demo-run::checkpoint_ts12500", "emitted_at": "2026-03-26T12:00:00Z"},
+      {"event_type": "model_promoted", "model_id": "demo-run::checkpoint_ts10000", "emitted_at": "2026-03-26T11:30:00Z"}
+    ],
+    "ancestor_chain": ["demo-run::checkpoint_ts10000", "demo-run::checkpoint_ts7500", "demo-run::checkpoint_ts5000", "demo-run::checkpoint_ts2500", "demo-run::init"]
   },
   "pending_updates": {}
 }

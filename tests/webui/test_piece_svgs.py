@@ -84,9 +84,7 @@ class TestPieceSVGs:
             for color in COLORS:
                 key = f"{piece}_{color}"
                 assert key in _PIECE_SVG_CACHE, f"Missing cache key: {key}"
-                assert _PIECE_SVG_CACHE[key].startswith(
-                    "data:image/svg+xml;base64,"
-                )
+                assert _PIECE_SVG_CACHE[key].startswith("data:image/svg+xml;base64,")
 
 
 @pytest.mark.unit

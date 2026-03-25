@@ -77,13 +77,23 @@ class ModelManager:
         # Model configuration from args or config.
         # Use `is not None` instead of `or` to respect valid falsy values (e.g. se_ratio=0).
         _input_features = getattr(args, "input_features", None)
-        self.input_features = _input_features if _input_features is not None else config.training.input_features
+        self.input_features = (
+            _input_features
+            if _input_features is not None
+            else config.training.input_features
+        )
         _model_type = getattr(args, "model", None)
-        self.model_type = _model_type if _model_type is not None else config.training.model_type
+        self.model_type = (
+            _model_type if _model_type is not None else config.training.model_type
+        )
         _tower_depth = getattr(args, "tower_depth", None)
-        self.tower_depth = _tower_depth if _tower_depth is not None else config.training.tower_depth
+        self.tower_depth = (
+            _tower_depth if _tower_depth is not None else config.training.tower_depth
+        )
         _tower_width = getattr(args, "tower_width", None)
-        self.tower_width = _tower_width if _tower_width is not None else config.training.tower_width
+        self.tower_width = (
+            _tower_width if _tower_width is not None else config.training.tower_width
+        )
         _se_ratio = getattr(args, "se_ratio", None)
         self.se_ratio = _se_ratio if _se_ratio is not None else config.training.se_ratio
 
@@ -165,9 +175,7 @@ class ModelManager:
         else:
             self.logger_func("torch.compile optimization disabled")
 
-    def set_lineage_registry(
-        self, registry: LineageRegistry, run_name: str
-    ) -> None:
+    def set_lineage_registry(self, registry: LineageRegistry, run_name: str) -> None:
         """Wire the lineage registry into the model manager.
 
         Called by ``Trainer`` when ``config.lineage.enabled`` is True.
@@ -292,9 +300,7 @@ class ModelManager:
         except ValueError as exc:
             _lineage_logger.warning("Failed to emit lineage event: %s", exc)
 
-    def emit_training_resumed(
-        self, checkpoint_path: str, global_timestep: int
-    ) -> None:
+    def emit_training_resumed(self, checkpoint_path: str, global_timestep: int) -> None:
         """Emit a ``training_resumed`` lineage event after loading a checkpoint."""
         if self._lineage_registry is None or self._run_name is None:
             return
