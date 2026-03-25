@@ -275,6 +275,32 @@ class TestDeterministicVsStochastic:
         expected_action = int(torch.argmax(masked_logits, dim=-1).item())
         assert det_action == expected_action
 
+    def test_grad_mode_tracks_training_flag(self, agent, game, mapper, monkeypatch):
+        """Evaluation should disable grad tracking while training leaves it enabled."""
+        obs = game.get_observation()
+        mask = _build_legal_mask(game, mapper)
+        legal_index = int(torch.nonzero(mask, as_tuple=False)[0].item())
+        grad_states = []
+
+        def fake_get_action_and_value(
+            obs_tensor, legal_mask=None, deterministic=False
+        ):
+            grad_states.append(torch.is_grad_enabled())
+            return (
+                torch.tensor([legal_index], device=obs_tensor.device),
+                torch.tensor([0.0], device=obs_tensor.device),
+                torch.tensor([0.0], device=obs_tensor.device),
+            )
+
+        monkeypatch.setattr(
+            agent.model, "get_action_and_value", fake_get_action_and_value
+        )
+
+        agent.select_action(obs, mask, is_training=True)
+        agent.select_action(obs, mask, is_training=False)
+
+        assert grad_states == [True, False]
+
 
 # ---------------------------------------------------------------------------
 # 4. Edge cases

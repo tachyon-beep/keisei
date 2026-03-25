@@ -173,6 +173,16 @@ class PPOAgent:
         # Get action, log_prob, and value from the ActorCritic model
         # Pass deterministic based on not is_training
         if is_training:
+            (
+                selected_policy_index_tensor,
+                log_prob_tensor,
+                value_tensor,
+            ) = self.model.get_action_and_value(
+                obs_tensor,
+                legal_mask=legal_mask,
+                deterministic=not is_training,
+            )
+        else:
             with torch.no_grad():
                 (
                     selected_policy_index_tensor,
@@ -183,16 +193,6 @@ class PPOAgent:
                     legal_mask=legal_mask,
                     deterministic=not is_training,
                 )
-        else:
-            (
-                selected_policy_index_tensor,
-                log_prob_tensor,
-                value_tensor,
-            ) = self.model.get_action_and_value(
-                obs_tensor,
-                legal_mask=legal_mask,
-                deterministic=not is_training,
-            )
 
         selected_policy_index_val = int(selected_policy_index_tensor.item())
         log_prob_val = float(log_prob_tensor.item())
