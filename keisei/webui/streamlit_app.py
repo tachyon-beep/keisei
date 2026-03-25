@@ -103,30 +103,54 @@ def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _piece_aria_label(piece: Optional[Dict[str, Any]]) -> str:
+    """Build an accessible label for a board cell's contents."""
+    if piece is None:
+        return "empty square"
+    ptype = piece["type"].replace("_", " ")
+    return f"{piece['color']} {ptype}"
+
+
 def render_board(board_state: Dict[str, Any]) -> None:
-    """Render the shogi board as an HTML table with SVG pieces."""
+    """Render the shogi board as a semantic HTML table with SVG pieces.
+
+    Uses ``role="table"`` with proper ``<th>`` headers, ``alt`` text on
+    piece images, and ``aria-label`` on each cell.  Row labels use
+    numeric 1-9 (standard Shogi notation), not alphabetic.
+    """
     board = board_state.get("board", [])
     if not board:
         st.info("No board data available")
         return
 
+    move_count = board_state.get("move_count", 0)
+    current_player = board_state.get("current_player", "unknown")
     cell_size = 48
-    html_rows = []
-    # Column headers (9 to 1, standard shogi notation)
-    header = "<tr><td></td>"
-    for c in range(9, 0, -1):
-        header += (
-            f'<td style="text-align:center;font-weight:bold;font-size:12px;">{c}</td>'
-        )
-    header += "</tr>"
-    html_rows.append(header)
 
-    row_labels = "abcdefghi"
+    # --- Column headers ---
+    header_cells = '<th scope="col" aria-hidden="true"></th>'
+    for file_num in range(9, 0, -1):
+        header_cells += (
+            f'<th scope="col" style="text-align:center;'
+            f'font-weight:bold;font-size:12px;">{file_num}</th>'
+        )
+
+    # --- Board rows (rank 1-9) ---
+    body_rows = []
     for r, row in enumerate(board):
-        tr = f'<td style="font-weight:bold;font-size:12px;padding:2px 4px;">{row_labels[r]}</td>'
+        rank = r + 1
+        row_header = (
+            f'<th scope="row" style="font-weight:bold;'
+            f'font-size:12px;padding:2px 4px;">{rank}</th>'
+        )
+        cells = ""
         for c in range(9):
             piece = row[c]
+            file_num = 9 - c
             bg = "#f5deb3" if (r + c) % 2 == 0 else "#deb887"
+            aria = _piece_aria_label(piece)
+            cell_label = f"{file_num}-{rank}: {aria}"
+
             cell_content = ""
             if piece is not None:
                 key = _piece_image_key(piece)
@@ -135,30 +159,46 @@ def render_board(board_state: Dict[str, Any]) -> None:
                     img_sz = cell_size - 8
                     cell_content = (
                         f'<img src="{svg_uri}" width="{img_sz}"'
-                        f' height="{img_sz}">'
+                        f' height="{img_sz}"'
+                        f' alt="{aria}">'
                     )
                 else:
-                    # Fallback: text label
+                    # Fallback: text label (contrast-safe)
                     label = piece["type"][0].upper()
-                    if piece["promoted"]:
+                    if piece.get("promoted"):
                         label = "+" + label
-                    color = "#000" if piece["color"] == "black" else "#c00"
-                    cell_content = (
-                        f'<span style="color:{color};font-weight:bold;">{label}</span>'
+                    txt_color = (
+                        "#000" if piece["color"] == "black"
+                        else "#8b0000"
                     )
-            tr += (
-                f'<td style="width:{cell_size}px;height:{cell_size}px;'
-                f"background:{bg};text-align:center;vertical-align:middle;"
-                f'border:1px solid #8b7355;">{cell_content}</td>'
+                    cell_content = (
+                        f'<span style="color:{txt_color};'
+                        f'font-weight:bold;">{label}</span>'
+                    )
+            cells += (
+                f'<td aria-label="{cell_label}"'
+                f' style="width:{cell_size}px;height:{cell_size}px;'
+                f"background:{bg};text-align:center;"
+                f'vertical-align:middle;'
+                f'border:1px solid #8b7355;">'
+                f"{cell_content}</td>"
             )
-        html_rows.append(f"<tr>{tr}</tr>")
+        body_rows.append(f"<tr>{row_header}{cells}</tr>")
 
-    table_html = (
-        '<table style="border-collapse:collapse;margin:auto;">'
-        + "".join(html_rows)
-        + "</table>"
+    caption = (
+        f"Shogi board position, move {move_count}, "
+        f"{current_player.capitalize()} to play. "
+        f"Black (Sente) plays from bottom, "
+        f"White (Gote) from top."
     )
-    # Add enough height for the board plus padding
+    table_html = (
+        f'<table role="table" style="border-collapse:collapse;'
+        f'margin:auto;"'
+        f' aria-label="{caption}">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f'<tbody>{"".join(body_rows)}</tbody>'
+        f"</table>"
+    )
     st.components.v1.html(table_html, height=cell_size * 10 + 40)
 
 
