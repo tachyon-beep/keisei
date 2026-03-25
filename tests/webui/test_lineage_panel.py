@@ -37,7 +37,7 @@ def _make_lineage_view() -> Dict[str, Any]:
 
 def _make_envelope_with_lineage() -> Dict[str, Any]:
     """Build a valid envelope with lineage view active."""
-    from tests.webui.conftest import _make_valid_training_view
+    from .conftest import _make_valid_training_view
 
     return {
         "schema_version": SCHEMA_VERSION,
