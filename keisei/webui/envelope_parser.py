@@ -90,6 +90,13 @@ class EnvelopeParser:
         t = self.training
         return t.get("model_info", {}) if t else {}
 
+    # -- optional views ----------------------------------------------------
+
+    @property
+    def lineage(self) -> Optional[Dict[str, Any]]:
+        """Lineage view payload, or ``None`` when lineage is not active."""
+        return self._raw.get("lineage")
+
     # -- health / staleness -------------------------------------------------
 
     def view_health(self, view: str) -> str:
