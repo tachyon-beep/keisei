@@ -624,16 +624,6 @@ class WebUIConfig(BaseModel):
     update_rate_hz: float = Field(
         2.0, description="State file update frequency in Hz"
     )
-    # Legacy fields kept for YAML backward compatibility
-    max_connections: int = Field(
-        10, description="(Legacy) Maximum concurrent connections"
-    )
-    board_update_rate_hz: float = Field(
-        5.0, description="(Legacy) Board state update frequency"
-    )
-    metrics_update_rate_hz: float = Field(
-        1.0, description="(Legacy) Metrics update frequency"
-    )
 
 
 class LineageConfig(BaseModel):

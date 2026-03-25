@@ -107,13 +107,7 @@ def setup_wandb(config, run_name, run_artifact_dir):
     is_active = wandb_cfg.enabled
     if is_active:
         try:
-            # Debug wandb import state
             import wandb as local_wandb
-
-            log_info_to_stderr(
-                "TrainingUtils",
-                f"wandb module type: {type(local_wandb)}, has init: {hasattr(local_wandb, 'init')}",
-            )
 
             config_dict_for_wandb = (
                 json.loads(serialize_config(config)) if serialize_config(config) else {}
@@ -129,20 +123,10 @@ def setup_wandb(config, run_name, run_artifact_dir):
                 id=run_name,
             )
         except (TypeError, ValueError, OSError, AttributeError) as e:
-            # Add specific debugging for AttributeError
-            if isinstance(e, AttributeError):
-                import traceback
-
-                error_trace = traceback.format_exc()
-                log_error_to_stderr(
-                    "TrainingUtils",
-                    f"AttributeError in W&B init: {e}. Traceback:\n{error_trace}",
-                )
-            else:
-                log_error_to_stderr(
-                    "TrainingUtils",
-                    f"Error initializing W&B: {e}. W&B logging disabled.",
-                )
+            log_error_to_stderr(
+                "TrainingUtils",
+                f"Error initializing W&B: {e}. W&B logging disabled.",
+            )
             is_active = False
     if not is_active:
         log_info_to_stderr(
