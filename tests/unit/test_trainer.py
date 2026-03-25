@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 import torch
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

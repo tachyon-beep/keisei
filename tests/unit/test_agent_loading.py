@@ -7,6 +7,8 @@ import pytest
 from keisei.utils.agent_loading import initialize_opponent, load_evaluation_agent
 from keisei.utils.opponents import SimpleHeuristicOpponent, SimpleRandomOpponent
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

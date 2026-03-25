@@ -24,6 +24,8 @@ from keisei.config_schema import (
     WebUIConfig,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

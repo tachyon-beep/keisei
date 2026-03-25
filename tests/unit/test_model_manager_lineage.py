@@ -13,6 +13,8 @@ import pytest
 from keisei.lineage.event_schema import validate_event
 from keisei.lineage.registry import LineageRegistry
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

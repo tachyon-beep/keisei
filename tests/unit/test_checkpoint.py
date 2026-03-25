@@ -10,6 +10,8 @@ from keisei.core.neural_network import ActorCritic
 from keisei.training.models.resnet_tower import ActorCriticResTower
 from keisei.utils.checkpoint import load_checkpoint_with_padding
 
+pytestmark = pytest.mark.unit
+
 # ---------------------------------------------------------------------------
 # Constants -- small sizes for fast tests
 # ---------------------------------------------------------------------------

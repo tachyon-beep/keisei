@@ -6,6 +6,8 @@ import pytest
 from keisei.utils.utils import PolicyOutputMapper
 from keisei.shogi.shogi_core_definitions import PieceType, get_unpromoted_types
 
+pytestmark = pytest.mark.unit
+
 EXPECTED_TOTAL_ACTIONS = 13527
 
 

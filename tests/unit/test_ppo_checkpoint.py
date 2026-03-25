@@ -19,6 +19,8 @@ from keisei.core.neural_network import ActorCritic
 from keisei.core.ppo_agent import PPOAgent
 from keisei.utils.utils import PolicyOutputMapper
 
+pytestmark = pytest.mark.unit
+
 
 def make_config(tmp_path, lr_schedule_type=None, lr_schedule_step_on="epoch"):
     """Build a minimal AppConfig, optionally with LR scheduling."""

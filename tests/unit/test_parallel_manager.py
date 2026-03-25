@@ -7,6 +7,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

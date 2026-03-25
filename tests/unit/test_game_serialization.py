@@ -6,6 +6,8 @@ import pytest
 from keisei.shogi.shogi_core_definitions import Color, Piece, PieceType
 from keisei.shogi.shogi_game import ShogiGame
 
+pytestmark = pytest.mark.unit
+
 # The canonical initial SFEN for standard Shogi
 INITIAL_SFEN = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
 

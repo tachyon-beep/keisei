@@ -20,6 +20,8 @@ from keisei.config_schema import (
 )
 from keisei.training.setup_manager import SetupManager
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

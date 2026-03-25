@@ -15,6 +15,8 @@ from keisei.utils.unified_logger import (
     log_warning_to_stderr,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestLogFunctionsDoNotRaise:
     """Basic smoke tests: calling each log function must not raise."""

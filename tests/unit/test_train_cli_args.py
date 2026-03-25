@@ -13,6 +13,8 @@ from keisei.training.train import (
     run_training_command,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _parse_eval_args(*args: str) -> argparse.Namespace:
     """Parse evaluation arguments, simulating the evaluate subcommand."""

@@ -12,6 +12,8 @@ import pytest
 from keisei.shogi.shogi_game import ShogiGame
 from keisei.shogi.shogi_core_definitions import Color, PieceType, Piece
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # 1. Nifu (two pawns on the same file)

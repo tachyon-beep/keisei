@@ -10,6 +10,8 @@ import torch
 
 from keisei.core.scheduler_factory import SchedulerFactory
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def optimizer():

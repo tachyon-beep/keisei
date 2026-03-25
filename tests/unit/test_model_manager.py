@@ -28,6 +28,8 @@ from keisei.config_schema import (
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.training.model_manager import ModelManager
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

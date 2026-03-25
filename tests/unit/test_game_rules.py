@@ -9,6 +9,8 @@ import pytest
 from keisei.shogi.shogi_game import ShogiGame
 from keisei.shogi.shogi_core_definitions import Color, PieceType, Piece, MoveTuple
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

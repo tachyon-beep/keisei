@@ -32,6 +32,8 @@ from keisei.shogi.shogi_game_io import (
     sfen_to_move_tuple,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

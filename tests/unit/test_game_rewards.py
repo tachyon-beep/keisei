@@ -7,6 +7,8 @@ import pytest
 from keisei.shogi.shogi_core_definitions import Color
 from keisei.shogi.shogi_game import ShogiGame
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Ongoing game reward tests

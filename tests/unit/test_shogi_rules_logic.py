@@ -27,6 +27,8 @@ from keisei.shogi.shogi_rules_logic import (
     must_promote_specific_piece,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

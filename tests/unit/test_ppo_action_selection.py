@@ -18,6 +18,8 @@ from keisei.core.ppo_agent import PPOAgent
 from keisei.shogi.shogi_game import ShogiGame
 from keisei.utils.utils import PolicyOutputMapper
 
+pytestmark = pytest.mark.unit
+
 
 def make_config(tmp_path):
     """Build a minimal AppConfig pointing at tmp_path for logs/models."""

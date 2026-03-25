@@ -14,6 +14,8 @@ import pytest
 from keisei.config_schema import WebUIConfig
 from keisei.webui.streamlit_manager import StreamlitManager
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # P2: update_rate_hz wired into StreamlitManager write throttle

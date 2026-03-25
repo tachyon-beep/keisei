@@ -4,6 +4,8 @@ These tests lock the canonical fixture payloads against the contract
 validators, ensuring that schema changes are detected immediately.
 """
 
+import pytest
+
 from keisei.webui.view_contracts import (
     SCHEMA_VERSION,
     STALE_THRESHOLD_SECONDS,
@@ -12,6 +14,8 @@ from keisei.webui.view_contracts import (
     sanitize_pending_updates,
     validate_envelope,
 )
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------

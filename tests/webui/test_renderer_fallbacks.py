@@ -20,6 +20,8 @@ from keisei.webui.view_contracts import (
     make_health_map,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

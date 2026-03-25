@@ -23,6 +23,8 @@ from keisei.webui.view_contracts import (
     validate_envelope,
 )
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers: lightweight stubs (no real training components needed)

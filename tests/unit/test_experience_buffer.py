@@ -6,6 +6,8 @@ import numpy as np
 
 from keisei.core.experience_buffer import ExperienceBuffer
 
+pytestmark = pytest.mark.unit
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

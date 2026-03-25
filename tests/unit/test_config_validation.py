@@ -21,6 +21,8 @@ from keisei.config_schema import (
     WebUIConfig,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def make_app_config(**overrides):
     """Build a minimal valid AppConfig, with optional section overrides."""

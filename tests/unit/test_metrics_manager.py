@@ -7,6 +7,8 @@ import pytest
 from keisei.shogi.shogi_core_definitions import Color
 from keisei.training.metrics_manager import MetricsHistory, MetricsManager, TrainingStats
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

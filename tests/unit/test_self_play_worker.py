@@ -11,6 +11,8 @@ import torch.nn as nn
 from keisei.core.experience_buffer import Experience
 from keisei.training.parallel.self_play_worker import SelfPlayWorker
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

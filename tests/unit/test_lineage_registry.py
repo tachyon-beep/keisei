@@ -14,6 +14,8 @@ from keisei.lineage.event_schema import (
 )
 from keisei.lineage.registry import LineageRegistry
 
+pytestmark = pytest.mark.unit
+
 
 def _make_event(seq: int = 0, **overrides) -> dict:
     """Build a valid event dict, with optional field overrides."""

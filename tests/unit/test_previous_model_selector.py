@@ -4,6 +4,10 @@ from pathlib import Path
 
 from keisei.training.previous_model_selector import PreviousModelSelector
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 class TestPreviousModelSelector:
     """Tests for the PreviousModelSelector deque-backed checkpoint pool."""

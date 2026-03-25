@@ -16,6 +16,8 @@ from keisei.lineage.registry import LineageRegistry
 from keisei.evaluation.opponents.elo_registry import EloRegistry
 from keisei.training.callbacks import AsyncEvaluationCallback, EvaluationCallback
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers

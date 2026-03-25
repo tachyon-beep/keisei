@@ -9,6 +9,8 @@ import torch.nn as nn
 
 from keisei.training.parallel.model_sync import ModelSynchronizer
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

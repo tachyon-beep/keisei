@@ -10,6 +10,8 @@ import torch
 
 from keisei.training.parallel.communication import WorkerCommunicator
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
