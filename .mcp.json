@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "filigree": {
+      "type": "stdio",
+      "command": "/home/john/.local/bin/filigree-mcp",
+      "args": [
+        "--project",
+        "/home/john/keisei"
+      ],
+      "env": {}
+    }
+  }
+}

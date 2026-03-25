@@ -13,6 +13,7 @@ from keisei.config_schema import (
     DisplayConfig,
     EnvConfig,
     EvaluationConfig,
+    LineageConfig,
     LoggingConfig,
     ParallelConfig,
     TrainingConfig,
@@ -216,3 +217,33 @@ class TestTorchCompileModeValidator:
         """An unsupported compile mode must be rejected."""
         with pytest.raises(ValidationError):
             TrainingConfig(torch_compile_mode="invalid")
+
+
+# ---------------------------------------------------------------------------
+# LineageConfig defaults
+# ---------------------------------------------------------------------------
+
+
+class TestLineageConfigDefaults:
+    def test_default_lineage_config_creates_successfully(self):
+        """Default LineageConfig should instantiate with lineage enabled."""
+        config = LineageConfig()
+        assert config.enabled is True
+        assert config.storage_path is None
+
+    def test_lineage_config_present_in_app_config(self):
+        """AppConfig must include a lineage section with defaults."""
+        config = make_app_config()
+        assert hasattr(config, "lineage")
+        assert isinstance(config.lineage, LineageConfig)
+        assert config.lineage.enabled is True
+
+    def test_lineage_disabled_mode(self):
+        """Setting enabled=False should be accepted."""
+        config = LineageConfig(enabled=False)
+        assert config.enabled is False
+
+    def test_lineage_custom_storage_path(self):
+        """A custom storage path should be preserved."""
+        config = LineageConfig(storage_path="/custom/path/lineage.jsonl")
+        assert config.storage_path == "/custom/path/lineage.jsonl"

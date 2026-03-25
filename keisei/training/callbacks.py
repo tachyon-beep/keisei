@@ -186,17 +186,52 @@ class EvaluationCallback(Callback):
                     ),
                 )
 
+            # Emit match_completed lineage event
+            step = trainer.metrics_manager.global_timestep + 1
+            opponent_id = os.path.basename(str(opponent_ckpt))
+            if eval_results and eval_results.summary_stats.total_games > 0:
+                result_str = (
+                    "win"
+                    if eval_results.summary_stats.win_rate
+                    > eval_results.summary_stats.loss_rate
+                    else (
+                        "loss"
+                        if eval_results.summary_stats.loss_rate
+                        > eval_results.summary_stats.win_rate
+                        else "draw"
+                    )
+                )
+                agent_rating = 0.0
+                opponent_rating = 0.0
+                if getattr(self.eval_cfg, "elo_registry_path", None):
+                    try:
+                        elo_reg = EloRegistry(
+                            Path(self.eval_cfg.elo_registry_path)
+                        )
+                        agent_rating = elo_reg.get_rating(trainer.run_name)
+                        opponent_rating = elo_reg.get_rating(opponent_id)
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                trainer.model_manager.emit_match_completed(
+                    opponent_model_id=opponent_id,
+                    result=result_str,
+                    num_games=eval_results.summary_stats.total_games,
+                    win_rate=eval_results.summary_stats.win_rate,
+                    agent_rating=agent_rating,
+                    opponent_rating=opponent_rating,
+                    global_timestep=step,
+                )
+
             # Elo tracking is independent of logging availability
             if getattr(self.eval_cfg, "elo_registry_path", None):
                 try:
                     registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
+                    old_rating = registry.get_rating(trainer.run_name)
                     snapshot = {
                         "current_id": trainer.run_name,
-                        "current_rating": registry.get_rating(trainer.run_name),
-                        "opponent_id": os.path.basename(str(opponent_ckpt)),
-                        "opponent_rating": registry.get_rating(
-                            os.path.basename(str(opponent_ckpt))
-                        ),
+                        "current_rating": old_rating,
+                        "opponent_id": opponent_id,
+                        "opponent_rating": registry.get_rating(opponent_id),
                         "last_outcome": (
                             "win"
                             if eval_results
@@ -217,6 +252,16 @@ class EvaluationCallback(Callback):
                         )[:3],
                     }
                     trainer.evaluation_elo_snapshot = snapshot
+
+                    # Emit model_promoted if rating improved
+                    new_rating = registry.get_rating(trainer.run_name)
+                    if new_rating > old_rating:
+                        trainer.model_manager.emit_model_promoted(
+                            from_rating=old_rating,
+                            to_rating=new_rating,
+                            promotion_reason="elo_improvement",
+                            global_timestep=step,
+                        )
                 except (OSError, RuntimeError, ValueError, AttributeError) as e:
                     if trainer.log_both is not None:
                         trainer.log_both(
@@ -304,17 +349,51 @@ class AsyncEvaluationCallback(AsyncCallback):
                     ),
                 )
 
+            # Emit match_completed lineage event
+            opponent_id = os.path.basename(str(opponent_ckpt))
+            if eval_results and hasattr(eval_results, "summary_stats") and eval_results.summary_stats.total_games > 0:
+                result_str = (
+                    "win"
+                    if eval_results.summary_stats.win_rate
+                    > eval_results.summary_stats.loss_rate
+                    else (
+                        "loss"
+                        if eval_results.summary_stats.loss_rate
+                        > eval_results.summary_stats.win_rate
+                        else "draw"
+                    )
+                )
+                agent_rating = 0.0
+                opponent_rating = 0.0
+                if getattr(self.eval_cfg, "elo_registry_path", None):
+                    try:
+                        elo_reg = EloRegistry(
+                            Path(self.eval_cfg.elo_registry_path)
+                        )
+                        agent_rating = elo_reg.get_rating(trainer.run_name)
+                        opponent_rating = elo_reg.get_rating(opponent_id)
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                trainer.model_manager.emit_match_completed(
+                    opponent_model_id=opponent_id,
+                    result=result_str,
+                    num_games=eval_results.summary_stats.total_games,
+                    win_rate=eval_results.summary_stats.win_rate,
+                    agent_rating=agent_rating,
+                    opponent_rating=opponent_rating,
+                    global_timestep=step,
+                )
+
             # Elo tracking is independent of logging availability
             if getattr(self.eval_cfg, "elo_registry_path", None):
                 try:
                     registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
+                    old_rating = registry.get_rating(trainer.run_name)
                     snapshot = {
                         "current_id": trainer.run_name,
-                        "current_rating": registry.get_rating(trainer.run_name),
-                        "opponent_id": os.path.basename(str(opponent_ckpt)),
-                        "opponent_rating": registry.get_rating(
-                            os.path.basename(str(opponent_ckpt))
-                        ),
+                        "current_rating": old_rating,
+                        "opponent_id": opponent_id,
+                        "opponent_rating": registry.get_rating(opponent_id),
                         "last_outcome": (
                             "win"
                             if eval_results
@@ -335,6 +414,16 @@ class AsyncEvaluationCallback(AsyncCallback):
                         )[:3],
                     }
                     trainer.evaluation_elo_snapshot = snapshot
+
+                    # Emit model_promoted if rating improved
+                    new_rating = registry.get_rating(trainer.run_name)
+                    if new_rating > old_rating:
+                        trainer.model_manager.emit_model_promoted(
+                            from_rating=old_rating,
+                            to_rating=new_rating,
+                            promotion_reason="elo_improvement",
+                            global_timestep=step,
+                        )
                 except (OSError, RuntimeError, ValueError, AttributeError) as e:
                     if trainer.log_both is not None:
                         trainer.log_both(

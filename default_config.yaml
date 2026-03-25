@@ -519,3 +519,19 @@ webui:
 # Access URL (when enabled):
 # - Dashboard: http://YOUR_SERVER_IP:8501
 # - Local access: http://localhost:8501
+
+# =============================================================================
+# LINEAGE — Event-backed model ancestry tracking
+# =============================================================================
+# Append-only JSONL log recording checkpoint saves, promotions, match results,
+# and training start/resume events.  Used for provenance queries and graph
+# reconstruction.
+lineage:
+  # Enable lineage event logging
+  enabled: true
+
+  # Path to the lineage JSONL file.
+  # null = default location (<model_dir>/lineage.jsonl)
+  storage_path: null
+
+  # Future: retention_days, max_events, archival settings

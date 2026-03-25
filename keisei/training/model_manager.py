@@ -9,8 +9,10 @@ This module handles model-related concerns including:
 - Model artifact creation for WandB
 - Final model saving and persistence
 - Performance benchmarking and optimization validation
+- Lineage event emission on checkpoint saves and resumes
 """
 
+import logging
 import os
 import shutil
 import time
@@ -22,6 +24,8 @@ from torch.amp import GradScaler
 from keisei.config_schema import AppConfig
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.ppo_agent import PPOAgent
+from keisei.lineage.event_schema import make_event, make_model_id
+from keisei.lineage.registry import LineageRegistry
 from keisei.shogi import features
 from keisei.training.models import model_factory
 from keisei.utils.performance_benchmarker import (
@@ -35,6 +39,8 @@ from keisei.utils.compilation_validator import (
 )
 
 from . import utils
+
+_lineage_logger = logging.getLogger(__name__)
 
 
 class ModelManager:
@@ -97,6 +103,11 @@ class ModelManager:
         self.resumed_from_checkpoint: Optional[str] = None
         self.checkpoint_data: Optional[Dict[str, Any]] = None
 
+        # Lineage registry — set via set_lineage_registry() by Trainer
+        self._lineage_registry: Optional[LineageRegistry] = None
+        self._run_name: Optional[str] = None
+        self._parent_model_id: Optional[str] = None
+
         # Track compilation status
         self.compilation_result: Optional[CompilationResult] = None
         self.model_is_compiled: bool = False
@@ -152,6 +163,151 @@ class ModelManager:
             )
         else:
             self.logger_func("torch.compile optimization disabled")
+
+    def set_lineage_registry(
+        self, registry: LineageRegistry, run_name: str
+    ) -> None:
+        """Wire the lineage registry into the model manager.
+
+        Called by ``Trainer`` when ``config.lineage.enabled`` is True.
+        """
+        self._lineage_registry = registry
+        self._run_name = run_name
+
+    def _emit_checkpoint_created(
+        self,
+        checkpoint_path: str,
+        global_timestep: int,
+        total_episodes: int,
+    ) -> None:
+        """Emit a ``checkpoint_created`` lineage event after a successful save."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="checkpoint_created",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "checkpoint_path": checkpoint_path,
+                "global_timestep": global_timestep,
+                "total_episodes": total_episodes,
+                "parent_model_id": self._parent_model_id,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
+    def emit_training_started(self, config_snapshot: Dict[str, Any]) -> None:
+        """Emit a ``training_started`` lineage event for a fresh run."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, 0)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="training_started",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "config_snapshot": config_snapshot,
+                "parent_model_id": self._parent_model_id,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
+    def emit_match_completed(
+        self,
+        opponent_model_id: str,
+        result: str,
+        num_games: int,
+        win_rate: float,
+        agent_rating: float,
+        opponent_rating: float,
+        global_timestep: int,
+    ) -> None:
+        """Emit a ``match_completed`` lineage event after an evaluation match set."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="match_completed",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "opponent_model_id": opponent_model_id,
+                "result": result,
+                "num_games": num_games,
+                "win_rate": win_rate,
+                "agent_rating": agent_rating,
+                "opponent_rating": opponent_rating,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
+    def emit_model_promoted(
+        self,
+        from_rating: float,
+        to_rating: float,
+        promotion_reason: str,
+        global_timestep: int,
+    ) -> None:
+        """Emit a ``model_promoted`` lineage event when a rating improvement occurs."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="model_promoted",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "from_rating": from_rating,
+                "to_rating": to_rating,
+                "promotion_reason": promotion_reason,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
+
+    def emit_training_resumed(
+        self, checkpoint_path: str, global_timestep: int
+    ) -> None:
+        """Emit a ``training_resumed`` lineage event after loading a checkpoint."""
+        if self._lineage_registry is None or self._run_name is None:
+            return
+
+        model_id = make_model_id(self._run_name, global_timestep)
+        event = make_event(
+            seq=self._lineage_registry.next_sequence_number,
+            event_type="training_resumed",
+            run_name=self._run_name,
+            model_id=model_id,
+            payload={
+                "resumed_from_checkpoint": checkpoint_path,
+                "global_timestep_at_resume": global_timestep,
+                "parent_model_id": self._parent_model_id,
+            },
+        )
+        try:
+            self._lineage_registry.append(event)
+        except ValueError as exc:
+            _lineage_logger.warning("Failed to emit lineage event: %s", exc)
 
     def create_model(self) -> ActorCriticProtocol:
         """
@@ -344,6 +500,7 @@ class ModelManager:
         if latest_ckpt:
             self.checkpoint_data = agent.load_model(latest_ckpt)
             self.resumed_from_checkpoint = latest_ckpt
+            self._set_parent_from_checkpoint(latest_ckpt)
             self.logger_func(f"Resumed from latest checkpoint: {latest_ckpt}")
             return True
         else:
@@ -360,6 +517,7 @@ class ModelManager:
             self.logger_func(f"Path exists! Loading model from {resume_path}")
             self.checkpoint_data = agent.load_model(resume_path)
             self.resumed_from_checkpoint = resume_path
+            self._set_parent_from_checkpoint(resume_path)
             self.logger_func(f"Resumed from specified checkpoint: {resume_path}")
             return True
         else:
@@ -389,6 +547,22 @@ class ModelManager:
                 shutil.copy2(parent_ckpt, dest_ckpt)
                 return dest_ckpt
         return None
+
+    def _set_parent_from_checkpoint(self, checkpoint_path: str) -> None:
+        """Extract parent model ID from a checkpoint path for lineage linkage.
+
+        Uses the checkpoint filename to derive a deterministic parent ID.
+        E.g. ``checkpoint_ts10000.pth`` → ``{run_name}::checkpoint_ts10000``.
+        """
+        import re as _re
+
+        basename = os.path.basename(checkpoint_path)
+        m = _re.search(r"_ts(\d+)", basename)
+        if m and self._run_name:
+            self._parent_model_id = make_model_id(self._run_name, int(m.group(1)))
+        else:
+            # Fallback: use the raw path as an opaque parent reference
+            self._parent_model_id = checkpoint_path
 
     def _reset_checkpoint_state(self) -> None:
         """Reset checkpoint-related state variables."""
@@ -556,6 +730,11 @@ class ModelManager:
             )
             self.logger_func(f"Final model saved to {final_model_path}")
 
+            # Emit lineage event on successful save
+            self._emit_checkpoint_created(
+                final_model_path, global_timestep, total_episodes_completed
+            )
+
             # Create W&B artifact for final model with compilation info
             final_metadata = {
                 "training_timesteps": global_timestep,
@@ -636,6 +815,9 @@ class ModelManager:
             )
             self.logger_func(f"Checkpoint saved to {checkpoint_filename}")
 
+            # Emit lineage event on successful save
+            self._emit_checkpoint_created(checkpoint_filename, timestep, episode_count)
+
             # Create W&B artifact for this checkpoint with compilation info
             checkpoint_metadata = {
                 "training_timesteps": timestep,
@@ -710,6 +892,11 @@ class ModelManager:
                 stats_to_save=game_stats,
             )
             self.logger_func(f"Final checkpoint saved to {checkpoint_filename}")
+
+            # Emit lineage event on successful save
+            self._emit_checkpoint_created(
+                checkpoint_filename, global_timestep, total_episodes_completed
+            )
 
             # Create W&B artifact for final checkpoint with compilation info
             checkpoint_metadata = {

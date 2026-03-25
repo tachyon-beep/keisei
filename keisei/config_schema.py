@@ -636,6 +636,16 @@ class WebUIConfig(BaseModel):
     )
 
 
+class LineageConfig(BaseModel):
+    """Configuration for event-backed model lineage persistence."""
+
+    enabled: bool = Field(True, description="Enable lineage event logging.")
+    storage_path: Optional[str] = Field(
+        None,
+        description="Path to the lineage JSONL file. None uses default location.",
+    )
+
+
 class AppConfig(BaseModel):
     env: EnvConfig
     training: TrainingConfig
@@ -646,5 +656,6 @@ class AppConfig(BaseModel):
     demo: Optional[DemoConfig] = None
     display: DisplayConfig = Field(default_factory=_create_display_config)
     webui: WebUIConfig = Field(default_factory=WebUIConfig)
+    lineage: LineageConfig = Field(default_factory=LineageConfig)
 
     model_config = {"extra": "forbid"}  # Disallow unknown fields for strict validation
