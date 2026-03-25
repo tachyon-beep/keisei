@@ -32,44 +32,19 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
-          
-          # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4.1)
-          # model: "claude-opus-4-1-20250805"
-          
-          # Optional: Customize the trigger phrase (default: @claude)
-          # trigger_phrase: "/claude"
-          
-          # Optional: Trigger when specific user is assigned to an issue
-          # assignee_trigger: "claude-bot"
-          
-          # Allow Claude to run project-specific commands
-          allowed_tools: "Bash(pytest tests/* -v),Bash(python train.py --help),Bash(python -m keisei.evaluation.evaluate --help),Bash(flake8 keisei/ --count),Bash(mypy keisei/ --ignore-missing-imports)"
-          
-          # Custom instructions for Keisei Deep RL project
-          custom_instructions: |
-            You are helping with the Keisei Deep Reinforcement Learning system for Shogi training.
-            
-            Key project context:
-            - Manager-based architecture with 9 specialized components
-            - PPO algorithm implementation for policy optimization
-            - Full Shogi game engine with complete rule implementation
-            - Production-ready training with Rich console UI and WandB integration
-            
-            Follow these guidelines:
-            - Maintain the manager separation pattern (SessionManager, ModelManager, etc.)
-            - Preserve PyTorch best practices and GPU memory efficiency
-            - Ensure RL training stability and checkpoint integrity
-            - Test changes with pytest and verify imports work correctly
-            - Follow the existing code style and architectural patterns
-          
-          # Optional: Custom environment variables for Claude
-          # claude_env: |
-          #   NODE_ENV: test
+
+          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
+          # prompt: 'Update the pull request description to include a summary of changes.'
+
+          # Optional: Add claude_args to customize behavior and configuration
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          # claude_args: '--allowed-tools Bash(gh pr:*)'
 
