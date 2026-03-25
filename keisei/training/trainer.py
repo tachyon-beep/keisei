@@ -83,45 +83,10 @@ class Trainer:
         # the Streamlit subprocess is stopped on *any* later init failure.
         self.webui_manager = None
         try:
-            if config.webui.enabled:
-                try:
-                    from keisei.webui.streamlit_manager import (
-                        STREAMLIT_AVAILABLE,
-                        StreamlitManager,
-                    )
-
-                    if STREAMLIT_AVAILABLE:
-                        self.webui_manager = StreamlitManager(config.webui)
-                        if self.webui_manager.start():
-                            self.logger.log(
-                                f"Streamlit dashboard launched on "
-                                f"http://{config.webui.host}:{config.webui.port}"
-                            )
-                        else:
-                            self.logger.log("Failed to start Streamlit dashboard")
-                            self.webui_manager = None
-                    else:
-                        self.logger.log(
-                            "Streamlit not available. Install 'streamlit' to enable the dashboard."
-                        )
-                except ImportError as e:
-                    self.logger.log(f"WebUI not available: {e}")
-                    self.webui_manager = None
+            self._init_webui(config)
 
             self.model_manager = ModelManager(config, args, self.device, self.logger.log)
-
-            # Wire lineage registry if enabled
-            self.lineage_registry = None
-            if config.lineage.enabled:
-                lineage_path = config.lineage.storage_path
-                if lineage_path is None:
-                    lineage_path = str(
-                        Path(self.model_dir) / "lineage.jsonl"
-                    )
-                self.lineage_registry = LineageRegistry(Path(lineage_path))
-                self.model_manager.set_lineage_registry(
-                    self.lineage_registry, self.run_name
-                )
+            self._init_lineage_registry(config)
 
             self.env_manager = EnvManager(config, self.logger.log)
             self.metrics_manager = MetricsManager(
@@ -129,47 +94,8 @@ class Trainer:
                 elo_initial_rating=config.display.elo_initial_rating,
                 elo_k_factor=config.display.elo_k_factor,
             )
-            # Create evaluation config directly from central config
-            from keisei.evaluation.core import create_evaluation_config
 
-            eval_config = create_evaluation_config(
-                strategy=config.evaluation.strategy,
-                num_games=config.evaluation.num_games,
-                max_concurrent_games=config.evaluation.max_concurrent_games,
-                timeout_per_game=config.evaluation.timeout_per_game,
-                randomize_positions=config.evaluation.randomize_positions,
-                random_seed=config.evaluation.random_seed,
-                save_games=config.evaluation.save_games,
-                save_path=config.evaluation.save_path,
-                log_level=config.evaluation.log_level,
-                wandb_logging=config.evaluation.wandb_log_eval,
-                update_elo=config.evaluation.update_elo,
-                enable_in_memory_evaluation=config.evaluation.enable_in_memory_evaluation,
-                model_weight_cache_size=config.evaluation.model_weight_cache_size,
-                enable_parallel_execution=config.evaluation.enable_parallel_execution,
-                process_restart_threshold=config.evaluation.process_restart_threshold,
-                temp_agent_device=config.evaluation.temp_agent_device,
-                clear_cache_after_evaluation=config.evaluation.clear_cache_after_evaluation,
-                # Add strategy-specific parameters
-                opponent_name=config.evaluation.opponent_type,
-                strategy_params=getattr(config.evaluation, "strategy_params", {}),
-            )
-            self.evaluation_manager = EnhancedEvaluationManager(
-                eval_config,
-                self.run_name,
-                pool_size=config.evaluation.previous_model_pool_size,
-                elo_registry_path=config.evaluation.elo_registry_path,
-                enable_background_tournaments=getattr(
-                    config.evaluation, "enable_background_tournaments", False
-                ),
-                enable_advanced_analytics=getattr(
-                    config.evaluation, "enable_advanced_analytics", False
-                ),
-                enable_enhanced_opponents=getattr(
-                    config.evaluation, "enable_enhanced_opponents", False
-                ),
-                analytics_output_dir=Path(self.model_dir) / "analytics",
-            )
+            self.evaluation_manager = self._create_evaluation_manager(config)
             self.evaluation_elo_snapshot: Optional[Dict[str, Any]] = None
             self.callback_manager = CallbackManager(config, self.model_dir)
             self.setup_manager = SetupManager(config, self.device)
@@ -200,6 +126,88 @@ class Trainer:
         # Variables for UI instrumentation
         self.last_gradient_norm: float = 0.0
         self.last_weight_updates: Dict[str, float] = {}
+
+    def _init_webui(self, config: AppConfig) -> None:
+        """Initialize the optional WebUI (Streamlit) manager."""
+        if not config.webui.enabled:
+            return
+        try:
+            from keisei.webui.streamlit_manager import (
+                STREAMLIT_AVAILABLE,
+                StreamlitManager,
+            )
+
+            if STREAMLIT_AVAILABLE:
+                self.webui_manager = StreamlitManager(config.webui)
+                if self.webui_manager.start():
+                    self.logger.log(
+                        f"Streamlit dashboard launched on "
+                        f"http://{config.webui.host}:{config.webui.port}"
+                    )
+                else:
+                    self.logger.log("Failed to start Streamlit dashboard")
+                    self.webui_manager = None
+            else:
+                self.logger.log(
+                    "Streamlit not available. Install 'streamlit' to enable the dashboard."
+                )
+        except ImportError as e:
+            self.logger.log(f"WebUI not available: {e}")
+            self.webui_manager = None
+
+    def _init_lineage_registry(self, config: AppConfig) -> None:
+        """Wire the lineage registry to the model manager if enabled."""
+        self.lineage_registry = None
+        if config.lineage.enabled:
+            lineage_path = config.lineage.storage_path
+            if lineage_path is None:
+                lineage_path = str(Path(self.model_dir) / "lineage.jsonl")
+            self.lineage_registry = LineageRegistry(Path(lineage_path))
+            self.model_manager.set_lineage_registry(
+                self.lineage_registry, self.run_name
+            )
+
+    def _create_evaluation_manager(self, config: AppConfig) -> EnhancedEvaluationManager:
+        """Create and return the evaluation manager from central config."""
+        from keisei.evaluation.core import create_evaluation_config
+
+        eval_config = create_evaluation_config(
+            strategy=config.evaluation.strategy,
+            num_games=config.evaluation.num_games,
+            max_concurrent_games=config.evaluation.max_concurrent_games,
+            timeout_per_game=config.evaluation.timeout_per_game,
+            randomize_positions=config.evaluation.randomize_positions,
+            random_seed=config.evaluation.random_seed,
+            save_games=config.evaluation.save_games,
+            save_path=config.evaluation.save_path,
+            log_level=config.evaluation.log_level,
+            wandb_logging=config.evaluation.wandb_log_eval,
+            update_elo=config.evaluation.update_elo,
+            enable_in_memory_evaluation=config.evaluation.enable_in_memory_evaluation,
+            model_weight_cache_size=config.evaluation.model_weight_cache_size,
+            enable_parallel_execution=config.evaluation.enable_parallel_execution,
+            process_restart_threshold=config.evaluation.process_restart_threshold,
+            temp_agent_device=config.evaluation.temp_agent_device,
+            clear_cache_after_evaluation=config.evaluation.clear_cache_after_evaluation,
+            opponent_name=config.evaluation.opponent_type,
+            strategy_params=getattr(config.evaluation, "strategy_params", {}),
+        )
+        return EnhancedEvaluationManager(
+            eval_config,
+            self.run_name,
+            pool_size=config.evaluation.previous_model_pool_size,
+            elo_registry_path=config.evaluation.elo_registry_path,
+            enable_background_tournaments=getattr(
+                config.evaluation, "enable_background_tournaments", False
+            ),
+            enable_advanced_analytics=getattr(
+                config.evaluation, "enable_advanced_analytics", False
+            ),
+            enable_enhanced_opponents=getattr(
+                config.evaluation, "enable_enhanced_opponents", False
+            ),
+            analytics_output_dir=Path(self.model_dir) / "analytics",
+        )
 
     def _initialize_components(self):
         """Initialize all training components using SetupManager."""
