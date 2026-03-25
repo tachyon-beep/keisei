@@ -107,6 +107,7 @@ class ModelManager:
         self._lineage_registry: Optional[LineageRegistry] = None
         self._run_name: Optional[str] = None
         self._parent_model_id: Optional[str] = None
+        self._current_model_id: Optional[str] = None
 
         # Track compilation status
         self.compilation_result: Optional[CompilationResult] = None
@@ -174,6 +175,11 @@ class ModelManager:
         self._lineage_registry = registry
         self._run_name = run_name
 
+    @property
+    def current_model_id(self) -> Optional[str]:
+        """The model_id of the most recently saved checkpoint, or None."""
+        return self._current_model_id
+
     def _emit_checkpoint_created(
         self,
         checkpoint_path: str,
@@ -185,6 +191,7 @@ class ModelManager:
             return
 
         model_id = make_model_id(self._run_name, global_timestep)
+        self._current_model_id = model_id
         event = make_event(
             seq=self._lineage_registry.next_sequence_number,
             event_type="checkpoint_created",
