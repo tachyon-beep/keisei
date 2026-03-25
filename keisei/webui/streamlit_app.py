@@ -13,10 +13,9 @@ Usage:
 import argparse
 import base64
 import json
-import os
-import time
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
@@ -133,7 +132,11 @@ def render_board(board_state: Dict[str, Any]) -> None:
                 key = _piece_image_key(piece)
                 svg_uri = _PIECE_SVG_CACHE.get(key, "")
                 if svg_uri:
-                    cell_content = f'<img src="{svg_uri}" width="{cell_size - 8}" height="{cell_size - 8}">'
+                    img_sz = cell_size - 8
+                    cell_content = (
+                        f'<img src="{svg_uri}" width="{img_sz}"'
+                        f' height="{img_sz}">'
+                    )
                 else:
                     # Fallback: text label
                     label = piece["type"][0].upper()
@@ -357,40 +360,18 @@ def render_stale_warning(env: EnvelopeParser) -> None:
         st.warning(f"Training data is {age}s old — training may be paused or stopped.")
 
 
-def main() -> None:
-    st.set_page_config(
-        page_title="Keisei Training Dashboard",
-        page_icon="♟",
-        layout="wide",
-    )
+def _render_dashboard_content(env: EnvelopeParser) -> None:
+    """Render all dashboard content from a parsed envelope.
 
-    # Parse --state-file from Streamlit's extra args
-    arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument(
-        "--state-file", default=None, help="Path to state JSON file"
-    )
-    args, _ = arg_parser.parse_known_args()
-
-    state = load_state(args.state_file)
-
-    if state is None:
-        st.error("No state data available. Waiting for training to start...")
-        time.sleep(2)
-        st.rerun()
-        return
-
-    # Parse envelope — all access goes through the parser from here
-    env = EnvelopeParser(state)
-
-    render_stale_warning(env)
-
+    Extracted from main() so that both the live-refresh fragment and the
+    paused-state path can share the same rendering logic.
+    """
     metrics = env.metrics
     board_state = env.board_state
     step_info = env.step_info
     buffer_info = env.buffer_info
 
     # --- Header metrics ---
-    st.title("Keisei Training Dashboard")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Timestep", f"{metrics.get('global_timestep', 0):,}")
@@ -399,7 +380,7 @@ def main() -> None:
     with c3:
         total = metrics.get("total_episodes", 0)
         bw = metrics.get("black_wins", 0)
-        wr = f"{bw / total * 100:.1f}%" if total > 0 else "—"
+        wr = f"{bw / total * 100:.1f}%" if total > 0 else "\u2014"
         st.metric("Black Win Rate", wr)
     with c4:
         st.metric("Speed", f"{env.speed:.0f} steps/s")
@@ -450,9 +431,58 @@ def main() -> None:
         render_lineage_panel(env)
     render_optional_view_placeholders(env)
 
-    # --- Auto-refresh ---
-    time.sleep(2)
-    st.rerun()
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Keisei Training Dashboard",
+        page_icon="\u265f",
+        layout="wide",
+    )
+
+    # Parse --state-file from Streamlit's extra args
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument(
+        "--state-file", default=None, help="Path to state JSON file"
+    )
+    args, _ = arg_parser.parse_known_args()
+    state_file: Optional[str] = args.state_file
+
+    # --- Sidebar controls (outside the fragment — rendered once) ---
+    with st.sidebar:
+        st.toggle("Auto-refresh", value=True, key="auto_refresh")
+
+    st.title("Keisei Training Dashboard")
+
+    # --- Live data fragment ---
+    # The fragment always runs on a 2-second timer.  When paused, it
+    # renders from the cached last_state instead of reloading from disk.
+    # This avoids the decorator-evaluation-time pitfall: run_every is
+    # captured once at definition time, so we cannot change it dynamically.
+    @st.fragment(run_every=timedelta(seconds=2))
+    def _live_data_section() -> None:
+        if not st.session_state.get("auto_refresh", True):
+            # Paused — render from cached state, skip disk read
+            cached = st.session_state.get("last_state")
+            if cached is None:
+                st.info("Paused. No cached state available.")
+                return
+            env = EnvelopeParser(cached)
+            render_stale_warning(env)
+            _render_dashboard_content(env)
+            return
+
+        state = load_state(state_file)
+        if state is None:
+            st.error("No state data available. Waiting for training to start...")
+            return
+
+        env = EnvelopeParser(state)
+        st.session_state.last_state = state
+
+        render_stale_warning(env)
+        _render_dashboard_content(env)
+
+    _live_data_section()
 
 
 if __name__ == "__main__":
