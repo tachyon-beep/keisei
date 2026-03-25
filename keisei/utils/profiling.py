@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict
 
 from keisei.utils.unified_logger import log_info_to_stderr
 
+from keisei.utils.unified_logger import log_info_to_stderr
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,15 +104,15 @@ class PerformanceMonitor:
                 timing_ops.add(op_name)
 
         if timing_ops:
-            print("\nTiming Operations:")
+            log_info_to_stderr("profiling", "\nTiming Operations:")
             for op in sorted(timing_ops):
                 if f"{op}_count" in stats:
-                    print(f"  {op}:")
-                    print(f"    Count: {stats[f'{op}_count']}")
-                    print(f"    Average: {stats[f'{op}_avg']:.4f}s")
-                    print(f"    Min: {stats[f'{op}_min']:.4f}s")
-                    print(f"    Max: {stats[f'{op}_max']:.4f}s")
-                    print(f"    Total: {stats[f'{op}_total']:.4f}s")
+                    log_info_to_stderr("profiling", f"  {op}:")
+                    log_info_to_stderr("profiling", f"    Count: {stats[f'{op}_count']}")
+                    log_info_to_stderr("profiling", f"    Average: {stats[f'{op}_avg']:.4f}s")
+                    log_info_to_stderr("profiling", f"    Min: {stats[f'{op}_min']:.4f}s")
+                    log_info_to_stderr("profiling", f"    Max: {stats[f'{op}_max']:.4f}s")
+                    log_info_to_stderr("profiling", f"    Total: {stats[f'{op}_total']:.4f}s")
 
         # Show counters
         counters = {
@@ -124,11 +126,11 @@ class PerformanceMonitor:
             }
         }
         if counters:
-            print("\nCounters:")
+            log_info_to_stderr("profiling", "\nCounters:")
             for name, value in sorted(counters.items()):
-                print(f"  {name}: {value}")
+                log_info_to_stderr("profiling", f"  {name}: {value}")
 
-        print("=" * 27)
+        log_info_to_stderr("profiling", "=" * 27)
 
 
 # Global performance monitor instance
@@ -252,49 +254,3 @@ def memory_usage_mb() -> float:
         # Use peak memory if current is 0 (which can happen immediately after starting)
         memory_bytes = current if current > 0 else peak
         return max(1.0, memory_bytes / 1024 / 1024)  # Ensure at least 1MB is reported
-
-
-# Example usage functions for documentation
-def example_usage():
-    """
-    Example usage of profiling utilities.
-
-    This function demonstrates how to use the profiling tools
-    during development.
-    """
-
-    # Using the performance monitor
-    with perf_monitor.time_operation("example_operation"):
-        time.sleep(0.1)  # Simulate work
-
-    # Using decorators
-    @profile_function
-    def example_function():
-        time.sleep(0.05)
-        return "result"
-
-    @profile_game_operation("move_generation")
-    def generate_moves():
-        time.sleep(0.02)
-        return ["move1", "move2"]
-
-    # Run examples
-    example_function()
-    generate_moves()
-
-    # Print summary
-    perf_monitor.print_summary()
-
-    # Run with cProfile
-    def heavy_computation():
-        return sum(i**2 for i in range(10000))
-
-    _, profile_output = run_profiler(heavy_computation)
-    print("\nProfile output:")
-    print(profile_output[:500] + "..." if len(profile_output) > 500 else profile_output)
-
-
-if __name__ == "__main__":
-    # Run example if script is executed directly
-    print("Profiling utilities module loaded successfully")
-    # example_usage()  # Disabled to prevent import delays

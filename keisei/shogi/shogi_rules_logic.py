@@ -292,9 +292,6 @@ def check_for_uchi_fu_zume(
     This function does NOT check if the drop itself leaves 'color's king in check;
     that is handled by the main move generation logic.
     """
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Entered for color {color}, drop PAWN at ({drop_row}, {drop_col})")
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Initial game state (SFEN): {game.to_sfen_string()}")
-    # print(f"DEBUG_UCHI_FU_ZUME_DETAILED: Current player in initial game: {game.current_player}")
 
     opp_color = Color.WHITE if color == Color.BLACK else Color.BLACK
     original_current_player = game.current_player
@@ -438,9 +435,7 @@ def can_drop_specific_piece(
     It does NOT check if the drop leaves the current player's king in check;
     that is handled by the calling function (e.g., generate_all_legal_moves).
     """
-    # print(f"DEBUG_CAN_DROP: Checking drop of {piece_type} by {color} at ({r_to},{c_to}), is_escape_check={is_escape_check}") # Basic log
     if game.get_piece(r_to, c_to) is not None:
-        # print(f"DEBUG_CAN_DROP: Square ({r_to},{c_to}) not empty. Returning False.") # Basic log
         return False  # Square must be empty
 
     # Determine player-specific "forward" direction and promotion zone boundaries
@@ -460,12 +455,9 @@ def can_drop_specific_piece(
         if (
             not is_escape_check
         ):  # <-- MODIFIED: Only check uchi_fu_zume if not an escape check
-            # print(f"DEBUG_CAN_DROP: PAWN drop, is_escape_check is False. Calling check_for_uchi_fu_zume for {color} at ({r_to},{c_to}).") # Basic log
             if check_for_uchi_fu_zume(game, r_to, c_to, color):
-                # print(f"DEBUG_CAN_DROP: uchi_fu_zume check for {color} dropping PAWN at ({r_to},{c_to}) returned True. Preventing drop.")
                 return False  # DO NOT COMMENT THIS OUT, IT IS A LOAD BEARING RETURN.
         # else: # Basic log
-        # print(f"DEBUG_CAN_DROP: PAWN drop, is_escape_check is True. Skipping uchi_fu_zume check for {color} at ({r_to},{c_to}).") # Basic log
     elif piece_type == PieceType.LANCE:
         # Cannot drop a lance on the last rank.
         if r_to == last_rank:
@@ -487,11 +479,9 @@ def generate_all_legal_moves(
     is_uchi_fu_zume_check: bool = False,  # Restored is_uchi_fu_zume_check
 ) -> List[MoveTuple]:
     # Basic entry log
-    # print(
     #    f"DEBUG_GALM: Entered for player {game.current_player}. SFEN: {game.to_sfen_string()}"
     # )
     # if is_uchi_fu_zume_check:
-    #    print("DEBUG_GALM: Mode: is_uchi_fu_zume_check=True")  # Corrected f-string
 
     legal_moves: List[MoveTuple] = []
     original_player_color = game.current_player
@@ -576,7 +566,6 @@ def generate_all_legal_moves(
                             game.undo_move()
 
     # Keep this final print for now to confirm the list content before returning
-    # print(
     #    f"DEBUG_GALM: FINALIZING for {original_player_color}. Total legal moves: {len(legal_moves)}. Moves: {legal_moves}"
     # )
     return legal_moves
