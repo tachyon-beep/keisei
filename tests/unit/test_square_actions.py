@@ -9,17 +9,16 @@ import torch
 pytestmark = pytest.mark.unit
 
 
-class TestSquareActionContract:
-    """SquareAction and square_actions field in PolicyInsight."""
+class TestActionProbContract:
+    """ActionProb and square_actions field in PolicyInsight."""
 
-    def test_square_action_typeddict_exists(self):
-        """SquareAction TypedDict is importable."""
-        from keisei.webui.view_contracts import SquareAction
+    def test_action_prob_typeddict_exists(self):
+        """ActionProb TypedDict is importable."""
+        from keisei.webui.view_contracts import ActionProb
 
-        # TypedDict instances are just dicts
-        sa: SquareAction = {"action": "7g7f", "prob": 0.23}
-        assert sa["action"] == "7g7f"
-        assert sa["prob"] == 0.23
+        ap: ActionProb = {"action": "7g7f", "prob": 0.23}
+        assert ap["action"] == "7g7f"
+        assert ap["prob"] == 0.23
 
     def test_policy_insight_allows_square_actions(self):
         """PolicyInsight accepts square_actions field."""

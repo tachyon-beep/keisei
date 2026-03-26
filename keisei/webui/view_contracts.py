@@ -187,11 +187,6 @@ class ActionProb(TypedDict):
     prob: float  # probability in [0, 1]
 
 
-# Backward-compatible aliases
-TopAction = ActionProb
-SquareAction = ActionProb
-
-
 class PolicyInsight(TypedDict):
     """Per-square action probability summary for the current board state.
 
