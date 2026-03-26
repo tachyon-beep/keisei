@@ -99,10 +99,10 @@ class EvaluationManager:
                 raise ValueError(
                     f"Checkpoint file is not a valid PyTorch checkpoint: {agent_checkpoint}"
                 )
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             raise ValueError(
-                f"Failed to load checkpoint file {agent_checkpoint}: {str(e)}"
-            )
+                f"Failed to load checkpoint file {agent_checkpoint}: {e}"
+            ) from e
 
         agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
         context = EvaluationContext(
@@ -161,10 +161,10 @@ class EvaluationManager:
                 raise ValueError(
                     f"Checkpoint file is not a valid PyTorch checkpoint: {agent_checkpoint}"
                 )
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             raise ValueError(
-                f"Failed to load checkpoint file {agent_checkpoint}: {str(e)}"
-            )
+                f"Failed to load checkpoint file {agent_checkpoint}: {e}"
+            ) from e
 
         agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
         context = EvaluationContext(
@@ -353,9 +353,13 @@ class EvaluationManager:
                 agent_weights, opponent_weights, agent_info, opponent_info, context
             )
 
-        except (ValueError, FileNotFoundError, RuntimeError) as e:
-            # Fallback to file-based evaluation on error
-            log_error_to_stderr("evaluation", f"In-memory evaluation failed, falling back to async file-based: {e}")
+        except (ValueError, FileNotFoundError) as e:
+            # Fallback to file-based evaluation on checkpoint/config errors only
+            log_error_to_stderr(
+                "evaluation",
+                f"In-memory evaluation failed ({type(e).__name__}: {e}), "
+                "falling back to file-based evaluation",
+            )
             return await self.evaluate_current_agent_async(agent)
 
     async def _run_in_memory_evaluation(

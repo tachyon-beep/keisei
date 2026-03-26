@@ -171,9 +171,11 @@ def extract_policy_insight(
                 obs_tensor = scaler(obs_tensor)
 
         was_training = model.training
-        with torch.no_grad():
-            model.eval()
-            policy_logits, value = model(obs_tensor)
+        try:
+            with torch.no_grad():
+                model.eval()
+                policy_logits, value = model(obs_tensor)
+        finally:
             model.train(was_training)
 
         # Mask illegal actions before softmax (mirrors PPOAgent.select_action)

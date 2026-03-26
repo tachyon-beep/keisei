@@ -229,24 +229,25 @@ class TestStreamlitCleanupOnInitFailure:
 
 
 class TestStreamlitProcessLiveness:
-    """StreamlitManager should surface subprocess death and stop writing snapshots."""
+    """StreamlitManager should surface subprocess death but keep writing state files."""
 
-    def test_update_progress_logs_once_and_skips_write_after_crash(self):
+    def test_update_progress_continues_writing_after_crash(self):
         cfg = WebUIConfig(update_rate_hz=2.0)
         mgr = StreamlitManager(cfg)
         trainer = MagicMock()
         process = MagicMock()
         process.poll.return_value = 17
         mgr._process = process
+        mgr._last_write_time = 0  # ensure rate-limit doesn't block
 
         with patch(
-            "keisei.webui.streamlit_manager.build_snapshot"
+            "keisei.webui.streamlit_manager.build_snapshot", return_value={}
         ) as build_snapshot, patch(
             "keisei.webui.streamlit_manager.write_snapshot_atomic"
         ) as write_snapshot:
             mgr.update_progress(trainer, speed=1.0, pending_updates={})
-            mgr.update_progress(trainer, speed=1.0, pending_updates={})
 
-        build_snapshot.assert_not_called()
-        write_snapshot.assert_not_called()
+        # State writes continue so a restarted dashboard picks up fresh data
+        build_snapshot.assert_called_once()
+        write_snapshot.assert_called_once()
         assert mgr._process is None

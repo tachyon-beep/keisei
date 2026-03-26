@@ -32,9 +32,12 @@ class CheckpointCallback(Callback):
     def __init__(self, interval: int, model_dir: str):
         self.interval = interval
         self.model_dir = model_dir
+        self._last_fired_timestep: int = -1
 
     def on_step_end(self, trainer: "Trainer"):
-        if trainer.metrics_manager.global_timestep % self.interval == 0:
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(
@@ -78,6 +81,7 @@ class EvaluationCallback(Callback):
     def __init__(self, eval_cfg, interval: int):
         self.eval_cfg = eval_cfg
         self.interval = interval
+        self._last_fired_timestep: int = -1
 
     @staticmethod
     def _determine_outcome(eval_results) -> str:
@@ -240,7 +244,9 @@ class EvaluationCallback(Callback):
     def on_step_end(self, trainer: "Trainer"):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return
-        if trainer.metrics_manager.global_timestep % self.interval == 0:
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(

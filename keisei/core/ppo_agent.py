@@ -553,25 +553,12 @@ class PPOAgent:
     def load_model(self, file_path: str) -> Dict[str, Any]:
         """Loads the model, optimizer, scheduler, and training state from a file.
 
-        Returns default resume metadata with an ``error`` key when the
-        checkpoint path is missing.
-
         Raises:
+            FileNotFoundError: If the checkpoint file does not exist.
             RuntimeError: If checkpoint is corrupted or incompatible.
         """
         if not os.path.exists(file_path):
-            return {
-                "error": f"Checkpoint file not found: {file_path}",
-                "global_timestep": 0,
-                "total_episodes_completed": 0,
-                "black_wins": 0,
-                "white_wins": 0,
-                "draws": 0,
-                "lr_schedule_type": None,
-                "lr_schedule_step_on": "epoch",
-                "elo_state": None,
-                "metrics_history": None,
-            }
+            raise FileNotFoundError(f"Checkpoint file not found: {file_path}")
 
         try:
             checkpoint = torch.load(

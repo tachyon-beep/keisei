@@ -177,14 +177,11 @@ class TestSaveLoadRoundtrip:
 class TestFileHandling:
     """Verify file system interactions for save/load."""
 
-    def test_load_nonexistent_returns_default_error_payload(self, agent_and_path):
-        """Loading a non-existent file returns a structured error payload."""
+    def test_load_nonexistent_raises_file_not_found(self, agent_and_path):
+        """Loading a non-existent file raises FileNotFoundError."""
         agent, _ = agent_and_path
-        result = agent.load_model("/tmp/nonexistent_checkpoint_xyz.pt")
-
-        assert result["error"] == "Checkpoint file not found: /tmp/nonexistent_checkpoint_xyz.pt"
-        assert result["global_timestep"] == 0
-        assert result["total_episodes_completed"] == 0
+        with pytest.raises(FileNotFoundError, match="nonexistent_checkpoint"):
+            agent.load_model("/tmp/nonexistent_checkpoint_xyz.pt")
 
     def test_save_creates_file(self, agent_and_path):
         """save_model creates a file at the specified path."""

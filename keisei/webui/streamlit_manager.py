@@ -132,9 +132,14 @@ class StreamlitManager:
             pass
 
     def _ensure_process_healthy(self) -> bool:
-        """Return False after detecting that the dashboard subprocess exited."""
+        """Check dashboard subprocess health, logging once on unexpected exit.
+
+        Always returns True so that state file writes continue even after a
+        dashboard crash — a manually restarted Streamlit process (or a new
+        ``streamlit run``) can pick up the latest snapshot immediately.
+        """
         if self._process is None:
-            return not self._process_failure_reported
+            return True
 
         return_code = self._process.poll()
         if return_code is None:
@@ -142,13 +147,15 @@ class StreamlitManager:
 
         if not self._process_failure_reported:
             self._logger.warning(
-                "Streamlit dashboard process exited unexpectedly with code %s",
+                "Streamlit dashboard process exited unexpectedly with code %s. "
+                "State file writes will continue so a restarted dashboard can "
+                "pick up fresh data.",
                 return_code,
             )
             self._process_failure_reported = True
 
         self._process = None
-        return False
+        return True
 
     def update_progress(
         self,

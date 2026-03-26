@@ -95,9 +95,15 @@ class TestCheckpointCallback:
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
         trainer = _make_trainer(global_timestep=0)  # 0 % 10 == 0
         cb.on_step_end(trainer)
-        # Fires at 0 — this is fine since the callback manager doesn't
-        # call on_step_end before the first epoch completes
-        trainer.model_manager.save_checkpoint.assert_called_once()
+        trainer.model_manager.save_checkpoint.assert_not_called()
+
+    def test_does_not_fire_twice_at_same_timestep(self):
+        """Resume boundary: callback should not fire again at the restored timestep."""
+        cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
+        trainer = _make_trainer(global_timestep=10)
+        cb._last_fired_timestep = 10  # simulate: already fired before save
+        cb.on_step_end(trainer)
+        trainer.model_manager.save_checkpoint.assert_not_called()
 
     def test_handles_missing_agent(self):
         cb = CheckpointCallback(interval=10, model_dir="/tmp/models")
