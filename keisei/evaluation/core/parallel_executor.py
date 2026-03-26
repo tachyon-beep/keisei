@@ -74,16 +74,24 @@ class ParallelGameExecutor:
             self._executor = None
 
     def _run_coroutine_blocking(self, coro_factory: Callable[[], Any]) -> Any:
-        """Run a coroutine from sync code without blocking an active loop thread."""
+        """Run a coroutine from sync code without blocking an active loop thread.
+
+        Uses a factory (not a pre-built coroutine) so cleanup is automatic:
+        asyncio.run() always finalizes the coroutine it runs.  On timeout,
+        the executor thread is interrupted via shutdown(cancel_futures=True).
+        """
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro_factory())
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(coro_factory())).result(
-                timeout=self.timeout_per_game_seconds
-            )
+            future = executor.submit(lambda: asyncio.run(coro_factory()))
+            try:
+                return future.result(timeout=self.timeout_per_game_seconds)
+            except TimeoutError:
+                future.cancel()
+                raise
 
     async def execute_games_parallel(
         self,

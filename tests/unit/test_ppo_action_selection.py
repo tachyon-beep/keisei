@@ -275,8 +275,8 @@ class TestDeterministicVsStochastic:
         expected_action = int(torch.argmax(masked_logits, dim=-1).item())
         assert det_action == expected_action
 
-    def test_grad_mode_tracks_training_flag(self, agent, game, mapper, monkeypatch):
-        """Evaluation should disable grad tracking while training leaves it enabled."""
+    def test_grad_disabled_for_both_paths(self, agent, game, mapper, monkeypatch):
+        """Both training and eval paths run under no_grad (rollout doesn't need gradients)."""
         obs = game.get_observation()
         mask = _build_legal_mask(game, mapper)
         legal_index = int(torch.nonzero(mask, as_tuple=False)[0].item())
@@ -299,7 +299,7 @@ class TestDeterministicVsStochastic:
         agent.select_action(obs, mask, is_training=True)
         agent.select_action(obs, mask, is_training=False)
 
-        assert grad_states == [True, False]
+        assert grad_states == [False, False]
 
 
 # ---------------------------------------------------------------------------

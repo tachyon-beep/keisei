@@ -984,8 +984,9 @@ def render_game_tab(env: EnvelopeParser) -> None:
                 selected_square=selected,
                 key="main_board",
             )
-        except Exception:
+        except Exception as e:
             # Fallback to non-interactive board rendering
+            st.warning(f"Interactive board unavailable: {e}")
             render_board(board_state, heatmap=heatmap)
             board_event = None
 

@@ -321,6 +321,7 @@ class AsyncEvaluationCallback(AsyncCallback):
     def __init__(self, eval_cfg, interval: int):
         self.eval_cfg = eval_cfg
         self.interval = interval
+        self._last_fired_timestep: int = -1
 
     @staticmethod
     def _determine_outcome(eval_results) -> str:
@@ -462,9 +463,10 @@ class AsyncEvaluationCallback(AsyncCallback):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return None
 
-        step = trainer.metrics_manager.global_timestep
-        if step % self.interval == 0:
-            return await self._run_evaluation_async(trainer, step)
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
+            return await self._run_evaluation_async(trainer, ts)
         return None
 
     async def _run_evaluation_async(

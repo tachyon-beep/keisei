@@ -170,20 +170,13 @@ class PPOAgent:
             # The train.py logic should ideally prevent calling select_action if no legal_moves.
             # Let it proceed, model.get_action_and_value will use the all-false mask.
 
-        # Get action, log_prob, and value from the ActorCritic model
-        # Pass deterministic based on not is_training
-        if is_training:
-            (
-                selected_policy_index_tensor,
-                log_prob_tensor,
-                value_tensor,
-            ) = self.model.get_action_and_value(
-                obs_tensor,
-                legal_mask=legal_mask,
-                deterministic=not is_training,
-            )
-        else:
-            with torch.no_grad():
+        # Get action, log_prob, and value from the ActorCritic model.
+        # Both paths use no_grad(): rollout collection .item()'s the
+        # log_prob and value (no backprop needed), and eval never needs
+        # gradients.  This avoids building a discarded computation graph
+        # that wastes GPU memory on constrained hardware.
+        with torch.no_grad():
+            if is_training:
                 (
                     selected_policy_index_tensor,
                     log_prob_tensor,
@@ -191,7 +184,17 @@ class PPOAgent:
                 ) = self.model.get_action_and_value(
                     obs_tensor,
                     legal_mask=legal_mask,
-                    deterministic=not is_training,
+                    deterministic=False,
+                )
+            else:
+                (
+                    selected_policy_index_tensor,
+                    log_prob_tensor,
+                    value_tensor,
+                ) = self.model.get_action_and_value(
+                    obs_tensor,
+                    legal_mask=legal_mask,
+                    deterministic=True,
                 )
 
         selected_policy_index_val = int(selected_policy_index_tensor.item())
