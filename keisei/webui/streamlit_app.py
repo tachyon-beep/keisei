@@ -545,6 +545,97 @@ def render_policy_insight_panel(
     render_top_actions(insight)
 
 
+def render_selected_square_panel(
+    selected: Dict[str, Any],
+    board_state: Dict[str, Any],
+    square_actions: Dict[str, List[Dict[str, Any]]],
+    heatmap: Optional[List[List[float]]],
+    insight_available: bool,
+) -> None:
+    """Render the selected square detail panel.
+
+    Shows top-3 actions targeting the selected square with probability bars.
+    Inserted between Action Distribution and Game Status in the Game tab.
+    Only visible when a square is selected.
+    """
+    row = selected["row"]
+    col = selected["col"]
+    file_num = 9 - col
+    rank = row + 1
+    square_label = f"{file_num}{rank}"
+
+    st.caption(f"Square {square_label} actions")
+
+    if not insight_available:
+        st.text("Policy insight not available. Enable in config to see action breakdown.")
+        return
+
+    # Piece context from board_state
+    board = board_state.get("board", [])
+    if 0 <= row < len(board) and 0 <= col < len(board[row]):
+        piece = board[row][col]
+        if piece:
+            st.text(
+                f"Contains: {piece['color'].capitalize()} "
+                f"{piece['type'].replace('_', ' ').title()}"
+            )
+
+    # Heatmap probability sum for this square
+    if heatmap and 0 <= row < len(heatmap) and 0 <= col < len(heatmap[row]):
+        prob_sum = heatmap[row][col]
+        st.text(f"Probability mass: {prob_sum * 100:.2f}%")
+
+    key = f"{row},{col}"
+    actions = square_actions.get(key, [])
+
+    if not actions:
+        st.text("No actions target this square")
+    else:
+        # Render probability bars (same style as render_top_actions)
+        max_prob = actions[0]["prob"] if actions else 1.0
+        lines = []
+        for act in actions:
+            action_str = act["action"]
+            prob = act["prob"]
+            pct = prob * 100
+            bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
+            bar = (
+                f'<span style="display:inline-block;width:{bar_w}px;'
+                f'height:12px;background:#ff8c00;border-radius:2px;'
+                f'vertical-align:middle;"></span>'
+            )
+            lines.append(
+                f'<span style="font-family:monospace;font-size:13px;">'
+                f"{action_str:<8s} {pct:5.1f}%  {bar}</span>"
+            )
+        html = "<br>".join(lines)
+        st.markdown(html, unsafe_allow_html=True)
+        st.caption("Probabilities are global (share of all possible moves)")
+
+    # Screen reader announcement (WCAG 4.1.3)
+    # Gate on selection change — only announce when the selected square
+    # differs from the last announcement. Without this gate, the aria-live
+    # div fires on every 2s fragment re-render, spamming screen reader users.
+    announce_key = f"{row},{col}"
+    if st.session_state.get("last_announced_square") != announce_key:
+        st.session_state.last_announced_square = announce_key
+        if actions:
+            announce = (
+                f"Selected {square_label}. Top action: "
+                f"{actions[0]['action']} {actions[0]['prob']*100:.1f}%."
+            )
+        else:
+            announce = f"Selected {square_label}. No actions target this square."
+
+        st.markdown(
+            f'<div role="status" aria-live="polite" '
+            f'style="position:absolute;width:1px;height:1px;'
+            f'overflow:hidden;clip:rect(0,0,0,0);">'
+            f"{announce}</div>",
+            unsafe_allow_html=True,
+        )
+
+
 def render_buffer_bar(buffer_info: Optional[Dict]) -> None:
     """Render experience buffer fill level."""
     if not buffer_info:
