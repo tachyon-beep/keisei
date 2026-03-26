@@ -165,10 +165,11 @@ def extract_policy_insight(
             else:
                 obs_tensor = scaler(obs_tensor)
 
+        was_training = model.training
         with torch.no_grad():
             model.eval()
             policy_logits, value = model(obs_tensor)
-            model.train()
+            model.train(was_training)
 
         # Softmax over the full action space
         probs = torch.softmax(policy_logits.squeeze(0), dim=0)
@@ -278,7 +279,7 @@ def _build_training_view(trainer: Any) -> Dict[str, Any]:
     is_processing = training.get("metrics", {}).get("processing", False)
 
     if insight_enabled and not is_processing:
-        ppo_agent = getattr(trainer, "ppo_agent", None)
+        ppo_agent = getattr(trainer, "agent", None)
         step_mgr = getattr(trainer, "step_manager", None)
         obs = getattr(step_mgr, "_latest_obs_for_snapshot", None)
         env_mgr = getattr(trainer, "env_manager", None)
