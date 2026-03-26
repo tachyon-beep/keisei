@@ -16,7 +16,7 @@ Required envelope fields (must always be present):
     schema_version, timestamp, speed, mode, active_views, health, training,
     pending_updates.
 
-Optional envelope fields (null when the producing Move has not delivered):
+Optional envelope fields (null when the corresponding feature is not active):
     league, lineage, skill_differential, model_profile.
 
 Health semantics (Decision Freeze #2):
@@ -54,6 +54,11 @@ from typing import (
 
 SCHEMA_VERSION: str = "v1.0.0"
 """Current broadcast schema version (semver-like)."""
+
+
+def square_key(row: int, col: int) -> str:
+    """Build the canonical ``"r,c"`` key used in ``square_actions`` dicts."""
+    return f"{row},{col}"
 
 STALE_THRESHOLD_SECONDS: float = 30.0
 """Default producer-side stale threshold matching current UI behaviour."""
@@ -120,7 +125,7 @@ class BoardState(TypedDict):
 
 
 class LearningCurves(TypedDict):
-    """Trailing history of PPO training metrics (last 50 values)."""
+    """Trailing history of PPO training metrics (window size set by producer)."""
 
     policy_losses: List[float]
     value_losses: List[float]
@@ -234,11 +239,11 @@ class TrainingViewState(TypedDict):
 
 
 class LeagueViewState(TypedDict):
-    """League / Elo snapshot view — placeholder, produced by Move 2.
+    """League / Elo snapshot view — placeholder for tournament evaluation.
 
     Shape derived from the ``evaluation_elo_snapshot`` dict in
-    ``callbacks.py``.  Not populated until ``keisei-tw5`` delivers a
-    producer.
+    ``callbacks.py``.  Not populated until tournament evaluation is
+    implemented.
     """
 
     current_id: str
@@ -297,7 +302,7 @@ class BroadcastStateEnvelope(TypedDict, total=False):
     view category.
 
     The ``training`` view is the only populated view in v1.  Its internal
-    structure is defined by ``TrainingViewState`` (see eva.1.2).
+    structure is defined by ``TrainingViewState``.
     """
 
     # --- required --------------------------------------------------------

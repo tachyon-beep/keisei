@@ -7,14 +7,22 @@ The component communicates selection and focus events back to Python via
 See: docs/superpowers/specs/2026-03-26-board-interactivity-design.md, Section 4.
 """
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit.components.v2 as components
 
+_logger = logging.getLogger(__name__)
+
 # Load JS from file to keep the Python module clean
 _JS_PATH = Path(__file__).parent / "frontend" / "board.js"
 _CSS_PATH = Path(__file__).parent / "frontend" / "board.css"
+
+if not _JS_PATH.exists():
+    _logger.warning("Board component JS not found: %s", _JS_PATH)
+if not _CSS_PATH.exists():
+    _logger.warning("Board component CSS not found: %s", _CSS_PATH)
 
 _JS = _JS_PATH.read_text() if _JS_PATH.exists() else ""
 _CSS = _CSS_PATH.read_text() if _CSS_PATH.exists() else ""

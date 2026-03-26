@@ -59,3 +59,24 @@ class TestEvaluateCurrentAgentModeRestoration:
 
         agent.model.eval.assert_called_once()
         agent.model.train.assert_called_once()
+
+
+class TestInMemoryEvalNarrowedExceptionScope:
+    """Narrowed catch in evaluate_current_agent_in_memory only catches
+    ValueError/FileNotFoundError — RuntimeError propagates."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_propagates_not_caught(self):
+        """RuntimeError from in-memory eval is not silently caught."""
+        manager = _make_manager()
+        manager.enable_in_memory_eval = True
+        manager.model_weight_manager = MagicMock()
+        manager.model_weight_manager.extract_agent_weights.side_effect = RuntimeError(
+            "CUDA OOM"
+        )
+
+        agent = MagicMock()
+        agent.model.training = True
+
+        with pytest.raises(RuntimeError, match="CUDA OOM"):
+            await manager.evaluate_current_agent_in_memory(agent)

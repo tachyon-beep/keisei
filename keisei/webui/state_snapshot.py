@@ -19,6 +19,7 @@ from .view_contracts import (
     SCHEMA_VERSION,
     make_health_map,
     sanitize_pending_updates,
+    square_key,
 )
 
 # Policy insight thresholds
@@ -220,10 +221,10 @@ def extract_policy_insight(
             ):
                 heatmap[to_r][to_c] += p
                 if p > _SQUARE_DETAIL_THRESHOLD:
-                    key = f"{to_r},{to_c}"
-                    if key not in square_action_candidates:
-                        square_action_candidates[key] = []
-                    square_action_candidates[key].append((p, idx))
+                    sk = square_key(to_r, to_c)
+                    if sk not in square_action_candidates:
+                        square_action_candidates[sk] = []
+                    square_action_candidates[sk].append((p, idx))
 
         # Top-N per square, sorted by probability descending
         square_actions: dict[str, list[dict]] = {}

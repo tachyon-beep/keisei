@@ -83,7 +83,7 @@ class TrainingLoopManager:
         coro = coro_factory()
         try:
             return runner(coro)
-        except Exception:
+        except BaseException:
             coro.close()
             raise
 

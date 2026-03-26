@@ -192,5 +192,5 @@ class StreamlitManager:
             snapshot = build_snapshot(trainer, speed, pending_updates)
             write_snapshot_atomic(snapshot, self._state_path)
             self._last_write_time = now
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             self._logger.warning("Failed to write state snapshot: %s", e)

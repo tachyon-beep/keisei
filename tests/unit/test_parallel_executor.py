@@ -61,6 +61,25 @@ class TestParallelExecutorLoopSafety:
         assert result == "ok"
         run_threadsafe.assert_not_called()
 
+    def test_run_coroutine_blocking_no_loop_uses_asyncio_run(self):
+        """When no event loop is running, asyncio.run() is used directly."""
+        executor = ParallelGameExecutor(timeout_per_game_seconds=5)
+
+        async def coro():
+            return "direct"
+
+        with patch(
+            "keisei.evaluation.core.parallel_executor.asyncio.get_running_loop",
+            side_effect=RuntimeError,
+        ), patch(
+            "keisei.evaluation.core.parallel_executor.asyncio.run",
+            return_value="direct",
+        ) as mock_run:
+            result = executor._run_coroutine_blocking(coro)
+
+        assert result == "direct"
+        mock_run.assert_called_once()
+
     @staticmethod
     def _make_async_executor(result):
         async def _executor(agent_info, opponent_info, context):
