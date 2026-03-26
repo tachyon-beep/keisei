@@ -162,12 +162,13 @@ export default function(component) {
 
         // Non-colour cue for heatmap: corner dot scaled by heat intensity.
         // Ensures heatmap is readable for red-green colorblind users.
+        // Uses inline absolute positioning within the position:relative cell.
         var heatDot = "";
         if (overlay && overlay[r][c] > 0.01) {
-          var dotSize = Math.round(3 + overlay[r][c] * 6);  // 3-9px
-          heatDot = '<span style="position:absolute;top:2px;right:2px;width:' + dotSize +
-            'px;height:' + dotSize + 'px;border-radius:50%;background:#005a3a;opacity:0.7;' +
-            'pointer-events:none;" aria-hidden="true"></span>';
+          var dotSize = Math.max(4, Math.round(3 + overlay[r][c] * 8));  // 4-11px
+          heatDot = '<span style="position:absolute;top:1px;right:1px;width:' + dotSize +
+            'px;height:' + dotSize + 'px;border-radius:50%;background:#004d33;' +
+            'pointer-events:none;z-index:3;" aria-hidden="true"></span>';
         }
 
         html += '<td role="gridcell" tabindex="' + tabIdx + '"' +

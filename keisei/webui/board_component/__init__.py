@@ -21,10 +21,10 @@ _CSS = _CSS_PATH.read_text() if _CSS_PATH.exists() else ""
 
 _component_func = components.component(
     "shogi_board",
-    html='<div id="board-root"></div>',
+    html='<div id="board-root" style="width:100%;text-align:center;"></div>',
     css=_CSS,
     js=_JS,
-    isolate_styles=False,  # We need access to parent DOM for focus tracking
+    isolate_styles=False,
 )
 
 

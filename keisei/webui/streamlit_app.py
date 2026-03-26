@@ -146,6 +146,7 @@ def _compute_heatmap_overlay(
 def render_board(
     board_state: Dict[str, Any],
     heatmap: Optional[List[List[float]]] = None,
+    cell_size: int = 48,
 ) -> None:
     """Render the shogi board as a semantic HTML table with SVG pieces.
 
@@ -163,7 +164,6 @@ def render_board(
 
     move_count = board_state.get("move_count", 0)
     current_player = board_state.get("current_player", "unknown")
-    cell_size = 48
 
     # Pre-compute heatmap overlay if provided
     overlay = _compute_heatmap_overlay(heatmap) if heatmap else None
@@ -747,6 +747,112 @@ def _render_header_metrics(env: EnvelopeParser) -> None:
         st.info("PPO update in progress...")
 
 
+def render_overview_tab(env: EnvelopeParser) -> None:
+    """Single-screen overview: board + charts + stats on one page."""
+    st.session_state.board_focused = False
+
+    board_state = env.board_state
+    metrics = env.metrics
+    model_info = env.model_info
+    insight = env.policy_insight
+    lineage = env.lineage
+
+    # Row 1: board (left) + 6 training charts (right)
+    col_board, col_charts = st.columns([3, 5])
+
+    with col_board:
+        if board_state:
+            # Heatmap overlay if toggled on
+            heatmap = None
+            if st.session_state.get("show_heatmap", False) and insight:
+                heatmap = insight.get("action_heatmap")
+            render_board(board_state, heatmap=heatmap, cell_size=34)
+
+            # Compact hands
+            bh = board_state.get("black_hand", {})
+            wh = board_state.get("white_hand", {})
+
+            def _hand_compact(hand: Dict[str, int]) -> str:
+                if not hand:
+                    return "(empty)"
+                return "  ".join(
+                    f"{k[0].upper()}{v}" for k, v in sorted(hand.items())
+                )
+
+            st.caption(f"Black: {_hand_compact(bh)}  |  White: {_hand_compact(wh)}")
+
+            # V(s) one-liner
+            if insight:
+                v = insight.get("value_estimate", 0.0)
+                label = (
+                    "Black +" if v > 0.05 else ("Even" if abs(v) <= 0.05 else "White +")
+                )
+                st.caption(f"V(s): {v:+.3f}  ({label})")
+        else:
+            st.info("Waiting for first episode...")
+
+    with col_charts:
+        curves = metrics.get("learning_curves", {})
+        chart_configs = [
+            ("Policy Loss", "policy_losses"),
+            ("Value Loss", "value_losses"),
+            ("Entropy", "entropies"),
+            ("KL Div", "kl_divergences"),
+            ("Clip Frac", "clip_fractions"),
+            ("Ep Reward", "episode_rewards"),
+        ]
+        cc1, cc2 = st.columns(2)
+        for i, (title, key) in enumerate(chart_configs):
+            data = curves.get(key, [])
+            if not data:
+                continue
+            target = cc1 if i % 2 == 0 else cc2
+            with target:
+                st.caption(f"{title}  ({data[-1]:.4g})")
+                st.line_chart(data, height=110, use_container_width=True)
+
+    # Row 2: win rate + gradient/buffer + game state
+    col_wr, col_meta, col_game = st.columns([3, 1, 1])
+
+    with col_wr:
+        render_win_rate_chart(metrics)
+
+    with col_meta:
+        grad = model_info.get("gradient_norm")
+        if grad is not None:
+            st.metric("Grad Norm", f"{grad:.4f}")
+        buf = env.buffer_info
+        if buf:
+            size = buf.get("size", 0)
+            cap = buf.get("capacity", 1)
+            st.caption(f"Buffer {size}/{cap}")
+            st.progress(min(size / cap, 1.0) if cap > 0 else 0)
+
+    with col_game:
+        if board_state:
+            player = board_state.get("current_player", "?").capitalize()
+            move_n = board_state.get("move_count", 0)
+            st.caption(f"Move {move_n} — {player} to play")
+        step_info = env.step_info
+        if step_info:
+            sc = step_info.get("sente_capture_count", 0)
+            gc = step_info.get("gote_capture_count", 0)
+            st.caption(f"Captures B:{sc} W:{gc}")
+
+    # Row 3: lineage summary (single line)
+    if lineage:
+        gen = lineage.get("generation", 0)
+        rating = lineage.get("latest_rating")
+        events = lineage.get("event_count", 0)
+        model_id = lineage.get("model_id") or "\u2014"
+        rating_str = f"{rating:.0f}" if rating is not None else "\u2014"
+        mid_short = (model_id[:20] + "\u2026") if len(model_id) > 21 else model_id
+        st.caption(
+            f"Lineage — Gen {gen}  |  Elo {rating_str}  "
+            f"|  {events} events  |  {mid_short}"
+        )
+
+
 def render_metrics_tab(env: EnvelopeParser) -> None:
     """Render the Metrics tab: training curves, win rates, buffer."""
     # Clear board focus when not on Game tab (prevents stuck focus-pause)
@@ -887,18 +993,20 @@ def _render_dashboard_content(env: EnvelopeParser) -> None:
     """Render header metrics + tab-based content from a parsed envelope."""
     _render_header_metrics(env)
 
-    # Build tab list — Lineage only shown when data is available
-    tab_names = ["Metrics", "Game"]
+    # Build tab list — Overview first, Lineage only when data available
+    tab_names = ["Overview", "Metrics", "Game"]
     if env.has_view("lineage"):
         tab_names.append("Lineage")
 
     tabs = st.tabs(tab_names)
     with tabs[0]:
-        render_metrics_tab(env)
+        render_overview_tab(env)
     with tabs[1]:
+        render_metrics_tab(env)
+    with tabs[2]:
         render_game_tab(env)
-    if len(tabs) > 2:
-        with tabs[2]:
+    if len(tabs) > 3:
+        with tabs[3]:
             render_lineage_tab(env)
 
 
