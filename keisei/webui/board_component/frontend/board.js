@@ -132,11 +132,16 @@ export default function(component) {
         var borderBottom = "1px solid #8b7355";
         if (rank === 3 || rank === 6) { borderBottom = "2.5px solid #6b5335"; }
 
-        // Heatmap overlay
+        // Heatmap: solid background replacement, white-to-navy scale.
+        // No transparency — directly overrides the cell background colour.
         var heatStyle = "";
         if (overlay && overlay[r][c] > 0.01) {
-          var heatAlpha = Math.min(0.85, overlay[r][c] * 0.85).toFixed(2);
-          heatStyle = "box-shadow:inset 0 0 0 100px rgba(0,210,140," + heatAlpha + ");";
+          var h = overlay[r][c];  // 0..1
+          // White (#ffffff) at 0 → deep navy (#001a4d) at 1
+          var hr = Math.round(255 * (1 - h));
+          var hg = Math.round(255 * (1 - h * 0.9));
+          var hb = Math.round(255 * (1 - h * 0.7));
+          bg = "rgb(" + hr + "," + hg + "," + hb + ")";
         }
 
         var tabIdx = (r === focusRow && c === focusCol) ? "0" : "-1";

@@ -210,13 +210,14 @@ def render_board(
             if rank == 3 or rank == 6:
                 border_bottom = "2.5px solid #6b5335"
 
-            # Heatmap overlay: blend orange over the cell bg
+            # Heatmap: solid background replacement, white-to-navy
             heat_style = ""
             if overlay and overlay[r][c] > 0.01:
-                alpha = min(0.85, overlay[r][c] * 0.85)
-                heat_style = (
-                    f"box-shadow:inset 0 0 0 100px " f"rgba(0,210,140,{alpha:.2f});"
-                )
+                h = overlay[r][c]
+                hr = int(255 * (1 - h))
+                hg = int(255 * (1 - h * 0.9))
+                hb = int(255 * (1 - h * 0.7))
+                bg = f"rgb({hr},{hg},{hb})"
 
             cell_content = ""
             if piece is not None:
