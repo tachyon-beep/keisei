@@ -537,10 +537,11 @@ class AsyncEvaluationCallback(AsyncCallback):
 
             return self._extract_summary_metrics(eval_results)
 
-        except Exception as e:
+        except (ValueError, FileNotFoundError, OSError, RuntimeError) as e:
             if trainer.log_both:
                 trainer.log_both(
-                    f"[ERROR] AsyncEvaluationCallback: Evaluation failed: {e}",
+                    f"[ERROR] AsyncEvaluationCallback: Evaluation failed "
+                    f"({type(e).__name__}): {e}",
                     also_to_wandb=True,
                 )
             return None

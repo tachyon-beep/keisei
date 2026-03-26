@@ -121,7 +121,7 @@ class EvaluationManager:
             wandb_active=self.wandb_active,
         )
         # Guard against being called from an async context.
-        # Nested event loops are not supported on Python 3.12+.
+        # Nested event loops have never been supported by asyncio.
         try:
             asyncio.get_running_loop()
         except RuntimeError:

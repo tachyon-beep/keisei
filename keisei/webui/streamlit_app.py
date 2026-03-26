@@ -169,7 +169,7 @@ def render_board(
         return
 
     move_count = board_state.get("move_count", 0)
-    current_player = board_state.get("current_player", "unknown")
+    current_player = html_mod.escape(board_state.get("current_player", "unknown"))
 
     # Pre-compute heatmap overlay if provided
     overlay = _compute_heatmap_overlay(heatmap) if heatmap else None
