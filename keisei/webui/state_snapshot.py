@@ -109,7 +109,7 @@ def extract_metrics(metrics_manager: Any) -> Dict[str, Any]:
 def extract_step_info(step_manager: Any) -> Dict[str, Any]:
     """Extract step/move info from StepManager."""
     return {
-        "move_log": list(step_manager.move_log[-20:]),
+        "move_log": list(step_manager.move_log[-300:]),
         "sente_capture_count": step_manager.sente_capture_count,
         "gote_capture_count": step_manager.gote_capture_count,
         "sente_drop_count": step_manager.sente_drop_count,

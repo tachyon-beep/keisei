@@ -226,7 +226,12 @@ def render_hands(board_state: Dict[str, Any]) -> None:
 
 
 def render_training_charts(metrics: Dict[str, Any]) -> None:
-    """Render training metric charts in a 2-column grid."""
+    """Render training metric charts in a 2-column grid.
+
+    Each chart is 220px tall with the current (latest) value annotated.
+    Learning rate is shown as an inline metric rather than a chart when
+    constant across the sample window.
+    """
     curves = metrics.get("learning_curves", {})
     if not curves:
         st.info("No training data yet")
@@ -238,7 +243,6 @@ def render_training_charts(metrics: Dict[str, Any]) -> None:
         ("Entropy", "entropies"),
         ("KL Divergence", "kl_divergences"),
         ("Clip Fraction", "clip_fractions"),
-        ("Episode Length", "episode_lengths"),
         ("Episode Reward", "episode_rewards"),
     ]
 
@@ -249,8 +253,21 @@ def render_training_charts(metrics: Dict[str, Any]) -> None:
             continue
         target = col1 if i % 2 == 0 else col2
         with target:
-            st.caption(title)
-            st.line_chart(data, height=150)
+            current = data[-1]
+            st.caption(f"{title}  ({current:.4g})")
+            st.line_chart(data, height=220)
+
+    # Learning rate: inline metric if constant, chart if varying
+    lr_data = curves.get("learning_rates", [])
+    if lr_data:
+        lr_set = set(lr_data)
+        if len(lr_set) <= 1:
+            st.caption(f"Learning Rate: {lr_data[-1]:.2e}")
+        else:
+            with col1:
+                current = lr_data[-1]
+                st.caption(f"Learning Rate  ({current:.2e})")
+                st.line_chart(lr_data, height=220)
 
 
 def render_win_rate_chart(metrics: Dict[str, Any]) -> None:
@@ -277,35 +294,55 @@ def render_win_rate_chart(metrics: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def render_game_status(board_state: Dict[str, Any], step_info: Optional[Dict]) -> None:
-    """Render current game status and recent moves."""
-    col1, col2 = st.columns(2)
-    with col1:
-        player = board_state.get("current_player", "?").capitalize()
-        move_count = board_state.get("move_count", 0)
-        game_over = board_state.get("game_over", False)
-        winner = board_state.get("winner")
+def render_game_status(board_state: Dict[str, Any]) -> None:
+    """Render current game status badge."""
+    player = board_state.get("current_player", "?").capitalize()
+    move_count = board_state.get("move_count", 0)
+    game_over = board_state.get("game_over", False)
+    winner = board_state.get("winner")
 
-        if game_over:
-            if winner:
-                st.success(
-                    f"Game over — {winner.capitalize()} wins! (Move {move_count})"
-                )
-            else:
-                st.warning(f"Game over — Draw (Move {move_count})")
+    if game_over:
+        if winner:
+            st.success(
+                f"Game over \u2014 {winner.capitalize()} wins! "
+                f"(Move {move_count})"
+            )
         else:
-            st.info(f"Move {move_count} — {player} to play")
+            st.warning(f"Game over \u2014 Draw (Move {move_count})")
+    else:
+        st.info(f"Move {move_count} \u2014 {player} to play")
 
-    with col2:
-        if step_info:
-            moves = step_info.get("move_log", [])
-            if moves:
-                st.caption("Recent Moves")
-                # Show most recent first, up to 10
-                for move in reversed(moves[-10:]):
-                    st.text(move)
-            else:
-                st.caption("No moves yet")
+
+def render_move_log(step_info: Optional[Dict]) -> None:
+    """Render the move log in chronological order with auto-scroll.
+
+    Uses an HTML container with overflow-y and JavaScript to auto-scroll
+    to the bottom on each render, so the most recent move is visible.
+    """
+    if not step_info:
+        return
+    moves = step_info.get("move_log", [])
+    if not moves:
+        st.caption("No moves yet")
+        return
+
+    st.caption(f"Move Log ({len(moves)} moves)")
+    # Build numbered move list (chronological, 1-indexed)
+    lines = []
+    for i, move in enumerate(moves, 1):
+        lines.append(f"{i:>3}. {move}")
+    text = "\n".join(lines)
+
+    # Scrollable container, auto-scrolls to bottom
+    html = (
+        f'<div id="movelog" style="font-family:monospace;'
+        f"font-size:13px;max-height:300px;overflow-y:auto;"
+        f'padding:8px;background:#f9f9f9;border-radius:4px;">'
+        f"<pre style=\"margin:0;\">{text}</pre></div>"
+        f"<script>var el=document.getElementById('movelog');"
+        f"el.scrollTop=el.scrollHeight;</script>"
+    )
+    st.components.v1.html(html, height=min(len(moves) * 20 + 40, 340))
 
 
 def render_buffer_bar(buffer_info: Optional[Dict]) -> None:
@@ -421,15 +458,26 @@ def _render_header_metrics(env: EnvelopeParser) -> None:
 def render_metrics_tab(env: EnvelopeParser) -> None:
     """Render the Metrics tab: training curves, win rates, buffer."""
     metrics = env.metrics
+    model_info = env.model_info
+
     render_training_charts(metrics)
-    render_win_rate_chart(metrics)
-    render_buffer_bar(env.buffer_info)
+
+    # Summary row: win rates, gradient norm, buffer
+    summary1, summary2 = st.columns(2)
+    with summary1:
+        render_win_rate_chart(metrics)
+    with summary2:
+        grad_norm = model_info.get("gradient_norm")
+        if grad_norm is not None:
+            st.metric("Gradient Norm", f"{grad_norm:.4f}")
+        render_buffer_bar(env.buffer_info)
 
 
 def render_game_tab(env: EnvelopeParser) -> None:
     """Render the Game tab: board, hands, game status, move stats."""
     board_state = env.board_state
     step_info = env.step_info
+    metrics = env.metrics
 
     if not board_state:
         st.info("Waiting for first episode...")
@@ -440,7 +488,8 @@ def render_game_tab(env: EnvelopeParser) -> None:
         render_board(board_state)
         render_hands(board_state)
     with status_col:
-        render_game_status(board_state, step_info)
+        render_game_status(board_state)
+        render_move_log(step_info)
         if step_info:
             st.caption("Move Statistics")
             sc = step_info.get("sente_capture_count", 0)
@@ -452,6 +501,13 @@ def render_game_tab(env: EnvelopeParser) -> None:
             st.text(f"Captures: Black {sc} / White {gc}")
             st.text(f"Drops:    Black {sd} / White {gd}")
             st.text(f"Promos:   Black {sp} / White {gp}")
+
+        # Hot squares (text fallback — heatmap overlay in Phase 3)
+        hot_squares = metrics.get("hot_squares", [])
+        if hot_squares:
+            st.caption(
+                f"Hot Squares: {', '.join(str(s) for s in hot_squares)}"
+            )
 
 
 def render_lineage_tab(env: EnvelopeParser) -> None:
