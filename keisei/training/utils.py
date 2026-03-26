@@ -123,9 +123,12 @@ def setup_wandb(config, run_name, run_artifact_dir):
                 id=run_name,
             )
         except (TypeError, ValueError, OSError, AttributeError) as e:
+            import traceback
+
             log_error_to_stderr(
                 "TrainingUtils",
-                f"Error initializing W&B: {e}. W&B logging disabled.",
+                f"Error initializing W&B ({type(e).__name__}): {e}. "
+                f"W&B logging disabled.\n{traceback.format_exc()}",
             )
             is_active = False
     if not is_active:

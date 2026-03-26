@@ -40,17 +40,19 @@ class TestUpdateRateHzConfig:
         mgr = StreamlitManager(cfg)
         assert mgr._min_write_interval == pytest.approx(1.0)
 
-    def test_zero_hz_clamped_to_floor(self):
-        """Zero Hz doesn't cause ZeroDivisionError; clamps to 0.1 Hz floor."""
-        cfg = WebUIConfig(update_rate_hz=0.0)
-        mgr = StreamlitManager(cfg)
-        assert mgr._min_write_interval == pytest.approx(10.0)
+    def test_zero_hz_rejected_by_validation(self):
+        """Zero Hz is rejected by Pydantic gt=0 validator."""
+        from pydantic import ValidationError
 
-    def test_negative_hz_clamped_to_floor(self):
-        """Negative Hz is treated like zero — clamped to floor."""
-        cfg = WebUIConfig(update_rate_hz=-5.0)
-        mgr = StreamlitManager(cfg)
-        assert mgr._min_write_interval == pytest.approx(10.0)
+        with pytest.raises(ValidationError):
+            WebUIConfig(update_rate_hz=0.0)
+
+    def test_negative_hz_rejected_by_validation(self):
+        """Negative Hz is rejected by Pydantic gt=0 validator."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            WebUIConfig(update_rate_hz=-5.0)
 
 
 # ---------------------------------------------------------------------------

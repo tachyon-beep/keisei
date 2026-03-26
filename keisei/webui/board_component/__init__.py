@@ -23,11 +23,11 @@ _JS_PATH = Path(__file__).parent / "frontend" / "board.js"
 _CSS_PATH = Path(__file__).parent / "frontend" / "board.css"
 
 if not _JS_PATH.exists():
-    _logger.warning("Board component JS not found: %s", _JS_PATH)
+    raise FileNotFoundError(f"Board component JS not found: {_JS_PATH}")
 if not _CSS_PATH.exists():
-    _logger.warning("Board component CSS not found: %s", _CSS_PATH)
+    _logger.warning("Board component CSS not found: %s — styling may be missing", _CSS_PATH)
 
-_JS = _JS_PATH.read_text() if _JS_PATH.exists() else ""
+_JS = _JS_PATH.read_text()
 _CSS = _CSS_PATH.read_text() if _CSS_PATH.exists() else ""
 
 _component_func = components.component(

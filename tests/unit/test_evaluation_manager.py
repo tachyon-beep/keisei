@@ -80,3 +80,36 @@ class TestInMemoryEvalNarrowedExceptionScope:
 
         with pytest.raises(RuntimeError, match="CUDA OOM"):
             await manager.evaluate_current_agent_in_memory(agent)
+
+    @pytest.mark.asyncio
+    async def test_model_mode_restored_on_success(self):
+        """Model training mode is restored after successful in-memory eval."""
+        manager = _make_manager()
+        manager.enable_in_memory_eval = True
+        manager.model_weight_manager = MagicMock()
+        manager.opponent_pool = MagicMock()
+        manager.opponent_pool.sample.return_value = None
+
+        agent = MagicMock()
+        agent.model.training = True
+        # ValueError triggers fallback, which also exercises finally block
+        manager.model_weight_manager.extract_agent_weights.side_effect = ValueError("no weights")
+        manager.evaluate_current_agent_async = AsyncMock(return_value=MagicMock())
+
+        await manager.evaluate_current_agent_in_memory(agent)
+        agent.model.train.assert_called_with(True)
+
+    @pytest.mark.asyncio
+    async def test_model_mode_restored_on_error(self):
+        """Model training mode is restored even when RuntimeError propagates."""
+        manager = _make_manager()
+        manager.enable_in_memory_eval = True
+        manager.model_weight_manager = MagicMock()
+        manager.model_weight_manager.extract_agent_weights.side_effect = RuntimeError("boom")
+
+        agent = MagicMock()
+        agent.model.training = True
+
+        with pytest.raises(RuntimeError):
+            await manager.evaluate_current_agent_in_memory(agent)
+        agent.model.train.assert_called_with(True)

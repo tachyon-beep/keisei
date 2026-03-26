@@ -358,7 +358,9 @@ class EvaluationManager:
             )
 
         except (ValueError, FileNotFoundError) as e:
-            # Fallback to file-based evaluation on checkpoint/config errors only
+            # Fallback to file-based evaluation on config/checkpoint errors.
+            # RuntimeError (CUDA OOM, tensor shape) intentionally propagates
+            # rather than silently degrading — those indicate systemic issues.
             log_error_to_stderr(
                 "evaluation",
                 f"In-memory evaluation failed ({type(e).__name__}: {e}), "

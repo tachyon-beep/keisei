@@ -267,6 +267,25 @@ class TestAsyncEvaluationCallback:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_does_not_fire_at_zero(self):
+        """Timestep 0 should not trigger async evaluation."""
+        cfg = self._make_eval_cfg()
+        cb = AsyncEvaluationCallback(cfg, interval=10)
+        trainer = _make_trainer(global_timestep=0)
+        result = await cb.on_step_end_async(trainer)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_does_not_fire_twice_at_same_timestep(self):
+        """Resume boundary: should not re-fire at the restored timestep."""
+        cfg = self._make_eval_cfg()
+        cb = AsyncEvaluationCallback(cfg, interval=10)
+        cb._last_fired_timestep = 10
+        trainer = _make_trainer(global_timestep=10)
+        result = await cb.on_step_end_async(trainer)
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_returns_metrics_dict_on_success(self):
         cfg = self._make_eval_cfg()
         cb = AsyncEvaluationCallback(cfg, interval=10)

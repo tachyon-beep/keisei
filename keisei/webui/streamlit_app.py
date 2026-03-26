@@ -196,7 +196,7 @@ def render_board(
             file_num = 9 - c
             bg = "#f5deb3" if (r + c) % 2 == 0 else "#deb887"
             aria = _piece_aria_label(piece)
-            cell_label = f"{file_num}-{rank}: {aria}"
+            cell_label = f"File {file_num} Rank {rank}: {aria}"
 
             # Promotion zone tint: rows 1-3 (White), rows 7-9 (Black)
             zone_tint = ""

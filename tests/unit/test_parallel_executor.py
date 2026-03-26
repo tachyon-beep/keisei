@@ -80,6 +80,32 @@ class TestParallelExecutorLoopSafety:
         assert result == "direct"
         mock_run.assert_called_once()
 
+    def test_run_coroutine_blocking_timeout_cancels_future(self):
+        """When the thread pool times out, the future is cancelled and TimeoutError raised."""
+        executor = ParallelGameExecutor(timeout_per_game_seconds=1)
+
+        async def slow_coro():
+            return "never"
+
+        mock_future = MagicMock()
+        mock_future.result.side_effect = TimeoutError("timed out")
+        mock_pool = MagicMock()
+        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
+        mock_pool.__exit__ = MagicMock(return_value=False)
+        mock_pool.submit.return_value = mock_future
+
+        with patch(
+            "keisei.evaluation.core.parallel_executor.asyncio.get_running_loop",
+            return_value=MagicMock(),
+        ), patch(
+            "keisei.evaluation.core.parallel_executor.ThreadPoolExecutor",
+            return_value=mock_pool,
+        ):
+            with pytest.raises(TimeoutError):
+                executor._run_coroutine_blocking(slow_coro)
+
+        mock_future.cancel.assert_called_once()
+
     @staticmethod
     def _make_async_executor(result):
         async def _executor(agent_info, opponent_info, context):

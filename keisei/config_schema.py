@@ -619,10 +619,10 @@ def _create_display_config() -> DisplayConfig:
 class WebUIConfig(BaseModel):
     """Configuration for the Streamlit training dashboard."""
     enabled: bool = Field(False, description="Enable Streamlit training dashboard")
-    port: int = Field(8501, description="Streamlit server port")
+    port: int = Field(8501, ge=1, le=65535, description="Streamlit server port")
     host: str = Field("localhost", description="Server host (use '0.0.0.0' for remote access)")
     update_rate_hz: float = Field(
-        2.0, description="State file update frequency in Hz"
+        2.0, gt=0, description="State file update frequency in Hz"
     )
     policy_insight: bool = Field(
         False,

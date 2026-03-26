@@ -210,7 +210,10 @@ class WorkerCommunicator:
         """Return queue size when supported, or None on unsupported platforms."""
         try:
             return q.qsize()
-        except (AttributeError, NotImplementedError, OSError):
+        except (AttributeError, NotImplementedError):
+            return None
+        except OSError as e:
+            logger.warning("Queue qsize failed (resource error): %s", e)
             return None
 
     def get_queue_info(self) -> Dict[str, List[Optional[int]]]:
