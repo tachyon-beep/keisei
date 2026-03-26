@@ -211,7 +211,7 @@ export default function(component) {
     html += '</tbody>';
 
     var gridLabel = "Shogi board position, move " + moveCount + ", " +
-      currentPlayer.charAt(0).toUpperCase() + currentPlayer.slice(1) +
+      escHtml(currentPlayer.charAt(0).toUpperCase() + currentPlayer.slice(1)) +
       " to play. Black (Sente) plays from bottom, White (Gote) from top.";
 
     root.innerHTML = '<table id="shogi-board" role="grid" ' +

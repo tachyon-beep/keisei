@@ -86,7 +86,10 @@ def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
         try:
             with open(path) as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError as e:
+            st.warning(f"State file is corrupt: {e}")
+            return None
+        except OSError:
             return None
 
     # An explicit state-file was given but not (yet) present — do not fall
@@ -454,9 +457,11 @@ def render_move_log(step_info: Optional[Dict]) -> None:
 
     st.caption(f"Move Log ({len(moves)} moves)")
     # Build numbered move list (chronological, 1-indexed)
+    import html as html_mod
+
     lines = []
     for i, move in enumerate(moves, 1):
-        lines.append(f"{i:>3}. {move}")
+        lines.append(f"{i:>3}. {html_mod.escape(str(move))}")
     text = "\n".join(lines)
 
     # Scrollable container, auto-scrolls to bottom
@@ -562,7 +567,7 @@ def render_selected_square_panel(
     """Render the selected square detail panel.
 
     Shows top-3 actions targeting the selected square with probability bars.
-    Rendered in the right-hand insight column of the Game tab.
+    Rendered in the leftmost detail column of the Game tab.
     Only visible when a square is selected.
     """
     row = selected["row"]

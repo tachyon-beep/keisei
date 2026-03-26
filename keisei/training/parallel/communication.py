@@ -206,14 +206,14 @@ class WorkerCommunicator:
         }
 
     @staticmethod
-    def _safe_qsize(q: mp.Queue) -> int:
-        """Return queue size when supported, otherwise a sentinel."""
+    def _safe_qsize(q: mp.Queue) -> Optional[int]:
+        """Return queue size when supported, or None on unsupported platforms."""
         try:
             return q.qsize()
         except (AttributeError, NotImplementedError, OSError):
-            return -1
+            return None
 
-    def get_queue_info(self) -> Dict[str, List[int]]:
+    def get_queue_info(self) -> Dict[str, List[Optional[int]]]:
         """
         Get current queue sizes for monitoring.
 
@@ -249,8 +249,8 @@ class WorkerCommunicator:
             for q in queues:
                 try:
                     self._drain_queue(q)
-                except (OSError, ValueError):
-                    pass
+                except (OSError, ValueError) as e:
+                    logger.debug("Queue drain during cleanup failed: %s", e)
                 q.close()
 
         logger.info("Worker communication cleanup complete")

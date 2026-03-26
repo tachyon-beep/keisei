@@ -242,9 +242,9 @@ class TestGetQueueInfo:
         c.control_queues = [FakeQueue()]
 
         info = c.get_queue_info()
-        assert info["experience_queue_sizes"] == [-1]
-        assert info["model_queue_sizes"] == [-1]
-        assert info["control_queue_sizes"] == [-1]
+        assert info["experience_queue_sizes"] == [None]
+        assert info["model_queue_sizes"] == [None]
+        assert info["control_queue_sizes"] == [None]
 
 
 # ---------------------------------------------------------------------------

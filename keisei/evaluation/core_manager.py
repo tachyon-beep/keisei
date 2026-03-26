@@ -299,7 +299,11 @@ class EvaluationManager:
                 agent
             )  # Fallback to async file-based
 
+        model = getattr(agent, "model", None)
+        was_training = model.training if model and hasattr(model, "training") else False
         try:
+            if model and hasattr(model, "eval"):
+                model.eval()
             # Extract current agent weights
             agent_weights = self.model_weight_manager.extract_agent_weights(agent)
             agent_info = AgentInfo(
@@ -361,6 +365,9 @@ class EvaluationManager:
                 "falling back to file-based evaluation",
             )
             return await self.evaluate_current_agent_async(agent)
+        finally:
+            if model and hasattr(model, "train"):
+                model.train(was_training)
 
     async def _run_in_memory_evaluation(
         self, agent_weights, opponent_weights, agent_info, opponent_info, context

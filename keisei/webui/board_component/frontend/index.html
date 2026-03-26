@@ -62,12 +62,10 @@
   <pre id="debug" style="font-size:10px;color:#888;max-height:100px;overflow:auto;"></pre>
 
   <!--
-    Inline Streamlit component communication library.
-    For v1 declare_component with a local path (no npm), the standard
-    streamlit-component-lib.js is not served automatically. This minimal
-    implementation provides the Streamlit.setComponentValue(),
-    Streamlit.setFrameHeight(), Streamlit.setComponentReady(), and
-    Streamlit.RENDER_EVENT APIs needed by the component.
+    Inline Streamlit component communication library (v1 fallback harness).
+    The production board uses st.components.v2 (board.js). This index.html
+    is a standalone test harness for the v1 iframe path — not loaded in
+    normal operation.
   -->
   <script>
     // Minimal Streamlit component communication (vanilla JS, no npm)
