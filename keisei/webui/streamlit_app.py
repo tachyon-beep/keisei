@@ -918,9 +918,20 @@ def main() -> None:
     state_file: Optional[str] = args.state_file
 
     # --- Sidebar controls (outside the fragment — rendered once) ---
+    # Restore toggle state from URL query params (survives browser refresh)
+    qp = st.query_params
+    if "auto_refresh" not in st.session_state:
+        st.session_state.auto_refresh = qp.get("auto_refresh", "true") == "true"
+    if "show_heatmap" not in st.session_state:
+        st.session_state.show_heatmap = qp.get("show_heatmap", "false") == "true"
+
     with st.sidebar:
-        st.toggle("Auto-refresh", value=True, key="auto_refresh")
-        st.toggle("Show heatmap", value=False, key="show_heatmap")
+        st.toggle("Auto-refresh", key="auto_refresh")
+        st.toggle("Show heatmap", key="show_heatmap")
+
+    # Sync toggle state back to URL query params
+    qp["auto_refresh"] = str(st.session_state.auto_refresh).lower()
+    qp["show_heatmap"] = str(st.session_state.show_heatmap).lower()
 
     st.title("Keisei Training Dashboard")
 
