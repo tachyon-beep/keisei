@@ -739,6 +739,4 @@ class TestObsSnapshotCache:
         episode = _make_episode_state()
         sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
 
-        np.testing.assert_array_equal(
-            sm._latest_obs_for_snapshot, episode.current_obs
-        )
+        np.testing.assert_array_equal(sm._latest_obs_for_snapshot, episode.current_obs)

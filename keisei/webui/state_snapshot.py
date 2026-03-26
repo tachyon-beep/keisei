@@ -181,7 +181,9 @@ def extract_policy_insight(
         if legal_mask is not None:
             legal_mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=device)
             if legal_mask_t.shape == logits.shape:
-                logits = torch.where(legal_mask_t, logits, torch.tensor(float("-inf"), device=device))
+                logits = torch.where(
+                    legal_mask_t, logits, torch.tensor(float("-inf"), device=device)
+                )
         probs = torch.softmax(logits, dim=0)
         value_estimate = float(value.item())
 

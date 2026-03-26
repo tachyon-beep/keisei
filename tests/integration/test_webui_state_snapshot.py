@@ -178,7 +178,10 @@ class TestBuildSnapshot:
         """Snapshot reflects game state changes after moves are played."""
         game = ShogiGame(max_moves_per_game=500)
         buf = ExperienceBuffer(
-            buffer_size=16, gamma=0.99, lambda_gae=0.95, device="cpu",
+            buffer_size=16,
+            gamma=0.99,
+            lambda_gae=0.95,
+            device="cpu",
             num_actions=session_policy_mapper.get_total_actions(),
         )
         mm = MetricsManager()
@@ -198,7 +201,9 @@ class TestBuildSnapshot:
         # Play a few steps
         episode_state = sm.reset_episode()
         for t in range(3):
-            result = sm.execute_step(episode_state, global_timestep=t, logger_func=_noop_logger)
+            result = sm.execute_step(
+                episode_state, global_timestep=t, logger_func=_noop_logger
+            )
             if result.success:
                 episode_state = sm.update_episode_state(episode_state, result)
                 if result.done:
@@ -218,12 +223,17 @@ class TestBuildSnapshot:
         """Step info section contains move log entries after gameplay."""
         game = ShogiGame(max_moves_per_game=500)
         config_with_display = integration_config.model_copy(
-            update={"display": integration_config.display.model_copy(
-                update={"display_moves": True, "turn_tick": 0.0}
-            )}
+            update={
+                "display": integration_config.display.model_copy(
+                    update={"display_moves": True, "turn_tick": 0.0}
+                )
+            }
         )
         buf = ExperienceBuffer(
-            buffer_size=16, gamma=0.99, lambda_gae=0.95, device="cpu",
+            buffer_size=16,
+            gamma=0.99,
+            lambda_gae=0.95,
+            device="cpu",
             num_actions=session_policy_mapper.get_total_actions(),
         )
         sm = StepManager(
@@ -236,7 +246,9 @@ class TestBuildSnapshot:
 
         episode_state = sm.reset_episode()
         for t in range(3):
-            result = sm.execute_step(episode_state, global_timestep=t, logger_func=_noop_logger)
+            result = sm.execute_step(
+                episode_state, global_timestep=t, logger_func=_noop_logger
+            )
             if result.success:
                 episode_state = sm.update_episode_state(episode_state, result)
                 if result.done:

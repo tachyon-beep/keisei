@@ -215,8 +215,7 @@ def render_board(
             if overlay and overlay[r][c] > 0.01:
                 alpha = overlay[r][c] * 0.5
                 heat_style = (
-                    f"box-shadow:inset 0 0 0 100px "
-                    f"rgba(255,140,0,{alpha:.2f});"
+                    f"box-shadow:inset 0 0 0 100px " f"rgba(255,140,0,{alpha:.2f});"
                 )
 
             cell_content = ""
@@ -235,10 +234,7 @@ def render_board(
                     label = piece["type"][0].upper()
                     if piece.get("promoted"):
                         label = "+" + label
-                    txt_color = (
-                        "#000" if piece["color"] == "black"
-                        else "#8b0000"
-                    )
+                    txt_color = "#000" if piece["color"] == "black" else "#8b0000"
                     cell_content = (
                         f'<span style="color:{txt_color};'
                         f'font-weight:bold;">{label}</span>'
@@ -415,8 +411,7 @@ def render_game_status(board_state: Dict[str, Any]) -> None:
     if game_over:
         if winner:
             status_text = (
-                f"Game over \u2014 {winner.capitalize()} wins! "
-                f"(Move {move_count})"
+                f"Game over \u2014 {winner.capitalize()} wins! " f"(Move {move_count})"
             )
             st.success(status_text)
         else:
@@ -461,7 +456,7 @@ def render_move_log(step_info: Optional[Dict]) -> None:
         f'<div id="movelog" style="font-family:monospace;'
         f"font-size:13px;max-height:300px;overflow-y:auto;"
         f'padding:8px;background:#f9f9f9;border-radius:4px;">'
-        f"<pre style=\"margin:0;\">{text}</pre></div>"
+        f'<pre style="margin:0;">{text}</pre></div>'
         f"<script>var el=document.getElementById('movelog');"
         f"el.scrollTop=el.scrollHeight;</script>"
     )
@@ -500,8 +495,10 @@ def render_position_assessment(insight: Dict[str, Any]) -> None:
     max_entropy = 9.51
     confidence = max(0.0, 1.0 - entropy / max_entropy)
     conf_pct = int(confidence * 100)
-    conf_label = "Focused" if confidence > 0.7 else (
-        "Moderate" if confidence > 0.3 else "Uncertain"
+    conf_label = (
+        "Focused"
+        if confidence > 0.7
+        else ("Moderate" if confidence > 0.3 else "Uncertain")
     )
     st.progress(confidence, text=f"Confidence: {conf_pct}% ({conf_label})")
 
@@ -524,7 +521,7 @@ def render_top_actions(insight: Dict[str, Any]) -> None:
         bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
         bar = (
             f'<span style="display:inline-block;width:{bar_w}px;'
-            f'height:12px;background:#ff8c00;border-radius:2px;'
+            f"height:12px;background:#ff8c00;border-radius:2px;"
             f'vertical-align:middle;"></span>'
         )
         lines.append(
@@ -569,7 +566,9 @@ def render_selected_square_panel(
     st.caption(f"Square {square_label} actions")
 
     if not insight_available:
-        st.text("Policy insight not available. Enable in config to see action breakdown.")
+        st.text(
+            "Policy insight not available. Enable in config to see action breakdown."
+        )
         return
 
     # Piece context from board_state
@@ -603,7 +602,7 @@ def render_selected_square_panel(
             bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
             bar = (
                 f'<span style="display:inline-block;width:{bar_w}px;'
-                f'height:12px;background:#ff8c00;border-radius:2px;'
+                f"height:12px;background:#ff8c00;border-radius:2px;"
                 f'vertical-align:middle;"></span>'
             )
             lines.append(
@@ -871,10 +870,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
         if not insight:
             hot_squares = metrics.get("hot_squares", [])
             if hot_squares:
-                st.caption(
-                    "Hot Squares: "
-                    + ", ".join(str(s) for s in hot_squares)
-                )
+                st.caption("Hot Squares: " + ", ".join(str(s) for s in hot_squares))
 
 
 def render_lineage_tab(env: EnvelopeParser) -> None:

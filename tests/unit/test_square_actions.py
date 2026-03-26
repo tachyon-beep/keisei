@@ -78,7 +78,9 @@ class TestSquareActionExtraction:
         obs = np.zeros((46, 9, 9), dtype=np.float32)
         legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
+        result = extract_policy_insight(
+            agent, obs, mapper, top_k=5, legal_mask=legal_mask
+        )
         assert result is not None
         assert "square_actions" in result
 
@@ -90,7 +92,9 @@ class TestSquareActionExtraction:
         obs = np.zeros((46, 9, 9), dtype=np.float32)
         legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
+        result = extract_policy_insight(
+            agent, obs, mapper, top_k=5, legal_mask=legal_mask
+        )
         sa = result["square_actions"]
         for key, actions in sa.items():
             assert len(actions) <= 3
@@ -103,7 +107,9 @@ class TestSquareActionExtraction:
         obs = np.zeros((46, 9, 9), dtype=np.float32)
         legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
+        result = extract_policy_insight(
+            agent, obs, mapper, top_k=5, legal_mask=legal_mask
+        )
         sa = result["square_actions"]
         for key in sa:
             parts = key.split(",")
@@ -120,7 +126,9 @@ class TestSquareActionExtraction:
         obs = np.zeros((46, 9, 9), dtype=np.float32)
         legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
+        result = extract_policy_insight(
+            agent, obs, mapper, top_k=5, legal_mask=legal_mask
+        )
         sa = result["square_actions"]
         for key, actions in sa.items():
             probs = [a["prob"] for a in actions]
