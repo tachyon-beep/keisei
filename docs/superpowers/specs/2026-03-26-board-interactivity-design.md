@@ -1,6 +1,6 @@
 # Streamlit Dashboard v2.1 — Board Interactivity Design
 
-**Status**: Draft
+**Status**: Reviewed (incorporating UX specialist feedback)
 **Date**: 2026-03-26
 **Parent**: [Streamlit Dashboard v2 Design](../../designs/streamlit-dashboard-v2.md) (Sections 6.3, 6.4, 8 Phase v2.1)
 
@@ -118,6 +118,18 @@ For each of the 13,527 actions, determine the destination square (already done f
 
 Worst case: 81 squares x 3 actions x ~40 bytes each = ~10 KB. Typical case with a focused policy: 10-20 populated squares, ~1-2 KB. This is negligible relative to the existing state file (~5-15 KB).
 
+### Coordinate Conversion Reference
+
+A single authoritative mapping used by both Python and JS:
+
+| row, col (0-indexed) | Square (Shogi notation) | Example |
+|----------------------|------------------------|---------|
+| row=0, col=0 | 9-1 (file 9, rank 1) | Top-left (White's lance) |
+| row=0, col=4 | 5-1 (file 5, rank 1) | Top-center (White's king) |
+| row=8, col=8 | 1-9 (file 1, rank 9) | Bottom-right (Black's lance) |
+
+**Formula**: `file = 9 - col`, `rank = row + 1`. Both Python and JS must use this single conversion.
+
 ### Schema Version
 
 No bump required. `square_actions` is an optional field addition (patch-level per the versioning policy in `view_contracts.py`). Old consumers ignore unknown keys.
@@ -192,15 +204,29 @@ Single HTML file containing:
    - Rank 3/6 thicker borders
    - Heatmap overlay (log-scaled orange)
    - SVG piece images
-   - ARIA labels and `role="table"`
+   - `role="grid"` with `role="gridcell"` on each `<td>` (see ARIA section below)
+   - ARIA labels on each cell, updated on every `RENDER_EVENT`
+   - Grid `aria-label` updated on each render: `"Shogi board, move {N}, {player} to play"`
 
 3. **Click handler**: On cell click, toggle selection state. If clicking the already-selected square, deselect. Call `Streamlit.setComponentValue({row, col, type: "select"})` or `{type: "deselect"}`.
 
-4. **Keyboard handler**: Arrow keys for navigation (existing logic). Enter/Space to select/deselect the focused cell. Escape to deselect.
+4. **Keyboard handler**:
+   - **Arrow keys**: Navigate between cells (existing logic), updating roving tabindex
+   - **Enter/Space**: Toggle selection — if the focused cell is already selected, deselect it; if not, select it. This mirrors the click toggle behavior exactly.
+   - **Escape**: Deselect the current selection (if any)
+   - **Tab/Shift-Tab**: Exit the grid immediately (do not cycle through cells). This prevents the board from being a Tab key trap. Arrow keys are the sole within-grid navigation mechanism, per the standard grid widget contract.
 
-5. **Selection highlight**: The selected square gets a 3px solid `#4169e1` (royal blue) outline, visually distinct from the heatmap overlay (orange).
+5. **Selection highlight**: The selected square gets a distinct visual treatment from the focus indicator:
+   - **Focus-only** (navigating with arrows): `2px dashed #888` outline — muted, indicates cursor position
+   - **Selected** (clicked or Enter/Space): `3px solid #2a52b0` outline + `rgba(42,82,176,0.15)` semi-transparent fill — distinct from both focus ring and heatmap overlay (orange)
+   - **Both focused and selected** (same cell): shows the selected style (solid outline + fill)
+   - **Contrast note**: `#2a52b0` achieves 3.1:1 against the lighter wheat cell (`#f5deb3`), meeting WCAG 1.4.11 non-text contrast. The previous `#4169e1` was 2.9:1, failing 1.4.11.
 
-6. **Focus tracking**: `focusin` / `focusout` on the table element. On focus, send `{type: "focus"}` via `setComponentValue`. On blur (with a 100ms debounce to handle focus moving between cells), send `{type: "blur"}`.
+6. **Focus tracking**: `focusin` / `focusout` on the table element, with gating:
+   - Maintain a JS-side `boardFocused` boolean. Only send `{type: "focus"}` via `setComponentValue` when transitioning from `false` → `true` (i.e., focus enters the grid from outside). Do NOT send on every cell-to-cell arrow navigation.
+   - On `focusout`, debounce by 100ms before sending `{type: "blur"}`. This prevents false blur→focus cycles when arrow keys move focus between cells. Only send blur if no cell in the grid has focus after the debounce.
+
+7. **Iframe height**: Set a fixed frame height matching the board dimensions (`cell_size * 10 + 40`) rather than calling `setFrameHeight()` with computed height on every render. This prevents page scroll jitter during re-renders.
 
 ### Piece Image Passing
 
@@ -219,9 +245,13 @@ The component communicates back to Python via `Streamlit.setComponentValue()`. T
 
 Python reads this as the return value of `shogi_board()`.
 
-### ARIA Role Change
+**Note on event timing**: Only the most recent interaction per render cycle is processed. If the user clicks multiple squares faster than the 2s fragment cycle, intermediate selections are intentionally dropped. The user sees the final selection reflected on the next render. This is correct for a read-only analysis tool — the user is interested in inspecting the current selection, not replaying all clicks.
 
-The board switches from `role="table"` to `role="grid"` now that it has interactive cells. This was explicitly deferred in v2 (Decision #9) pending click-to-inspect. With selection support, the grid role and its keyboard interaction contract are appropriate. The arrow-key navigation already satisfies the grid keyboard requirements.
+### ARIA Role and Roving Tabindex
+
+The board switches from `role="table"` to `role="grid"` now that it has interactive cells. This was explicitly deferred in v2 (Decision #9) pending click-to-inspect. Each `<td>` gets `role="gridcell"`.
+
+**Roving tabindex** (required by the grid contract): Only one cell in the grid has `tabindex="0"` at a time; all others have `tabindex="-1"`. On mount, initialize `tabindex="0"` on cell (0,0), or on the pre-existing `selected_square` if one is passed as a component arg. When the user arrows between cells, shift `tabindex="0"` to the newly-focused cell and set `tabindex="-1"` on the previous one. This ensures Tab enters the grid at the last-focused cell and Tab exits immediately (only one cell is in the tab sequence).
 
 ---
 
@@ -245,11 +275,22 @@ def render_selected_square_panel(
 
 **Content:**
 
-1. **Header**: "Actions targeting 7-6" (converted to file-rank Shogi notation: file = 9 - col, rank = row + 1)
+1. **Header**: "Square 76 actions" (compact Shogi notation without dash, avoiding collision with move notation like "7-6" which looks like "from 7 to 6"). Conversion: file = 9 - col, rank = row + 1, display as `f"{file}{rank}"`.
 2. **Probability sum**: The heatmap value for this square (raw, not log-scaled), shown as a percentage of total policy mass
 3. **Action list**: Top-3 actions from `square_actions["r,c"]`, rendered as horizontal probability bars (same visual style as the global top-actions)
-4. **Empty state**: "No actions target this square" when the key is absent or the list is empty
-5. **Piece context**: If the square contains a piece, show "Contains: Black Pawn" (from board_state) for context
+4. **Sub-caption**: "Probabilities are global (share of all possible moves)" — prevents misreading percentages as relative to the selected square
+5. **Empty states** (two variants):
+   - When `square_actions` key is absent or empty for this square: "No actions target this square"
+   - When `insight` is None (policy data unavailable): "Policy insight not available. Enable in config to see action breakdown."
+6. **Piece context**: If the square contains a piece, show "Contains: Black Pawn" (from board_state) for context
+
+**Screen reader announcement** (WCAG 4.1.3 — Status Messages):
+
+Add a scoped `aria-live="polite"` off-screen div in `render_selected_square_panel()`, following the existing pattern from `render_game_status()`. When the panel renders with new content, announce:
+- With actions: "Selected 76. Top action: 7g7f 23.1%."
+- Empty: "Selected 76. No actions target this square."
+
+This ensures keyboard users who select via Enter/Space receive confirmation without needing to navigate to the panel.
 
 ### Integration in `render_game_tab()`
 
@@ -278,14 +319,23 @@ When `board_state.move_count` changes between fragment render cycles, the select
 At the top of the fragment's render function, before rendering:
 
 ```python
-prev_move = st.session_state.get("last_move_count")
-curr_move = board_state.get("move_count", 0) if board_state else None
-if prev_move is not None and curr_move is not None and prev_move != curr_move:
+# Clear selection when board disappears (between episodes)
+if board_state is None:
     st.session_state.selected_square = None
-st.session_state.last_move_count = curr_move
+    st.session_state.last_move_count = None
+else:
+    # Clear selection when position changes (new move or new episode)
+    prev_move = st.session_state.get("last_move_count")
+    curr_move = board_state.get("move_count", 0)
+    if prev_move is not None and prev_move != curr_move:
+        st.session_state.selected_square = None
+    st.session_state.last_move_count = curr_move
 ```
 
-This also handles episode boundaries (move_count resets to 0) and new episodes (board_state transitions from None to a fresh board).
+This handles three transitions:
+- **Move played**: `move_count` changes → clear selection
+- **Episode boundary**: `board_state` becomes None → clear selection
+- **New episode**: `move_count` resets to 0 (differs from previous) → clear selection
 
 ---
 
@@ -302,14 +352,27 @@ In the fragment, after reading the board component's return value:
 ```python
 board_result = shogi_board(...)
 
-# Track focus state
+# Track focus state from component
 if board_result and board_result.get("type") == "focus":
     st.session_state.board_focused = True
 elif board_result and board_result.get("type") == "blur":
     st.session_state.board_focused = False
 ```
 
-The fragment's pause check expands:
+**Stuck-state prevention**: The board component only sends `blur` when the user actively moves focus out of the grid. If the user navigates to a different tab or closes the browser tab, no `blur` event fires — `board_focused` gets stuck `True`. To prevent this:
+
+```python
+# At the top of the fragment, before rendering tab content:
+# If we're not rendering the Game tab, the board is not focused
+if active_tab_index != GAME_TAB_INDEX:
+    st.session_state.board_focused = False
+```
+
+Since `st.tabs()` doesn't expose the active tab index directly, track it via `st.session_state.active_tab_index` set by a tab-selection callback, or clear `board_focused` at the start of every non-Game-tab render path (Metrics tab and Lineage tab both set `board_focused = False`).
+
+### Pause Precedence
+
+**Manual toggle takes precedence over focus-pause.** The combined logic:
 
 ```python
 paused_by_toggle = not st.session_state.get("auto_refresh", True)
@@ -320,16 +383,19 @@ if paused_by_toggle or paused_by_focus:
     # ... render from cache ...
 ```
 
+When `auto_refresh` is toggled back on while the board is focused, auto-refresh remains paused (focus-pause still active). The status indicator distinguishes the two states so the user understands why.
+
 ### Status Indicator
 
-The header or sidebar shows the pause reason:
-- Manual toggle off: "Paused"
-- Board focused: "Paused (inspecting board)"
-- Both: "Paused (inspecting board)"
+Placed in the **header row above the tabs** (always visible regardless of sidebar state), using `st.info()` at the top of the fragment's paused render branch:
+
+- Manual toggle off: `st.info("Paused")`
+- Board focused (auto-refresh on): `st.info("Paused — inspecting board")`
+- Both: `st.info("Paused — inspecting board")`
 
 ### Focus Debounce
 
-The JS frontend debounces `focusout` by 100ms before sending a `blur` event. This prevents false blur→focus cycles when the user tabs between board cells (focus leaves one cell and enters another within the same table). Without debounce, each arrow-key press would trigger blur→focus→blur→focus.
+The JS frontend debounces `focusout` by 100ms before sending a `blur` event. This prevents false blur→focus cycles when the user tabs between board cells (focus leaves one cell and enters another within the same table). Without debounce, each arrow-key press would trigger blur→focus→blur→focus. See also Section 4 item 6 for the JS-side `boardFocused` gating.
 
 ---
 
@@ -414,5 +480,12 @@ The old `render_board()` function is removed. No external consumers — it's onl
 | 2 | Component architecture | `declare_component` with vanilla HTML (no npm) | Official bidirectional API without adding build toolchain dependency |
 | 3 | Detail panel placement | Insert below Action Distribution | Static layout — no shifts when no square selected. Matches design doc's "separate panel" language |
 | 4 | Focus-pause scope | Pause entire fragment | When inspecting a square, the entire state should be frozen — right panel data corresponds to board position |
-| 5 | ARIA role | Switch to `role="grid"` | Interactive cells now satisfy the grid keyboard contract (arrow keys + Enter/Space) |
-| 6 | Focus debounce | 100ms on blur | Prevents false blur→focus cycles when tabbing between cells within the board |
+| 5 | ARIA role | Switch to `role="grid"` with roving tabindex | Interactive cells require grid contract. Roving tabindex ensures only one cell in tab sequence. |
+| 6 | Focus debounce | 100ms on blur, gated focusin | Prevents false blur→focus cycles; avoids flooding setComponentValue on arrow navigation |
+| 7 | Focus vs. selection visual | Dashed muted outline (focus) vs. solid blue + fill (selected) | Must be independently recognizable when user navigates away from selected cell |
+| 8 | Selection highlight color | `#2a52b0` (not `#4169e1`) | 3.1:1 against wheat background, meeting WCAG 1.4.11 non-text contrast |
+| 9 | Panel header notation | "Square 76 actions" (no dash) | Dash format "7-6" collides with move notation. Compact format matches standard Shogi square references |
+| 10 | Focus-pause stuck state | Clear `board_focused` on non-Game-tab render | Prevents auto-refresh from permanently stopping when user leaves Game tab |
+| 11 | Pause precedence | Manual toggle takes precedence; focus-pause additive | Both contribute to pause state; status indicator distinguishes the reason |
+| 12 | Tab behavior in grid | Tab/Shift-Tab exit immediately | Prevents 81-cell Tab trap; arrow keys are the within-grid navigation mechanism |
+| 13 | Iframe height | Fixed height, not computed per render | Prevents page scroll jitter during re-renders |
