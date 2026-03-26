@@ -132,12 +132,17 @@ def extract_policy_insight(
     observation: Any,
     policy_mapper: Any,
     top_k: int = 10,
+    legal_mask: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Extract policy insight from the agent's current observation.
 
     Performs a ``torch.no_grad()`` forward pass to get action probabilities
     and the critic's value estimate.  Returns ``None`` on any error so that
     snapshot production is never interrupted.
+
+    When *legal_mask* is provided, illegal actions are masked to ``-inf``
+    before softmax so the heatmap and top-actions reflect only legal moves
+    (mirroring ``PPOAgent.select_action``).
 
     The ``action_heatmap`` is a 9x9 grid where each cell holds the sum of
     action probabilities whose destination square is that cell.
@@ -171,8 +176,13 @@ def extract_policy_insight(
             policy_logits, value = model(obs_tensor)
             model.train(was_training)
 
-        # Softmax over the full action space
-        probs = torch.softmax(policy_logits.squeeze(0), dim=0)
+        # Mask illegal actions before softmax (mirrors PPOAgent.select_action)
+        logits = policy_logits.squeeze(0)
+        if legal_mask is not None:
+            legal_mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=device)
+            if legal_mask_t.shape == logits.shape:
+                logits = torch.where(legal_mask_t, logits, torch.tensor(float("-inf"), device=device))
+        probs = torch.softmax(logits, dim=0)
         value_estimate = float(value.item())
 
         # Action entropy
@@ -282,13 +292,14 @@ def _build_training_view(trainer: Any) -> Dict[str, Any]:
         ppo_agent = getattr(trainer, "agent", None)
         step_mgr = getattr(trainer, "step_manager", None)
         obs = getattr(step_mgr, "_latest_obs_for_snapshot", None)
+        legal_mask = getattr(step_mgr, "_latest_legal_mask_for_snapshot", None)
         env_mgr = getattr(trainer, "env_manager", None)
         mapper = getattr(env_mgr, "policy_mapper", None)
         top_k = getattr(webui_cfg, "policy_insight_top_k", 10)
 
         if ppo_agent is not None and mapper is not None:
             training["policy_insight"] = extract_policy_insight(
-                ppo_agent, obs, mapper, top_k=top_k
+                ppo_agent, obs, mapper, top_k=top_k, legal_mask=legal_mask
             )
 
     return training

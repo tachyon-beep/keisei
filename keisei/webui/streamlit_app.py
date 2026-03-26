@@ -773,16 +773,6 @@ def main() -> None:
         st.toggle("Auto-refresh", value=True, key="auto_refresh")
         st.toggle("Show heatmap", value=False, key="show_heatmap")
 
-        # Export state button
-        cached = st.session_state.get("last_state")
-        if cached is not None:
-            st.download_button(
-                label="Export state",
-                data=json.dumps(cached, indent=2),
-                file_name="keisei_state.json",
-                mime="application/json",
-            )
-
     st.title("Keisei Training Dashboard")
 
     # --- Live data fragment ---
@@ -801,18 +791,28 @@ def main() -> None:
             env = EnvelopeParser(cached)
             render_stale_warning(env)
             _render_dashboard_content(env)
-            return
+        else:
+            state = load_state(state_file)
+            if state is None:
+                st.error("No state data available. Waiting for training to start...")
+                return
 
-        state = load_state(state_file)
-        if state is None:
-            st.error("No state data available. Waiting for training to start...")
-            return
+            env = EnvelopeParser(state)
+            st.session_state.last_state = state
 
-        env = EnvelopeParser(state)
-        st.session_state.last_state = state
+            render_stale_warning(env)
+            _render_dashboard_content(env)
 
-        render_stale_warning(env)
-        _render_dashboard_content(env)
+        # Export button lives inside the fragment so it always has fresh state
+        current = st.session_state.get("last_state")
+        if current is not None:
+            with st.sidebar:
+                st.download_button(
+                    label="Export state",
+                    data=json.dumps(current, indent=2),
+                    file_name="keisei_state.json",
+                    mime="application/json",
+                )
 
     _live_data_section()
 
