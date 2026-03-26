@@ -194,6 +194,7 @@ def extract_policy_insight(
         # Build 9x9 heatmap: sum of probs per destination square
         heatmap = [[0.0] * 9 for _ in range(9)]
         idx_to_move = policy_mapper.idx_to_move
+        square_action_candidates: dict[str, list[tuple[float, int]]] = {}
         for idx in range(len(idx_to_move)):
             p = float(probs_np[idx])
             if p < 1e-8:
@@ -208,6 +209,26 @@ def extract_policy_insight(
                 and 0 <= to_c < 9
             ):
                 heatmap[to_r][to_c] += p
+                # Collect for per-square breakdown (threshold: prob > 0.001)
+                if p > 0.001:
+                    key = f"{to_r},{to_c}"
+                    if key not in square_action_candidates:
+                        square_action_candidates[key] = []
+                    square_action_candidates[key].append((p, idx))
+
+        # Top-3 per square, sorted by probability descending
+        square_actions: dict[str, list[dict]] = {}
+        for key, candidates in square_action_candidates.items():
+            candidates.sort(reverse=True)  # Sort by probability (first element)
+            top3 = candidates[:3]
+            actions = []
+            for prob, idx in top3:
+                try:
+                    usi = policy_mapper.action_idx_to_usi_move(int(idx))
+                except (IndexError, ValueError):
+                    usi = f"idx:{idx}"
+                actions.append({"action": usi, "prob": prob})
+            square_actions[key] = actions
 
         # Top-K actions
         top_indices = probs_np.argsort()[-top_k:][::-1]
@@ -227,6 +248,7 @@ def extract_policy_insight(
             "top_actions": top_actions,
             "value_estimate": value_estimate,
             "action_entropy": action_entropy,
+            "square_actions": square_actions,
         }
 
     except Exception:
