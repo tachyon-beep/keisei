@@ -29,7 +29,7 @@
 |------|--------|
 | `keisei/webui/view_contracts.py` | Add `SquareAction` TypedDict, `square_actions` field to `PolicyInsight` |
 | `keisei/webui/state_snapshot.py` | Add `square_actions` computation to `extract_policy_insight()` |
-| `keisei/training/step_manager.py` | Add `_latest_obs_for_snapshot` attribute |
+| `keisei/training/step_manager.py` | Already done — `_latest_obs_for_snapshot` (np.ndarray) and `_latest_legal_mask_for_snapshot` (tensor) exist |
 | `keisei/webui/streamlit_manager.py` | No change needed (already reads `_latest_obs_for_snapshot` via `_build_training_view`) |
 | `keisei/webui/streamlit_app.py` | Replace `render_board()` with `shogi_board()`, add selected square panel, invalidation, focus-pause |
 | `keisei/webui/sample_state.json` | Add `square_actions` sample data to existing `policy_insight` |
@@ -38,32 +38,37 @@
 
 ---
 
-## Task 1: StepManager Observation Cache
+## Task 1: StepManager Observation Cache Tests (Implementation Already Done)
 
-**Note:** The spec (Section 2) describes adding `latest_observation` to `build_snapshot()` and modifying `StreamlitManager._write_if_due()`. This is **not needed** — `_build_training_view()` in `state_snapshot.py:284` already reads `_latest_obs_for_snapshot` via `getattr(step_mgr, "_latest_obs_for_snapshot", None)`. Adding the attribute to `StepManager` is the only change needed for the data to flow through.
+**Status:** The `_latest_obs_for_snapshot` and `_latest_legal_mask_for_snapshot` attributes already exist in `step_manager.py` (added previously). Key facts about the current implementation:
+- `_latest_obs_for_snapshot` is a **numpy array** (`np.ndarray`), NOT a tensor — set via `self._latest_obs_for_snapshot = episode_state.current_obs` at line 269
+- `_latest_legal_mask_for_snapshot` is a **tensor** — set at line 270
+- Both initialized to `None` in `__init__` (lines 98-99)
+- Both are NOT cleared in `_clear_episode_counters()` (they persist across episodes)
+- `_build_training_view()` in `state_snapshot.py:284-295` already reads both via `getattr` and passes them to `extract_policy_insight()`
+
+**No implementation changes needed. This task adds only the lifecycle tests.**
 
 **Files:**
-- Modify: `keisei/training/step_manager.py:61-97` (\_\_init\_\_ and \_clear\_episode\_counters)
-- Modify: `keisei/training/step_manager.py:222-338` (execute\_step)
 - Test: `tests/unit/test_step_manager.py`
 
-- [ ] **Step 1: Write failing tests for obs cache lifecycle**
+- [ ] **Step 1: Write lifecycle tests for obs and legal mask cache**
 
-Add to `tests/unit/test_step_manager.py`:
+Add to `tests/unit/test_step_manager.py` (use the existing `_noop_logger` at line 65 — do NOT redefine it):
 
 ```python
 class TestObsSnapshotCache:
-    """_latest_obs_for_snapshot lifecycle."""
+    """_latest_obs_for_snapshot and _latest_legal_mask_for_snapshot lifecycle."""
 
-    def test_initial_value_is_none(self):
-        """Obs cache starts as None."""
+    def test_initial_values_are_none(self):
+        """Both snapshot caches start as None."""
         sm = _make_step_manager()
         assert sm._latest_obs_for_snapshot is None
+        assert sm._latest_legal_mask_for_snapshot is None
 
     def test_stashed_after_successful_step(self):
-        """After a successful execute_step, _latest_obs_for_snapshot is set."""
+        """After a successful execute_step, both caches are populated."""
         sm = _make_step_manager()
-        # Set up mocks for a successful step
         sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
         sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
         sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
@@ -73,88 +78,45 @@ class TestObsSnapshotCache:
         sm.game.current_player.value = 0
 
         episode = _make_episode_state()
-        # Use the existing _noop_logger (line 65, accepts *args, **kwargs)
         result = sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
 
         assert result.success
+        # Obs cache is a numpy array (stashed from episode_state.current_obs)
         assert sm._latest_obs_for_snapshot is not None
-        # Must be a detached clone, not the same tensor
-        assert not sm._latest_obs_for_snapshot.requires_grad
+        assert isinstance(sm._latest_obs_for_snapshot, np.ndarray)
+        # Legal mask cache is a tensor
+        assert sm._latest_legal_mask_for_snapshot is not None
+        assert isinstance(sm._latest_legal_mask_for_snapshot, torch.Tensor)
 
-    def test_cleared_on_episode_reset(self):
-        """_clear_episode_counters sets obs cache to None."""
+    def test_obs_is_current_observation(self):
+        """The stashed obs matches the episode's current_obs (numpy array)."""
         sm = _make_step_manager()
-        sm._latest_obs_for_snapshot = torch.zeros(1, 46, 9, 9)
-        sm._clear_episode_counters()
-        assert sm._latest_obs_for_snapshot is None
+        sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
+        sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
+        sm.game.make_move.return_value = (_make_obs(), 0.0, False, {})
+        sm.game.current_player = MagicMock()
+        sm.game.current_player.name = "BLACK"
+        sm.game.current_player.value = 0
+
+        episode = _make_episode_state()
+        sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
+
+        np.testing.assert_array_equal(
+            sm._latest_obs_for_snapshot, episode.current_obs
+        )
 ```
 
-**Note:** Do NOT add a new `_noop_logger` — the file already has one at line 65 with signature `(*args, **kwargs)`. Use it directly.
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they pass**
 
 Run: `pytest tests/unit/test_step_manager.py::TestObsSnapshotCache -v`
-Expected: FAIL — `_latest_obs_for_snapshot` attribute doesn't exist
+Expected: All 3 PASS (implementation already exists)
 
-- [ ] **Step 3: Add `_latest_obs_for_snapshot` to StepManager**
-
-In `keisei/training/step_manager.py`, add to `__init__` after `self.gote_promo_count = 0` (line ~96):
-
-```python
-        # Observation cache for WebUI policy insight (see v2.1 spec Section 2)
-        self._latest_obs_for_snapshot: Optional[torch.Tensor] = None
-```
-
-In `_clear_episode_counters()`, add at the end (after `self.gote_promo_count = 0`, line ~115):
-
-```python
-        self._latest_obs_for_snapshot = None
-```
-
-In `execute_step()`, after the successful `return StepResult(...)` block (before the `except` at line ~340), add the stash just before the return. Specifically, replace the successful return block:
-
-```python
-            # Stash observation for WebUI snapshot (detached clone to avoid aliasing)
-            self._latest_obs_for_snapshot = self._obs_to_tensor(next_obs_np).detach().clone()
-
-            return StepResult(
-                next_obs=next_obs_np,
-                next_obs_tensor=self._obs_to_tensor(next_obs_np),
-                ...  # existing fields unchanged
-            )
-```
-
-Note: `_obs_to_tensor` is called twice (once for snapshot, once for StepResult). This is intentional — the snapshot tensor must be an independent clone. Alternatively, compute once, clone for snapshot:
-
-```python
-            next_obs_tensor = self._obs_to_tensor(next_obs_np)
-            self._latest_obs_for_snapshot = next_obs_tensor.detach().clone()
-
-            return StepResult(
-                next_obs=next_obs_np,
-                next_obs_tensor=next_obs_tensor,
-                reward=reward,
-                done=done,
-                info=info,
-                selected_move=selected_shogi_move,
-                policy_index=policy_index,
-                log_prob=log_prob,
-                value_pred=value_pred,
-                success=True,
-            )
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/unit/test_step_manager.py::TestObsSnapshotCache -v`
-Expected: All 3 PASS
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add keisei/training/step_manager.py tests/unit/test_step_manager.py
-git commit -m "feat(training): add observation cache for WebUI policy insight"
+git add tests/unit/test_step_manager.py
+git commit -m "test(training): add lifecycle tests for observation/legal_mask snapshot cache"
 ```
 
 ---
@@ -297,8 +259,10 @@ class TestSquareActionExtraction:
 
         agent, mapper = self._make_mock_agent_and_mapper()
         obs = np.zeros((46, 9, 9), dtype=np.float32)
+        # legal_mask: all True (all actions legal) — matches the current signature
+        legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
         assert result is not None
         assert "square_actions" in result
 
@@ -308,8 +272,9 @@ class TestSquareActionExtraction:
 
         agent, mapper = self._make_mock_agent_and_mapper()
         obs = np.zeros((46, 9, 9), dtype=np.float32)
+        legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
         sa = result["square_actions"]
         for key, actions in sa.items():
             assert len(actions) <= 3
@@ -320,8 +285,9 @@ class TestSquareActionExtraction:
 
         agent, mapper = self._make_mock_agent_and_mapper()
         obs = np.zeros((46, 9, 9), dtype=np.float32)
+        legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
         sa = result["square_actions"]
         for key in sa:
             parts = key.split(",")
@@ -336,8 +302,9 @@ class TestSquareActionExtraction:
 
         agent, mapper = self._make_mock_agent_and_mapper()
         obs = np.zeros((46, 9, 9), dtype=np.float32)
+        legal_mask = torch.ones(13527, dtype=torch.bool)
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=legal_mask)
         sa = result["square_actions"]
         for key, actions in sa.items():
             probs = [a["prob"] for a in actions]
@@ -609,11 +576,14 @@ Create a minimal placeholder `keisei/webui/board_component/frontend/index.html`:
 <head><title>Shogi Board Component</title></head>
 <body>
 <div id="root">Loading board component...</div>
-<script src="https://cdn.jsdelivr.net/npm/streamlit-component-lib@2.0.0/dist/streamlit-component-lib.min.js"></script>
 <script>
+// Load streamlit-component-lib from Streamlit's own static serving (no CDN dependency).
+// Streamlit serves this at a relative path when using declare_component with a local path.
+// The actual script tag is: <script src="streamlit-component-lib.js"> which Streamlit
+// rewrites to the correct URL at serve time.
 // Placeholder — full implementation in Task 6
-Streamlit.setFrameHeight(520);
 </script>
+<script src="streamlit-component-lib.js"></script>
 </body>
 </html>
 ```
@@ -743,10 +713,60 @@ Verify in browser:
 
 Note: The app won't use the component yet (render_board still calls html()). To test the component standalone, temporarily add a test script or modify the Game tab to call `shogi_board()`. This integration happens in Task 8.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Write automated smoke test for board HTML structure**
+
+Add to `tests/unit/test_board_component.py`:
+
+```python
+class TestBoardComponentHTML:
+    """Verify the JS frontend HTML file has the expected structure."""
+
+    def test_frontend_index_exists(self):
+        """The frontend index.html file exists."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        assert index.exists()
+
+    def test_frontend_uses_grid_role(self):
+        """The frontend HTML uses role='grid', not role='table'."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert 'role="grid"' in content or "role='grid'" in content
+        assert 'role="table"' not in content
+
+    def test_frontend_has_no_cdn_dependency(self):
+        """The frontend does not load JS from external CDNs."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert "cdn.jsdelivr.net" not in content
+        assert "unpkg.com" not in content
+
+    def test_frontend_has_setComponentValue(self):
+        """The frontend calls Streamlit.setComponentValue for interaction events."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert "setComponentValue" in content
+
+    def test_frontend_has_roving_tabindex(self):
+        """The frontend implements roving tabindex (tabindex=-1 pattern)."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert 'tabindex="-1"' in content or "tabindex=\"-1\"" in content
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `pytest tests/unit/test_board_component.py -v`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add keisei/webui/board_component/frontend/index.html
+git add keisei/webui/board_component/frontend/index.html tests/unit/test_board_component.py
 git commit -m "feat(webui): implement board component JS frontend with interaction"
 ```
 
@@ -1042,11 +1062,44 @@ def render_lineage_tab(env: EnvelopeParser) -> None:
     render_lineage_panel(env)
 ```
 
+Additionally, add a **timeout-based fallback** in the fragment's pause check to handle edge cases where the blur event is missed (e.g., component unmount, browser iframe issues, user clicks outside the board without switching tabs):
+
+```python
+import time
+
+# Timeout fallback: if board_focused has been True for > 30s without
+# a fresh focus event, auto-clear it. This catches cases where blur
+# is never received (component unmount, iframe issues).
+if st.session_state.get("board_focused", False):
+    last_focus_time = st.session_state.get("board_focus_timestamp", 0)
+    if time.time() - last_focus_time > 30:
+        st.session_state.board_focused = False
+```
+
+Set `board_focus_timestamp` whenever a focus event is received:
+
+```python
+if board_result and board_result.get("type") == "focus":
+    st.session_state.board_focused = True
+    st.session_state.board_focus_timestamp = time.time()
+```
+
 - [ ] **Step 5: Remove old render_board() function**
 
-Delete the `render_board()` function (currently lines ~144-311) and `_compute_heatmap_overlay()` (lines ~115-141) from `streamlit_app.py`. These are replaced by the JS frontend. Keep `_piece_aria_label()` only if still used elsewhere (check — it's only used by `render_board`, so delete it too).
+**Do NOT delete `render_board()`.** Keep it as a fallback renderer in case the custom component fails to load (JS error, iframe blocked, etc.). Wrap the `shogi_board()` call in the Game tab with a try/except:
 
-Keep `_load_piece_svgs()`, `_PIECE_SVG_CACHE`, and `_piece_image_key()` — these produce the data URIs passed to the component.
+```python
+try:
+    board_result = shogi_board(...)
+except Exception:
+    # Fallback to non-interactive board rendering
+    render_board(board_state, heatmap=heatmap)
+    board_result = None
+```
+
+This ensures the Game tab is never blank. The fallback loses interactivity but preserves the board display. Keep `_compute_heatmap_overlay()` and `_piece_aria_label()` for the fallback path.
+
+Keep `_load_piece_svgs()`, `_PIECE_SVG_CACHE`, and `_piece_image_key()` — these produce the data URIs passed to the component AND used by the fallback.
 
 - [ ] **Step 6: Test manually in demo mode**
 
@@ -1099,8 +1152,14 @@ class TestPolicyInsightSquareActions:
         # Get observation from game
         obs = shogi_game.reset()
 
+        # Get a real legal mask from the current position
+        legal_moves = shogi_game.get_legal_moves()
+        legal_mask = session_policy_mapper.get_legal_mask(
+            legal_moves, device=torch.device("cpu")
+        )
+
         result = extract_policy_insight(
-            ppo_agent, obs, session_policy_mapper, top_k=5
+            ppo_agent, obs, session_policy_mapper, top_k=5, legal_mask=legal_mask
         )
         assert result is not None
         assert "square_actions" in result
