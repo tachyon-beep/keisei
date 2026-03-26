@@ -261,8 +261,12 @@ def extract_policy_insight(
             "square_actions": square_actions,
         }
 
-    except Exception:
-        # Non-fatal — snapshot production continues without insight
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Policy insight extraction failed: %s: %s", type(e).__name__, e
+        )
         return None
 
 

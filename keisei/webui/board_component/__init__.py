@@ -1,8 +1,11 @@
 """Custom Streamlit component: interactive shogi board with click-to-inspect.
 
 Uses the ``st.components.v2`` API with inline HTML/CSS/JS (no iframe, no npm).
-The component communicates selection and focus events back to Python via
-``setTriggerValue`` and ``setStateValue``.
+The JS frontend (board.js) calls ``component.setTriggerValue("selection", ...)``
+for click/keyboard events and ``component.setStateValue("board_focused", ...)``
+for focus tracking.  On the Python side, the v2 ``BidiComponentResult`` exposes
+these as ``result.selection`` and ``result.board_focused`` attributes (accessed
+via ``getattr`` in ``render_game_tab``).
 
 See: docs/superpowers/specs/2026-03-26-board-interactivity-design.md, Section 4.
 """

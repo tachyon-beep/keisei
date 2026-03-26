@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import base64
+import html as html_mod
 import json
 import math
 import time
@@ -89,7 +90,8 @@ def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError as e:
             st.warning(f"State file is corrupt: {e}")
             return None
-        except OSError:
+        except OSError as e:
+            st.warning(f"Cannot read state file: {e}")
             return None
 
     # An explicit state-file was given but not (yet) present — do not fall
@@ -113,8 +115,9 @@ def _piece_aria_label(piece: Optional[Dict[str, Any]]) -> str:
     """Build an accessible label for a board cell's contents."""
     if piece is None:
         return "empty square"
-    ptype = piece["type"].replace("_", " ")
-    return f"{piece['color']} {ptype}"
+    ptype = html_mod.escape(piece["type"].replace("_", " "))
+    color = html_mod.escape(piece["color"])
+    return f"{color} {ptype}"
 
 
 def _compute_heatmap_overlay(
@@ -414,16 +417,15 @@ def render_win_rate_chart(metrics: Dict[str, Any]) -> None:
 
 def render_game_status(board_state: Dict[str, Any]) -> None:
     """Render current game status badge with aria-live for updates."""
-    player = board_state.get("current_player", "?").capitalize()
+    player = html_mod.escape(board_state.get("current_player", "?").capitalize())
     move_count = board_state.get("move_count", 0)
     game_over = board_state.get("game_over", False)
-    winner = board_state.get("winner")
+    winner_raw = board_state.get("winner")
+    winner = html_mod.escape(winner_raw.capitalize()) if winner_raw else None
 
     if game_over:
         if winner:
-            status_text = (
-                f"Game over \u2014 {winner.capitalize()} wins! " f"(Move {move_count})"
-            )
+            status_text = f"Game over \u2014 {winner} wins! (Move {move_count})"
             st.success(status_text)
         else:
             status_text = f"Game over \u2014 Draw (Move {move_count})"
@@ -437,7 +439,7 @@ def render_game_status(board_state: Dict[str, Any]) -> None:
         f'<div role="status" aria-live="polite" '
         f'style="position:absolute;width:1px;height:1px;'
         f'overflow:hidden;clip:rect(0,0,0,0);">'
-        f"{status_text}</div>",
+        f"{html_mod.escape(status_text)}</div>",
         unsafe_allow_html=True,
     )
 
@@ -457,8 +459,6 @@ def render_move_log(step_info: Optional[Dict]) -> None:
 
     st.caption(f"Move Log ({len(moves)} moves)")
     # Build numbered move list (chronological, 1-indexed)
-    import html as html_mod
-
     lines = []
     for i, move in enumerate(moves, 1):
         lines.append(f"{i:>3}. {html_mod.escape(str(move))}")
@@ -527,7 +527,7 @@ def render_top_actions(insight: Dict[str, Any]) -> None:
     max_prob = top_actions[0]["prob"] if top_actions else 1.0
     lines = []
     for act in top_actions:
-        action_str = act["action"]
+        action_str = html_mod.escape(str(act["action"]))
         prob = act["prob"]
         pct = prob * 100
         # Bar width proportional to max action
@@ -609,7 +609,7 @@ def render_selected_square_panel(
         max_prob = actions[0]["prob"] if actions else 1.0
         lines = []
         for act in actions:
-            action_str = act["action"]
+            action_str = html_mod.escape(str(act["action"]))
             prob = act["prob"]
             pct = prob * 100
             bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
@@ -634,9 +634,10 @@ def render_selected_square_panel(
     if st.session_state.get("last_announced_square") != announce_key:
         st.session_state.last_announced_square = announce_key
         if actions:
+            top_action = html_mod.escape(str(actions[0]["action"]))
             announce = (
                 f"Selected {square_label}. Top action: "
-                f"{actions[0]['action']} {actions[0]['prob']*100:.1f}%."
+                f"{top_action} {actions[0]['prob']*100:.1f}%."
             )
         else:
             announce = f"Selected {square_label}. No actions target this square."
@@ -645,7 +646,7 @@ def render_selected_square_panel(
             f'<div role="status" aria-live="polite" '
             f'style="position:absolute;width:1px;height:1px;'
             f'overflow:hidden;clip:rect(0,0,0,0);">'
-            f"{announce}</div>",
+            f"{html_mod.escape(announce)}</div>",
             unsafe_allow_html=True,
         )
 
@@ -989,7 +990,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
                 selected_square=selected,
                 key="main_board",
             )
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             # Fallback to non-interactive board rendering
             st.warning(f"Interactive board unavailable: {e}")
             render_board(board_state, heatmap=heatmap)
