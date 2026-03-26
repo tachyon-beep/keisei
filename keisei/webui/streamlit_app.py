@@ -155,7 +155,7 @@ def render_board(
     numeric 1-9 (standard Shogi notation), not alphabetic.
 
     When *heatmap* is provided (9x9 raw probability sums), a log-scaled
-    orange overlay is rendered on each square.
+    white-to-navy overlay is rendered on each square.
     """
     board = board_state.get("board", [])
     if not board:
@@ -562,7 +562,7 @@ def render_selected_square_panel(
     """Render the selected square detail panel.
 
     Shows top-3 actions targeting the selected square with probability bars.
-    Inserted between Action Distribution and Game Status in the Game tab.
+    Rendered in the right-hand insight column of the Game tab.
     Only visible when a square is selected.
     """
     row = selected["row"]

@@ -512,8 +512,8 @@ webui:
   update_rate_hz: 2.0
 
   # Policy insight: extract action probabilities for heatmap overlay
-  # Requires a torch.no_grad() forward pass per snapshot, gated on
-  # training step boundaries (skipped during PPO updates)
+  # Requires a torch.no_grad() forward pass per snapshot, skipped
+  # while the PPO update processing flag is set
   policy_insight: false
   policy_insight_top_k: 10
 

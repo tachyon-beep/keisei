@@ -52,7 +52,7 @@ class EvaluationManager:
             config, "enable_in_memory_evaluation", True
         )
 
-        # CRITICAL FIX: Initialize performance manager and integrate it into evaluation flow
+        # Performance manager for evaluation concurrency and resource safety
         self.performance_manager = EvaluationPerformanceManager(
             max_concurrent=getattr(config, "max_concurrent_evaluations", 4),
             timeout_seconds=getattr(config, "evaluation_timeout_seconds", 300),
@@ -182,7 +182,7 @@ class EvaluationManager:
             model_dir=self.model_dir,
             wandb_active=self.wandb_active,
         )
-        # CRITICAL FIX: Use performance manager for async evaluation
+        # Route through performance manager when safeguards are enabled
         if self.performance_safeguards_enabled:
             return await self.performance_manager.run_evaluation_with_safeguards(
                 evaluator, agent_info, context
@@ -280,7 +280,7 @@ class EvaluationManager:
                 wandb_active=self.wandb_active,
             )
 
-            # CRITICAL FIX: Use performance manager for async current agent evaluation
+            # Route through performance manager when safeguards are enabled
             if self.performance_safeguards_enabled:
                 return await self.performance_manager.run_evaluation_with_safeguards(
                     evaluator, agent_info, context
@@ -378,7 +378,7 @@ class EvaluationManager:
 
         # Check if evaluator supports in-memory evaluation
         if hasattr(evaluator, "evaluate_in_memory"):
-            # CRITICAL FIX: Apply performance safeguards to in-memory evaluation
+            # Apply performance safeguards to in-memory evaluation
             if self.performance_safeguards_enabled:
                 # Create a wrapper for in-memory evaluation
                 class InMemoryEvaluatorWrapper:
