@@ -187,6 +187,13 @@ class TopAction(TypedDict):
     prob: float  # probability in [0, 1]
 
 
+class SquareAction(TypedDict):
+    """A single action targeting a specific board square."""
+
+    action: str  # USI notation, e.g. "7g7f" or "P*5e"
+    prob: float  # probability in [0, 1]
+
+
 class PolicyInsight(TypedDict, total=False):
     """Per-square action probability summary for the current board state.
 
@@ -202,6 +209,7 @@ class PolicyInsight(TypedDict, total=False):
     top_actions: List[TopAction]  # top-K actions with USI labels
     value_estimate: float  # V(s), typically in [-1, 1]
     action_entropy: float  # entropy of action distribution
+    square_actions: Dict[str, List["SquareAction"]]  # "r,c" -> top-3 actions
 
 
 # ---------------------------------------------------------------------------
