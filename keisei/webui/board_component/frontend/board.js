@@ -135,7 +135,7 @@ export default function(component) {
         // Heatmap overlay
         var heatStyle = "";
         if (overlay && overlay[r][c] > 0.01) {
-          heatStyle = "box-shadow:inset 0 0 0 100px rgba(255,140,0," + (overlay[r][c] * 0.5).toFixed(2) + ");";
+          heatStyle = "box-shadow:inset 0 0 0 100px rgba(0,180,120," + (overlay[r][c] * 0.45).toFixed(2) + ");";
         }
 
         var tabIdx = (r === focusRow && c === focusCol) ? "0" : "-1";
