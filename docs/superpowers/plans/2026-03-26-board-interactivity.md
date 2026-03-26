@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-26-board-interactivity-design.md`
 
+**Note:** Line numbers in this plan are anchored to the codebase as of commit `8a50172`. After each task modifies files, subsequent line numbers will drift — match on surrounding code context, not exact line numbers.
+
 ---
 
 ## File Structure
@@ -318,23 +320,21 @@ Expected: FAIL — `square_actions` not in result
 
 - [ ] **Step 3: Add square_actions computation to extract_policy_insight**
 
-In `keisei/webui/state_snapshot.py`, inside `extract_policy_insight()`, after the heatmap loop (after line ~200 `heatmap[to_r][to_c] += p`) and before the top-K section, add:
+In `keisei/webui/state_snapshot.py`, inside `extract_policy_insight()`, modify the existing heatmap loop (lines 194-210) to also collect per-square action candidates. The key change: add a `square_action_candidates` dict **before** the loop, then append candidates **inside** the existing loop body. Do NOT use `defaultdict` (unnecessary import); use a plain `dict`.
+
+Replace lines 194-210 (the heatmap section) with:
 
 ```python
-        # Per-square action breakdown: top-3 actions per destination square
-        from collections import defaultdict
-        square_action_candidates: dict[str, list[tuple[float, str]]] = defaultdict(list)
-```
-
-Then, inside the existing heatmap loop, extend it to also collect per-square candidates. Modify the loop body (lines ~187-200) to:
-
-```python
-        square_action_candidates: dict = {}
+        # Build 9x9 heatmap: sum of probs per destination square
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        idx_to_move = policy_mapper.idx_to_move
+        square_action_candidates: dict[str, list[tuple[float, int]]] = {}
         for idx in range(len(idx_to_move)):
             p = float(probs_np[idx])
             if p < 1e-8:
                 continue
             move = idx_to_move[idx]
+            # Destination square is at indices [2], [3]
             to_r, to_c = move[2], move[3]
             if (
                 isinstance(to_r, int)
@@ -351,7 +351,9 @@ Then, inside the existing heatmap loop, extend it to also collect per-square can
                     square_action_candidates[key].append((p, idx))
 ```
 
-After the loop, build the square_actions dict:
+**Important:** This is a full replacement of the heatmap section. The only additions to the original loop body are the `square_action_candidates` dict (before the loop) and the `if p > 0.001` block (inside the `if isinstance(...)` guard). All existing logic (heatmap accumulation, `p < 1e-8` guard, bounds checks) is preserved exactly.
+
+After the loop and before the Top-K section, build the square_actions dict:
 
 ```python
         # Top-3 per square, sorted by probability descending
@@ -609,9 +611,11 @@ git commit -m "feat(webui): add board component Python wrapper with declare_comp
 
 This is the largest task. The JS frontend renders the board and handles all interaction. No automated test for this task — it's pure frontend JS tested via manual demo mode.
 
+**Design spike:** `docs/superpowers/spikes/2026-03-26-board-component-frontend.html` contains a complete, implementation-ready `index.html` ported from the existing `render_board()` Python code. Copy it to `keisei/webui/board_component/frontend/index.html` and adjust if needed. The spike includes all features below — the rest of this task description documents the design rationale for reference.
+
 - [ ] **Step 1: Write the full index.html**
 
-Replace the placeholder `keisei/webui/board_component/frontend/index.html` with the full implementation. The file should contain:
+Copy from the design spike, or build from scratch using the spec below. The file should contain:
 
 **HTML structure:**
 - `<div id="root">` container
@@ -622,8 +626,8 @@ Replace the placeholder `keisei/webui/board_component/frontend/index.html` with 
 - Cell base styles: 48px x 48px, border, background colors (`#f5deb3` / `#deb887` alternating)
 - Promotion zone tints: rows 0-2 blue tint, rows 6-8 red tint
 - Rank 3/6 thicker borders (2.5px)
-- Focus indicator: `td[role="gridcell"]:focus { outline: 2px dashed #888; outline-offset: -2px; }`
-- Selected indicator: `.selected { outline: 3px solid #2a52b0; outline-offset: -3px; background-color: rgba(42,82,176,0.15) !important; }`
+- Focus indicator: `td[role="gridcell"]:focus { outline: 2px dashed #666; outline-offset: -2px; }` (changed from `#888` for WCAG 1.4.11 — `#666` gives ~3.5:1 against `#f5deb3`)
+- Selected indicator: `.selected { outline: 3px solid #2a52b0; outline-offset: -3px; background-color: rgba(42,82,176,0.25) !important; }`
 - Heatmap overlay: `box-shadow: inset 0 0 0 100px rgba(255,140,0,ALPHA)`
 - Dark theme: `@media (prefers-color-scheme: dark) { table[role="grid"] th { color: #e0e0e0; } }` — note: must use `role="grid"` selector, NOT `role="table"` (the old `render_board()` used `role="table"`)
 
@@ -696,7 +700,7 @@ Replace the placeholder `keisei/webui/board_component/frontend/index.html` with 
 
 7. **Board rendering function:**
    - Port the Python `render_board()` HTML generation to JS
-   - Use `piece_images[key]` for SVG data URIs (key format: `"{type}_{color}"`, e.g., `"pawn_black"`)
+   - Use `piece_images[key]` for SVG data URIs. Keys are SVG filename stems produced by `_piece_image_key()` in `streamlit_app.py:57-63`: format is `"{type}_{color}"` (e.g., `"pawn_black"`, `"promoted_bishop_white"`). Promoted pieces use `"promoted_{base_type}_{color}"`. The full list of valid keys matches the files in `keisei/webui/static/images/*.svg` (e.g., `pawn_black`, `lance_white`, `promoted_pawn_black`, etc.)
    - Build aria-labels: `"{file}-{rank}: {piece description}"` where file = 9 - col, rank = row + 1. **Note:** Cell aria-labels use "7-1" geographic format; announcement text (Task 7) uses compact "76" — this is intentional per spec Decision #9. Do not "fix" the mismatch.
 
 - [ ] **Step 2: Test manually in demo mode**
@@ -756,6 +760,21 @@ class TestBoardComponentHTML:
         index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
         content = index.read_text()
         assert 'tabindex="-1"' in content or "tabindex=\"-1\"" in content
+
+    def test_frontend_has_aria_selected(self):
+        """The frontend sets aria-selected on gridcells."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert "aria-selected" in content
+
+    def test_frontend_has_aria_rowcount(self):
+        """The frontend declares grid dimensions for screen readers."""
+        from pathlib import Path
+        index = Path(__file__).parent.parent.parent / "keisei" / "webui" / "board_component" / "frontend" / "index.html"
+        content = index.read_text()
+        assert "aria-rowcount" in content
+        assert "aria-colcount" in content
 ```
 
 - [ ] **Step 4: Run tests**
@@ -779,7 +798,7 @@ git commit -m "feat(webui): implement board component JS frontend with interacti
 
 - [ ] **Step 1: Write `render_selected_square_panel()` function**
 
-Add to `keisei/webui/streamlit_app.py`, after `render_policy_insight_panel()` (after line ~546):
+Add to `keisei/webui/streamlit_app.py`, after `render_policy_insight_panel()` (after line ~546). No new imports needed — `Dict`, `List`, `Any`, `Optional` are already imported at line 19:
 
 ```python
 def render_selected_square_panel(
@@ -1007,11 +1026,26 @@ def render_game_tab(env: EnvelopeParser) -> None:
 
 - [ ] **Step 3: Update the fragment for focus-pause and board_state None invalidation**
 
-In `_live_data_section()`, update the pause check to include board focus:
+The current `_live_data_section()` (lines 784-815 in `streamlit_app.py`) checks only `auto_refresh` for pausing. It needs two additions: (a) focus-pause, and (b) selection invalidation on episode boundary.
 
+**Current structure** (for reference — do NOT replace blindly, merge these changes):
 ```python
+# CURRENT (lines 784-815):
 @st.fragment(run_every=timedelta(seconds=2))
 def _live_data_section() -> None:
+    if not st.session_state.get("auto_refresh", True):
+        cached = st.session_state.get("last_state")
+        ...  # render from cache
+    else:
+        state = load_state(state_file)
+        ...  # render from fresh state
+    # Export button (lines 806-815)
+```
+
+**Changes to make:**
+
+1. Replace the simple `auto_refresh` check with a dual-condition check:
+```python
     paused_by_toggle = not st.session_state.get("auto_refresh", True)
     paused_by_focus = st.session_state.get("board_focused", False)
 
@@ -1021,29 +1055,21 @@ def _live_data_section() -> None:
             st.info("Paused. No cached state available.")
             return
         env = EnvelopeParser(cached)
-        # Show pause reason in header
         if paused_by_focus:
             st.info("Paused — inspecting board")
         render_stale_warning(env)
         _render_dashboard_content(env)
-        return
-
-    state = load_state(state_file)
-    if state is None:
-        st.error("No state data available. Waiting for training to start...")
-        return
-
-    env = EnvelopeParser(state)
-    st.session_state.last_state = state
-
-    # Clear selection and focus when board disappears between episodes
-    if env.board_state is None:
-        st.session_state.selected_square = None
-        st.session_state.last_move_count = None
-
-    render_stale_warning(env)
-    _render_dashboard_content(env)
 ```
+
+2. In the `else` (live) branch, after `st.session_state.last_state = state`, add episode-boundary invalidation:
+```python
+        # Clear selection and focus when board disappears between episodes
+        if env.board_state is None:
+            st.session_state.selected_square = None
+            st.session_state.last_move_count = None
+```
+
+3. **Preserve the export button block** (lines 806-815) — it must remain at the end of the function, outside both branches.
 
 - [ ] **Step 4: Clear board_focused on non-Game-tab render paths**
 
@@ -1062,11 +1088,11 @@ def render_lineage_tab(env: EnvelopeParser) -> None:
     render_lineage_panel(env)
 ```
 
-Additionally, add a **timeout-based fallback** in the fragment's pause check to handle edge cases where the blur event is missed (e.g., component unmount, browser iframe issues, user clicks outside the board without switching tabs):
+Additionally, add a **timeout-based fallback** in the fragment's pause check to handle edge cases where the blur event is missed (e.g., component unmount, browser iframe issues, user clicks outside the board without switching tabs). **Note:** add `import time` to the top-level imports (line 17 area, next to `from datetime import timedelta`).
+
+Place this check at the top of `_live_data_section()`, before the `paused_by_toggle`/`paused_by_focus` check:
 
 ```python
-import time
-
 # Timeout fallback: if board_focused has been True for > 30s without
 # a fresh focus event, auto-clear it. This catches cases where blur
 # is never received (component unmount, iframe issues).
@@ -1223,12 +1249,14 @@ Full checklist:
 - [ ] Escape clears selection
 - [ ] Tab exits the board immediately (does NOT cycle through 81 cells)
 - [ ] Shift-Tab also exits the board
+- [ ] Home moves to first cell in row, End to last; Ctrl+Home to (0,0), Ctrl+End to (8,8)
+- [ ] PageUp moves to top of column, PageDown to bottom
 - [ ] "Paused — inspecting board" appears when board is focused
 - [ ] Switching to Metrics tab resumes auto-refresh (focus-pause clears)
 - [ ] Move counter change clears selection
 - [ ] Episode boundary (board disappears between episodes) clears selection
 - [ ] Detail panel shows "Policy insight not available..." when insight is None
-- [ ] **DOM verification:** Open DevTools → inspect board table → verify `role="grid"` on table, `role="gridcell"` on cells (NOT `role="table"`)
+- [ ] **DOM verification:** Open DevTools → inspect board table → verify `role="grid"` on table with `aria-rowcount="9"` and `aria-colcount="9"`, `role="gridcell"` on cells with `aria-selected` and `aria-rowindex`/`aria-colindex` (NOT `role="table"`)
 - [ ] **Dark theme:** Toggle prefers-color-scheme → verify column headers are readable (`#e0e0e0`)
 - [ ] **Screen reader:** Open browser Accessibility panel. Select a square → verify announcement fires exactly once ("Selected 76. Top action: ..."). Wait 4+ seconds → verify it does NOT repeat on re-render. Select a different square → verify new announcement fires.
 - [ ] Blur debounce: rapidly arrow-navigate between cells → verify no pause/unpause flicker
