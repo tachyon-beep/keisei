@@ -83,7 +83,12 @@ class WorkerCommunicator:
                     )
 
         except (RuntimeError, OSError, ValueError) as e:
-            logger.error("Failed to send model weights: %s", str(e))
+            logger.error(
+                "Failed to send model weights to %d workers — "
+                "all workers remain on stale weights: %s",
+                len(self.model_queues),
+                e,
+            )
 
     def collect_experiences(self) -> List[Tuple[int, Dict[str, Any]]]:
         """

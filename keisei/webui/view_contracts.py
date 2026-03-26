@@ -194,12 +194,12 @@ class SquareAction(TypedDict):
     prob: float  # probability in [0, 1]
 
 
-class PolicyInsight(TypedDict, total=False):
+class PolicyInsight(TypedDict):
     """Per-square action probability summary for the current board state.
 
-    Optional — only populated when ``webui.policy_insight`` is enabled
-    and the agent has produced an observation.  ``None`` when unavailable
-    (between episodes, during PPO updates, or when disabled).
+    All fields are required when a ``PolicyInsight`` is present.  Optionality
+    is handled at the ``TrainingViewState`` level where ``policy_insight``
+    is typed as ``PolicyInsight | None``.
 
     The ``action_heatmap`` contains raw probability sums per destination
     square.  The renderer applies log-scale normalization for display.

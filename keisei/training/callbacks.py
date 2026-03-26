@@ -112,8 +112,11 @@ class EvaluationCallback(Callback):
                 elo_reg = EloRegistry(Path(self.eval_cfg.elo_registry_path))
                 agent_rating = elo_reg.get_rating(trainer.run_name)
                 opponent_rating = elo_reg.get_rating(opponent_id)
-            except (OSError, RuntimeError, ValueError):
-                pass
+            except (OSError, RuntimeError, ValueError) as e:
+                if trainer.log_both:
+                    trainer.log_both(
+                        f"[WARNING] Failed to read Elo ratings for lineage event: {e}",
+                    )
         trainer.model_manager.emit_match_completed(
             opponent_model_id=opponent_id,
             result=result_str,
@@ -191,7 +194,11 @@ class EvaluationCallback(Callback):
         try:
             pre_eval_registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
             return pre_eval_registry.get_rating(trainer.run_name)
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as e:
+            if trainer.log_both:
+                trainer.log_both(
+                    f"[WARNING] Failed to capture pre-eval Elo rating: {e}",
+                )
             return None
 
     def _handle_initial_evaluation(self, trainer: "Trainer", current_model) -> None:
@@ -348,8 +355,11 @@ class AsyncEvaluationCallback(AsyncCallback):
                 elo_reg = EloRegistry(Path(self.eval_cfg.elo_registry_path))
                 agent_rating = elo_reg.get_rating(trainer.run_name)
                 opponent_rating = elo_reg.get_rating(opponent_id)
-            except (OSError, RuntimeError, ValueError):
-                pass
+            except (OSError, RuntimeError, ValueError) as e:
+                if trainer.log_both:
+                    trainer.log_both(
+                        f"[WARNING] Failed to read Elo ratings for lineage event: {e}",
+                    )
         trainer.model_manager.emit_match_completed(
             opponent_model_id=opponent_id,
             result=result_str,
@@ -427,7 +437,11 @@ class AsyncEvaluationCallback(AsyncCallback):
         try:
             pre_eval_registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
             return pre_eval_registry.get_rating(trainer.run_name)
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as e:
+            if trainer.log_both:
+                trainer.log_both(
+                    f"[WARNING] Failed to capture pre-eval Elo rating: {e}",
+                )
             return None
 
     @staticmethod

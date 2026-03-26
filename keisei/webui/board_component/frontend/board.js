@@ -60,11 +60,24 @@ export default function(component) {
   }
 
   // =========================================================================
+  // Sanitization
+  // =========================================================================
+  function escHtml(s) {
+    // Escape HTML special characters to prevent injection
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function isSafeDataUri(uri) {
+    // Only allow data: URIs (our SVG piece images) and reject anything else
+    return typeof uri === "string" && uri.indexOf("data:") === 0;
+  }
+
+  // =========================================================================
   // Piece helpers
   // =========================================================================
   function pieceAriaLabel(piece) {
     if (!piece) return "empty square";
-    return piece.color + " " + piece.type.replace(/_/g, " ");
+    return escHtml(piece.color) + " " + escHtml(piece.type.replace(/_/g, " "));
   }
 
   function pieceImageKey(piece) {
@@ -159,12 +172,12 @@ export default function(component) {
         if (piece) {
           var key = pieceImageKey(piece);
           var svgUri = pieceImages[key] || "";
-          if (svgUri) {
+          if (svgUri && isSafeDataUri(svgUri)) {
             var imgSz = CELL_SIZE - 8;
-            content = '<img src="' + svgUri + '" width="' + imgSz +
+            content = '<img src="' + escHtml(svgUri) + '" width="' + imgSz +
               '" height="' + imgSz + '" alt="" style="pointer-events:none;">';
           } else {
-            var label = piece.type.charAt(0).toUpperCase();
+            var label = escHtml(piece.type.charAt(0).toUpperCase());
             if (piece.promoted) label = "+" + label;
             var txtColor = (piece.color === "black") ? "#000" : "#8b0000";
             content = '<span style="color:' + txtColor + ';font-weight:bold;pointer-events:none;">' + label + '</span>';
