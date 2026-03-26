@@ -802,9 +802,9 @@ def render_game_tab(env: EnvelopeParser) -> None:
 
     board_col, insight_col = st.columns([2, 3])
     with board_col:
-        # Custom bidirectional board component with fallback
+        # Interactive board component (v2 API) with fallback
         try:
-            board_result = shogi_board(
+            board_event = shogi_board(
                 board_state=board_state,
                 heatmap=heatmap,
                 square_actions=square_actions,
@@ -815,25 +815,29 @@ def render_game_tab(env: EnvelopeParser) -> None:
         except Exception:
             # Fallback to non-interactive board rendering
             render_board(board_state, heatmap=heatmap)
-            board_result = None
+            board_event = None
 
-        # Process component interaction events
-        if board_result:
-            event_type = board_result.get("type")
-            if event_type == "select":
-                st.session_state.selected_square = {
-                    "row": board_result["row"],
-                    "col": board_result["col"],
-                }
-            elif event_type == "deselect":
-                st.session_state.selected_square = None
-                st.session_state.last_announced_square = None
-            elif event_type == "focus":
-                if not st.session_state.get("board_focused", False):
-                    st.session_state.board_focused = True
+        # Process events from the v2 component
+        if board_event is not None:
+            # Selection trigger (transient — fires once per click)
+            selection = getattr(board_event, "selection", None)
+            if selection:
+                event_type = selection.get("type")
+                if event_type == "select":
+                    st.session_state.selected_square = {
+                        "row": selection["row"],
+                        "col": selection["col"],
+                    }
+                elif event_type == "deselect":
+                    st.session_state.selected_square = None
+                    st.session_state.last_announced_square = None
+
+            # Focus state (persistent)
+            focused = getattr(board_event, "board_focused", None)
+            if focused is not None:
+                st.session_state.board_focused = bool(focused)
+                if focused:
                     st.session_state.board_focus_timestamp = time.time()
-            elif event_type == "blur":
-                st.session_state.board_focused = False
 
         render_hands(board_state)
 
@@ -964,18 +968,18 @@ def main() -> None:
             render_stale_warning(env)
             _render_dashboard_content(env)
 
-        # Export button lives inside the fragment so it always has fresh state
-        current = st.session_state.get("last_state")
-        if current is not None:
-            with st.sidebar:
-                st.download_button(
-                    label="Export state",
-                    data=json.dumps(current, indent=2),
-                    file_name="keisei_state.json",
-                    mime="application/json",
-                )
-
     _live_data_section()
+
+    # Export button outside the fragment (fragments can't write to sidebar)
+    current = st.session_state.get("last_state")
+    if current is not None:
+        with st.sidebar:
+            st.download_button(
+                label="Export state",
+                data=json.dumps(current, indent=2),
+                file_name="keisei_state.json",
+                mime="application/json",
+            )
 
 
 if __name__ == "__main__":

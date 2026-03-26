@@ -1,8 +1,8 @@
 """Custom Streamlit component: interactive shogi board with click-to-inspect.
 
-Uses ``declare_component`` with a vanilla HTML/JS frontend (no npm build).
-The component sends click, keyboard selection, and focus events back to
-Python via ``Streamlit.setComponentValue()``.
+Uses the ``st.components.v2`` API with inline HTML/CSS/JS (no iframe, no npm).
+The component communicates selection and focus events back to Python via
+``setTriggerValue`` and ``setStateValue``.
 
 See: docs/superpowers/specs/2026-03-26-board-interactivity-design.md, Section 4.
 """
@@ -10,11 +10,22 @@ See: docs/superpowers/specs/2026-03-26-board-interactivity-design.md, Section 4.
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import streamlit.components.v1 as components
+import streamlit.components.v2 as components
 
-_FRONTEND_DIR = str(Path(__file__).parent / "frontend")
+# Load JS from file to keep the Python module clean
+_JS_PATH = Path(__file__).parent / "frontend" / "board.js"
+_CSS_PATH = Path(__file__).parent / "frontend" / "board.css"
 
-_component_func = components.declare_component("shogi_board", path=_FRONTEND_DIR)
+_JS = _JS_PATH.read_text() if _JS_PATH.exists() else ""
+_CSS = _CSS_PATH.read_text() if _CSS_PATH.exists() else ""
+
+_component_func = components.component(
+    "shogi_board",
+    html='<div id="board-root"></div>',
+    css=_CSS,
+    js=_JS,
+    isolate_styles=False,  # We need access to parent DOM for focus tracking
+)
 
 
 def shogi_board(
@@ -40,29 +51,30 @@ def shogi_board(
         Mapping of piece type keys (e.g. ``"pawn_black"``) to base64 data URIs.
     selected_square : dict | None
         Currently selected square ``{"row": int, "col": int}`` from session
-        state — used to initialize roving tabindex at the selected cell on mount.
+        state — used to initialize selection on mount.
     key : str | None
         Streamlit widget key for this component instance.
 
     Returns
     -------
     dict | None
-        Interaction event dict, or None if no interaction occurred:
+        The ``selection`` trigger value when a square is selected/deselected,
+        or None if no interaction occurred. Shape:
         - ``{"row": int, "col": int, "type": "select"}`` — square selected
         - ``{"type": "deselect"}`` — selection cleared
-        - ``{"type": "focus"}`` — board gained focus
-        - ``{"type": "blur"}`` — board lost focus
-
-    Note: Streamlit replays the last ``setComponentValue`` on every fragment
-    re-run. The Python side should handle focus/blur events idempotently
-    (compare against current session state before setting).
     """
-    return _component_func(
-        board_state=board_state,
-        heatmap=heatmap,
-        square_actions=square_actions or {},
-        piece_images=piece_images or {},
-        selected_square=selected_square,
+    result = _component_func(
         key=key,
-        default=None,
+        data={
+            "board_state": board_state,
+            "heatmap": heatmap,
+            "square_actions": square_actions or {},
+            "piece_images": piece_images or {},
+            "selected_square": selected_square,
+        },
+        default={"board_focused": False},
+        on_selection_change=lambda: None,
+        on_board_focused_change=lambda: None,
     )
+
+    return result

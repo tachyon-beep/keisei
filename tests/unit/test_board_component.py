@@ -30,58 +30,77 @@ class TestBoardComponentImport:
         assert "key" in param_names
 
 
-class TestBoardComponentHTML:
-    """Verify the JS frontend HTML file has the expected structure."""
+class TestBoardComponentFrontend:
+    """Verify the JS frontend files have the expected structure."""
 
-    def _read_index(self):
+    def _read_js(self):
         from pathlib import Path
 
-        index = (
+        js_path = (
             Path(__file__).parent.parent.parent
             / "keisei"
             / "webui"
             / "board_component"
             / "frontend"
-            / "index.html"
+            / "board.js"
         )
-        return index.read_text()
+        return js_path.read_text()
 
-    def test_frontend_index_exists(self):
-        """The frontend index.html file exists."""
-        content = self._read_index()
+    def _read_css(self):
+        from pathlib import Path
+
+        css_path = (
+            Path(__file__).parent.parent.parent
+            / "keisei"
+            / "webui"
+            / "board_component"
+            / "frontend"
+            / "board.css"
+        )
+        return css_path.read_text()
+
+    def test_frontend_js_exists(self):
+        """The frontend board.js file exists and is substantial."""
+        content = self._read_js()
         assert len(content) > 100
 
     def test_frontend_uses_grid_role(self):
-        """The frontend HTML uses role='grid', not role='table'."""
-        content = self._read_index()
+        """The JS generates role='grid', not role='table'."""
+        content = self._read_js()
         assert 'role="grid"' in content or "role='grid'" in content
-        assert 'role="table"' not in content
 
     def test_frontend_has_no_cdn_dependency(self):
         """The frontend does not load JS from external CDNs."""
-        content = self._read_index()
+        content = self._read_js()
         assert "cdn.jsdelivr.net" not in content
         assert "unpkg.com" not in content
 
-    def test_frontend_has_setComponentValue(self):
-        """The frontend calls Streamlit.setComponentValue for interaction events."""
-        content = self._read_index()
-        assert "setComponentValue" in content
+    def test_frontend_uses_v2_api(self):
+        """The JS uses the v2 component API (setTriggerValue, not setComponentValue)."""
+        content = self._read_js()
+        assert "setTriggerValue" in content
+        assert "export default function" in content
 
     def test_frontend_has_roving_tabindex(self):
         """The frontend implements roving tabindex pattern."""
-        content = self._read_index()
-        # The JS builds tabindex values dynamically; check for the logic
+        content = self._read_js()
         assert "tabindex" in content
         assert "moveFocusTo" in content
 
     def test_frontend_has_aria_selected(self):
         """The frontend sets aria-selected on gridcells."""
-        content = self._read_index()
+        content = self._read_js()
         assert "aria-selected" in content
 
     def test_frontend_has_aria_rowcount(self):
         """The frontend declares grid dimensions for screen readers."""
-        content = self._read_index()
+        content = self._read_js()
         assert "aria-rowcount" in content
         assert "aria-colcount" in content
+
+    def test_css_has_selection_styles(self):
+        """The CSS includes selection and focus indicator styles."""
+        content = self._read_css()
+        assert ".selected" in content
+        assert "#2a52b0" in content
+        assert "#666" in content

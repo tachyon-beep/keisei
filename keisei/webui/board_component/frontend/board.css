@@ -1,0 +1,36 @@
+/* Shogi Board Component Styles */
+
+table[role="grid"] {
+  border-collapse: collapse;
+  margin: auto;
+}
+
+table[role="grid"] th {
+  text-align: center;
+  font-weight: bold;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+/* Dark theme: readable column/row headers */
+@media (prefers-color-scheme: dark) {
+  table[role="grid"] th { color: #e0e0e0; }
+}
+
+/* Focus indicator: dashed, muted — indicates cursor position only.
+   #666 gives ~3.5:1 against lighter wheat (#f5deb3), passing WCAG 1.4.11. */
+td[role="gridcell"]:focus {
+  outline: 2px dashed #666;
+  outline-offset: -2px;
+  z-index: 1;
+  position: relative;
+}
+
+/* Selected indicator: solid, prominent — indicates inspected square */
+td[role="gridcell"].selected {
+  outline: 3px solid #2a52b0 !important;
+  outline-offset: -3px;
+  background-color: rgba(42,82,176,0.25) !important;
+  z-index: 2;
+  position: relative;
+}

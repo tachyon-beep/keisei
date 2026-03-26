@@ -16,6 +16,7 @@
 -->
 <html>
 <head>
+  <meta charset="utf-8">
   <title>Shogi Board Component</title>
   <style>
     body { margin: 0; padding: 0; font-family: sans-serif; background: transparent; }
@@ -58,9 +59,88 @@
 </head>
 <body>
   <div id="root"></div>
+  <pre id="debug" style="font-size:10px;color:#888;max-height:100px;overflow:auto;"></pre>
 
-  <!-- Streamlit component lib — served by Streamlit's static file server -->
-  <script src="streamlit-component-lib.js"></script>
+  <!--
+    Inline Streamlit component communication library.
+    For declare_component with a local path (no npm), the standard
+    streamlit-component-lib.js is not served automatically. This minimal
+    implementation provides the Streamlit.setComponentValue(),
+    Streamlit.setFrameHeight(), Streamlit.setComponentReady(), and
+    Streamlit.RENDER_EVENT APIs needed by the component.
+  -->
+  <script>
+    // Minimal Streamlit component communication (vanilla JS, no npm)
+    function _dbg(msg) {
+      var el = document.getElementById("debug");
+      if (el) el.textContent += msg + "\n";
+    }
+
+    var Streamlit = (function() {
+      var _listeners = {};
+      var _lastFrameHeight = 0;
+
+      _dbg("init: window.parent === window? " + (window.parent === window));
+      _dbg("init: location=" + window.location.href);
+
+      // Listen for ALL messages to diagnose what Streamlit sends
+      window.addEventListener("message", function(event) {
+        var dataType = typeof event.data;
+        if (dataType === "string") {
+          _dbg("msg(string): " + event.data.substring(0, 80));
+          return;
+        }
+        if (!event.data || dataType !== "object") {
+          _dbg("msg(other): " + dataType);
+          return;
+        }
+        _dbg("msg: type=" + event.data.type + " keys=" + Object.keys(event.data).join(","));
+        if (event.data.type === "streamlit:render") {
+          _dbg("RENDER received! args keys=" + (event.data.args ? Object.keys(event.data.args).join(",") : "null"));
+          var handlers = _listeners["streamlit:render"] || [];
+          for (var i = 0; i < handlers.length; i++) {
+            handlers[i]({detail: {args: event.data.args, disabled: event.data.disabled, theme: event.data.theme}});
+          }
+        }
+      });
+
+      return {
+        RENDER_EVENT: "streamlit:render",
+
+        events: {
+          addEventListener: function(type, handler) {
+            if (!_listeners[type]) _listeners[type] = [];
+            _listeners[type].push(handler);
+          }
+        },
+
+        setComponentValue: function(value) {
+          window.parent.postMessage({
+            type: "streamlit:setComponentValue",
+            value: value
+          }, "*");
+        },
+
+        setFrameHeight: function(height) {
+          if (height === _lastFrameHeight) return;
+          _lastFrameHeight = height;
+          window.parent.postMessage({
+            type: "streamlit:setFrameHeight",
+            height: height
+          }, "*");
+        },
+
+        setComponentReady: function() {
+          _dbg("sending componentReady...");
+          window.parent.postMessage({
+            type: "streamlit:componentReady",
+            apiVersion: 1
+          }, "*");
+          _dbg("componentReady sent");
+        }
+      };
+    })();
+  </script>
 
   <script>
     // =========================================================================
