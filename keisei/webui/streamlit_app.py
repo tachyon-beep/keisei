@@ -215,7 +215,7 @@ def render_board(
             if overlay and overlay[r][c] > 0.01:
                 alpha = overlay[r][c] * 0.5
                 heat_style = (
-                    f"box-shadow:inset 0 0 0 100px " f"rgba(0,180,120,{alpha:.2f});"
+                    f"box-shadow:inset 0 0 0 100px " f"rgba(0,210,140,{alpha:.2f});"
                 )
 
             cell_content = ""
@@ -521,7 +521,7 @@ def render_top_actions(insight: Dict[str, Any]) -> None:
         bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
         bar = (
             f'<span style="display:inline-block;width:{bar_w}px;'
-            f"height:12px;background:#00b478;border-radius:2px;"
+            f"height:12px;background:#007850;border-radius:2px;"
             f'vertical-align:middle;"></span>'
         )
         lines.append(
@@ -602,7 +602,7 @@ def render_selected_square_panel(
             bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
             bar = (
                 f'<span style="display:inline-block;width:{bar_w}px;'
-                f"height:12px;background:#00b478;border-radius:2px;"
+                f"height:12px;background:#007850;border-radius:2px;"
                 f'vertical-align:middle;"></span>'
             )
             lines.append(

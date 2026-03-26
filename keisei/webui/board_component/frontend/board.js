@@ -135,7 +135,8 @@ export default function(component) {
         // Heatmap overlay
         var heatStyle = "";
         if (overlay && overlay[r][c] > 0.01) {
-          heatStyle = "box-shadow:inset 0 0 0 100px rgba(0,180,120," + (overlay[r][c] * 0.45).toFixed(2) + ");";
+          var heatAlpha = (overlay[r][c] * 0.6).toFixed(2);
+          heatStyle = "box-shadow:inset 0 0 0 100px rgba(0,210,140," + heatAlpha + ");";
         }
 
         var tabIdx = (r === focusRow && c === focusCol) ? "0" : "-1";
@@ -159,6 +160,16 @@ export default function(component) {
           }
         }
 
+        // Non-colour cue for heatmap: corner dot scaled by heat intensity.
+        // Ensures heatmap is readable for red-green colorblind users.
+        var heatDot = "";
+        if (overlay && overlay[r][c] > 0.01) {
+          var dotSize = Math.round(3 + overlay[r][c] * 6);  // 3-9px
+          heatDot = '<span style="position:absolute;top:2px;right:2px;width:' + dotSize +
+            'px;height:' + dotSize + 'px;border-radius:50%;background:#005a3a;opacity:0.7;' +
+            'pointer-events:none;" aria-hidden="true"></span>';
+        }
+
         html += '<td role="gridcell" tabindex="' + tabIdx + '"' +
           ' data-row="' + r + '" data-col="' + c + '"' +
           ' aria-label="' + cellLabel + '"' +
@@ -167,8 +178,8 @@ export default function(component) {
           cls +
           ' style="width:' + CELL_SIZE + 'px;height:' + CELL_SIZE + 'px;' +
           'background:' + bg + ';text-align:center;vertical-align:middle;' +
-          'border:1px solid #8b7355;border-bottom:' + borderBottom + ';cursor:pointer;' +
-          zoneTint + heatStyle + '">' + content + '</td>';
+          'border:1px solid #8b7355;border-bottom:' + borderBottom + ';cursor:pointer;position:relative;' +
+          zoneTint + heatStyle + '">' + content + heatDot + '</td>';
       }
       html += '</tr>';
     }
