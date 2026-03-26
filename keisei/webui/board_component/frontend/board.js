@@ -135,7 +135,7 @@ export default function(component) {
         // Heatmap overlay
         var heatStyle = "";
         if (overlay && overlay[r][c] > 0.01) {
-          var heatAlpha = (overlay[r][c] * 0.6).toFixed(2);
+          var heatAlpha = Math.min(0.85, overlay[r][c] * 0.85).toFixed(2);
           heatStyle = "box-shadow:inset 0 0 0 100px rgba(0,210,140," + heatAlpha + ");";
         }
 

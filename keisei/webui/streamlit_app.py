@@ -213,7 +213,7 @@ def render_board(
             # Heatmap overlay: blend orange over the cell bg
             heat_style = ""
             if overlay and overlay[r][c] > 0.01:
-                alpha = overlay[r][c] * 0.5
+                alpha = min(0.85, overlay[r][c] * 0.85)
                 heat_style = (
                     f"box-shadow:inset 0 0 0 100px " f"rgba(0,210,140,{alpha:.2f});"
                 )
