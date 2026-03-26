@@ -22,6 +22,7 @@ from keisei.webui.state_snapshot import (
     extract_board_state,
     extract_buffer_info,
     extract_metrics,
+    extract_policy_insight,
     extract_step_info,
 )
 from keisei.webui.view_contracts import SCHEMA_VERSION, validate_envelope
@@ -258,3 +259,38 @@ class TestBuildSnapshot:
         assert "learning_curves" in metrics
         assert "hot_squares" in metrics
         assert isinstance(metrics["learning_curves"], dict)
+
+
+class TestPolicyInsightSquareActions:
+    """End-to-end: obs → extract_policy_insight → square_actions in result."""
+
+    def test_square_actions_in_snapshot(
+        self, shogi_game, ppo_agent, session_policy_mapper
+    ):
+        """When policy insight is enabled and obs is available, square_actions is populated."""
+        # Get observation from game
+        obs = shogi_game.reset()
+
+        # Get a real legal mask from the current position
+        legal_moves = shogi_game.get_legal_moves()
+        legal_mask = session_policy_mapper.get_legal_mask(
+            legal_moves, device=torch.device("cpu")
+        )
+
+        result = extract_policy_insight(
+            ppo_agent, obs, session_policy_mapper, top_k=5, legal_mask=legal_mask
+        )
+        assert result is not None
+        assert "square_actions" in result
+        assert isinstance(result["square_actions"], dict)
+
+        # At least some squares should have actions
+        assert len(result["square_actions"]) > 0
+
+        # Each entry should have correct format
+        for key, actions in result["square_actions"].items():
+            assert "," in key
+            for act in actions:
+                assert "action" in act
+                assert "prob" in act
+                assert act["prob"] > 0
