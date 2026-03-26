@@ -906,7 +906,8 @@ def render_game_tab(env: EnvelopeParser) -> None:
     # Square actions for the component and panel
     square_actions = insight.get("square_actions", {}) if insight else {}
 
-    board_col, insight_col = st.columns([2, 3])
+    board_col, insight_col, status_col = st.columns([2, 2, 2])
+
     with board_col:
         # Interactive board component (v2 API) with fallback
         try:
@@ -962,6 +963,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
                 insight_available=insight is not None,
             )
 
+    with status_col:
         render_game_status(board_state)
         render_move_log(step_info)
         if step_info:
