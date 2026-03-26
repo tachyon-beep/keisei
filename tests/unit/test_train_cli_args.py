@@ -258,9 +258,9 @@ class TestRunTrainingCommand:
 class TestMainSync:
     """Tests for main_sync entry point."""
 
-    @patch("keisei.training.train.asyncio")
+    @patch("keisei.training.train._run_async_entrypoint")
     @patch("keisei.training.train.multiprocessing")
-    def test_sets_multiprocessing_start_method(self, mock_mp, mock_asyncio):
+    def test_sets_multiprocessing_start_method(self, mock_mp, mock_run_entrypoint):
         """Sets multiprocessing start method to 'spawn'."""
         from keisei.training.train import main_sync
 
@@ -270,31 +270,46 @@ class TestMainSync:
 
         mock_mp.freeze_support.assert_called_once()
         mock_mp.set_start_method.assert_called_once_with("spawn", force=True)
+        mock_run_entrypoint.assert_called_once()
 
     @patch("keisei.training.train.sys")
-    @patch("keisei.training.train.asyncio")
+    @patch("keisei.training.train._run_async_entrypoint")
     @patch("keisei.training.train.multiprocessing")
-    def test_handles_keyboard_interrupt(self, mock_mp, mock_asyncio, mock_sys):
+    def test_handles_keyboard_interrupt(self, mock_mp, mock_run_entrypoint, mock_sys):
         """Handles KeyboardInterrupt gracefully."""
         from keisei.training.train import main_sync
 
         mock_mp.get_start_method.return_value = "spawn"
-        mock_asyncio.run.side_effect = KeyboardInterrupt
+        mock_run_entrypoint.side_effect = KeyboardInterrupt
 
         main_sync()
 
         mock_sys.exit.assert_called_with(1)
 
     @patch("keisei.training.train.sys")
-    @patch("keisei.training.train.asyncio")
+    @patch("keisei.training.train._run_async_entrypoint")
     @patch("keisei.training.train.multiprocessing")
-    def test_handles_generic_exception(self, mock_mp, mock_asyncio, mock_sys):
+    def test_handles_generic_exception(self, mock_mp, mock_run_entrypoint, mock_sys):
         """Handles generic exception and exits with code 1."""
         from keisei.training.train import main_sync
 
         mock_mp.get_start_method.return_value = "spawn"
-        mock_asyncio.run.side_effect = RuntimeError("fatal error")
+        mock_run_entrypoint.side_effect = RuntimeError("fatal error")
 
         main_sync()
 
         mock_sys.exit.assert_called_with(1)
+
+    @patch("keisei.training.train.asyncio")
+    def test_closes_entrypoint_coroutine_when_asyncio_run_fails(self, mock_asyncio):
+        """Early asyncio.run failure should not leak an unawaited coroutine."""
+        from keisei.training.train import _run_async_entrypoint
+
+        mock_coro = MagicMock()
+        mock_entrypoint = MagicMock(return_value=mock_coro)
+        mock_asyncio.run.side_effect = RuntimeError("fatal error")
+
+        with pytest.raises(RuntimeError, match="fatal error"):
+            _run_async_entrypoint(mock_entrypoint)
+
+        mock_coro.close.assert_called_once()

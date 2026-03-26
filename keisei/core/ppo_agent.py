@@ -61,22 +61,11 @@ class PPOAgent:
         self.num_actions_total = self.policy_output_mapper.get_total_actions()
         # Add weight_decay from config if present, else default to 0.0
         weight_decay = getattr(config.training, "weight_decay", 0.0)
-        # Initialize optimizer, handle invalid learning rate gracefully
-        try:
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(),
-                lr=config.training.learning_rate,
-                weight_decay=weight_decay,
-            )
-        except Exception as e:
-            # Fallback to default learning rate on error
-            log_error_to_stderr(
-                "PPOAgent",
-                f"Could not initialize optimizer with lr={config.training.learning_rate}, using default lr=1e-3: {e}",
-            )
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(), lr=1e-3, weight_decay=weight_decay
-            )
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=config.training.learning_rate,
+            weight_decay=weight_decay,
+        )
 
         # PPO hyperparameters
         self.gamma = config.training.gamma
@@ -170,10 +159,16 @@ class PPOAgent:
             # The train.py logic should ideally prevent calling select_action if no legal_moves.
             # Let it proceed, model.get_action_and_value will use the all-false mask.
 
-        # Get action, log_prob, and value from the ActorCritic model
-        # Pass deterministic based on not is_training
-        if is_training:
-            with torch.no_grad():
+        # Get action, log_prob, and value from the ActorCritic model.
+        # Both paths use no_grad(): rollout collection .item()'s the
+        # log_prob and value (no backprop needed), and eval never needs
+        # gradients.  This avoids building a discarded computation graph
+        # that wastes GPU memory on constrained hardware.
+        # Note: model stays in its current mode (training for rollouts,
+        # eval when called from evaluation) — dropout/batchnorm behave
+        # accordingly.  Mode is set by the caller (line 149).
+        with torch.no_grad():
+            if is_training:
                 (
                     selected_policy_index_tensor,
                     log_prob_tensor,
@@ -181,18 +176,18 @@ class PPOAgent:
                 ) = self.model.get_action_and_value(
                     obs_tensor,
                     legal_mask=legal_mask,
-                    deterministic=not is_training,
+                    deterministic=False,
                 )
-        else:
-            (
-                selected_policy_index_tensor,
-                log_prob_tensor,
-                value_tensor,
-            ) = self.model.get_action_and_value(
-                obs_tensor,
-                legal_mask=legal_mask,
-                deterministic=not is_training,
-            )
+            else:
+                (
+                    selected_policy_index_tensor,
+                    log_prob_tensor,
+                    value_tensor,
+                ) = self.model.get_action_and_value(
+                    obs_tensor,
+                    legal_mask=legal_mask,
+                    deterministic=True,
+                )
 
         selected_policy_index_val = int(selected_policy_index_tensor.item())
         log_prob_val = float(log_prob_tensor.item())
@@ -554,7 +549,7 @@ class PPOAgent:
         """Loads the model, optimizer, scheduler, and training state from a file.
 
         Raises:
-            FileNotFoundError: If checkpoint file does not exist.
+            FileNotFoundError: If the checkpoint file does not exist.
             RuntimeError: If checkpoint is corrupted or incompatible.
         """
         if not os.path.exists(file_path):

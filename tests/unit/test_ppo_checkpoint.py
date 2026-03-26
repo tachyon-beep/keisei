@@ -180,7 +180,7 @@ class TestFileHandling:
     def test_load_nonexistent_raises_file_not_found(self, agent_and_path):
         """Loading a non-existent file raises FileNotFoundError."""
         agent, _ = agent_and_path
-        with pytest.raises(FileNotFoundError, match="Checkpoint file not found"):
+        with pytest.raises(FileNotFoundError, match="nonexistent_checkpoint"):
             agent.load_model("/tmp/nonexistent_checkpoint_xyz.pt")
 
     def test_save_creates_file(self, agent_and_path):

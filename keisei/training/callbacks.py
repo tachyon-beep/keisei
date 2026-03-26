@@ -32,9 +32,12 @@ class CheckpointCallback(Callback):
     def __init__(self, interval: int, model_dir: str):
         self.interval = interval
         self.model_dir = model_dir
+        self._last_fired_timestep: int = -1
 
     def on_step_end(self, trainer: "Trainer"):
-        if (trainer.metrics_manager.global_timestep + 1) % self.interval == 0:
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(
@@ -49,7 +52,7 @@ class CheckpointCallback(Callback):
             success, ckpt_save_path = trainer.model_manager.save_checkpoint(
                 agent=trainer.agent,
                 model_dir=self.model_dir,  # model_dir is part of CheckpointCallback's state
-                timestep=trainer.metrics_manager.global_timestep + 1,
+                timestep=trainer.metrics_manager.global_timestep,
                 episode_count=trainer.metrics_manager.total_episodes_completed,
                 stats=game_stats,
                 run_name=trainer.run_name,
@@ -69,7 +72,7 @@ class CheckpointCallback(Callback):
             else:
                 if trainer.log_both:
                     trainer.log_both(
-                        f"[ERROR] CheckpointCallback: Failed to save checkpoint via ModelManager for timestep {trainer.metrics_manager.global_timestep + 1}.",
+                        f"[ERROR] CheckpointCallback: Failed to save checkpoint via ModelManager for timestep {trainer.metrics_manager.global_timestep}.",
                         also_to_wandb=True,
                     )
 
@@ -78,6 +81,7 @@ class EvaluationCallback(Callback):
     def __init__(self, eval_cfg, interval: int):
         self.eval_cfg = eval_cfg
         self.interval = interval
+        self._last_fired_timestep: int = -1
 
     @staticmethod
     def _determine_outcome(eval_results) -> str:
@@ -108,8 +112,11 @@ class EvaluationCallback(Callback):
                 elo_reg = EloRegistry(Path(self.eval_cfg.elo_registry_path))
                 agent_rating = elo_reg.get_rating(trainer.run_name)
                 opponent_rating = elo_reg.get_rating(opponent_id)
-            except (OSError, RuntimeError, ValueError):
-                pass
+            except (OSError, RuntimeError, ValueError) as e:
+                if trainer.log_both:
+                    trainer.log_both(
+                        f"[WARNING] Failed to read Elo ratings for lineage event: {e}",
+                    )
         trainer.model_manager.emit_match_completed(
             opponent_model_id=opponent_id,
             result=result_str,
@@ -187,7 +194,11 @@ class EvaluationCallback(Callback):
         try:
             pre_eval_registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
             return pre_eval_registry.get_rating(trainer.run_name)
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as e:
+            if trainer.log_both:
+                trainer.log_both(
+                    f"[WARNING] Failed to capture pre-eval Elo rating: {e}",
+                )
             return None
 
     def _handle_initial_evaluation(self, trainer: "Trainer", current_model) -> None:
@@ -222,7 +233,7 @@ class EvaluationCallback(Callback):
         success, ckpt_path = trainer.model_manager.save_checkpoint(
             agent=trainer.agent,
             model_dir=trainer.session_manager.run_artifact_dir,
-            timestep=trainer.metrics_manager.global_timestep + 1,
+            timestep=trainer.metrics_manager.global_timestep,
             episode_count=trainer.metrics_manager.total_episodes_completed,
             stats=game_stats,
             run_name=trainer.run_name,
@@ -240,7 +251,9 @@ class EvaluationCallback(Callback):
     def on_step_end(self, trainer: "Trainer"):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return
-        if (trainer.metrics_manager.global_timestep + 1) % self.interval == 0:
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
             if not trainer.agent:
                 if trainer.log_both:
                     trainer.log_both(
@@ -270,7 +283,7 @@ class EvaluationCallback(Callback):
 
             if trainer.log_both is not None:
                 trainer.log_both(
-                    f"Starting periodic evaluation at timestep {trainer.metrics_manager.global_timestep + 1}...",
+                    f"Starting periodic evaluation at timestep {trainer.metrics_manager.global_timestep}...",
                     also_to_wandb=True,
                 )
 
@@ -294,7 +307,7 @@ class EvaluationCallback(Callback):
                     ),
                 )
 
-            step = trainer.metrics_manager.global_timestep + 1
+            step = trainer.metrics_manager.global_timestep
             opponent_id = os.path.basename(str(opponent_ckpt))
             self._emit_match_completed(trainer, eval_results, opponent_id, step)
             self._update_elo_snapshot(
@@ -308,6 +321,7 @@ class AsyncEvaluationCallback(AsyncCallback):
     def __init__(self, eval_cfg, interval: int):
         self.eval_cfg = eval_cfg
         self.interval = interval
+        self._last_fired_timestep: int = -1
 
     @staticmethod
     def _determine_outcome(eval_results) -> str:
@@ -342,8 +356,11 @@ class AsyncEvaluationCallback(AsyncCallback):
                 elo_reg = EloRegistry(Path(self.eval_cfg.elo_registry_path))
                 agent_rating = elo_reg.get_rating(trainer.run_name)
                 opponent_rating = elo_reg.get_rating(opponent_id)
-            except (OSError, RuntimeError, ValueError):
-                pass
+            except (OSError, RuntimeError, ValueError) as e:
+                if trainer.log_both:
+                    trainer.log_both(
+                        f"[WARNING] Failed to read Elo ratings for lineage event: {e}",
+                    )
         trainer.model_manager.emit_match_completed(
             opponent_model_id=opponent_id,
             result=result_str,
@@ -421,7 +438,11 @@ class AsyncEvaluationCallback(AsyncCallback):
         try:
             pre_eval_registry = EloRegistry(Path(self.eval_cfg.elo_registry_path))
             return pre_eval_registry.get_rating(trainer.run_name)
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as e:
+            if trainer.log_both:
+                trainer.log_both(
+                    f"[WARNING] Failed to capture pre-eval Elo rating: {e}",
+                )
             return None
 
     @staticmethod
@@ -442,9 +463,10 @@ class AsyncEvaluationCallback(AsyncCallback):
         if not getattr(self.eval_cfg, "enable_periodic_evaluation", False):
             return None
 
-        step = trainer.metrics_manager.global_timestep + 1
-        if step % self.interval == 0:
-            return await self._run_evaluation_async(trainer, step)
+        ts = trainer.metrics_manager.global_timestep
+        if ts > 0 and ts % self.interval == 0 and ts != self._last_fired_timestep:
+            self._last_fired_timestep = ts
+            return await self._run_evaluation_async(trainer, ts)
         return None
 
     async def _run_evaluation_async(
@@ -515,10 +537,11 @@ class AsyncEvaluationCallback(AsyncCallback):
 
             return self._extract_summary_metrics(eval_results)
 
-        except Exception as e:
+        except (ValueError, FileNotFoundError, OSError, RuntimeError) as e:
             if trainer.log_both:
                 trainer.log_both(
-                    f"[ERROR] AsyncEvaluationCallback: Evaluation failed: {e}",
+                    f"[ERROR] AsyncEvaluationCallback: Evaluation failed "
+                    f"({type(e).__name__}): {e}",
                     also_to_wandb=True,
                 )
             return None

@@ -230,6 +230,22 @@ class TestGetQueueInfo:
         assert info["experience_queue_sizes"][1] == 0
         assert info["control_queue_sizes"][1] == 1
 
+    def test_qsize_not_supported_returns_sentinel(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FakeQueue:
+            def qsize(self):
+                raise NotImplementedError("unsupported")
+
+        c.experience_queues = [FakeQueue()]
+        c.model_queues = [FakeQueue()]
+        c.control_queues = [FakeQueue()]
+
+        info = c.get_queue_info()
+        assert info["experience_queue_sizes"] == [None]
+        assert info["model_queue_sizes"] == [None]
+        assert info["control_queue_sizes"] == [None]
+
 
 # ---------------------------------------------------------------------------
 # TestCleanup
@@ -264,3 +280,81 @@ class TestCleanup:
         with patch.object(c, "send_control_command", wraps=c.send_control_command) as mock_send:
             c.cleanup()
             mock_send.assert_called_once_with("stop")
+
+    def test_cleanup_drains_without_using_empty(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FakeQueue:
+            def __init__(self):
+                self.items = [1, 2]
+                self.closed = False
+
+            def empty(self):
+                raise AssertionError("cleanup should not rely on empty()")
+
+            def get_nowait(self):
+                if self.items:
+                    return self.items.pop(0)
+                raise queue.Empty
+
+            def close(self):
+                self.closed = True
+
+        fake_queue = FakeQueue()
+        c.experience_queues = [fake_queue]
+        c.model_queues = []
+        c.control_queues = []
+
+        with pytest.MonkeyPatch.context() as mp_context:
+            mp_context.setattr(c, "send_control_command", lambda *args, **kwargs: None)
+            c.cleanup()
+
+        assert fake_queue.items == []
+        assert fake_queue.closed is True
+
+
+# ---------------------------------------------------------------------------
+# TestSendModelWeightsFailure
+# ---------------------------------------------------------------------------
+
+
+class TestSendModelWeightsFailure:
+    """send_model_weights returns False on total failure."""
+
+    def test_returns_false_on_prepare_error(self):
+        c = WorkerCommunicator(num_workers=1)
+        # Force _prepare_model_data to raise
+        c._prepare_model_data = lambda *a, **kw: (_ for _ in ()).throw(
+            RuntimeError("serialization failed")
+        )
+        result = c.send_model_weights({})
+        assert result is False
+
+    def test_returns_false_when_all_queues_full(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FullQueue:
+            def put(self, data, timeout=None):
+                raise queue.Full()
+
+        c.model_queues = [FullQueue(), FullQueue()]
+        # Need to mock _prepare_model_data to return valid data
+        c._prepare_model_data = lambda *a, **kw: {"fake": "data"}
+        result = c.send_model_weights({})
+        assert result is False
+
+    def test_returns_true_when_at_least_one_succeeds(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FullQueue:
+            def put(self, data, timeout=None):
+                raise queue.Full()
+
+        class GoodQueue:
+            def put(self, data, timeout=None):
+                pass
+
+        c.model_queues = [FullQueue(), GoodQueue()]
+        c._prepare_model_data = lambda *a, **kw: {"fake": "data"}
+        result = c.send_model_weights({})
+        assert result is True

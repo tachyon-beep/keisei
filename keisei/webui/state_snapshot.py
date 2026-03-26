@@ -19,7 +19,14 @@ from .view_contracts import (
     SCHEMA_VERSION,
     make_health_map,
     sanitize_pending_updates,
+    square_key,
 )
+
+# Policy insight thresholds
+_PROB_FLOOR = 1e-8  # Actions below this are excluded from heatmap/top-K
+_ENTROPY_EPSILON = 1e-10  # Log-probability numerical stability
+_SQUARE_DETAIL_THRESHOLD = 0.001  # Minimum prob for per-square action list
+_SQUARE_DETAIL_TOP_N = 3  # Max actions shown per square in detail panel
 
 
 def extract_board_state(game: Any) -> Dict[str, Any]:
@@ -109,7 +116,7 @@ def extract_metrics(metrics_manager: Any) -> Dict[str, Any]:
 def extract_step_info(step_manager: Any) -> Dict[str, Any]:
     """Extract step/move info from StepManager."""
     return {
-        "move_log": list(step_manager.move_log[-20:]),
+        "move_log": list(step_manager.move_log[-300:]),
         "sente_capture_count": step_manager.sente_capture_count,
         "gote_capture_count": step_manager.gote_capture_count,
         "sente_drop_count": step_manager.sente_drop_count,
@@ -125,6 +132,147 @@ def extract_buffer_info(experience_buffer: Any) -> Dict[str, int]:
         "size": experience_buffer.size(),
         "capacity": experience_buffer.capacity(),
     }
+
+
+def extract_policy_insight(
+    ppo_agent: Any,
+    observation: Any,
+    policy_mapper: Any,
+    top_k: int = 10,
+    legal_mask: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Extract policy insight from the agent's current observation.
+
+    Performs a ``torch.no_grad()`` forward pass to get action probabilities
+    and the critic's value estimate.  Returns ``None`` on any error so that
+    snapshot production is never interrupted.
+
+    When *legal_mask* is provided, illegal actions are masked to ``-inf``
+    before softmax so the heatmap and top-actions reflect only legal moves
+    (mirroring ``PPOAgent.select_action``).
+
+    The ``action_heatmap`` is a 9x9 grid where each cell holds the sum of
+    action probabilities whose destination square is that cell.
+    """
+    try:
+        import torch
+
+        if observation is None or ppo_agent is None:
+            return None
+
+        model = ppo_agent.model
+        device = ppo_agent.device
+
+        obs_tensor = torch.as_tensor(
+            observation, dtype=torch.float32, device=device
+        ).unsqueeze(0)
+
+        # Observation normalization (mirrors PPOAgent.select_action)
+        from torch.amp import GradScaler
+
+        scaler = getattr(ppo_agent, "scaler", None)
+        if scaler is not None and not isinstance(scaler, GradScaler):
+            if hasattr(scaler, "transform"):
+                obs_tensor = scaler.transform(obs_tensor)
+            else:
+                obs_tensor = scaler(obs_tensor)
+
+        was_training = model.training
+        try:
+            with torch.no_grad():
+                model.eval()
+                policy_logits, value = model(obs_tensor)
+        finally:
+            model.train(was_training)
+
+        # Mask illegal actions before softmax (mirrors PPOAgent.select_action)
+        logits = policy_logits.squeeze(0)
+        if legal_mask is not None:
+            legal_mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=device)
+            if legal_mask_t.shape == logits.shape:
+                logits = torch.where(
+                    legal_mask_t, logits, torch.tensor(float("-inf"), device=device)
+                )
+        probs = torch.softmax(logits, dim=0)
+        value_estimate = float(value.item())
+
+        # Action entropy
+        log_probs = torch.log(probs + _ENTROPY_EPSILON)
+        action_entropy = float(-(probs * log_probs).sum().item())
+
+        probs_np = probs.cpu().numpy()
+
+        # Build 9x9 heatmap: sum of probs per destination square
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        idx_to_move = policy_mapper.idx_to_move
+        square_action_candidates: dict[str, list[tuple[float, int]]] = {}
+        for idx in range(len(idx_to_move)):
+            p = float(probs_np[idx])
+            if p < _PROB_FLOOR:
+                continue
+            move = idx_to_move[idx]
+            # Destination square is at indices [2], [3]
+            to_r, to_c = move[2], move[3]
+            if (
+                isinstance(to_r, int)
+                and isinstance(to_c, int)
+                and 0 <= to_r < 9
+                and 0 <= to_c < 9
+            ):
+                heatmap[to_r][to_c] += p
+                if p > _SQUARE_DETAIL_THRESHOLD:
+                    sk = square_key(to_r, to_c)
+                    if sk not in square_action_candidates:
+                        square_action_candidates[sk] = []
+                    square_action_candidates[sk].append((p, idx))
+
+        # Top-N per square, sorted by probability descending
+        square_actions: dict[str, list[dict]] = {}
+        for key, candidates in square_action_candidates.items():
+            candidates.sort(reverse=True)
+            top3 = candidates[:_SQUARE_DETAIL_TOP_N]
+            actions = []
+            for prob, idx in top3:
+                try:
+                    usi = policy_mapper.action_idx_to_usi_move(int(idx))
+                except (IndexError, ValueError) as e:
+                    import logging
+
+                    logging.getLogger(__name__).debug(
+                        "Failed to convert action index %d to USI: %s", idx, e
+                    )
+                    usi = f"idx:{idx}"
+                actions.append({"action": usi, "prob": prob})
+            square_actions[key] = actions
+
+        # Top-K actions
+        top_indices = probs_np.argsort()[-top_k:][::-1]
+        top_actions = []
+        for idx in top_indices:
+            p = float(probs_np[idx])
+            if p < _PROB_FLOOR:
+                break
+            try:
+                usi = policy_mapper.action_idx_to_usi_move(int(idx))
+            except (IndexError, ValueError):
+                usi = f"idx:{idx}"
+            top_actions.append({"action": usi, "prob": p})
+
+        return {
+            "action_heatmap": heatmap,
+            "top_actions": top_actions,
+            "value_estimate": value_estimate,
+            "action_entropy": action_entropy,
+            "square_actions": square_actions,
+        }
+
+    except (RuntimeError, ValueError, TypeError, OSError, IndexError) as e:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Policy insight extraction failed: %s: %s", type(e).__name__, e
+        )
+        return None
 
 
 def _resolve_mode(trainer: Any) -> str:
@@ -173,6 +321,27 @@ def _build_training_view(trainer: Any) -> Dict[str, Any]:
     training["model_info"] = {
         "gradient_norm": getattr(trainer, "last_gradient_norm", 0.0),
     }
+
+    # Policy insight (optional — gated on config and training state)
+    training["policy_insight"] = None
+    config = getattr(trainer, "config", None)
+    webui_cfg = getattr(config, "webui", None) if config else None
+    insight_enabled = getattr(webui_cfg, "policy_insight", False)
+    is_processing = training.get("metrics", {}).get("processing", False)
+
+    if insight_enabled and not is_processing:
+        ppo_agent = getattr(trainer, "agent", None)
+        step_mgr = getattr(trainer, "step_manager", None)
+        obs = getattr(step_mgr, "_latest_obs_for_snapshot", None)
+        legal_mask = getattr(step_mgr, "_latest_legal_mask_for_snapshot", None)
+        env_mgr = getattr(trainer, "env_manager", None)
+        mapper = getattr(env_mgr, "policy_mapper", None)
+        top_k = getattr(webui_cfg, "policy_insight_top_k", 10)
+
+        if ppo_agent is not None and mapper is not None:
+            training["policy_insight"] = extract_policy_insight(
+                ppo_agent, obs, mapper, top_k=top_k, legal_mask=legal_mask
+            )
 
     return training
 

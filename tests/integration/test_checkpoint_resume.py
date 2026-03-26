@@ -111,11 +111,10 @@ class TestCheckpointLoad:
                 original_state[k], model2.state_dict()[k]
             ), f"Weight mismatch for {k}"
 
-    def test_load_nonexistent_file_returns_error(self, ppo_agent):
-        """load_model with a nonexistent path returns an error dict."""
-        result = ppo_agent.load_model("/nonexistent/path/checkpoint.pt")
-        assert "error" in result
-        assert result["global_timestep"] == 0
+    def test_load_nonexistent_file_raises(self, ppo_agent):
+        """load_model with a nonexistent path raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            ppo_agent.load_model("/nonexistent/path/checkpoint.pt")
 
 
 # ---------------------------------------------------------------------------

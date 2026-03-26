@@ -1,6 +1,7 @@
 """Unit tests for keisei.training.parallel.model_sync.ModelSynchronizer."""
 
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -126,9 +127,16 @@ class TestRestoreModelFromSync:
 
         # Create a fresh model and restore into it
         target = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
-        result = syncer.restore_model_from_sync(sync_data, target)
+        with warnings.catch_warnings(record=True) as recorded:
+            warnings.simplefilter("always")
+            result = syncer.restore_model_from_sync(sync_data, target)
 
         assert result is True
+        assert not [
+            w
+            for w in recorded
+            if "not writable" in str(w.message).lower()
+        ]
         for key in original_sd:
             assert torch.allclose(original_sd[key], target.state_dict()[key])
 
@@ -143,11 +151,11 @@ class TestRestoreModelFromSync:
         for key in original_sd:
             assert torch.allclose(original_sd[key], target.state_dict()[key])
 
-    def test_corrupted_data_returns_false(self, syncer, small_model):
+    def test_corrupted_data_raises(self, syncer, small_model):
         import gzip
 
         # Valid gzip data but wrong size for float32/shape — triggers
-        # ValueError in np.frombuffer, which is caught by restore_model_from_sync.
+        # ValueError wrapped as RuntimeError by restore_model_from_sync.
         bad_bytes = gzip.compress(b"hello")
         sync_data = {
             "model_data": {
@@ -160,15 +168,15 @@ class TestRestoreModelFromSync:
             },
             "metadata": {"compressed": True, "sync_count": 0, "total_parameters": 0},
         }
-        result = syncer.restore_model_from_sync(sync_data, small_model)
-        assert result is False
+        with pytest.raises(RuntimeError, match="Model sync restore failed"):
+            syncer.restore_model_from_sync(sync_data, small_model)
 
-    def test_mismatched_keys_returns_false(self, syncer, small_model):
+    def test_mismatched_keys_raises(self, syncer, small_model):
         # Prepare sync data from a different-shaped model
         other_model = nn.Linear(3, 7)
         sync_data = syncer.prepare_model_for_sync(other_model)
-        result = syncer.restore_model_from_sync(sync_data, small_model)
-        assert result is False
+        with pytest.raises(RuntimeError, match="Model sync restore failed"):
+            syncer.restore_model_from_sync(sync_data, small_model)
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +222,21 @@ class TestGetSyncStats:
         # Before any sync, last_sync_step == 0, so rate should be 0
         stats = syncer.get_sync_stats()
         assert stats["average_sync_rate"] == 0
+
+
+class TestEnsureWritableArray:
+    """_ensure_writable_array copies non-writable arrays."""
+
+    def test_writable_array_returned_as_is(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        assert arr.flags.writeable
+        result = ModelSynchronizer._ensure_writable_array(arr)
+        assert result is arr
+
+    def test_non_writable_array_copied(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        arr.flags.writeable = False
+        result = ModelSynchronizer._ensure_writable_array(arr)
+        assert result is not arr
+        assert result.flags.writeable
+        np.testing.assert_array_equal(result, arr)

@@ -687,3 +687,56 @@ class TestHandleEpisodeEndResetDelegation:
         # Should return original state on failure
         assert new_state is state
         assert winner == "white"
+
+
+# ---------------------------------------------------------------------------
+# Observation / legal mask snapshot cache lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestObsSnapshotCache:
+    """_latest_obs_for_snapshot and _latest_legal_mask_for_snapshot lifecycle."""
+
+    def test_initial_values_are_none(self):
+        """Both snapshot caches start as None."""
+        sm = _make_step_manager()
+        assert sm._latest_obs_for_snapshot is None
+        assert sm._latest_legal_mask_for_snapshot is None
+
+    def test_stashed_after_successful_step(self):
+        """After a successful execute_step, both caches are populated."""
+        sm = _make_step_manager()
+        sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
+        sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
+        sm.game.make_move.return_value = (_make_obs(), 0.0, False, {})
+        sm.game.current_player = MagicMock()
+        sm.game.current_player.name = "BLACK"
+        sm.game.current_player.value = 0
+
+        episode = _make_episode_state()
+        result = sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
+
+        assert result.success
+        # Obs cache is a numpy array (stashed from episode_state.current_obs)
+        assert sm._latest_obs_for_snapshot is not None
+        assert isinstance(sm._latest_obs_for_snapshot, np.ndarray)
+        # Legal mask cache is a tensor
+        assert sm._latest_legal_mask_for_snapshot is not None
+        assert isinstance(sm._latest_legal_mask_for_snapshot, torch.Tensor)
+
+    def test_obs_is_current_observation(self):
+        """The stashed obs matches the episode's current_obs (numpy array)."""
+        sm = _make_step_manager()
+        sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
+        sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
+        sm.game.make_move.return_value = (_make_obs(), 0.0, False, {})
+        sm.game.current_player = MagicMock()
+        sm.game.current_player.name = "BLACK"
+        sm.game.current_player.value = 0
+
+        episode = _make_episode_state()
+        sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
+
+        np.testing.assert_array_equal(sm._latest_obs_for_snapshot, episode.current_obs)

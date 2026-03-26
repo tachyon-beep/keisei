@@ -706,3 +706,81 @@ class TestProcessStepEpisodeStateNone:
 
         with pytest.raises(RuntimeError, match="StepManager"):
             tlm._process_step_and_handle_episode(trainer.log_both)
+
+
+class TestAsyncCallbackRunnerCleanup:
+    """Tests for cleanup around sync-to-async callback bridging."""
+
+    def test_run_async_callbacks_closes_coroutine_if_asyncio_run_fails(self):
+        trainer = _make_trainer()
+        tlm = _make_training_loop_manager(trainer)
+        fake_coro = MagicMock()
+        trainer.callback_manager.execute_step_callbacks_async.return_value = fake_coro
+
+        with patch(
+            "keisei.training.training_loop_manager.asyncio.get_running_loop",
+            side_effect=RuntimeError,
+        ), patch(
+            "keisei.training.training_loop_manager.asyncio.run",
+            side_effect=RuntimeError("runner failed"),
+        ):
+            with pytest.raises(RuntimeError, match="runner failed"):
+                tlm._run_async_callbacks()
+
+        fake_coro.close.assert_called_once()
+
+    def test_run_async_callbacks_thread_pool_branch(self):
+        """When an event loop is running, the thread-pool path is used."""
+        import concurrent.futures
+
+        trainer = _make_trainer()
+        tlm = _make_training_loop_manager(trainer)
+        fake_coro = MagicMock()
+        trainer.callback_manager.execute_step_callbacks_async.return_value = fake_coro
+
+        mock_loop = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.return_value = {"eval/test": 1.0}
+        mock_pool = MagicMock()
+        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
+        mock_pool.__exit__ = MagicMock(return_value=False)
+        mock_pool.submit.return_value = mock_future
+
+        with patch(
+            "keisei.training.training_loop_manager.asyncio.get_running_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            concurrent.futures, "ThreadPoolExecutor", return_value=mock_pool,
+        ):
+            result = tlm._run_async_callbacks()
+
+        assert result == {"eval/test": 1.0}
+        mock_pool.submit.assert_called_once()
+
+    def test_thread_pool_branch_cleans_up_coroutine_on_failure(self):
+        """Thread-pool path closes coroutine if submit/result raises."""
+        import concurrent.futures
+
+        trainer = _make_trainer()
+        tlm = _make_training_loop_manager(trainer)
+        fake_coro = MagicMock()
+        trainer.callback_manager.execute_step_callbacks_async.return_value = fake_coro
+
+        mock_loop = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.side_effect = RuntimeError("thread failed")
+        mock_pool = MagicMock()
+        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
+        mock_pool.__exit__ = MagicMock(return_value=False)
+        mock_pool.submit.return_value = mock_future
+
+        with patch(
+            "keisei.training.training_loop_manager.asyncio.get_running_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            concurrent.futures, "ThreadPoolExecutor", return_value=mock_pool,
+        ):
+            with pytest.raises(RuntimeError, match="thread failed"):
+                tlm._run_async_callbacks()
+
+        fake_coro.close.assert_called_once()

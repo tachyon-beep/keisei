@@ -94,6 +94,9 @@ class StepManager:
         self.gote_drop_count: int = 0
         self.sente_promo_count: int = 0
         self.gote_promo_count: int = 0
+        # Snapshot cache for policy insight (read by state_snapshot.py)
+        self._latest_obs_for_snapshot: Optional[np.ndarray] = None
+        self._latest_legal_mask_for_snapshot: Optional[torch.Tensor] = None
 
     def _obs_to_tensor(self, obs: np.ndarray) -> torch.Tensor:
         """Convert a numpy observation to a batched torch tensor on the correct device."""
@@ -261,6 +264,10 @@ class StepManager:
             legal_mask_tensor = self.policy_mapper.get_legal_mask(
                 legal_shogi_moves, device=self.device
             )
+
+            # Stash for policy insight snapshot
+            self._latest_obs_for_snapshot = episode_state.current_obs
+            self._latest_legal_mask_for_snapshot = legal_mask_tensor
 
             # Agent action selection
             selected_shogi_move, policy_index, log_prob, value_pred = (

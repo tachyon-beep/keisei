@@ -215,7 +215,12 @@ class TestSaveFinalCheckpointLineage:
 
 
 class TestSaveFinalModelLineage:
-    def test_final_model_emits_event(self, tmp_path):
+    def test_final_model_does_not_emit_lineage_event(self, tmp_path):
+        """save_final_model does NOT emit a lineage event.
+
+        The canonical checkpoint_created event is emitted by
+        save_final_checkpoint instead, avoiding duplicates.
+        """
         mm, registry, _ = _make_model_manager(tmp_path)
         model_dir = str(tmp_path / "models")
 
@@ -233,11 +238,7 @@ class TestSaveFinalModelLineage:
         )
 
         assert success is True
-        assert registry.event_count == 1
-        event = registry.load_all()[0]
-        assert event["event_type"] == "checkpoint_created"
-        assert event["payload"]["global_timestep"] == 100000
-        assert "final_model.pth" in event["payload"]["checkpoint_path"]
+        assert registry.event_count == 0  # No lineage event from final_model
 
 
 # ---------------------------------------------------------------------------

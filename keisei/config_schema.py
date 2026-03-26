@@ -619,20 +619,20 @@ def _create_display_config() -> DisplayConfig:
 class WebUIConfig(BaseModel):
     """Configuration for the Streamlit training dashboard."""
     enabled: bool = Field(False, description="Enable Streamlit training dashboard")
-    port: int = Field(8501, description="Streamlit server port")
+    port: int = Field(8501, ge=1, le=65535, description="Streamlit server port")
     host: str = Field("localhost", description="Server host (use '0.0.0.0' for remote access)")
     update_rate_hz: float = Field(
-        2.0, description="State file update frequency in Hz"
+        2.0, gt=0, description="State file update frequency in Hz"
     )
-    # Legacy fields kept for YAML backward compatibility
-    max_connections: int = Field(
-        10, description="(Legacy) Maximum concurrent connections"
+    policy_insight: bool = Field(
+        False,
+        description="Include policy action probabilities in dashboard state",
     )
-    board_update_rate_hz: float = Field(
-        5.0, description="(Legacy) Board state update frequency"
-    )
-    metrics_update_rate_hz: float = Field(
-        1.0, description="(Legacy) Metrics update frequency"
+    policy_insight_top_k: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description="Number of top actions to surface in policy insight panel",
     )
 
 

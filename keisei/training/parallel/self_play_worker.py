@@ -422,8 +422,12 @@ class SelfPlayWorker(mp.Process):
                             )
                     else:
                         array_np = data["data"]
+                    if not array_np.flags.writeable:
+                        array_np = array_np.copy()
                     state_dict[key] = torch.from_numpy(array_np).to(self.device)
                 else:
+                    if isinstance(data, np.ndarray) and not data.flags.writeable:
+                        data = data.copy()
                     state_dict[key] = torch.from_numpy(data).to(self.device)
 
             # Load weights

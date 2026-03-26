@@ -22,6 +22,7 @@ from keisei.webui.state_snapshot import (
     extract_board_state,
     extract_buffer_info,
     extract_metrics,
+    extract_policy_insight,
     extract_step_info,
 )
 from keisei.webui.view_contracts import SCHEMA_VERSION, validate_envelope
@@ -177,7 +178,10 @@ class TestBuildSnapshot:
         """Snapshot reflects game state changes after moves are played."""
         game = ShogiGame(max_moves_per_game=500)
         buf = ExperienceBuffer(
-            buffer_size=16, gamma=0.99, lambda_gae=0.95, device="cpu",
+            buffer_size=16,
+            gamma=0.99,
+            lambda_gae=0.95,
+            device="cpu",
             num_actions=session_policy_mapper.get_total_actions(),
         )
         mm = MetricsManager()
@@ -197,7 +201,9 @@ class TestBuildSnapshot:
         # Play a few steps
         episode_state = sm.reset_episode()
         for t in range(3):
-            result = sm.execute_step(episode_state, global_timestep=t, logger_func=_noop_logger)
+            result = sm.execute_step(
+                episode_state, global_timestep=t, logger_func=_noop_logger
+            )
             if result.success:
                 episode_state = sm.update_episode_state(episode_state, result)
                 if result.done:
@@ -217,12 +223,17 @@ class TestBuildSnapshot:
         """Step info section contains move log entries after gameplay."""
         game = ShogiGame(max_moves_per_game=500)
         config_with_display = integration_config.model_copy(
-            update={"display": integration_config.display.model_copy(
-                update={"display_moves": True, "turn_tick": 0.0}
-            )}
+            update={
+                "display": integration_config.display.model_copy(
+                    update={"display_moves": True, "turn_tick": 0.0}
+                )
+            }
         )
         buf = ExperienceBuffer(
-            buffer_size=16, gamma=0.99, lambda_gae=0.95, device="cpu",
+            buffer_size=16,
+            gamma=0.99,
+            lambda_gae=0.95,
+            device="cpu",
             num_actions=session_policy_mapper.get_total_actions(),
         )
         sm = StepManager(
@@ -235,7 +246,9 @@ class TestBuildSnapshot:
 
         episode_state = sm.reset_episode()
         for t in range(3):
-            result = sm.execute_step(episode_state, global_timestep=t, logger_func=_noop_logger)
+            result = sm.execute_step(
+                episode_state, global_timestep=t, logger_func=_noop_logger
+            )
             if result.success:
                 episode_state = sm.update_episode_state(episode_state, result)
                 if result.done:
@@ -258,3 +271,38 @@ class TestBuildSnapshot:
         assert "learning_curves" in metrics
         assert "hot_squares" in metrics
         assert isinstance(metrics["learning_curves"], dict)
+
+
+class TestPolicyInsightSquareActions:
+    """End-to-end: obs → extract_policy_insight → square_actions in result."""
+
+    def test_square_actions_in_snapshot(
+        self, shogi_game, ppo_agent, session_policy_mapper
+    ):
+        """When policy insight is enabled and obs is available, square_actions is populated."""
+        # Get observation from game
+        obs = shogi_game.reset()
+
+        # Get a real legal mask from the current position
+        legal_moves = shogi_game.get_legal_moves()
+        legal_mask = session_policy_mapper.get_legal_mask(
+            legal_moves, device=torch.device("cpu")
+        )
+
+        result = extract_policy_insight(
+            ppo_agent, obs, session_policy_mapper, top_k=5, legal_mask=legal_mask
+        )
+        assert result is not None
+        assert "square_actions" in result
+        assert isinstance(result["square_actions"], dict)
+
+        # At least some squares should have actions
+        assert len(result["square_actions"]) > 0
+
+        # Each entry should have correct format
+        for key, actions in result["square_actions"].items():
+            assert "," in key
+            for act in actions:
+                assert "action" in act
+                assert "prob" in act
+                assert act["prob"] > 0

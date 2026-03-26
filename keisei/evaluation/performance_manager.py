@@ -103,7 +103,7 @@ class EvaluationPerformanceSLA:
         violations = []
 
         for metric, threshold in self.SLA_METRICS.items():
-            # CRITICAL FIX: Handle None values for GPU metrics on CPU-only deployments
+            # Handle None values for GPU metrics on CPU-only deployments
             if (
                 metric in metrics
                 and metrics[metric] is not None
@@ -188,7 +188,7 @@ class EvaluationPerformanceManager:
                 initial_memory = self.resource_monitor.get_memory_usage()
                 initial_cpu = self.resource_monitor.get_cpu_percent()
 
-                # CRITICAL FIX: Timeout control with proper resource enforcement
+                # Timeout control with resource enforcement
                 result = await asyncio.wait_for(
                     evaluator.evaluate(agent_info, context), timeout=self.timeout
                 )
@@ -214,7 +214,7 @@ class EvaluationPerformanceManager:
                     end_time=end_time,
                 )
 
-                # CRITICAL FIX: Actually enforce resource limits
+                # Enforce resource limits
                 self.enforce_resource_limits(metrics)
 
                 # Log and validate performance

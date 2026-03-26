@@ -82,6 +82,7 @@ class TestTrainingViewKeyLock:
         "step_info",
         "buffer_info",
         "model_info",
+        "policy_insight",
     }
 
     def test_producer_emits_exact_training_keys(self):
@@ -106,7 +107,10 @@ class TestTrainingViewKeyLock:
 
     def test_parser_exposes_all_training_keys(self):
         """EnvelopeParser has a property for each training sub-key."""
-        parser_props = {"board_state", "metrics", "step_info", "buffer_info", "model_info"}
+        parser_props = {
+            "board_state", "metrics", "step_info", "buffer_info",
+            "model_info", "policy_insight",
+        }
         actual = {name for name in dir(EnvelopeParser) if name in parser_props}
         assert actual == parser_props
 

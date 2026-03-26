@@ -73,6 +73,26 @@ class ParallelGameExecutor:
             self._executor.shutdown(wait=True)
             self._executor = None
 
+    def _run_coroutine_blocking(self, coro_factory: Callable[[], Any]) -> Any:
+        """Run a coroutine from sync code without blocking an active loop thread.
+
+        Uses a factory (not a pre-built coroutine) so cleanup is automatic:
+        asyncio.run() always finalizes the coroutine it runs.  On timeout,
+        the future is cancelled and TimeoutError re-raised.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro_factory())
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: asyncio.run(coro_factory()))
+            try:
+                return future.result(timeout=self.timeout_per_game_seconds)
+            except TimeoutError:
+                future.cancel()
+                raise
+
     async def execute_games_parallel(
         self,
         tasks: List[ParallelGameTask],
@@ -164,50 +184,24 @@ class ParallelGameExecutor:
             ):
                 # Use in-memory evaluation if available
                 logger.debug(f"Using in-memory evaluation for game {task.task_id}")
-                try:
-                    # Check if we're in an existing event loop
-                    loop = asyncio.get_running_loop()
-                    # Use asyncio.run_coroutine_threadsafe to run from thread pool
-                    future = asyncio.run_coroutine_threadsafe(
-                        task.game_executor.__self__.evaluate_step_in_memory(
-                            task.agent_info, task.opponent_info, task.context
-                        ),
-                        loop,
+                result = self._run_coroutine_blocking(
+                    lambda: task.game_executor.__self__.evaluate_step_in_memory(
+                        task.agent_info, task.opponent_info, task.context
                     )
-                    result = future.result(timeout=300)  # 5 minutes timeout
-                except RuntimeError:
-                    # No running loop, safe to use asyncio.run()
-                    result = asyncio.run(
-                        task.game_executor.__self__.evaluate_step_in_memory(
-                            task.agent_info, task.opponent_info, task.context
-                        )
-                    )
+                )
             else:
                 # Use regular evaluation
                 logger.debug(f"Using regular evaluation for game {task.task_id}")
-                try:
-                    # Check if we're in an existing event loop
-                    loop = asyncio.get_running_loop()
-                    # Use asyncio.run_coroutine_threadsafe to run from thread pool
-                    future = asyncio.run_coroutine_threadsafe(
-                        task.game_executor(
-                            task.agent_info, task.opponent_info, task.context
-                        ),
-                        loop,
+                result = self._run_coroutine_blocking(
+                    lambda: task.game_executor(
+                        task.agent_info, task.opponent_info, task.context
                     )
-                    result = future.result(timeout=300)  # 5 minutes timeout
-                except RuntimeError:
-                    # No running loop, safe to use asyncio.run()
-                    result = asyncio.run(
-                        task.game_executor(
-                            task.agent_info, task.opponent_info, task.context
-                        )
-                    )
+                )
 
             task.result = result
             return result
 
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError, TimeoutError) as e:
             task.error = e
             logger.error(
                 f"Error executing game {task.task_id}: {str(e)}", exc_info=True

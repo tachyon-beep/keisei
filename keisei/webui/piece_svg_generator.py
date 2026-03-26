@@ -39,25 +39,32 @@ _CY = _HEIGHT / 2  # 22
 # Pentagonal piece path: pointed top, widening shoulders, flat bottom
 _PIECE_PATH = "M20 2 L36 14 L32 42 L8 42 L4 14 Z"
 
-_FILL = "#f5deb3"
+# Side-specific fills — contrast ratio 1.64:1 (WCAG non-text adjacent pass)
+_FILLS = {"black": "#f0d9a0", "white": "#b5ab99"}
 _STROKE = "#000000"
 _STROKE_WIDTH = "1.5"
-_KANJI_COLOR = "#000000"
+_KANJI_COLOR = "#1a1a1a"
 _PROMOTED_COLOR = "#cc0000"
 _FONT_SIZE = "18"
 
 
-def _generate_svg(kanji: str, is_promoted: bool, is_white: bool) -> str:
+def _generate_svg(
+    kanji: str, is_promoted: bool, is_white: bool
+) -> str:
     """Generate a single piece SVG as a string."""
-    fill_color = _PROMOTED_COLOR if is_promoted else _KANJI_COLOR
-    transform = f'transform="rotate(180, {_CX}, {_CY})"' if is_white else ""
+    fill = _FILLS["white"] if is_white else _FILLS["black"]
+    text_color = _PROMOTED_COLOR if is_promoted else _KANJI_COLOR
+    transform = (
+        f'transform="rotate(180, {_CX}, {_CY})"' if is_white else ""
+    )
 
+    vb = f"0 0 {_WIDTH} {_HEIGHT}"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {_WIDTH} {_HEIGHT}" width="{_WIDTH}" height="{_HEIGHT}">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" width="{_WIDTH}" height="{_HEIGHT}">
   <g {transform}>
-    <path d="{_PIECE_PATH}" fill="{_FILL}" stroke="{_STROKE}" stroke-width="{_STROKE_WIDTH}"/>
+    <path d="{_PIECE_PATH}" fill="{fill}" stroke="{_STROKE}" stroke-width="{_STROKE_WIDTH}"/>
     <text x="{_CX}" y="30" text-anchor="middle" dominant-baseline="central"
-          font-size="{_FONT_SIZE}" font-family="serif" fill="{fill_color}">{kanji}</text>
+          font-size="{_FONT_SIZE}" font-family="serif" fill="{text_color}">{kanji}</text>
   </g>
 </svg>
 """

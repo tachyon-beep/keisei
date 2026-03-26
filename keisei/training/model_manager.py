@@ -743,10 +743,9 @@ class ModelManager:
             )
             self.logger_func(f"Final model saved to {final_model_path}")
 
-            # Emit lineage event on successful save
-            self._emit_checkpoint_created(
-                final_model_path, global_timestep, total_episodes_completed
-            )
+            # Note: lineage event is NOT emitted here — save_final_checkpoint()
+            # handles the canonical checkpoint_created event for this timestep.
+            # Emitting here would create a duplicate.
 
             # Create W&B artifact for final model with compilation info
             final_metadata = {

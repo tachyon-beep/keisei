@@ -40,17 +40,19 @@ class TestUpdateRateHzConfig:
         mgr = StreamlitManager(cfg)
         assert mgr._min_write_interval == pytest.approx(1.0)
 
-    def test_zero_hz_clamped_to_floor(self):
-        """Zero Hz doesn't cause ZeroDivisionError; clamps to 0.1 Hz floor."""
-        cfg = WebUIConfig(update_rate_hz=0.0)
-        mgr = StreamlitManager(cfg)
-        assert mgr._min_write_interval == pytest.approx(10.0)
+    def test_zero_hz_rejected_by_validation(self):
+        """Zero Hz is rejected by Pydantic gt=0 validator."""
+        from pydantic import ValidationError
 
-    def test_negative_hz_clamped_to_floor(self):
-        """Negative Hz is treated like zero — clamped to floor."""
-        cfg = WebUIConfig(update_rate_hz=-5.0)
-        mgr = StreamlitManager(cfg)
-        assert mgr._min_write_interval == pytest.approx(10.0)
+        with pytest.raises(ValidationError):
+            WebUIConfig(update_rate_hz=0.0)
+
+    def test_negative_hz_rejected_by_validation(self):
+        """Negative Hz is rejected by Pydantic gt=0 validator."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            WebUIConfig(update_rate_hz=-5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +228,63 @@ class TestStreamlitCleanupOnInitFailure:
 
         # The critical assertion: stop() was called on the webui manager
         mock_webui.stop.assert_called_once()
+
+
+class TestStreamlitProcessLiveness:
+    """StreamlitManager should surface subprocess death but keep writing state files."""
+
+    def test_update_progress_continues_writing_after_crash(self):
+        cfg = WebUIConfig(update_rate_hz=2.0)
+        mgr = StreamlitManager(cfg)
+        trainer = MagicMock()
+        process = MagicMock()
+        process.poll.return_value = 17
+        mgr._process = process
+        mgr._last_write_time = 0  # ensure rate-limit doesn't block
+
+        with patch(
+            "keisei.webui.streamlit_manager.build_snapshot", return_value={}
+        ) as build_snapshot, patch(
+            "keisei.webui.streamlit_manager.write_snapshot_atomic"
+        ) as write_snapshot:
+            mgr.update_progress(trainer, speed=1.0, pending_updates={})
+
+        # State writes continue so a restarted dashboard picks up fresh data
+        build_snapshot.assert_called_once()
+        write_snapshot.assert_called_once()
+        assert mgr._process is None
+
+
+# ---------------------------------------------------------------------------
+# _compute_heatmap_overlay pure function
+# ---------------------------------------------------------------------------
+
+
+class TestComputeHeatmapOverlay:
+    """Log-scale heatmap normalization."""
+
+    def test_all_zeros_returns_zeros(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        result = _compute_heatmap_overlay(heatmap)
+        assert all(v == 0.0 for row in result for v in row)
+
+    def test_max_value_normalizes_to_one(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        heatmap[4][4] = 0.5
+        heatmap[0][0] = 0.01  # Need two distinct values to get a range
+        result = _compute_heatmap_overlay(heatmap)
+        assert result[4][4] == 1.0  # Max value → 1.0
+        assert result[0][0] >= 0.0  # Min nonzero value → floor of log range
+
+    def test_output_range_is_zero_to_one(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[float(r * 9 + c) / 81 for c in range(9)] for r in range(9)]
+        result = _compute_heatmap_overlay(heatmap)
+        for row in result:
+            for v in row:
+                assert 0.0 <= v <= 1.0

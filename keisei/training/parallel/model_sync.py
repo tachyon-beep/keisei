@@ -120,10 +120,12 @@ class ModelSynchronizer:
             state_dict = {}
             for key, data in model_data.items():
                 if metadata["compressed"]:
-                    state_dict[key] = torch.from_numpy(self._decompress_array(data))
+                    np_array = self._decompress_array(data)
                 else:
                     np_array = data["data"]
-                    state_dict[key] = torch.from_numpy(np_array)
+                state_dict[key] = torch.from_numpy(
+                    self._ensure_writable_array(np_array)
+                )
 
             # Load into model
             model.load_state_dict(state_dict)
@@ -137,8 +139,15 @@ class ModelSynchronizer:
             return True
 
         except (RuntimeError, ValueError, TypeError) as e:
-            logger.error("Failed to restore model from sync data: %s", str(e))
-            return False
+            logger.error("Failed to restore model from sync data: %s", e)
+            raise RuntimeError(f"Model sync restore failed: {e}") from e
+
+    @staticmethod
+    def _ensure_writable_array(array: np.ndarray) -> np.ndarray:
+        """Return an array backed by writable storage for safe tensor conversion."""
+        if array.flags.writeable:
+            return array
+        return np.array(array, copy=True)
 
     def mark_sync_completed(self, current_step: int) -> None:
         """

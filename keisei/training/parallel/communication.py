@@ -61,29 +61,46 @@ class WorkerCommunicator:
         self,
         model_state_dict: Dict[str, torch.Tensor],
         compression_enabled: bool = True,
-    ) -> None:
-        """
-        Send updated model weights to all workers.
+    ) -> bool:
+        """Send updated model weights to all workers.
 
         Args:
             model_state_dict: PyTorch model state dictionary
             compression_enabled: Whether to compress weights for transmission
+
+        Returns:
+            True if at least one worker received weights, False on total failure.
         """
         try:
             # Prepare model data for transmission
             model_data = self._prepare_model_data(model_state_dict, compression_enabled)
 
             # Send to all workers
+            sent = 0
             for i, model_queue in enumerate(self.model_queues):
                 try:
                     model_queue.put(model_data, timeout=self.timeout)
+                    sent += 1
                 except queue.Full:
                     logger.warning(
                         "Model queue for worker %d is full, skipping update", i
                     )
 
+            if sent == 0 and len(self.model_queues) > 0:
+                logger.error(
+                    "All %d model queues full — workers remain on stale weights",
+                    len(self.model_queues),
+                )
+            return sent > 0
+
         except (RuntimeError, OSError, ValueError) as e:
-            logger.error("Failed to send model weights: %s", str(e))
+            logger.error(
+                "Failed to send model weights to %d workers — "
+                "all workers remain on stale weights: %s",
+                len(self.model_queues),
+                e,
+            )
+            return False
 
     def collect_experiences(self) -> List[Tuple[int, Dict[str, Any]]]:
         """
@@ -200,7 +217,18 @@ class WorkerCommunicator:
             "total_compressed_size": total_compressed_size,
         }
 
-    def get_queue_info(self) -> Dict[str, List[int]]:
+    @staticmethod
+    def _safe_qsize(q: mp.Queue) -> Optional[int]:
+        """Return queue size when supported, or None on unsupported platforms."""
+        try:
+            return q.qsize()
+        except (AttributeError, NotImplementedError):
+            return None
+        except OSError as e:
+            logger.warning("Queue qsize failed (resource error): %s", e)
+            return None
+
+    def get_queue_info(self) -> Dict[str, List[Optional[int]]]:
         """
         Get current queue sizes for monitoring.
 
@@ -208,10 +236,21 @@ class WorkerCommunicator:
             Dictionary with queue sizes for each worker
         """
         return {
-            "experience_queue_sizes": [q.qsize() for q in self.experience_queues],
-            "model_queue_sizes": [q.qsize() for q in self.model_queues],
-            "control_queue_sizes": [q.qsize() for q in self.control_queues],
+            "experience_queue_sizes": [
+                self._safe_qsize(q) for q in self.experience_queues
+            ],
+            "model_queue_sizes": [self._safe_qsize(q) for q in self.model_queues],
+            "control_queue_sizes": [self._safe_qsize(q) for q in self.control_queues],
         }
+
+    @staticmethod
+    def _drain_queue(q: mp.Queue) -> None:
+        """Drain any queued items without relying on `empty()` support."""
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                return
 
     def cleanup(self) -> None:
         """Clean up communication resources."""
@@ -224,10 +263,9 @@ class WorkerCommunicator:
         for queues in [self.experience_queues, self.model_queues, self.control_queues]:
             for q in queues:
                 try:
-                    while not q.empty():
-                        q.get_nowait()
-                except queue.Empty:
-                    pass
+                    self._drain_queue(q)
+                except (OSError, ValueError) as e:
+                    logger.warning("Queue drain during cleanup failed: %s", e)
                 q.close()
 
         logger.info("Worker communication cleanup complete")

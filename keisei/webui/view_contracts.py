@@ -16,7 +16,7 @@ Required envelope fields (must always be present):
     schema_version, timestamp, speed, mode, active_views, health, training,
     pending_updates.
 
-Optional envelope fields (null when the producing Move has not delivered):
+Optional envelope fields (null when the corresponding feature is not active):
     league, lineage, skill_differential, model_profile.
 
 Health semantics (Decision Freeze #2):
@@ -54,6 +54,11 @@ from typing import (
 
 SCHEMA_VERSION: str = "v1.0.0"
 """Current broadcast schema version (semver-like)."""
+
+
+def square_key(row: int, col: int) -> str:
+    """Build the canonical ``"r,c"`` key used in ``square_actions`` dicts."""
+    return f"{row},{col}"
 
 STALE_THRESHOLD_SECONDS: float = 30.0
 """Default producer-side stale threshold matching current UI behaviour."""
@@ -120,7 +125,7 @@ class BoardState(TypedDict):
 
 
 class LearningCurves(TypedDict):
-    """Trailing history of PPO training metrics (last 50 values)."""
+    """Trailing history of PPO training metrics (window size set by producer)."""
 
     policy_losses: List[float]
     value_losses: List[float]
@@ -180,6 +185,31 @@ class ModelInfo(TypedDict):
     gradient_norm: float
 
 
+class ActionProb(TypedDict):
+    """An action with its probability — used in top-K lists and per-square breakdowns."""
+
+    action: str  # USI notation, e.g. "7g7f" or "P*5e"
+    prob: float  # probability in [0, 1]
+
+
+class PolicyInsight(TypedDict):
+    """Per-square action probability summary for the current board state.
+
+    All fields are required when a ``PolicyInsight`` is present.  Optionality
+    is handled at the ``TrainingViewState`` level where ``policy_insight``
+    is typed as ``PolicyInsight | None``.
+
+    The ``action_heatmap`` contains raw probability sums per destination
+    square.  The renderer applies log-scale normalization for display.
+    """
+
+    action_heatmap: List[List[float]]  # 9x9, each cell = prob sum
+    top_actions: List[ActionProb]  # top-K actions with USI labels
+    value_estimate: float  # V(s), typically in [-1, 1]
+    action_entropy: float  # entropy of action distribution
+    square_actions: Dict[str, List[ActionProb]]  # "r,c" -> top-3 actions
+
+
 # ---------------------------------------------------------------------------
 # Per-view state schemas
 # ---------------------------------------------------------------------------
@@ -196,6 +226,8 @@ class TrainingViewState(TypedDict):
         - ``board_state`` is None between episodes.
         - ``step_info`` is None before the first episode starts.
         - ``buffer_info`` is None before the experience buffer is created.
+        - ``policy_insight`` is None between episodes, during PPO updates,
+          or when ``webui.policy_insight`` is disabled.
     """
 
     board_state: Optional[BoardState]
@@ -203,14 +235,15 @@ class TrainingViewState(TypedDict):
     step_info: Optional[StepInfo]
     buffer_info: Optional[BufferInfo]
     model_info: ModelInfo
+    policy_insight: NotRequired[Optional[PolicyInsight]]
 
 
 class LeagueViewState(TypedDict):
-    """League / Elo snapshot view — placeholder, produced by Move 2.
+    """League / Elo snapshot view — placeholder for tournament evaluation.
 
     Shape derived from the ``evaluation_elo_snapshot`` dict in
-    ``callbacks.py``.  Not populated until ``keisei-tw5`` delivers a
-    producer.
+    ``callbacks.py``.  Not populated until tournament evaluation is
+    implemented.
     """
 
     current_id: str
@@ -269,7 +302,7 @@ class BroadcastStateEnvelope(TypedDict, total=False):
     view category.
 
     The ``training`` view is the only populated view in v1.  Its internal
-    structure is defined by ``TrainingViewState`` (see eva.1.2).
+    structure is defined by ``TrainingViewState``.
     """
 
     # --- required --------------------------------------------------------
