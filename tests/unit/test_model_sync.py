@@ -222,3 +222,21 @@ class TestGetSyncStats:
         # Before any sync, last_sync_step == 0, so rate should be 0
         stats = syncer.get_sync_stats()
         assert stats["average_sync_rate"] == 0
+
+
+class TestEnsureWritableArray:
+    """_ensure_writable_array copies non-writable arrays."""
+
+    def test_writable_array_returned_as_is(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        assert arr.flags.writeable
+        result = ModelSynchronizer._ensure_writable_array(arr)
+        assert result is arr
+
+    def test_non_writable_array_copied(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        arr.flags.writeable = False
+        result = ModelSynchronizer._ensure_writable_array(arr)
+        assert result is not arr
+        assert result.flags.writeable
+        np.testing.assert_array_equal(result, arr)

@@ -168,6 +168,23 @@ class TestEvaluationCallback:
         cb.on_step_end(trainer)
         trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
 
+    def test_does_not_fire_at_zero(self):
+        """Timestep 0 should not trigger evaluation even though 0 % N == 0."""
+        cfg = self._make_eval_cfg()
+        cb = EvaluationCallback(cfg, interval=100)
+        trainer = _make_trainer(global_timestep=0)
+        cb.on_step_end(trainer)
+        trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
+
+    def test_does_not_fire_twice_at_same_timestep(self):
+        """Resume boundary: should not re-fire at the restored timestep."""
+        cfg = self._make_eval_cfg()
+        cb = EvaluationCallback(cfg, interval=100)
+        cb._last_fired_timestep = 100
+        trainer = _make_trainer(global_timestep=100)
+        cb.on_step_end(trainer)
+        trainer.evaluation_manager.evaluate_current_agent.assert_not_called()
+
     def test_bootstrap_when_no_previous_checkpoints(self):
         cfg = self._make_eval_cfg()
         cb = EvaluationCallback(cfg, interval=10)

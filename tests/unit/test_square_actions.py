@@ -133,3 +133,46 @@ class TestSquareActionExtraction:
         for key, actions in sa.items():
             probs = [a["prob"] for a in actions]
             assert probs == sorted(probs, reverse=True)
+
+
+class TestPolicyInsightErrorPath:
+    """extract_policy_insight returns None on error and restores model mode."""
+
+    def test_returns_none_on_forward_pass_error(self):
+        """If model() raises, extract_policy_insight returns None."""
+        from keisei.webui.state_snapshot import extract_policy_insight
+
+        agent = MagicMock()
+        agent.device = torch.device("cpu")
+        agent.scaler = None
+        model = MagicMock()
+        model.training = True
+        model.side_effect = RuntimeError("CUDA error")
+        model.return_value = None
+        model.__call__ = MagicMock(side_effect=RuntimeError("CUDA error"))
+        agent.model = model
+
+        mapper = MagicMock()
+        obs = np.zeros((46, 9, 9), dtype=np.float32)
+
+        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        assert result is None
+
+    def test_restores_model_mode_on_error(self):
+        """Model training mode is restored even if forward pass raises."""
+        from keisei.webui.state_snapshot import extract_policy_insight
+
+        agent = MagicMock()
+        agent.device = torch.device("cpu")
+        agent.scaler = None
+        model = MagicMock()
+        model.training = True
+        model.__call__ = MagicMock(side_effect=RuntimeError("shape mismatch"))
+        agent.model = model
+
+        mapper = MagicMock()
+        obs = np.zeros((46, 9, 9), dtype=np.float32)
+
+        extract_policy_insight(agent, obs, mapper, top_k=5)
+        # model.train(True) should have been called via finally block
+        model.train.assert_called_with(True)
