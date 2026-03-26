@@ -151,11 +151,11 @@ class TestRestoreModelFromSync:
         for key in original_sd:
             assert torch.allclose(original_sd[key], target.state_dict()[key])
 
-    def test_corrupted_data_returns_false(self, syncer, small_model):
+    def test_corrupted_data_raises(self, syncer, small_model):
         import gzip
 
         # Valid gzip data but wrong size for float32/shape — triggers
-        # ValueError in np.frombuffer, which is caught by restore_model_from_sync.
+        # ValueError wrapped as RuntimeError by restore_model_from_sync.
         bad_bytes = gzip.compress(b"hello")
         sync_data = {
             "model_data": {
@@ -168,15 +168,15 @@ class TestRestoreModelFromSync:
             },
             "metadata": {"compressed": True, "sync_count": 0, "total_parameters": 0},
         }
-        result = syncer.restore_model_from_sync(sync_data, small_model)
-        assert result is False
+        with pytest.raises(RuntimeError, match="Model sync restore failed"):
+            syncer.restore_model_from_sync(sync_data, small_model)
 
-    def test_mismatched_keys_returns_false(self, syncer, small_model):
+    def test_mismatched_keys_raises(self, syncer, small_model):
         # Prepare sync data from a different-shaped model
         other_model = nn.Linear(3, 7)
         sync_data = syncer.prepare_model_for_sync(other_model)
-        result = syncer.restore_model_from_sync(sync_data, small_model)
-        assert result is False
+        with pytest.raises(RuntimeError, match="Model sync restore failed"):
+            syncer.restore_model_from_sync(sync_data, small_model)
 
 
 # ---------------------------------------------------------------------------

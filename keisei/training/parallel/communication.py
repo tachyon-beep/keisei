@@ -61,26 +61,37 @@ class WorkerCommunicator:
         self,
         model_state_dict: Dict[str, torch.Tensor],
         compression_enabled: bool = True,
-    ) -> None:
-        """
-        Send updated model weights to all workers.
+    ) -> bool:
+        """Send updated model weights to all workers.
 
         Args:
             model_state_dict: PyTorch model state dictionary
             compression_enabled: Whether to compress weights for transmission
+
+        Returns:
+            True if at least one worker received weights, False on total failure.
         """
         try:
             # Prepare model data for transmission
             model_data = self._prepare_model_data(model_state_dict, compression_enabled)
 
             # Send to all workers
+            sent = 0
             for i, model_queue in enumerate(self.model_queues):
                 try:
                     model_queue.put(model_data, timeout=self.timeout)
+                    sent += 1
                 except queue.Full:
                     logger.warning(
                         "Model queue for worker %d is full, skipping update", i
                     )
+
+            if sent == 0 and len(self.model_queues) > 0:
+                logger.error(
+                    "All %d model queues full — workers remain on stale weights",
+                    len(self.model_queues),
+                )
+            return sent > 0
 
         except (RuntimeError, OSError, ValueError) as e:
             logger.error(
@@ -89,6 +100,7 @@ class WorkerCommunicator:
                 len(self.model_queues),
                 e,
             )
+            return False
 
     def collect_experiences(self) -> List[Tuple[int, Dict[str, Any]]]:
         """

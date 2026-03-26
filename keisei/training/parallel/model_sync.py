@@ -139,8 +139,8 @@ class ModelSynchronizer:
             return True
 
         except (RuntimeError, ValueError, TypeError) as e:
-            logger.error("Failed to restore model from sync data: %s", str(e))
-            return False
+            logger.error("Failed to restore model from sync data: %s", e)
+            raise RuntimeError(f"Model sync restore failed: {e}") from e
 
     @staticmethod
     def _ensure_writable_array(array: np.ndarray) -> np.ndarray:
