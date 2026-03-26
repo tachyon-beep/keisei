@@ -504,8 +504,9 @@ def render_position_assessment(insight: Dict[str, Any]) -> None:
 
     # Confidence meter (entropy-derived)
     entropy = insight.get("action_entropy", 0.0)
-    # Normalize: max entropy for 13527 actions is ln(13527) ~ 9.51
-    max_entropy = 9.51
+    # Max entropy = ln(action_space_size) for uniform distribution
+    _ACTION_SPACE_SIZE = 13527
+    max_entropy = math.log(_ACTION_SPACE_SIZE)
     confidence = max(0.0, 1.0 - entropy / max_entropy)
     conf_pct = int(confidence * 100)
     conf_label = (

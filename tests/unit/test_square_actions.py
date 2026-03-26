@@ -175,3 +175,60 @@ class TestPolicyInsightErrorPath:
         extract_policy_insight(agent, obs, mapper, top_k=5)
         # model.train(True) should have been called via finally block
         model.train.assert_called_with(True)
+
+    def test_legal_mask_none_still_works(self):
+        """extract_policy_insight produces results when legal_mask is None."""
+        from keisei.webui.state_snapshot import extract_policy_insight
+
+        agent, mapper = TestSquareActionExtraction()._make_mock_agent_and_mapper()
+        obs = np.zeros((46, 9, 9), dtype=np.float32)
+
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=None)
+        assert result is not None
+        assert "action_heatmap" in result
+        assert "square_actions" in result
+
+
+class TestPolicyInsightGating:
+    """_build_training_view gates policy insight on config and processing state."""
+
+    def test_insight_none_when_disabled(self):
+        """policy_insight is None when config flag is off."""
+        from types import SimpleNamespace
+
+        from keisei.webui.state_snapshot import _build_training_view
+
+        trainer = MagicMock()
+        trainer.config = SimpleNamespace(
+            webui=SimpleNamespace(policy_insight=False, policy_insight_top_k=10)
+        )
+        trainer.metrics_manager.get_stats_dict.return_value = {}
+        trainer.metrics_manager.get_learning_curves.return_value = {}
+        trainer.step_manager.move_log = []
+        trainer.step_manager.move_history = []
+        trainer.game.get_board_state_dict.return_value = {"board": []}
+        trainer.last_gradient_norm = 0.0
+
+        result = _build_training_view(trainer)
+        assert result["policy_insight"] is None
+
+    def test_insight_none_when_processing(self):
+        """policy_insight is None when PPO update is in progress."""
+        from types import SimpleNamespace
+
+        from keisei.webui.state_snapshot import _build_training_view
+
+        trainer = MagicMock()
+        trainer.config = SimpleNamespace(
+            webui=SimpleNamespace(policy_insight=True, policy_insight_top_k=10)
+        )
+        stats = {"processing": True}
+        trainer.metrics_manager.get_stats_dict.return_value = stats
+        trainer.metrics_manager.get_learning_curves.return_value = {}
+        trainer.step_manager.move_log = []
+        trainer.step_manager.move_history = []
+        trainer.game.get_board_state_dict.return_value = {"board": []}
+        trainer.last_gradient_norm = 0.0
+
+        result = _build_training_view(trainer)
+        assert result["policy_insight"] is None

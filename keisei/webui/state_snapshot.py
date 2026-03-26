@@ -235,7 +235,12 @@ def extract_policy_insight(
             for prob, idx in top3:
                 try:
                     usi = policy_mapper.action_idx_to_usi_move(int(idx))
-                except (IndexError, ValueError):
+                except (IndexError, ValueError) as e:
+                    import logging
+
+                    logging.getLogger(__name__).debug(
+                        "Failed to convert action index %d to USI: %s", idx, e
+                    )
                     usi = f"idx:{idx}"
                 actions.append({"action": usi, "prob": prob})
             square_actions[key] = actions

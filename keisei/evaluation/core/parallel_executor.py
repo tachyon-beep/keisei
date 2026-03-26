@@ -78,7 +78,7 @@ class ParallelGameExecutor:
 
         Uses a factory (not a pre-built coroutine) so cleanup is automatic:
         asyncio.run() always finalizes the coroutine it runs.  On timeout,
-        the executor thread is interrupted via shutdown(cancel_futures=True).
+        the future is cancelled and TimeoutError re-raised.
         """
         try:
             asyncio.get_running_loop()

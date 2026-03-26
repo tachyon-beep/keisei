@@ -175,6 +175,9 @@ class PPOAgent:
         # log_prob and value (no backprop needed), and eval never needs
         # gradients.  This avoids building a discarded computation graph
         # that wastes GPU memory on constrained hardware.
+        # Note: model stays in its current mode (training for rollouts,
+        # eval when called from evaluation) — dropout/batchnorm behave
+        # accordingly.  Mode is set by the caller (line 149).
         with torch.no_grad():
             if is_training:
                 (

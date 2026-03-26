@@ -253,3 +253,38 @@ class TestStreamlitProcessLiveness:
         build_snapshot.assert_called_once()
         write_snapshot.assert_called_once()
         assert mgr._process is None
+
+
+# ---------------------------------------------------------------------------
+# _compute_heatmap_overlay pure function
+# ---------------------------------------------------------------------------
+
+
+class TestComputeHeatmapOverlay:
+    """Log-scale heatmap normalization."""
+
+    def test_all_zeros_returns_zeros(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        result = _compute_heatmap_overlay(heatmap)
+        assert all(v == 0.0 for row in result for v in row)
+
+    def test_max_value_normalizes_to_one(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        heatmap[4][4] = 0.5
+        heatmap[0][0] = 0.01  # Need two distinct values to get a range
+        result = _compute_heatmap_overlay(heatmap)
+        assert result[4][4] == 1.0  # Max value → 1.0
+        assert result[0][0] >= 0.0  # Min nonzero value → floor of log range
+
+    def test_output_range_is_zero_to_one(self):
+        from keisei.webui.streamlit_app import _compute_heatmap_overlay
+
+        heatmap = [[float(r * 9 + c) / 81 for c in range(9)] for r in range(9)]
+        result = _compute_heatmap_overlay(heatmap)
+        for row in result:
+            for v in row:
+                assert 0.0 <= v <= 1.0

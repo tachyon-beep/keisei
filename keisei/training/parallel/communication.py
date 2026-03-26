@@ -253,7 +253,7 @@ class WorkerCommunicator:
                 try:
                     self._drain_queue(q)
                 except (OSError, ValueError) as e:
-                    logger.debug("Queue drain during cleanup failed: %s", e)
+                    logger.warning("Queue drain during cleanup failed: %s", e)
                 q.close()
 
         logger.info("Worker communication cleanup complete")
