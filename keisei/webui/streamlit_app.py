@@ -13,9 +13,10 @@ Usage:
 import argparse
 import base64
 import json
+import math
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -111,12 +112,47 @@ def _piece_aria_label(piece: Optional[Dict[str, Any]]) -> str:
     return f"{piece['color']} {ptype}"
 
 
-def render_board(board_state: Dict[str, Any]) -> None:
+def _compute_heatmap_overlay(
+    heatmap: List[List[float]],
+) -> List[List[float]]:
+    """Normalize a 9x9 probability heatmap to [0, 1] using log scale.
+
+    Log scale makes the full distribution visible when action
+    probabilities are extremely peaked (common in Shogi PPO).
+    """
+    epsilon = 1e-10
+    flat = [v for row in heatmap for v in row if v > epsilon]
+    if not flat:
+        return [[0.0] * 9 for _ in range(9)]
+    log_min = math.log(min(flat) + epsilon)
+    log_max = math.log(max(flat) + epsilon)
+    log_range = log_max - log_min if log_max > log_min else 1.0
+
+    result = []
+    for row in heatmap:
+        out_row = []
+        for v in row:
+            if v <= epsilon:
+                out_row.append(0.0)
+            else:
+                norm = (math.log(v + epsilon) - log_min) / log_range
+                out_row.append(max(0.0, min(1.0, norm)))
+        result.append(out_row)
+    return result
+
+
+def render_board(
+    board_state: Dict[str, Any],
+    heatmap: Optional[List[List[float]]] = None,
+) -> None:
     """Render the shogi board as a semantic HTML table with SVG pieces.
 
     Uses ``role="table"`` with proper ``<th>`` headers, ``alt`` text on
     piece images, and ``aria-label`` on each cell.  Row labels use
     numeric 1-9 (standard Shogi notation), not alphabetic.
+
+    When *heatmap* is provided (9x9 raw probability sums), a log-scaled
+    orange overlay is rendered on each square.
     """
     board = board_state.get("board", [])
     if not board:
@@ -126,6 +162,9 @@ def render_board(board_state: Dict[str, Any]) -> None:
     move_count = board_state.get("move_count", 0)
     current_player = board_state.get("current_player", "unknown")
     cell_size = 48
+
+    # Pre-compute heatmap overlay if provided
+    overlay = _compute_heatmap_overlay(heatmap) if heatmap else None
 
     # --- Column headers ---
     header_cells = '<th scope="col" aria-hidden="true"></th>'
@@ -150,6 +189,15 @@ def render_board(board_state: Dict[str, Any]) -> None:
             bg = "#f5deb3" if (r + c) % 2 == 0 else "#deb887"
             aria = _piece_aria_label(piece)
             cell_label = f"{file_num}-{rank}: {aria}"
+
+            # Heatmap overlay: blend orange over the cell bg
+            heat_style = ""
+            if overlay and overlay[r][c] > 0.01:
+                alpha = overlay[r][c] * 0.5
+                heat_style = (
+                    f"box-shadow:inset 0 0 0 100px "
+                    f"rgba(255,140,0,{alpha:.2f});"
+                )
 
             cell_content = ""
             if piece is not None:
@@ -179,8 +227,9 @@ def render_board(board_state: Dict[str, Any]) -> None:
                 f'<td aria-label="{cell_label}"'
                 f' style="width:{cell_size}px;height:{cell_size}px;'
                 f"background:{bg};text-align:center;"
-                f'vertical-align:middle;'
-                f'border:1px solid #8b7355;">'
+                f"vertical-align:middle;"
+                f"border:1px solid #8b7355;"
+                f'{heat_style}">'
                 f"{cell_content}</td>"
             )
         body_rows.append(f"<tr>{row_header}{cells}</tr>")
@@ -345,6 +394,85 @@ def render_move_log(step_info: Optional[Dict]) -> None:
     st.components.v1.html(html, height=min(len(moves) * 20 + 40, 340))
 
 
+# ---------------------------------------------------------------------------
+# Policy insight renderers
+# ---------------------------------------------------------------------------
+
+
+def render_position_assessment(insight: Dict[str, Any]) -> None:
+    """Render the Position Assessment group: V(s) + confidence."""
+    st.caption("Position Assessment")
+
+    # Value estimate with directional label
+    v = insight.get("value_estimate", 0.0)
+    if v > 0.05:
+        label = f"V(s): +{v:.3f} (Black +)"
+        color = "#006400"
+    elif v < -0.05:
+        label = f"V(s): {v:.3f} (White +)"
+        color = "#8b0000"
+    else:
+        label = f"V(s): {v:.3f} (Even)"
+        color = "#555555"
+    st.markdown(
+        f'<span style="font-size:18px;font-weight:bold;'
+        f'color:{color};">{label}</span>',
+        unsafe_allow_html=True,
+    )
+
+    # Confidence meter (entropy-derived)
+    entropy = insight.get("action_entropy", 0.0)
+    # Normalize: max entropy for 13527 actions is ln(13527) ~ 9.51
+    max_entropy = 9.51
+    confidence = max(0.0, 1.0 - entropy / max_entropy)
+    conf_pct = int(confidence * 100)
+    conf_label = "Focused" if confidence > 0.7 else (
+        "Moderate" if confidence > 0.3 else "Uncertain"
+    )
+    st.progress(confidence, text=f"Confidence: {conf_pct}% ({conf_label})")
+
+
+def render_top_actions(insight: Dict[str, Any]) -> None:
+    """Render the Action Distribution group: top-K horizontal bars."""
+    st.caption("Action Distribution")
+    top_actions = insight.get("top_actions", [])
+    if not top_actions:
+        st.text("No action data")
+        return
+
+    max_prob = top_actions[0]["prob"] if top_actions else 1.0
+    lines = []
+    for act in top_actions:
+        action_str = act["action"]
+        prob = act["prob"]
+        pct = prob * 100
+        # Bar width proportional to max action
+        bar_w = int((prob / max_prob) * 120) if max_prob > 0 else 0
+        bar = (
+            f'<span style="display:inline-block;width:{bar_w}px;'
+            f'height:12px;background:#ff8c00;border-radius:2px;'
+            f'vertical-align:middle;"></span>'
+        )
+        lines.append(
+            f'<span style="font-family:monospace;font-size:13px;">'
+            f"{action_str:<8s} {pct:5.1f}%  {bar}</span>"
+        )
+    html = "<br>".join(lines)
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_policy_insight_panel(
+    insight: Optional[Dict[str, Any]],
+) -> None:
+    """Render the full policy insight right panel."""
+    if not insight:
+        return
+
+    render_position_assessment(insight)
+    st.divider()
+    render_top_actions(insight)
+
+
 def render_buffer_bar(buffer_info: Optional[Dict]) -> None:
     """Render experience buffer fill level."""
     if not buffer_info:
@@ -474,20 +602,30 @@ def render_metrics_tab(env: EnvelopeParser) -> None:
 
 
 def render_game_tab(env: EnvelopeParser) -> None:
-    """Render the Game tab: board, hands, game status, move stats."""
+    """Render the Game tab: board, policy insight, game status, moves."""
     board_state = env.board_state
     step_info = env.step_info
     metrics = env.metrics
+    insight = env.policy_insight
 
     if not board_state:
         st.info("Waiting for first episode...")
         return
 
-    board_col, status_col = st.columns([2, 3])
+    # Heatmap overlay — controlled by sidebar toggle
+    heatmap = None
+    if (
+        st.session_state.get("show_heatmap", False)
+        and insight
+    ):
+        heatmap = insight.get("action_heatmap")
+
+    board_col, insight_col = st.columns([2, 3])
     with board_col:
-        render_board(board_state)
+        render_board(board_state, heatmap=heatmap)
         render_hands(board_state)
-    with status_col:
+    with insight_col:
+        render_policy_insight_panel(insight)
         render_game_status(board_state)
         render_move_log(step_info)
         if step_info:
@@ -502,12 +640,14 @@ def render_game_tab(env: EnvelopeParser) -> None:
             st.text(f"Drops:    Black {sd} / White {gd}")
             st.text(f"Promos:   Black {sp} / White {gp}")
 
-        # Hot squares (text fallback — heatmap overlay in Phase 3)
-        hot_squares = metrics.get("hot_squares", [])
-        if hot_squares:
-            st.caption(
-                f"Hot Squares: {', '.join(str(s) for s in hot_squares)}"
-            )
+        # Hot squares (text when no heatmap data)
+        if not insight:
+            hot_squares = metrics.get("hot_squares", [])
+            if hot_squares:
+                st.caption(
+                    "Hot Squares: "
+                    + ", ".join(str(s) for s in hot_squares)
+                )
 
 
 def render_lineage_tab(env: EnvelopeParser) -> None:
@@ -552,6 +692,7 @@ def main() -> None:
     # --- Sidebar controls (outside the fragment — rendered once) ---
     with st.sidebar:
         st.toggle("Auto-refresh", value=True, key="auto_refresh")
+        st.toggle("Show heatmap", value=False, key="show_heatmap")
 
     st.title("Keisei Training Dashboard")
 

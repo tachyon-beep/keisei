@@ -511,6 +511,12 @@ webui:
   # State file update frequency in Hz
   update_rate_hz: 2.0
 
+  # Policy insight: extract action probabilities for heatmap overlay
+  # Requires a torch.no_grad() forward pass per snapshot, gated on
+  # training step boundaries (skipped during PPO updates)
+  policy_insight: false
+  policy_insight_top_k: 10
+
 
 # Access URL (when enabled):
 # - Dashboard: http://YOUR_SERVER_IP:8501

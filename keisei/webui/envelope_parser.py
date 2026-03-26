@@ -90,6 +90,11 @@ class EnvelopeParser:
         t = self.training
         return t.get("model_info", {}) if t else {}
 
+    @property
+    def policy_insight(self) -> Optional[Dict[str, Any]]:
+        t = self.training
+        return t.get("policy_insight") if t else None
+
     # -- optional views ----------------------------------------------------
 
     @property

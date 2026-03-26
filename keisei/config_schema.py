@@ -624,6 +624,14 @@ class WebUIConfig(BaseModel):
     update_rate_hz: float = Field(
         2.0, description="State file update frequency in Hz"
     )
+    policy_insight: bool = Field(
+        False,
+        description="Include policy action probabilities in dashboard state",
+    )
+    policy_insight_top_k: int = Field(
+        10,
+        description="Number of top actions to surface in policy insight panel",
+    )
 
 
 class LineageConfig(BaseModel):

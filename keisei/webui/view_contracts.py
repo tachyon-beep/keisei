@@ -180,6 +180,30 @@ class ModelInfo(TypedDict):
     gradient_norm: float
 
 
+class TopAction(TypedDict):
+    """A single high-probability action from the policy head."""
+
+    action: str  # USI notation, e.g. "7g7f" or "P*5e"
+    prob: float  # probability in [0, 1]
+
+
+class PolicyInsight(TypedDict, total=False):
+    """Per-square action probability summary for the current board state.
+
+    Optional — only populated when ``webui.policy_insight`` is enabled
+    and the agent has produced an observation.  ``None`` when unavailable
+    (between episodes, during PPO updates, or when disabled).
+
+    The ``action_heatmap`` contains raw probability sums per destination
+    square.  The renderer applies log-scale normalization for display.
+    """
+
+    action_heatmap: List[List[float]]  # 9x9, each cell = prob sum
+    top_actions: List[TopAction]  # top-K actions with USI labels
+    value_estimate: float  # V(s), typically in [-1, 1]
+    action_entropy: float  # entropy of action distribution
+
+
 # ---------------------------------------------------------------------------
 # Per-view state schemas
 # ---------------------------------------------------------------------------
@@ -196,6 +220,8 @@ class TrainingViewState(TypedDict):
         - ``board_state`` is None between episodes.
         - ``step_info`` is None before the first episode starts.
         - ``buffer_info`` is None before the experience buffer is created.
+        - ``policy_insight`` is None between episodes, during PPO updates,
+          or when ``webui.policy_insight`` is disabled.
     """
 
     board_state: Optional[BoardState]
@@ -203,6 +229,7 @@ class TrainingViewState(TypedDict):
     step_info: Optional[StepInfo]
     buffer_info: Optional[BufferInfo]
     model_info: ModelInfo
+    policy_insight: NotRequired[Optional[PolicyInsight]]
 
 
 class LeagueViewState(TypedDict):

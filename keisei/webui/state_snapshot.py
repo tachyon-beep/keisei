@@ -127,6 +127,102 @@ def extract_buffer_info(experience_buffer: Any) -> Dict[str, int]:
     }
 
 
+def extract_policy_insight(
+    ppo_agent: Any,
+    observation: Any,
+    policy_mapper: Any,
+    top_k: int = 10,
+) -> Optional[Dict[str, Any]]:
+    """Extract policy insight from the agent's current observation.
+
+    Performs a ``torch.no_grad()`` forward pass to get action probabilities
+    and the critic's value estimate.  Returns ``None`` on any error so that
+    snapshot production is never interrupted.
+
+    The ``action_heatmap`` is a 9x9 grid where each cell holds the sum of
+    action probabilities whose destination square is that cell.
+    """
+    try:
+        import torch
+
+        if observation is None or ppo_agent is None:
+            return None
+
+        model = ppo_agent.model
+        device = ppo_agent.device
+
+        obs_tensor = torch.as_tensor(
+            observation, dtype=torch.float32, device=device
+        ).unsqueeze(0)
+
+        # Observation normalization (mirrors PPOAgent.select_action)
+        from torch.amp import GradScaler
+
+        scaler = getattr(ppo_agent, "scaler", None)
+        if scaler is not None and not isinstance(scaler, GradScaler):
+            if hasattr(scaler, "transform"):
+                obs_tensor = scaler.transform(obs_tensor)
+            else:
+                obs_tensor = scaler(obs_tensor)
+
+        with torch.no_grad():
+            model.eval()
+            policy_logits, value = model(obs_tensor)
+            model.train()
+
+        # Softmax over the full action space
+        probs = torch.softmax(policy_logits.squeeze(0), dim=0)
+        value_estimate = float(value.item())
+
+        # Action entropy
+        log_probs = torch.log(probs + 1e-10)
+        action_entropy = float(-(probs * log_probs).sum().item())
+
+        probs_np = probs.cpu().numpy()
+
+        # Build 9x9 heatmap: sum of probs per destination square
+        heatmap = [[0.0] * 9 for _ in range(9)]
+        idx_to_move = policy_mapper.idx_to_move
+        for idx in range(len(idx_to_move)):
+            p = float(probs_np[idx])
+            if p < 1e-8:
+                continue
+            move = idx_to_move[idx]
+            # Destination square is at indices [2], [3]
+            to_r, to_c = move[2], move[3]
+            if (
+                isinstance(to_r, int)
+                and isinstance(to_c, int)
+                and 0 <= to_r < 9
+                and 0 <= to_c < 9
+            ):
+                heatmap[to_r][to_c] += p
+
+        # Top-K actions
+        top_indices = probs_np.argsort()[-top_k:][::-1]
+        top_actions = []
+        for idx in top_indices:
+            p = float(probs_np[idx])
+            if p < 1e-8:
+                break
+            try:
+                usi = policy_mapper.action_idx_to_usi_move(int(idx))
+            except (IndexError, ValueError):
+                usi = f"idx:{idx}"
+            top_actions.append({"action": usi, "prob": p})
+
+        return {
+            "action_heatmap": heatmap,
+            "top_actions": top_actions,
+            "value_estimate": value_estimate,
+            "action_entropy": action_entropy,
+        }
+
+    except Exception:
+        # Non-fatal — snapshot production continues without insight
+        return None
+
+
 def _resolve_mode(trainer: Any) -> str:
     """Derive the broadcast mode from the trainer's config.
 
@@ -173,6 +269,26 @@ def _build_training_view(trainer: Any) -> Dict[str, Any]:
     training["model_info"] = {
         "gradient_norm": getattr(trainer, "last_gradient_norm", 0.0),
     }
+
+    # Policy insight (optional — gated on config and training state)
+    training["policy_insight"] = None
+    config = getattr(trainer, "config", None)
+    webui_cfg = getattr(config, "webui", None) if config else None
+    insight_enabled = getattr(webui_cfg, "policy_insight", False)
+    is_processing = training.get("metrics", {}).get("processing", False)
+
+    if insight_enabled and not is_processing:
+        ppo_agent = getattr(trainer, "ppo_agent", None)
+        step_mgr = getattr(trainer, "step_manager", None)
+        obs = getattr(step_mgr, "_latest_obs_for_snapshot", None)
+        env_mgr = getattr(trainer, "env_manager", None)
+        mapper = getattr(env_mgr, "policy_mapper", None)
+        top_k = getattr(webui_cfg, "policy_insight_top_k", 10)
+
+        if ppo_agent is not None and mapper is not None:
+            training["policy_insight"] = extract_policy_insight(
+                ppo_agent, obs, mapper, top_k=top_k
+            )
 
     return training
 

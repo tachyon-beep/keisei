@@ -111,11 +111,14 @@ class TestEnvelopeStructure:
         snapshot = build_snapshot(trainer)
         assert snapshot["active_views"] == ["training"]
 
-    def test_training_has_five_sub_keys(self):
+    def test_training_has_expected_sub_keys(self):
         trainer = _stub_trainer()
         snapshot = build_snapshot(trainer)
         training = snapshot["training"]
-        expected = {"board_state", "metrics", "step_info", "buffer_info", "model_info"}
+        expected = {
+            "board_state", "metrics", "step_info",
+            "buffer_info", "model_info", "policy_insight",
+        }
         assert expected == set(training.keys())
 
     def test_validates_against_contract(self):
