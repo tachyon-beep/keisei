@@ -218,6 +218,13 @@ def render_board(
                 hg = int(255 * (1 - h * 0.9))
                 hb = int(255 * (1 - h * 0.7))
                 bg = f"rgb({hr},{hg},{hb})"
+                # Subtle diagonal texture on "dark" squares to keep grid visible
+                if (r + c) % 2 != 0:
+                    zone_tint = (
+                        "background-image:repeating-linear-gradient("
+                        "135deg,rgba(0,0,0,0.06),rgba(0,0,0,0.06) 1px,"
+                        "transparent 1px,transparent 4px);"
+                    )
 
             cell_content = ""
             if piece is not None:

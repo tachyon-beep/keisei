@@ -134,14 +134,20 @@ export default function(component) {
 
         // Heatmap: solid background replacement, white-to-navy scale.
         // No transparency — directly overrides the cell background colour.
+        // Subtle texture preserves the grid pattern: diagonal lines on
+        // "dark" squares, no texture on "light" squares.
         var heatStyle = "";
         if (overlay && overlay[r][c] > 0.01) {
           var h = overlay[r][c];  // 0..1
-          // White (#ffffff) at 0 → deep navy (#001a4d) at 1
           var hr = Math.round(255 * (1 - h));
           var hg = Math.round(255 * (1 - h * 0.9));
           var hb = Math.round(255 * (1 - h * 0.7));
           bg = "rgb(" + hr + "," + hg + "," + hb + ")";
+          // "Dark" squares get fine diagonal lines to maintain grid feel
+          if ((r + c) % 2 !== 0) {
+            zoneTint = "background-image:repeating-linear-gradient(" +
+              "135deg,rgba(0,0,0,0.06),rgba(0,0,0,0.06) 1px,transparent 1px,transparent 4px);";
+          }
         }
 
         var tabIdx = (r === focusRow && c === focusCol) ? "0" : "-1";
