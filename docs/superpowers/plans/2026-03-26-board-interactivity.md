@@ -511,7 +511,7 @@ class TestBoardComponentImport:
         assert callable(shogi_board)
 
     def test_shogi_board_accepts_expected_args(self):
-        """shogi_board accepts board_state, heatmap, square_actions, piece_images, key."""
+        """shogi_board accepts board_state, heatmap, square_actions, piece_images, selected_square, key."""
         import inspect
         from keisei.webui.board_component import shogi_board
 
@@ -521,6 +521,7 @@ class TestBoardComponentImport:
         assert "heatmap" in param_names
         assert "square_actions" in param_names
         assert "piece_images" in param_names
+        assert "selected_square" in param_names
         assert "key" in param_names
 ```
 
@@ -558,6 +559,7 @@ def shogi_board(
     heatmap: Optional[List[List[float]]] = None,
     square_actions: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     piece_images: Optional[Dict[str, str]] = None,
+    selected_square: Optional[Dict[str, int]] = None,
     key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Render the shogi board with click-to-inspect support.
@@ -573,6 +575,9 @@ def shogi_board(
         Per-square top-3 actions keyed by ``"r,c"`` (0-indexed).
     piece_images : dict | None
         Mapping of piece type keys (e.g. ``"pawn_black"``) to base64 data URIs.
+    selected_square : dict | None
+        Currently selected square ``{"row": int, "col": int}`` from session
+        state — used to initialize roving tabindex at the selected cell on mount.
     key : str | None
         Streamlit widget key for this component instance.
 
@@ -590,6 +595,7 @@ def shogi_board(
         heatmap=heatmap,
         square_actions=square_actions or {},
         piece_images=piece_images or {},
+        selected_square=selected_square,
         key=key,
         default=None,
     )
@@ -649,7 +655,7 @@ Replace the placeholder `keisei/webui/board_component/frontend/index.html` with 
 - Focus indicator: `td[role="gridcell"]:focus { outline: 2px dashed #888; outline-offset: -2px; }`
 - Selected indicator: `.selected { outline: 3px solid #2a52b0; outline-offset: -3px; background-color: rgba(42,82,176,0.15) !important; }`
 - Heatmap overlay: `box-shadow: inset 0 0 0 100px rgba(255,140,0,ALPHA)`
-- Dark theme: `@media (prefers-color-scheme: dark) { ... }`
+- Dark theme: `@media (prefers-color-scheme: dark) { table[role="grid"] th { color: #e0e0e0; } }` — note: must use `role="grid"` selector, NOT `role="table"` (the old `render_board()` used `role="table"`)
 
 **JS (in `<script>` tag):**
 
@@ -665,11 +671,12 @@ Replace the placeholder `keisei/webui/board_component/frontend/index.html` with 
    - Apply heatmap overlay using log-scale normalization (port `_compute_heatmap_overlay` logic)
    - Apply selection highlight if a cell is selected
    - Set up event listeners
-   - Update grid `aria-label` with current move/player info
+   - Update grid `aria-label` on each render: `"Shogi board position, move {N}, {player} to play. Black (Sente) plays from bottom, White (Gote) from top."` — preserves orientation guidance from the original `render_board()` caption
    - Call `Streamlit.setFrameHeight(FIXED_HEIGHT)` with fixed height (48 * 10 + 40 = 520)
 
 3. **Roving tabindex:**
-   - Track `currentFocusRow` and `currentFocusCol` (default 0,0)
+   - Track `currentFocusRow` and `currentFocusCol`
+   - On mount: if `args.selected_square` exists (passed from Python session state), initialize focus at that cell; otherwise default to (0,0)
    - Only that cell gets `tabindex="0"`; all others get `tabindex="-1"`
    - On arrow key navigation, shift `tabindex` values
 
@@ -720,7 +727,7 @@ Replace the placeholder `keisei/webui/board_component/frontend/index.html` with 
 7. **Board rendering function:**
    - Port the Python `render_board()` HTML generation to JS
    - Use `piece_images[key]` for SVG data URIs (key format: `"{type}_{color}"`, e.g., `"pawn_black"`)
-   - Build aria-labels: `"{file}-{rank}: {piece description}"` where file = 9 - col, rank = row + 1
+   - Build aria-labels: `"{file}-{rank}: {piece description}"` where file = 9 - col, rank = row + 1. **Note:** Cell aria-labels use "7-1" geographic format; announcement text (Task 7) uses compact "76" — this is intentional per spec Decision #9. Do not "fix" the mismatch.
 
 - [ ] **Step 2: Test manually in demo mode**
 
@@ -822,18 +829,24 @@ def render_selected_square_panel(
         st.caption("Probabilities are global (share of all possible moves)")
 
     # Screen reader announcement (WCAG 4.1.3)
-    if actions:
-        announce = f"Selected {square_label}. Top action: {actions[0]['action']} {actions[0]['prob']*100:.1f}%."
-    else:
-        announce = f"Selected {square_label}. No actions target this square."
+    # Gate on selection change — only announce when the selected square
+    # differs from the last announcement. Without this gate, the aria-live
+    # div fires on every 2s fragment re-render, spamming screen reader users.
+    announce_key = f"{row},{col}"
+    if st.session_state.get("last_announced_square") != announce_key:
+        st.session_state.last_announced_square = announce_key
+        if actions:
+            announce = f"Selected {square_label}. Top action: {actions[0]['action']} {actions[0]['prob']*100:.1f}%."
+        else:
+            announce = f"Selected {square_label}. No actions target this square."
 
-    st.markdown(
-        f'<div role="status" aria-live="polite" '
-        f'style="position:absolute;width:1px;height:1px;'
-        f'overflow:hidden;clip:rect(0,0,0,0);">'
-        f"{announce}</div>",
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            f'<div role="status" aria-live="polite" '
+            f'style="position:absolute;width:1px;height:1px;'
+            f'overflow:hidden;clip:rect(0,0,0,0);">'
+            f"{announce}</div>",
+            unsafe_allow_html=True,
+        )
 ```
 
 - [ ] **Step 2: Commit**
@@ -911,6 +924,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
             heatmap=heatmap,
             square_actions=square_actions,
             piece_images=_PIECE_SVG_CACHE,
+            selected_square=st.session_state.get("selected_square"),
             key="main_board",
         )
 
@@ -924,6 +938,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
                 }
             elif event_type == "deselect":
                 st.session_state.selected_square = None
+                st.session_state.last_announced_square = None
             elif event_type == "focus":
                 st.session_state.board_focused = True
             elif event_type == "blur":
@@ -1140,16 +1155,24 @@ Run: `streamlit run keisei/webui/streamlit_app.py`
 Full checklist:
 - [ ] Board renders with correct pieces, promotion zones, coordinates
 - [ ] Heatmap toggle works
-- [ ] Click selects square, blue highlight + fill appears
+- [ ] Click selects square, blue highlight (solid `#2a52b0` + fill) appears
 - [ ] Detail panel shows below Action Distribution with top-3 actions
 - [ ] Click same square deselects, panel disappears
-- [ ] Arrow keys navigate with dashed focus indicator
-- [ ] Enter/Space toggles selection
+- [ ] Arrow keys navigate with dashed focus indicator (`2px dashed #888`)
+- [ ] **Focus/selection distinction:** Select a cell (Enter), then arrow away. Selected cell keeps solid blue outline + fill; navigated cell shows dashed focus ring only.
+- [ ] Enter/Space toggles selection (select → deselect on same cell)
 - [ ] Escape clears selection
-- [ ] Tab exits the board
+- [ ] Tab exits the board immediately (does NOT cycle through 81 cells)
+- [ ] Shift-Tab also exits the board
 - [ ] "Paused — inspecting board" appears when board is focused
-- [ ] Switching to Metrics tab resumes auto-refresh
-- [ ] Screen reader announcement on selection (test with browser dev tools)
+- [ ] Switching to Metrics tab resumes auto-refresh (focus-pause clears)
+- [ ] Move counter change clears selection
+- [ ] Episode boundary (board disappears between episodes) clears selection
+- [ ] Detail panel shows "Policy insight not available..." when insight is None
+- [ ] **DOM verification:** Open DevTools → inspect board table → verify `role="grid"` on table, `role="gridcell"` on cells (NOT `role="table"`)
+- [ ] **Dark theme:** Toggle prefers-color-scheme → verify column headers are readable (`#e0e0e0`)
+- [ ] **Screen reader:** Open browser Accessibility panel. Select a square → verify announcement fires exactly once ("Selected 76. Top action: ..."). Wait 4+ seconds → verify it does NOT repeat on re-render. Select a different square → verify new announcement fires.
+- [ ] Blur debounce: rapidly arrow-navigate between cells → verify no pause/unpause flicker
 
 - [ ] **Step 5: Final commit if any cleanup was needed**
 
