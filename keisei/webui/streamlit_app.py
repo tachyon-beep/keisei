@@ -14,12 +14,14 @@ import argparse
 import base64
 import json
 import math
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
+from keisei.webui.board_component import shogi_board
 from keisei.webui.envelope_parser import EnvelopeParser
 
 # ---------------------------------------------------------------------------
@@ -748,6 +750,8 @@ def _render_header_metrics(env: EnvelopeParser) -> None:
 
 def render_metrics_tab(env: EnvelopeParser) -> None:
     """Render the Metrics tab: training curves, win rates, buffer."""
+    # Clear board focus when not on Game tab (prevents stuck focus-pause)
+    st.session_state.board_focused = False
     metrics = env.metrics
     model_info = env.model_info
 
@@ -775,6 +779,13 @@ def render_game_tab(env: EnvelopeParser) -> None:
         st.info("Waiting for first episode...")
         return
 
+    # Selected square invalidation: clear when move counter changes
+    prev_move = st.session_state.get("last_move_count")
+    curr_move = board_state.get("move_count", 0)
+    if prev_move is not None and prev_move != curr_move:
+        st.session_state.selected_square = None
+    st.session_state.last_move_count = curr_move
+
     # Skip-to-board link (accessibility: Phase 4, item 30)
     st.markdown(
         '<a href="#shogi-board" style="font-size:0;position:absolute;">'
@@ -784,18 +795,64 @@ def render_game_tab(env: EnvelopeParser) -> None:
 
     # Heatmap overlay — controlled by sidebar toggle
     heatmap = None
-    if (
-        st.session_state.get("show_heatmap", False)
-        and insight
-    ):
+    if st.session_state.get("show_heatmap", False) and insight:
         heatmap = insight.get("action_heatmap")
+
+    # Square actions for the component and panel
+    square_actions = insight.get("square_actions", {}) if insight else {}
 
     board_col, insight_col = st.columns([2, 3])
     with board_col:
-        render_board(board_state, heatmap=heatmap)
+        # Custom bidirectional board component with fallback
+        try:
+            board_result = shogi_board(
+                board_state=board_state,
+                heatmap=heatmap,
+                square_actions=square_actions,
+                piece_images=_PIECE_SVG_CACHE,
+                selected_square=st.session_state.get("selected_square"),
+                key="main_board",
+            )
+        except Exception:
+            # Fallback to non-interactive board rendering
+            render_board(board_state, heatmap=heatmap)
+            board_result = None
+
+        # Process component interaction events
+        if board_result:
+            event_type = board_result.get("type")
+            if event_type == "select":
+                st.session_state.selected_square = {
+                    "row": board_result["row"],
+                    "col": board_result["col"],
+                }
+            elif event_type == "deselect":
+                st.session_state.selected_square = None
+                st.session_state.last_announced_square = None
+            elif event_type == "focus":
+                if not st.session_state.get("board_focused", False):
+                    st.session_state.board_focused = True
+                    st.session_state.board_focus_timestamp = time.time()
+            elif event_type == "blur":
+                st.session_state.board_focused = False
+
         render_hands(board_state)
+
     with insight_col:
         render_policy_insight_panel(insight)
+
+        # Selected square detail panel
+        selected = st.session_state.get("selected_square")
+        if selected:
+            st.divider()
+            render_selected_square_panel(
+                selected=selected,
+                board_state=board_state,
+                square_actions=square_actions,
+                heatmap=heatmap,
+                insight_available=insight is not None,
+            )
+
         render_game_status(board_state)
         render_move_log(step_info)
         if step_info:
@@ -822,6 +879,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
 
 def render_lineage_tab(env: EnvelopeParser) -> None:
     """Render the Lineage tab: generation tree, Elo, events."""
+    st.session_state.board_focused = False
     render_lineage_panel(env)
 
 
@@ -873,13 +931,24 @@ def main() -> None:
     # captured once at definition time, so we cannot change it dynamically.
     @st.fragment(run_every=timedelta(seconds=2))
     def _live_data_section() -> None:
-        if not st.session_state.get("auto_refresh", True):
+        # Timeout fallback: auto-clear stuck board_focused after 30s
+        if st.session_state.get("board_focused", False):
+            last_focus_time = st.session_state.get("board_focus_timestamp", 0)
+            if time.time() - last_focus_time > 30:
+                st.session_state.board_focused = False
+
+        paused_by_toggle = not st.session_state.get("auto_refresh", True)
+        paused_by_focus = st.session_state.get("board_focused", False)
+
+        if paused_by_toggle or paused_by_focus:
             # Paused — render from cached state, skip disk read
             cached = st.session_state.get("last_state")
             if cached is None:
                 st.info("Paused. No cached state available.")
                 return
             env = EnvelopeParser(cached)
+            if paused_by_focus:
+                st.info("Paused — inspecting board")
             render_stale_warning(env)
             _render_dashboard_content(env)
         else:
@@ -890,6 +959,11 @@ def main() -> None:
 
             env = EnvelopeParser(state)
             st.session_state.last_state = state
+
+            # Clear selection and focus when board disappears between episodes
+            if env.board_state is None:
+                st.session_state.selected_square = None
+                st.session_state.last_move_count = None
 
             render_stale_warning(env)
             _render_dashboard_content(env)
