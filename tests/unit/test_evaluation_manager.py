@@ -82,8 +82,8 @@ class TestInMemoryEvalNarrowedExceptionScope:
             await manager.evaluate_current_agent_in_memory(agent)
 
     @pytest.mark.asyncio
-    async def test_model_mode_restored_on_success(self):
-        """Model training mode is restored after successful in-memory eval."""
+    async def test_model_mode_restored_on_fallback(self):
+        """Model training mode is restored after ValueError fallback."""
         manager = _make_manager()
         manager.enable_in_memory_eval = True
         manager.model_weight_manager = MagicMock()
@@ -92,11 +92,31 @@ class TestInMemoryEvalNarrowedExceptionScope:
 
         agent = MagicMock()
         agent.model.training = True
-        # ValueError triggers fallback, which also exercises finally block
         manager.model_weight_manager.extract_agent_weights.side_effect = ValueError("no weights")
         manager.evaluate_current_agent_async = AsyncMock(return_value=MagicMock())
 
         await manager.evaluate_current_agent_in_memory(agent)
+        agent.model.train.assert_called_with(True)
+
+    @pytest.mark.asyncio
+    async def test_model_mode_restored_on_clean_success(self):
+        """Model training mode is restored after a fully successful in-memory eval."""
+        manager = _make_manager()
+        manager.enable_in_memory_eval = True
+        manager.model_weight_manager = MagicMock()
+        manager.opponent_pool = MagicMock()
+        manager.opponent_pool.sample.return_value = "/fake/opponent.pt"
+        manager.model_weight_manager.cache_opponent_weights.return_value = {}
+
+        agent = MagicMock()
+        agent.model.training = True
+        agent.name = "test-agent"
+
+        eval_result = MagicMock()
+        manager._run_in_memory_evaluation = AsyncMock(return_value=eval_result)
+
+        result = await manager.evaluate_current_agent_in_memory(agent)
+        assert result is eval_result
         agent.model.train.assert_called_with(True)
 
     @pytest.mark.asyncio

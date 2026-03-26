@@ -188,6 +188,20 @@ class TestPolicyInsightErrorPath:
         assert "action_heatmap" in result
         assert "square_actions" in result
 
+    def test_mismatched_legal_mask_shape_uses_unmasked(self):
+        """A legal_mask with wrong shape is silently ignored (unmasked softmax)."""
+        from keisei.webui.state_snapshot import extract_policy_insight
+
+        agent, mapper = TestSquareActionExtraction()._make_mock_agent_and_mapper()
+        obs = np.zeros((46, 9, 9), dtype=np.float32)
+        # Wrong shape: 100 instead of 13527
+        bad_mask = torch.ones(100, dtype=torch.bool)
+
+        result = extract_policy_insight(agent, obs, mapper, top_k=5, legal_mask=bad_mask)
+        # Should still produce a result using unmasked probabilities
+        assert result is not None
+        assert "action_heatmap" in result
+
 
 class TestPolicyInsightGating:
     """_build_training_view gates policy insight on config and processing state."""

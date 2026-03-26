@@ -201,7 +201,7 @@ class ParallelGameExecutor:
             task.result = result
             return result
 
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError, TimeoutError) as e:
             task.error = e
             logger.error(
                 f"Error executing game {task.task_id}: {str(e)}", exc_info=True

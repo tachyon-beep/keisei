@@ -5,10 +5,8 @@
 # Each section corresponds to a configuration class in keisei/config_schema.py
 #
 # CONFIGURATION VALIDATION:
-# - TrainingConfig: 3 validators (learning_rate > 0, lr_schedule_type validation, lr_schedule_step_on validation)
-# - EvaluationConfig: 3 validators (evaluation_interval_timesteps > 0, num_games > 0, max_moves_per_game > 0)
-# - ParallelConfig: 2 validators (num_workers > 0, batch_size > 0)
-# - Other configs: No validators (validated through Pydantic field constraints)
+# All configs use Pydantic field constraints (ge, gt, le) and model validators.
+# See config_schema.py for the definitive validation rules.
 #
 # CROSS-CONFIGURATION DEPENDENCIES:
 # - Device coordination: env.device used across training and evaluation
