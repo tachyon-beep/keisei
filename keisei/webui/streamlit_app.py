@@ -914,7 +914,28 @@ def render_game_tab(env: EnvelopeParser) -> None:
     # Square actions for the component and panel
     square_actions = insight.get("square_actions", {}) if insight else {}
 
-    board_col, insight_col, status_col = st.columns([2, 2, 2])
+    # Auto-select the hottest square if nothing is selected
+    if st.session_state.get("selected_square") is None and square_actions:
+        hottest_key = max(
+            square_actions.keys(),
+            key=lambda k: square_actions[k][0]["prob"] if square_actions[k] else 0,
+        )
+        r_hot, c_hot = hottest_key.split(",")
+        st.session_state.selected_square = {"row": int(r_hot), "col": int(c_hot)}
+
+    selected = st.session_state.get("selected_square")
+
+    detail_col, board_col, insight_col, status_col = st.columns([2, 3, 2, 2])
+
+    with detail_col:
+        if selected:
+            render_selected_square_panel(
+                selected=selected,
+                board_state=board_state,
+                square_actions=square_actions,
+                heatmap=insight.get("action_heatmap") if insight else None,
+                insight_available=insight is not None,
+            )
 
     with board_col:
         # Interactive board component (v2 API) with fallback
@@ -924,7 +945,7 @@ def render_game_tab(env: EnvelopeParser) -> None:
                 heatmap=heatmap,
                 square_actions=square_actions,
                 piece_images=_PIECE_SVG_CACHE,
-                selected_square=st.session_state.get("selected_square"),
+                selected_square=selected,
                 key="main_board",
             )
         except Exception:
@@ -935,13 +956,13 @@ def render_game_tab(env: EnvelopeParser) -> None:
         # Process events from the v2 component
         if board_event is not None:
             # Selection trigger (transient — fires once per click)
-            selection = getattr(board_event, "selection", None)
-            if selection:
-                event_type = selection.get("type")
+            sel_event = getattr(board_event, "selection", None)
+            if sel_event:
+                event_type = sel_event.get("type")
                 if event_type == "select":
                     st.session_state.selected_square = {
-                        "row": selection["row"],
-                        "col": selection["col"],
+                        "row": sel_event["row"],
+                        "col": sel_event["col"],
                     }
                 elif event_type == "deselect":
                     st.session_state.selected_square = None
@@ -958,18 +979,6 @@ def render_game_tab(env: EnvelopeParser) -> None:
 
     with insight_col:
         render_policy_insight_panel(insight)
-
-        # Selected square detail panel
-        selected = st.session_state.get("selected_square")
-        if selected:
-            st.divider()
-            render_selected_square_panel(
-                selected=selected,
-                board_state=board_state,
-                square_actions=square_actions,
-                heatmap=heatmap,
-                insight_available=insight is not None,
-            )
 
     with status_col:
         render_game_status(board_state)
