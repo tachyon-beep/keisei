@@ -103,7 +103,25 @@
         {"action": "6g6f", "prob": 0.012}
       ],
       "value_estimate": 0.23,
-      "action_entropy": 4.8
+      "action_entropy": 4.8,
+      "square_actions": {
+        "5,2": [
+          {"action": "7g7f", "prob": 0.231},
+          {"action": "6h7g", "prob": 0.042}
+        ],
+        "2,6": [
+          {"action": "3c3d", "prob": 0.084},
+          {"action": "2b3c", "prob": 0.015}
+        ],
+        "6,2": [
+          {"action": "7g7f", "prob": 0.231}
+        ],
+        "3,5": [
+          {"action": "4e3d", "prob": 0.058},
+          {"action": "5d4e", "prob": 0.041},
+          {"action": "3c3d", "prob": 0.012}
+        ]
+      }
     }
   },
   "lineage": {
