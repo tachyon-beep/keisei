@@ -190,6 +190,24 @@ def render_board(
             aria = _piece_aria_label(piece)
             cell_label = f"{file_num}-{rank}: {aria}"
 
+            # Promotion zone tint: rows 1-3 (White), rows 7-9 (Black)
+            zone_tint = ""
+            if rank <= 3:
+                zone_tint = (
+                    "background-image:linear-gradient("
+                    "rgba(100,149,237,0.08),rgba(100,149,237,0.08));"
+                )
+            elif rank >= 7:
+                zone_tint = (
+                    "background-image:linear-gradient("
+                    "rgba(220,80,80,0.08),rgba(220,80,80,0.08));"
+                )
+
+            # Promotion zone boundary: thicker borders at ranks 3/6
+            border_bottom = "1px solid #8b7355"
+            if rank == 3 or rank == 6:
+                border_bottom = "2.5px solid #6b5335"
+
             # Heatmap overlay: blend orange over the cell bg
             heat_style = ""
             if overlay and overlay[r][c] > 0.01:
@@ -224,11 +242,14 @@ def render_board(
                         f'font-weight:bold;">{label}</span>'
                     )
             cells += (
-                f'<td aria-label="{cell_label}"'
+                f'<td tabindex="0" data-row="{r}" data-col="{c}"'
+                f' aria-label="{cell_label}"'
                 f' style="width:{cell_size}px;height:{cell_size}px;'
                 f"background:{bg};text-align:center;"
                 f"vertical-align:middle;"
                 f"border:1px solid #8b7355;"
+                f"border-bottom:{border_bottom};"
+                f"{zone_tint}"
                 f'{heat_style}">'
                 f"{cell_content}</td>"
             )
@@ -240,9 +261,48 @@ def render_board(
         f"Black (Sente) plays from bottom, "
         f"White (Gote) from top."
     )
+
+    # Dark theme + keyboard navigation + focus styling
+    board_css_and_js = """
+    <style>
+    @media (prefers-color-scheme: dark) {
+      table[role="table"] th { color: #e0e0e0; }
+    }
+    td[tabindex="0"]:focus {
+      outline: 3px solid #4169e1;
+      outline-offset: -3px;
+      z-index: 1;
+      position: relative;
+    }
+    </style>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      var cells = document.querySelectorAll('td[tabindex="0"]');
+      cells.forEach(function(cell) {
+        cell.addEventListener('keydown', function(e) {
+          var row = parseInt(cell.dataset.row);
+          var col = parseInt(cell.dataset.col);
+          var nextRow = row, nextCol = col;
+          if (e.key === 'ArrowUp') nextRow = Math.max(0, row - 1);
+          else if (e.key === 'ArrowDown') nextRow = Math.min(8, row + 1);
+          else if (e.key === 'ArrowLeft') nextCol = Math.max(0, col - 1);
+          else if (e.key === 'ArrowRight') nextCol = Math.min(8, col + 1);
+          else return;
+          e.preventDefault();
+          var next = document.querySelector(
+            'td[data-row="' + nextRow + '"][data-col="' + nextCol + '"]'
+          );
+          if (next) next.focus();
+        });
+      });
+    });
+    </script>
+    """
+
     table_html = (
-        f'<table role="table" style="border-collapse:collapse;'
-        f'margin:auto;"'
+        f"{board_css_and_js}"
+        f'<table id="shogi-board" role="table"'
+        f' style="border-collapse:collapse;margin:auto;"'
         f' aria-label="{caption}">'
         f"<thead><tr>{header_cells}</tr></thead>"
         f'<tbody>{"".join(body_rows)}</tbody>'
@@ -344,7 +404,7 @@ def render_win_rate_chart(metrics: Dict[str, Any]) -> None:
 
 
 def render_game_status(board_state: Dict[str, Any]) -> None:
-    """Render current game status badge."""
+    """Render current game status badge with aria-live for updates."""
     player = board_state.get("current_player", "?").capitalize()
     move_count = board_state.get("move_count", 0)
     game_over = board_state.get("game_over", False)
@@ -352,14 +412,26 @@ def render_game_status(board_state: Dict[str, Any]) -> None:
 
     if game_over:
         if winner:
-            st.success(
+            status_text = (
                 f"Game over \u2014 {winner.capitalize()} wins! "
                 f"(Move {move_count})"
             )
+            st.success(status_text)
         else:
-            st.warning(f"Game over \u2014 Draw (Move {move_count})")
+            status_text = f"Game over \u2014 Draw (Move {move_count})"
+            st.warning(status_text)
     else:
-        st.info(f"Move {move_count} \u2014 {player} to play")
+        status_text = f"Move {move_count} \u2014 {player} to play"
+        st.info(status_text)
+
+    # Scoped aria-live region for screen reader announcements
+    st.markdown(
+        f'<div role="status" aria-live="polite" '
+        f'style="position:absolute;width:1px;height:1px;'
+        f'overflow:hidden;clip:rect(0,0,0,0);">'
+        f"{status_text}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_move_log(step_info: Optional[Dict]) -> None:
@@ -612,6 +684,13 @@ def render_game_tab(env: EnvelopeParser) -> None:
         st.info("Waiting for first episode...")
         return
 
+    # Skip-to-board link (accessibility: Phase 4, item 30)
+    st.markdown(
+        '<a href="#shogi-board" style="font-size:0;position:absolute;">'
+        "Skip to board</a>",
+        unsafe_allow_html=True,
+    )
+
     # Heatmap overlay — controlled by sidebar toggle
     heatmap = None
     if (
@@ -693,6 +772,16 @@ def main() -> None:
     with st.sidebar:
         st.toggle("Auto-refresh", value=True, key="auto_refresh")
         st.toggle("Show heatmap", value=False, key="show_heatmap")
+
+        # Export state button
+        cached = st.session_state.get("last_state")
+        if cached is not None:
+            st.download_button(
+                label="Export state",
+                data=json.dumps(cached, indent=2),
+                file_name="keisei_state.json",
+                mime="application/json",
+            )
 
     st.title("Keisei Training Dashboard")
 
