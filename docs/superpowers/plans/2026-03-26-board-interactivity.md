@@ -40,6 +40,8 @@
 
 ## Task 1: StepManager Observation Cache
 
+**Note:** The spec (Section 2) describes adding `latest_observation` to `build_snapshot()` and modifying `StreamlitManager._write_if_due()`. This is **not needed** — `_build_training_view()` in `state_snapshot.py:284` already reads `_latest_obs_for_snapshot` via `getattr(step_mgr, "_latest_obs_for_snapshot", None)`. Adding the attribute to `StepManager` is the only change needed for the data to flow through.
+
 **Files:**
 - Modify: `keisei/training/step_manager.py:61-97` (\_\_init\_\_ and \_clear\_episode\_counters)
 - Modify: `keisei/training/step_manager.py:222-338` (execute\_step)
@@ -71,6 +73,7 @@ class TestObsSnapshotCache:
         sm.game.current_player.value = 0
 
         episode = _make_episode_state()
+        # Use the existing _noop_logger (line 65, accepts *args, **kwargs)
         result = sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
 
         assert result.success
@@ -84,10 +87,9 @@ class TestObsSnapshotCache:
         sm._latest_obs_for_snapshot = torch.zeros(1, 46, 9, 9)
         sm._clear_episode_counters()
         assert sm._latest_obs_for_snapshot is None
+```
 
-
-def _noop_logger(msg, also_to_wandb=False, wandb_data=None, log_level="info"):
-    pass
+**Note:** Do NOT add a new `_noop_logger` — the file already has one at line 65 with signature `(*args, **kwargs)`. Use it directly.
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1067,28 +1069,24 @@ Add to `tests/integration/test_webui_state_snapshot.py`:
 class TestPolicyInsightSquareActions:
     """End-to-end: StepManager obs → build_snapshot → square_actions in envelope."""
 
-    def test_square_actions_in_snapshot(self, shogi_game):
-        """When policy insight is enabled and obs is available, square_actions is populated."""
+    def test_square_actions_in_snapshot(
+        self, shogi_game, ppo_agent, session_policy_mapper
+    ):
+        """When policy insight is enabled and obs is available, square_actions is populated.
+
+        Uses existing fixtures from conftest.py:
+        - shogi_game: fresh ShogiGame
+        - ppo_agent: PPOAgent(model=ActorCritic(46, 13527), config=integration_config, device=cpu)
+        - session_policy_mapper: PolicyOutputMapper (cached per session)
+        """
         from keisei.webui.state_snapshot import extract_policy_insight
-        from keisei.utils import PolicyOutputMapper
-
-        # Create real components
-        mapper = PolicyOutputMapper()
-
-        # Create a simple model and agent
-        model = ActorCritic(
-            input_channels=46,
-            board_size=9,
-            policy_output_size=13527,
-            num_res_blocks=2,
-            channels=32,
-        )
-        agent = PPOAgent(model=model, lr=0.001, device="cpu")
 
         # Get observation from game
         obs = shogi_game.reset()
 
-        result = extract_policy_insight(agent, obs, mapper, top_k=5)
+        result = extract_policy_insight(
+            ppo_agent, obs, session_policy_mapper, top_k=5
+        )
         assert result is not None
         assert "square_actions" in result
         assert isinstance(result["square_actions"], dict)
