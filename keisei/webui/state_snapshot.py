@@ -21,6 +21,12 @@ from .view_contracts import (
     sanitize_pending_updates,
 )
 
+# Policy insight thresholds
+_PROB_FLOOR = 1e-8  # Actions below this are excluded from heatmap/top-K
+_ENTROPY_EPSILON = 1e-10  # Log-probability numerical stability
+_SQUARE_DETAIL_THRESHOLD = 0.001  # Minimum prob for per-square action list
+_SQUARE_DETAIL_TOP_N = 3  # Max actions shown per square in detail panel
+
 
 def extract_board_state(game: Any) -> Dict[str, Any]:
     """Extract board state from a ShogiGame instance.
@@ -190,7 +196,7 @@ def extract_policy_insight(
         value_estimate = float(value.item())
 
         # Action entropy
-        log_probs = torch.log(probs + 1e-10)
+        log_probs = torch.log(probs + _ENTROPY_EPSILON)
         action_entropy = float(-(probs * log_probs).sum().item())
 
         probs_np = probs.cpu().numpy()
@@ -201,7 +207,7 @@ def extract_policy_insight(
         square_action_candidates: dict[str, list[tuple[float, int]]] = {}
         for idx in range(len(idx_to_move)):
             p = float(probs_np[idx])
-            if p < 1e-8:
+            if p < _PROB_FLOOR:
                 continue
             move = idx_to_move[idx]
             # Destination square is at indices [2], [3]
@@ -213,18 +219,17 @@ def extract_policy_insight(
                 and 0 <= to_c < 9
             ):
                 heatmap[to_r][to_c] += p
-                # Collect for per-square breakdown (threshold: prob > 0.001)
-                if p > 0.001:
+                if p > _SQUARE_DETAIL_THRESHOLD:
                     key = f"{to_r},{to_c}"
                     if key not in square_action_candidates:
                         square_action_candidates[key] = []
                     square_action_candidates[key].append((p, idx))
 
-        # Top-3 per square, sorted by probability descending
+        # Top-N per square, sorted by probability descending
         square_actions: dict[str, list[dict]] = {}
         for key, candidates in square_action_candidates.items():
-            candidates.sort(reverse=True)  # Sort by probability (first element)
-            top3 = candidates[:3]
+            candidates.sort(reverse=True)
+            top3 = candidates[:_SQUARE_DETAIL_TOP_N]
             actions = []
             for prob, idx in top3:
                 try:
@@ -239,7 +244,7 @@ def extract_policy_insight(
         top_actions = []
         for idx in top_indices:
             p = float(probs_np[idx])
-            if p < 1e-8:
+            if p < _PROB_FLOOR:
                 break
             try:
                 usi = policy_mapper.action_idx_to_usi_move(int(idx))

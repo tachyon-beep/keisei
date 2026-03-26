@@ -180,18 +180,16 @@ class ModelInfo(TypedDict):
     gradient_norm: float
 
 
-class TopAction(TypedDict):
-    """A single high-probability action from the policy head."""
+class ActionProb(TypedDict):
+    """An action with its probability — used in top-K lists and per-square breakdowns."""
 
     action: str  # USI notation, e.g. "7g7f" or "P*5e"
     prob: float  # probability in [0, 1]
 
 
-class SquareAction(TypedDict):
-    """A single action targeting a specific board square."""
-
-    action: str  # USI notation, e.g. "7g7f" or "P*5e"
-    prob: float  # probability in [0, 1]
+# Backward-compatible aliases
+TopAction = ActionProb
+SquareAction = ActionProb
 
 
 class PolicyInsight(TypedDict):
@@ -206,10 +204,10 @@ class PolicyInsight(TypedDict):
     """
 
     action_heatmap: List[List[float]]  # 9x9, each cell = prob sum
-    top_actions: List[TopAction]  # top-K actions with USI labels
+    top_actions: List[ActionProb]  # top-K actions with USI labels
     value_estimate: float  # V(s), typically in [-1, 1]
     action_entropy: float  # entropy of action distribution
-    square_actions: Dict[str, List["SquareAction"]]  # "r,c" -> top-3 actions
+    square_actions: Dict[str, List[ActionProb]]  # "r,c" -> top-3 actions
 
 
 # ---------------------------------------------------------------------------

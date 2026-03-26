@@ -630,6 +630,7 @@ class WebUIConfig(BaseModel):
     )
     policy_insight_top_k: int = Field(
         10,
+        ge=1,
         description="Number of top actions to surface in policy insight panel",
     )
 
