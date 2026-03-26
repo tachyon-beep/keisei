@@ -61,22 +61,11 @@ class PPOAgent:
         self.num_actions_total = self.policy_output_mapper.get_total_actions()
         # Add weight_decay from config if present, else default to 0.0
         weight_decay = getattr(config.training, "weight_decay", 0.0)
-        # Initialize optimizer, handle invalid learning rate gracefully
-        try:
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(),
-                lr=config.training.learning_rate,
-                weight_decay=weight_decay,
-            )
-        except Exception as e:
-            # Fallback to default learning rate on error
-            log_error_to_stderr(
-                "PPOAgent",
-                f"Could not initialize optimizer with lr={config.training.learning_rate}, using default lr=1e-3: {e}",
-            )
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(), lr=1e-3, weight_decay=weight_decay
-            )
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=config.training.learning_rate,
+            weight_decay=weight_decay,
+        )
 
         # PPO hyperparameters
         self.gamma = config.training.gamma

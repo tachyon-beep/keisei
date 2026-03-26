@@ -311,3 +311,50 @@ class TestCleanup:
 
         assert fake_queue.items == []
         assert fake_queue.closed is True
+
+
+# ---------------------------------------------------------------------------
+# TestSendModelWeightsFailure
+# ---------------------------------------------------------------------------
+
+
+class TestSendModelWeightsFailure:
+    """send_model_weights returns False on total failure."""
+
+    def test_returns_false_on_prepare_error(self):
+        c = WorkerCommunicator(num_workers=1)
+        # Force _prepare_model_data to raise
+        c._prepare_model_data = lambda *a, **kw: (_ for _ in ()).throw(
+            RuntimeError("serialization failed")
+        )
+        result = c.send_model_weights({})
+        assert result is False
+
+    def test_returns_false_when_all_queues_full(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FullQueue:
+            def put(self, data, timeout=None):
+                raise queue.Full()
+
+        c.model_queues = [FullQueue(), FullQueue()]
+        # Need to mock _prepare_model_data to return valid data
+        c._prepare_model_data = lambda *a, **kw: {"fake": "data"}
+        result = c.send_model_weights({})
+        assert result is False
+
+    def test_returns_true_when_at_least_one_succeeds(self):
+        c = WorkerCommunicator(num_workers=0)
+
+        class FullQueue:
+            def put(self, data, timeout=None):
+                raise queue.Full()
+
+        class GoodQueue:
+            def put(self, data, timeout=None):
+                pass
+
+        c.model_queues = [FullQueue(), GoodQueue()]
+        c._prepare_model_data = lambda *a, **kw: {"fake": "data"}
+        result = c.send_model_weights({})
+        assert result is True

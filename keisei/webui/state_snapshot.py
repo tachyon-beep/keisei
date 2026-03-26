@@ -266,7 +266,7 @@ def extract_policy_insight(
             "square_actions": square_actions,
         }
 
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, OSError, IndexError) as e:
         import logging
 
         logging.getLogger(__name__).warning(
