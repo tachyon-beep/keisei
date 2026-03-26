@@ -765,12 +765,56 @@ def render_overview_tab(env: EnvelopeParser) -> None:
     insight = env.policy_insight
     lineage = env.lineage
 
-    # Row 1: board (left) + 6 training charts (right)
-    col_board, col_charts = st.columns([3, 5])
+    # Invalidate overview selection on move change
+    if board_state:
+        prev = st.session_state.get("overview_last_move_count")
+        curr = board_state.get("move_count", 0)
+        if prev is not None and prev != curr:
+            st.session_state.overview_selected_square = None
+        st.session_state.overview_last_move_count = curr
+
+    # Square actions + auto-select hottest square
+    square_actions = insight.get("square_actions", {}) if insight else {}
+    if (
+        st.session_state.get("overview_selected_square") is None
+        and square_actions
+    ):
+        hottest_key = max(
+            square_actions.keys(),
+            key=lambda k: square_actions[k][0]["prob"] if square_actions[k] else 0,
+        )
+        r_hot, c_hot = hottest_key.split(",")
+        st.session_state.overview_selected_square = {
+            "row": int(r_hot),
+            "col": int(c_hot),
+        }
+
+    overview_selected = st.session_state.get("overview_selected_square")
+
+    # Row 1: square detail | board | 6 training charts
+    col_detail, col_board, col_charts = st.columns([2, 3, 5])
+
+    with col_detail:
+        if overview_selected and board_state:
+            render_selected_square_panel(
+                selected=overview_selected,
+                board_state=board_state,
+                square_actions=square_actions,
+                heatmap=insight.get("action_heatmap") if insight else None,
+                insight_available=insight is not None,
+            )
+            # V(s) one-liner
+            if insight:
+                v = insight.get("value_estimate", 0.0)
+                label = (
+                    "Black +"
+                    if v > 0.05
+                    else ("Even" if abs(v) <= 0.05 else "White +")
+                )
+                st.caption(f"V(s): {v:+.3f}  ({label})")
 
     with col_board:
         if board_state:
-            # Heatmap overlay if toggled on
             heatmap = None
             if st.session_state.get("show_heatmap", False) and insight:
                 heatmap = insight.get("action_heatmap")
@@ -788,14 +832,6 @@ def render_overview_tab(env: EnvelopeParser) -> None:
                 )
 
             st.caption(f"Black: {_hand_compact(bh)}  |  White: {_hand_compact(wh)}")
-
-            # V(s) one-liner
-            if insight:
-                v = insight.get("value_estimate", 0.0)
-                label = (
-                    "Black +" if v > 0.05 else ("Even" if abs(v) <= 0.05 else "White +")
-                )
-                st.caption(f"V(s): {v:+.3f}  ({label})")
         else:
             st.info("Waiting for first episode...")
 
