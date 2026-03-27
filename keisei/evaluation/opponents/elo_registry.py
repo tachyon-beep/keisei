@@ -47,21 +47,30 @@ class EloRegistry:
                 self.ratings = {}
 
     def save(self) -> None:
-        """Save ratings to file."""
+        """Persist ratings to disk atomically."""
+        import os
+        import tempfile
+
+        data = {
+            "ratings": self.ratings,
+            "metadata": {
+                "initial_rating": self.initial_rating,
+                "k_factor": self.k_factor,
+            },
+        }
+        dir_path = str(self.file_path.parent)
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
         try:
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "ratings": self.ratings,
-                "metadata": {
-                    "initial_rating": self.initial_rating,
-                    "k_factor": self.k_factor,
-                },
-            }
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            logger.debug(f"Saved {len(self.ratings)} ratings to {self.file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save ratings to {self.file_path}: {e}")
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, str(self.file_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def get_rating(self, player_id: str) -> float:
         """Get rating for a player, creating if new."""

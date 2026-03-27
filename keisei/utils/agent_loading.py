@@ -161,18 +161,30 @@ def _load_model_from_checkpoint(
     device_str: str,
     policy_mapper,
     input_channels: int,
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
-    """Create a model and load weights from a checkpoint file."""
+    """Create a model using model_factory and return it with the device."""
     import torch  # pylint: disable=import-outside-toplevel
 
-    from keisei.core.neural_network import (  # pylint: disable=import-outside-toplevel
-        ActorCritic,
+    from keisei.training.models import (  # pylint: disable=import-outside-toplevel
+        model_factory,
     )
 
     device = torch.device(device_str)
-    temp_model = ActorCritic(input_channels, policy_mapper.get_total_actions()).to(
-        device
-    )
+    num_actions = policy_mapper.get_total_actions()
+    obs_shape = (input_channels, 9, 9)
+
+    temp_model = model_factory(
+        model_type=model_type,
+        obs_shape=obs_shape,
+        num_actions=num_actions,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
+    ).to(device)
     return temp_model, device
 
 
@@ -201,6 +213,10 @@ def load_evaluation_agent(
     policy_mapper,
     input_channels: int,
     input_features: Optional[str] = "core46",
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
     if not os.path.isfile(checkpoint_path):
         log_error_to_stderr(
@@ -213,7 +229,11 @@ def load_evaluation_agent(
     )
 
     temp_model, device = _load_model_from_checkpoint(
-        checkpoint_path, device_str, policy_mapper, input_channels
+        checkpoint_path, device_str, policy_mapper, input_channels,
+        model_type=model_type,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
     )
 
     agent = _create_ppo_agent(temp_model, config, device, checkpoint_path)
