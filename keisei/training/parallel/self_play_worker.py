@@ -24,7 +24,7 @@ from .utils import decompress_array
 logger = logging.getLogger(__name__)
 
 
-class SelfPlayWorker(mp.Process):
+class SelfPlayWorker(mp.get_context("spawn").Process):
     """
     Worker process for parallel self-play experience collection.
 
@@ -77,7 +77,9 @@ class SelfPlayWorker(mp.Process):
         self.game: Optional[ShogiGame] = None
         self.model: Optional[ActorCriticProtocol] = None
         self.policy_mapper: Optional[PolicyOutputMapper] = None
-        self.device = torch.device("cpu")  # Workers use CPU
+        self.device = torch.device(
+            self.parallel_config.get("worker_device", "cpu")
+        )
 
         # Internal state tracking
         self._current_obs: Optional[np.ndarray] = None

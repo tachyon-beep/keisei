@@ -105,11 +105,14 @@ class ParallelManager:
         try:
             # Create and start worker processes
             for worker_id in range(self.num_workers):
+                worker_config = dict(self.parallel_config)
+                worker_config["worker_device"] = self._assign_worker_device(worker_id)
+
                 worker = SelfPlayWorker(
                     worker_id=worker_id,
                     env_config=self.env_config,
                     model_config=self.model_config,
-                    parallel_config=self.parallel_config,
+                    parallel_config=worker_config,
                     experience_queue=self.communicator.experience_queues[worker_id],
                     model_queue=self.communicator.model_queues[worker_id],
                     control_queue=self.communicator.control_queues[worker_id],
