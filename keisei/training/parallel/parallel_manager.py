@@ -78,6 +78,16 @@ class ParallelManager:
 
         logger.info("ParallelManager initialized with %d workers", self.num_workers)
 
+    def _assign_worker_device(self, worker_id: int) -> str:
+        """Assign a CUDA device to a worker based on the device map config."""
+        device_map = self.parallel_config.get("worker_device_map", "auto")
+        if device_map == "auto":
+            gpu_count = torch.cuda.device_count()
+            if gpu_count == 0:
+                return "cpu"
+            return f"cuda:{worker_id % gpu_count}"
+        return device_map
+
     def start_workers(self, initial_model: nn.Module) -> bool:
         """
         Start all worker processes.
@@ -110,6 +120,20 @@ class ParallelManager:
                 self.workers.append(worker)
 
                 logger.info("Started worker %d (PID: %d)", worker_id, worker.pid)
+
+            # Verify workers are alive after spawn (catch immediate crashes)
+            time.sleep(1)
+            dead = [w for w in self.workers if not w.is_alive()]
+            if dead:
+                for w in dead:
+                    logger.error(
+                        "Worker %d died immediately (exit code %s)",
+                        w.worker_id,
+                        w.exitcode,
+                    )
+                raise RuntimeError(
+                    f"{len(dead)}/{len(self.workers)} workers died on startup"
+                )
 
             # Send initial model to all workers
             self._sync_model_to_workers(initial_model)
