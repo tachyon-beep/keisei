@@ -46,55 +46,7 @@ TERMINATION_REASON_UNKNOWN_LOOP_TERMINATION = "Unknown (Loop terminated unexpect
 TERMINATION_REASON_EVAL_STEP_ERROR = "Ladder evaluate_step error"
 
 
-# Placeholder for an ELO management system
-# from ..analytics.elo_tracker import EloTracker
-
-
-# For now, let's define a placeholder if not available
-class EloTracker:  # pragma: no cover
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.ratings: Dict[str, float] = {}
-        self.default_rating = 1500.0
-        self.k_factor = 32  # Example K-factor
-
-    def get_agent_rating(self, agent_id: str) -> float:
-        return self.ratings.get(agent_id, self.default_rating)
-
-    def update_ratings(
-        self, agent_id: str, opponent_id: str, game_results: List[GameResult]
-    ) -> None:
-        # Simplified ELO update logic
-        # In a real system, this would be more sophisticated
-        agent_rating = self.get_agent_rating(agent_id)
-        opponent_rating = self.get_agent_rating(opponent_id)
-
-        for game in game_results:
-            expected_score_agent = 1 / (
-                1 + 10 ** ((opponent_rating - agent_rating) / 400)
-            )
-
-            actual_score_agent = 0.0
-            if game.winner == 0:  # Agent won
-                actual_score_agent = 1.0
-            elif game.winner is None:  # Draw
-                actual_score_agent = 0.5
-
-            agent_rating_change = self.k_factor * (
-                actual_score_agent - expected_score_agent
-            )
-            opponent_rating_change = self.k_factor * (
-                (1 - actual_score_agent) - (1 - expected_score_agent)
-            )
-
-            agent_rating += agent_rating_change
-            opponent_rating += opponent_rating_change
-
-        self.ratings[agent_id] = agent_rating
-        self.ratings[opponent_id] = opponent_rating
-        # Persist ratings if needed
-
-    def get_elo_snapshot(self) -> Dict[str, float]:
-        return self.ratings.copy()
+from ..analytics.elo_tracker import EloTracker
 
 
 class LadderEvaluator(BaseEvaluator):
@@ -103,7 +55,7 @@ class LadderEvaluator(BaseEvaluator):
     def __init__(self, config: EvaluationConfig):  # type: ignore
         super().__init__(config)
         self.config: EvaluationConfig = config  # type: ignore
-        self.elo_tracker = EloTracker(self.config.get_strategy_param("elo_config", {}))
+        self.elo_tracker = EloTracker()
         self.opponent_pool: List[OpponentInfo] = []
         self.policy_mapper = PolicyOutputMapper()  # Add PolicyOutputMapper instance
         # Ensure self.logger is initialized by BaseEvaluator or here
@@ -470,11 +422,10 @@ class LadderEvaluator(BaseEvaluator):
                 opp_type = opp_config_data.get("type", "random")
                 path = opp_config_data.get("checkpoint_path", None)
                 initial_rating = opp_config_data.get(
-                    "initial_rating", self.elo_tracker.default_rating
+                    "initial_rating", self.elo_tracker.default_initial_rating
                 )
-                # Ensure opponent is in EloTracker
-                if name not in self.elo_tracker.ratings:
-                    self.elo_tracker.ratings[name] = initial_rating
+                # Ensure opponent is in EloTracker (get_rating auto-creates)
+                self.elo_tracker.get_rating(name)
                 self.opponent_pool.append(
                     OpponentInfo(
                         name=name,
@@ -499,9 +450,9 @@ class LadderEvaluator(BaseEvaluator):
         self.log_evaluation_start(agent_info, context)
         await self._initialize_opponent_pool(context)
 
-        initial_agent_rating = self.elo_tracker.get_agent_rating(agent_info.name)
-        if agent_info.name not in self.elo_tracker.ratings:
-            self.elo_tracker.ratings[agent_info.name] = initial_agent_rating
+        initial_agent_rating = self.elo_tracker.get_rating(agent_info.name)
+        # get_rating auto-creates with default if not present
+        self.elo_tracker.get_rating(agent_info.name)
 
         selected_opponents = self._select_ladder_opponents(
             initial_agent_rating, context
@@ -520,11 +471,11 @@ class LadderEvaluator(BaseEvaluator):
                 errors.extend(match_errors)
 
                 if match_games:
-                    self.elo_tracker.update_ratings(
-                        agent_info.name, opponent_info.name, match_games
-                    )
+                    for game in match_games:
+                        score_a = 1.0 if game.winner == 0 else (0.5 if game.winner is None else 0.0)
+                        self.elo_tracker.update_rating(agent_info.name, opponent_info.name, score_a)
                     self.logger.info(
-                        f"Ratings updated after match: Agent({agent_info.name}): {self.elo_tracker.get_agent_rating(agent_info.name):.2f}, Opponent({opponent_info.name}): {self.elo_tracker.get_agent_rating(opponent_info.name):.2f}"
+                        f"Ratings updated after match: Agent({agent_info.name}): {self.elo_tracker.get_rating(agent_info.name):.2f}, Opponent({opponent_info.name}): {self.elo_tracker.get_rating(opponent_info.name):.2f}"
                     )
 
             except (
@@ -535,7 +486,7 @@ class LadderEvaluator(BaseEvaluator):
                 errors.append(error_msg)
 
         summary_stats = SummaryStats.from_games(all_game_results)
-        final_agent_rating = self.elo_tracker.get_agent_rating(agent_info.name)
+        final_agent_rating = self.elo_tracker.get_rating(agent_info.name)
         ladder_specific_analytics = {
             "initial_agent_rating": initial_agent_rating,
             "final_agent_rating": final_agent_rating,
@@ -548,10 +499,10 @@ class LadderEvaluator(BaseEvaluator):
             summary_stats=summary_stats,
             analytics_data={
                 "ladder_specific_analytics": ladder_specific_analytics,
-                "final_elo_snapshot": self.elo_tracker.get_elo_snapshot(),
+                "final_elo_snapshot": self.elo_tracker.get_all_ratings(),
             },
             errors=errors,
-            elo_tracker=self.elo_tracker,  # type: ignore # Placeholder EloTracker, real one from analytics needed
+            elo_tracker=self.elo_tracker,
         )
 
         self.log_evaluation_complete(evaluation_result)
