@@ -27,6 +27,8 @@
 | File | Change |
 |------|--------|
 | `keisei/evaluation/__init__.py` | Export `ContinuousMatchScheduler` |
+| `keisei/utils/agent_loading.py` | Fix `_load_model_from_checkpoint` to use `model_factory` instead of hardcoded `ActorCritic` |
+| `keisei/evaluation/opponents/elo_registry.py` | Make `save()` atomic with tempfile + os.replace (W2 fix) |
 
 ### Reference Files (read-only — use their APIs)
 
@@ -34,10 +36,11 @@
 |------|----------|
 | `keisei/evaluation/opponents/opponent_pool.py` | `OpponentPool`, `scan_directory()`, `get_all()` |
 | `keisei/evaluation/opponents/elo_registry.py` | `EloRegistry`, `get_rating()`, `update_ratings()`, `save()` |
-| `keisei/shogi/shogi_game.py` | `ShogiGame`, `reset()`, `get_legal_moves()`, `make_move()`, `get_observation()`, `get_board_state_dict()` |
-| `keisei/utils/agent_loading.py` | `load_evaluation_agent()` |
+| `keisei/shogi/shogi_game.py` | `ShogiGame`, `reset()`, `get_legal_moves()`, `make_move()`, `get_observation()`, `to_sfen()`, `current_player` |
 | `keisei/utils/utils.py` | `PolicyOutputMapper` |
 | `keisei/webui/state_snapshot.py` | `write_snapshot_atomic()` |
+| `keisei/training/models/__init__.py` | `model_factory()` |
+| `keisei/core/ppo_agent.py` | `PPOAgent` (via `load_evaluation_agent`) |
 
 ---
 
@@ -149,11 +152,13 @@ import asyncio
 import json
 import logging
 import random
-import tempfile
 import time
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
@@ -162,46 +167,79 @@ _NEWMODEL_WEIGHT_BOOST = 3.0
 _ELO_PROXIMITY_SCALE = 200.0
 
 
+@dataclass
+class MatchResult:
+    """Typed result from a completed game (W10 fix)."""
+
+    done: bool
+    winner: Optional[int]  # 0=Black, 1=White, None=Draw
+    move_count: int
+    reason: str
+
+
+class SchedulerConfig(BaseModel):
+    """Configuration for ContinuousMatchScheduler (W7 fix).
+
+    Defined here for now; move to keisei/config_schema.py when the scheduler
+    is wired into the train.py ladder subcommand.
+    """
+
+    checkpoint_dir: Path
+    elo_registry_path: Path
+    device: str = "cuda"
+    num_concurrent: int = Field(6, ge=1, le=32)
+    num_spectated: int = Field(3, ge=0)
+    move_delay: float = Field(1.5, ge=0.0)
+    poll_interval: float = Field(30.0, ge=1.0)
+    max_moves_per_game: int = Field(500, ge=1)
+    pool_size: int = Field(50, ge=2, le=1000)
+    input_channels: int = 46
+    input_features: str = "core46"
+    model_type: str = "resnet"
+    tower_depth: int = Field(9, ge=1)
+    tower_width: int = Field(256, ge=1)
+    se_ratio: Optional[float] = 0.25
+    state_path: Optional[Path] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class ContinuousMatchScheduler:
     """Continuous Elo ladder match scheduler."""
 
-    def __init__(
-        self,
-        checkpoint_dir: Path,
-        elo_registry_path: Path,
-        device: str = "cuda",
-        num_concurrent: int = 6,
-        num_spectated: int = 3,
-        move_delay: float = 1.5,
-        poll_interval: float = 30.0,
-        max_moves_per_game: int = 500,
-        pool_size: int = 50,
-        input_channels: int = 46,
-        input_features: str = "core46",
-    ):
+    def __init__(self, config: SchedulerConfig):
         from keisei.evaluation.opponents.elo_registry import EloRegistry
         from keisei.evaluation.opponents.opponent_pool import OpponentPool
+        from keisei.utils.utils import PolicyOutputMapper
 
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.device = device
-        self.num_concurrent = num_concurrent
-        self.num_spectated = num_spectated
-        self.move_delay = move_delay
-        self.poll_interval = poll_interval
-        self.max_moves_per_game = max_moves_per_game
-        self.input_channels = input_channels
-        self.input_features = input_features
+        self.checkpoint_dir = Path(config.checkpoint_dir)
+        self.device = config.device
+        self.num_concurrent = config.num_concurrent
+        self.num_spectated = config.num_spectated
+        self.move_delay = config.move_delay
+        self.poll_interval = config.poll_interval
+        self.max_moves_per_game = config.max_moves_per_game
+        self.input_channels = config.input_channels
+        self.input_features = config.input_features
+        self.model_type = config.model_type
+        self.tower_depth = config.tower_depth
+        self.tower_width = config.tower_width
+        self.se_ratio = config.se_ratio
 
-        # State
-        self._pool = OpponentPool(
-            pool_size=pool_size, elo_registry_path=str(elo_registry_path)
-        )
-        self._elo_registry = EloRegistry(elo_registry_path)
+        # Shared policy mapper (one instance, reused across all matches)
+        self._policy_mapper = PolicyOutputMapper()
+
+        # State — scheduler owns the EloRegistry exclusively.
+        # OpponentPool gets elo_registry_path=None to prevent a second
+        # registry instance from racing on the same file (B1 fix).
+        self._pool = OpponentPool(pool_size=config.pool_size, elo_registry_path=None)
+        self._elo_registry = EloRegistry(config.elo_registry_path)
         self._pool_paths: List[Path] = []
         self._games_played: Counter = Counter()
         self._active_matches: Dict[int, Dict[str, Any]] = {}
+        self._match_tasks: Dict[int, asyncio.Task] = {}  # W8: managed by _manage_game_slots, read by run()
         self._recent_results: List[Dict[str, Any]] = []
-        self._state_path = Path(".keisei_ladder") / "state.json"
+        self._state_path = config.state_path or (Path(".keisei_ladder") / "state.json")
 
     def _get_rating(self, name: str) -> float:
         """Get Elo rating for a model by checkpoint filename."""
@@ -274,7 +312,7 @@ git commit -m "feat(scheduler): add ContinuousMatchScheduler skeleton with weigh
 - Modify: `keisei/evaluation/scheduler.py`
 - Test: `tests/unit/test_scheduler.py`
 
-Add `_run_match` and `_run_game_loop` methods.
+Add `_run_match` and `_run_game_loop` methods. Fix `_load_model_from_checkpoint` in `agent_loading.py` to use `model_factory`.
 
 - [ ] **Step 1: Write failing test for game execution**
 
@@ -283,6 +321,8 @@ Add to `tests/unit/test_scheduler.py`:
 ```python
 from unittest.mock import MagicMock, patch, AsyncMock
 import asyncio
+import numpy as np
+import torch
 
 
 class TestGameExecution:
@@ -292,6 +332,7 @@ class TestGameExecution:
     async def test_run_game_loop_returns_result(self):
         """Game loop runs until done and returns winner info."""
         from keisei.evaluation.scheduler import ContinuousMatchScheduler
+        from keisei.shogi.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
         scheduler.max_moves_per_game = 10
@@ -299,19 +340,26 @@ class TestGameExecution:
         scheduler.num_spectated = 0
         scheduler._active_matches = {}
         scheduler._publish_state = MagicMock()
+        scheduler._policy_mapper = MagicMock()
+        scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
 
-        # Mock game
+        # Mock game — alternates current_player like real ShogiGame
         game = MagicMock()
         game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
-        game.make_move.return_value = (None, 0.0, False, {})
-        game.get_observation.return_value = __import__("numpy").zeros((46, 9, 9))
-        game.get_board_state_dict.return_value = {"board": []}
-        game.current_player = MagicMock()
-        game.current_player.name = "BLACK"
-        # After max_moves, game ends
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.to_sfen.return_value = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
+
+        # Alternate current_player between BLACK and WHITE each move
+        player_cycle = [Color.BLACK, Color.WHITE] * 5
+        type(game).current_player = property(
+            lambda self, _cycle=iter(player_cycle): next(_cycle)
+        )
+
+        # After 10 moves, game ends
+        obs = np.zeros((46, 9, 9))
         game.make_move.side_effect = [
-            (None, 0.0, False, {}),
-        ] * 9 + [(None, 0.0, True, {"winner": "black"})]
+            (obs, 0.0, False, {}),
+        ] * 9 + [(obs, 0.0, True, {"winner": "black"})]
 
         # Mock agents
         agent_a = MagicMock()
@@ -322,7 +370,72 @@ class TestGameExecution:
         result = await scheduler._run_game_loop(
             game, agent_a, agent_b, spectated=False, slot=0
         )
-        assert "winner" in result or "draw" in result or result.get("done")
+        assert result.done is True
+        assert result.winner == 0  # Black wins
+
+    @pytest.mark.asyncio
+    async def test_run_game_loop_draw_on_max_moves(self):
+        """Game returns draw when max_moves reached without winner (W6 fix)."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, MatchResult
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        scheduler.max_moves_per_game = 3  # Very short game
+        scheduler.move_delay = 0
+        scheduler.num_spectated = 0
+        scheduler._active_matches = {}
+        scheduler._publish_state = MagicMock()
+        scheduler._policy_mapper = MagicMock()
+        scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.to_sfen.return_value = "startpos"
+
+        player_cycle = [Color.BLACK, Color.WHITE] * 5
+        type(game).current_player = property(
+            lambda self, _cycle=iter(player_cycle): next(_cycle)
+        )
+
+        # Never return done=True — game should hit max_moves
+        obs = np.zeros((46, 9, 9))
+        game.make_move.return_value = (obs, 0.0, False, {})
+
+        agent_a = MagicMock()
+        agent_a.select_action.return_value = ((0, 0, 1, 1, False), 0, 0.0, 0.0)
+        agent_b = MagicMock()
+        agent_b.select_action.return_value = ((0, 0, 1, 1, False), 0, 0.0, 0.0)
+
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=False, slot=0
+        )
+        assert result.done is True
+        assert result.winner is None  # Draw
+        assert result.move_count == 3
+        assert result.reason == "max_moves"
+
+    @pytest.mark.asyncio
+    async def test_run_match_handles_missing_checkpoint(self):
+        """_run_match logs error and doesn't crash on missing file (W4 fix)."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                state_path=Path(tmpdir) / "state.json",
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            # Call with non-existent checkpoint paths
+            await scheduler._run_match(
+                0, Path("/nonexistent/a.pth"), Path("/nonexistent/b.pth")
+            )
+            # Should not raise — error is caught and logged
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -330,7 +443,114 @@ class TestGameExecution:
 Run: `uv run pytest tests/unit/test_scheduler.py::TestGameExecution -v`
 Expected: FAIL — `_run_game_loop` doesn't exist
 
-- [ ] **Step 3: Implement _run_game_loop and _run_match**
+- [ ] **Step 3a: Fix `_load_model_from_checkpoint` in agent_loading.py (B2 prerequisite)**
+
+Modify `keisei/utils/agent_loading.py` to use `model_factory` instead of hardcoded `ActorCritic`:
+
+```python
+# Replace _load_model_from_checkpoint (lines 159-176) with:
+
+def _load_model_from_checkpoint(
+    checkpoint_path: str,
+    device_str: str,
+    policy_mapper,
+    input_channels: int,
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
+) -> Any:
+    """Create a model using model_factory and return it with the device."""
+    import torch  # pylint: disable=import-outside-toplevel
+
+    from keisei.training.models import (  # pylint: disable=import-outside-toplevel
+        model_factory,
+    )
+
+    device = torch.device(device_str)
+    num_actions = policy_mapper.get_total_actions()
+    obs_shape = (input_channels, 9, 9)
+
+    temp_model = model_factory(
+        model_type=model_type,
+        obs_shape=obs_shape,
+        num_actions=num_actions,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
+    ).to(device)
+    return temp_model, device
+```
+
+Also update `load_evaluation_agent` to accept and forward the architecture params:
+
+```python
+def load_evaluation_agent(
+    checkpoint_path: str,
+    device_str: str,
+    policy_mapper,
+    input_channels: int,
+    input_features: Optional[str] = "core46",
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
+) -> Any:
+    # ... (existing validation unchanged) ...
+
+    config = _build_evaluation_config(
+        device_str, policy_mapper, input_channels, input_features
+    )
+
+    temp_model, device = _load_model_from_checkpoint(
+        checkpoint_path, device_str, policy_mapper, input_channels,
+        model_type=model_type,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
+    )
+
+    agent = _create_ppo_agent(temp_model, config, device, checkpoint_path)
+    # ... (rest unchanged) ...
+```
+
+Existing callers that pass no architecture params get the defaults (`resnet`, depth=9, width=256, se_ratio=0.25) — backward compatible.
+
+- [ ] **Step 3b: Make EloRegistry.save() atomic (W2 fix)**
+
+Modify `keisei/evaluation/opponents/elo_registry.py` — replace the non-atomic `save()` with tempfile + os.replace:
+
+```python
+    def save(self) -> None:
+        """Persist ratings to disk atomically."""
+        import os
+        import tempfile
+
+        data = {
+            "ratings": self.ratings,
+            "metadata": {
+                "initial_rating": self.initial_rating,
+                "k_factor": self.k_factor,
+            },
+        }
+        dir_path = str(self.file_path.parent)
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, str(self.file_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+```
+
+This prevents a crash mid-write from corrupting the ratings file (previously a truncate-and-write that could leave empty/partial JSON).
+
+- [ ] **Step 3c: Implement _run_game_loop and _run_match**
 
 Add to `keisei/evaluation/scheduler.py`:
 
@@ -342,54 +562,69 @@ Add to `keisei/evaluation/scheduler.py`:
         agent_b: Any,
         spectated: bool,
         slot: int,
-    ) -> Dict[str, Any]:
+    ) -> MatchResult:
         """Play a game to completion. Pace and publish if spectated."""
-        from keisei.utils.utils import PolicyOutputMapper
+        import torch
+        from keisei.shogi.shogi_core_definitions import Color
 
-        policy_mapper = PolicyOutputMapper()
         move_count = 0
-        agents = [agent_a, agent_b]  # Index 0 = Sente (Black), 1 = Gote (White)
+        agents = {Color.BLACK: agent_a, Color.WHITE: agent_b}
         move_log: List[str] = []
 
         while move_count < self.max_moves_per_game:
-            current_agent_idx = move_count % 2
-            agent = agents[current_agent_idx]
+            current_color = game.current_player
+            current_agent_idx = 0 if current_color == Color.BLACK else 1
+            agent = agents[current_color]
 
             legal_moves = game.get_legal_moves()
             if not legal_moves:
-                return {
-                    "done": True,
-                    "winner": 1 - current_agent_idx,  # Other player wins
-                    "move_count": move_count,
-                    "reason": "no_legal_moves",
-                }
+                logger.warning(
+                    "Slot %d: no legal moves at move %d (SFEN: %s)",
+                    slot, move_count, game.to_sfen(),
+                )
+                return MatchResult(
+                    done=True,
+                    winner=1 - current_agent_idx,
+                    move_count=move_count,
+                    reason="no_legal_moves",
+                )
 
             obs = game.get_observation()
-            legal_mask = policy_mapper.get_legal_mask(legal_moves, device="cpu")
+            legal_mask = self._policy_mapper.get_legal_mask(
+                legal_moves, device=torch.device("cpu")
+            )
 
-            selected_move, _, _, _ = agent.select_action(
-                obs, legal_mask, is_training=False
+            # Offload synchronous PyTorch inference to a thread so the
+            # asyncio event loop stays responsive (B3 fix).
+            # Note: is_training is keyword-only in PPOAgent.select_action.
+            selected_move, _, _, _ = await asyncio.to_thread(
+                lambda: agent.select_action(obs, legal_mask, is_training=False)
             )
 
             if selected_move is None:
-                return {
-                    "done": True,
-                    "winner": 1 - current_agent_idx,
-                    "move_count": move_count,
-                    "reason": "no_action_selected",
-                }
+                logger.warning(
+                    "Slot %d: agent returned None action at move %d",
+                    slot, move_count,
+                )
+                return MatchResult(
+                    done=True,
+                    winner=1 - current_agent_idx,
+                    move_count=move_count,
+                    reason="no_action_selected",
+                )
 
             _, reward, done, info = game.make_move(selected_move)
             move_count += 1
+            move_log.append(str(selected_move))  # W3 fix: populate move_log
 
             if spectated:
                 # Update active match state for dashboard
-                self._active_matches[slot] = {
-                    "board_state": game.get_board_state_dict(),
+                self._active_matches[slot].update({
+                    "sfen": game.to_sfen(),
                     "move_count": move_count,
                     "move_log": move_log[-20:],  # Last 20 moves
                     "status": "in_progress",
-                }
+                })
                 self._publish_state()
                 await asyncio.sleep(self.move_delay)
 
@@ -400,19 +635,19 @@ Add to `keisei/evaluation/scheduler.py`:
                     winner_idx = 0
                 elif winner == "white" or winner == 1:
                     winner_idx = 1
-                return {
-                    "done": True,
-                    "winner": winner_idx,
-                    "move_count": move_count,
-                    "reason": info.get("terminal_reason", "game_over"),
-                }
+                return MatchResult(
+                    done=True,
+                    winner=winner_idx,
+                    move_count=move_count,
+                    reason=info.get("terminal_reason", "game_over"),
+                )
 
-        return {
-            "done": True,
-            "winner": None,  # Draw
-            "move_count": move_count,
-            "reason": "max_moves",
-        }
+        return MatchResult(
+            done=True,
+            winner=None,  # Draw
+            move_count=move_count,
+            reason="max_moves",
+        )
 
     async def _run_match(
         self, slot: int, model_a_path: Path, model_b_path: Path
@@ -421,7 +656,6 @@ Add to `keisei/evaluation/scheduler.py`:
         import torch
         from keisei.shogi.shogi_game import ShogiGame
         from keisei.utils.agent_loading import load_evaluation_agent
-        from keisei.utils.utils import PolicyOutputMapper
 
         spectated = slot < self.num_spectated
         name_a = model_a_path.name
@@ -433,17 +667,35 @@ Add to `keisei/evaluation/scheduler.py`:
         )
 
         try:
-            policy_mapper = PolicyOutputMapper()
+            # W1: Log GPU memory usage when loading models for concurrent slots.
+            if self.device.startswith("cuda"):
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    mem_gb = _torch.cuda.memory_allocated() / 1e9
+                    logger.info(
+                        "Slot %d: GPU memory before load: %.2f GB", slot, mem_gb
+                    )
+
+            # load_evaluation_agent now uses model_factory internally (B2 fix —
+            # see Task 2 Step 3a for the agent_loading.py patch).
             agent_a = load_evaluation_agent(
-                str(model_a_path), self.device, policy_mapper,
+                str(model_a_path), self.device, self._policy_mapper,
                 self.input_channels, self.input_features,
+                model_type=self.model_type,
+                tower_depth=self.tower_depth,
+                tower_width=self.tower_width,
+                se_ratio=self.se_ratio,
             )
             agent_b = load_evaluation_agent(
-                str(model_b_path), self.device, policy_mapper,
+                str(model_b_path), self.device, self._policy_mapper,
                 self.input_channels, self.input_features,
+                model_type=self.model_type,
+                tower_depth=self.tower_depth,
+                tower_width=self.tower_width,
+                se_ratio=self.se_ratio,
             )
 
-            game = ShogiGame(max_moves=self.max_moves_per_game)
+            game = ShogiGame(max_moves_per_game=self.max_moves_per_game)
             game.reset()
 
             # Set initial match state
@@ -451,7 +703,7 @@ Add to `keisei/evaluation/scheduler.py`:
                 "match_id": f"{name_a}_vs_{name_b}_{int(time.time())}",
                 "model_a": {"name": name_a, "elo": self._get_rating(name_a)},
                 "model_b": {"name": name_b, "elo": self._get_rating(name_b)},
-                "board_state": game.get_board_state_dict(),
+                "sfen": game.to_sfen(),
                 "move_count": 0,
                 "move_log": [],
                 "status": "in_progress",
@@ -462,18 +714,17 @@ Add to `keisei/evaluation/scheduler.py`:
                 game, agent_a, agent_b, spectated, slot
             )
 
-            # Update Elo
-            winner_idx = result.get("winner")
-            if winner_idx == 0:
-                score_a = 1.0
-            elif winner_idx == 1:
-                score_a = 0.0
+            # Update Elo — EloRegistry expects "agent_win"/"opponent_win"/"draw"
+            if result.winner == 0:
+                elo_result = "agent_win"
+            elif result.winner == 1:
+                elo_result = "opponent_win"
             else:
-                score_a = 0.5
+                elo_result = "draw"
 
             old_elo_a = self._get_rating(name_a)
             old_elo_b = self._get_rating(name_b)
-            self._elo_registry.update_ratings(name_a, name_b, ["win" if score_a == 1.0 else "draw" if score_a == 0.5 else "loss"])
+            self._elo_registry.update_ratings(name_a, name_b, [elo_result])
             self._elo_registry.save()
             new_elo_a = self._get_rating(name_a)
             new_elo_b = self._get_rating(name_b)
@@ -486,11 +737,11 @@ Add to `keisei/evaluation/scheduler.py`:
             match_result = {
                 "model_a": name_a,
                 "model_b": name_b,
-                "winner": name_a if winner_idx == 0 else (name_b if winner_idx == 1 else "draw"),
+                "winner": name_a if result.winner == 0 else (name_b if result.winner == 1 else "draw"),
                 "elo_delta_a": round(new_elo_a - old_elo_a, 1),
                 "elo_delta_b": round(new_elo_b - old_elo_b, 1),
-                "move_count": result["move_count"],
-                "reason": result.get("reason", ""),
+                "move_count": result.move_count,
+                "reason": result.reason,
                 "timestamp": time.time(),
             }
             self._recent_results.append(match_result)
@@ -500,14 +751,23 @@ Add to `keisei/evaluation/scheduler.py`:
                 "Slot %d: %s (%+.1f) vs %s (%+.1f) — %d moves, %s",
                 slot, name_a, new_elo_a - old_elo_a,
                 name_b, new_elo_b - old_elo_b,
-                result["move_count"], result.get("reason"),
+                result.move_count, result.reason,
             )
 
-        except (FileNotFoundError, RuntimeError, ValueError) as e:
-            logger.error("Slot %d match failed: %s", slot, e)
+        except FileNotFoundError as e:
+            logger.error("Slot %d: checkpoint not found: %s", slot, e)
+        except ValueError as e:
+            logger.error("Slot %d: invalid configuration: %s", slot, e)
+        except Exception:
+            logger.exception("Slot %d: unexpected match failure", slot)
         finally:
             self._active_matches.pop(slot, None)
-            self._publish_state()
+            # Protected publish — exception here must not mask the original
+            # error from the try block (B4 fix).
+            try:
+                self._publish_state()
+            except Exception:
+                logger.exception("Slot %d: failed to publish state", slot)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -518,8 +778,12 @@ Expected: All PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add keisei/evaluation/scheduler.py tests/unit/test_scheduler.py
-git commit -m "feat(scheduler): add game execution with spectated pacing and Elo updates"
+git add keisei/evaluation/scheduler.py keisei/utils/agent_loading.py keisei/evaluation/opponents/elo_registry.py tests/unit/test_scheduler.py
+git commit -m "feat(scheduler): add game execution with spectated pacing and Elo updates
+
+Also fixes load_evaluation_agent to use model_factory for correct
+architecture detection (ResNet/CNN) instead of hardcoded ActorCritic.
+Also makes EloRegistry.save() atomic to prevent data loss on crash."
 ```
 
 ---
@@ -549,7 +813,9 @@ class TestStatePublishing:
             scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
             scheduler._state_path = Path(tmpdir) / "state.json"
             scheduler._active_matches = {
-                0: {"match_id": "test", "status": "in_progress", "spectated": True}
+                0: {"match_id": "test", "status": "in_progress", "spectated": True,
+                    "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+                    "model_a": {}, "model_b": {}, "move_count": 0}
             }
             scheduler._recent_results = [{"winner": "model_a"}]
             scheduler._elo_registry = MagicMock()
@@ -597,7 +863,13 @@ Add to `ContinuousMatchScheduler`:
 
 ```python
     def _publish_state(self) -> None:
-        """Write atomic JSON state file for the spectator dashboard."""
+        """Write atomic JSON state file for the spectator dashboard.
+
+        Schema: "ladder-v1" — consumed by the future spectator dashboard
+        (see filigree keisei-8f408d3360). NOT compatible with the training
+        dashboard's BroadcastStateEnvelope ("v1.0.0") format. This is a
+        separate file at a separate path for the ladder subsystem.
+        """
         # Build leaderboard from Elo registry
         leaderboard = []
         for name, elo in sorted(
@@ -625,7 +897,7 @@ Add to `ContinuousMatchScheduler`:
                 "status": match.get("status", "unknown"),
             }
             if match.get("spectated"):
-                entry["board_state"] = match.get("board_state")
+                entry["sfen"] = match.get("sfen")
                 entry["move_log"] = match.get("move_log", [])
             matches.append(entry)
 
@@ -637,11 +909,12 @@ Add to `ContinuousMatchScheduler`:
             "recent_results": self._recent_results[-20:],
         }
 
-        # Atomic write
+        # Use existing atomic write utility — handles cleanup on failure,
+        # uses tempfile.mkstemp + os.replace (replaces inline reimplementation).
+        from keisei.webui.state_snapshot import write_snapshot_atomic
+
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, default=str))
-        tmp.replace(self._state_path)
+        write_snapshot_atomic(state, self._state_path)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -688,8 +961,11 @@ class TestRunLoop:
             (ckpt_dir / "checkpoint_ts2000.pth").write_bytes(b"fake")
 
             elo_path = Path(tmpdir) / "elo.json"
+            state_path = Path(tmpdir) / "state.json"
 
-            scheduler = ContinuousMatchScheduler(
+            from keisei.evaluation.scheduler import SchedulerConfig
+
+            config = SchedulerConfig(
                 checkpoint_dir=ckpt_dir,
                 elo_registry_path=elo_path,
                 device="cpu",
@@ -698,7 +974,20 @@ class TestRunLoop:
                 move_delay=0,
                 poll_interval=1.0,
                 max_moves_per_game=5,
+                state_path=state_path,
             )
+            scheduler = ContinuousMatchScheduler(config)
+
+            # Mock _run_match to avoid loading real models from fake files.
+            # Track call count to verify slot management works.
+            match_count = 0
+
+            async def fake_run_match(slot, a, b):
+                nonlocal match_count
+                match_count += 1
+                await asyncio.sleep(0.05)
+
+            scheduler._run_match = fake_run_match
 
             # run() should not raise when cancelled
             task = asyncio.create_task(scheduler.run())
@@ -708,6 +997,9 @@ class TestRunLoop:
                 await task
             except asyncio.CancelledError:
                 pass  # Expected
+
+            # Verify slot management actually dispatched matches
+            assert match_count > 0, "Scheduler should have dispatched at least one match"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -739,12 +1031,18 @@ Add to `ContinuousMatchScheduler`:
         except asyncio.CancelledError:
             poll_task.cancel()
             slot_task.cancel()
+            # W8 fix: await in-flight match tasks so they can finish
+            # their current Elo save before we exit.
+            pending = [
+                t for t in self._match_tasks.values() if not t.done()
+            ]
+            if pending:
+                logger.info("Awaiting %d in-flight matches...", len(pending))
+                await asyncio.gather(*pending, return_exceptions=True)
             logger.info("Scheduler stopped")
 
     async def _manage_game_slots(self) -> None:
         """Keep all N game slots filled with matches."""
-        slots: Dict[int, asyncio.Task] = {}
-
         while True:
             # Wait until we have enough models
             if len(self._pool_paths) < 2:
@@ -753,13 +1051,13 @@ Add to `ContinuousMatchScheduler`:
 
             # Fill empty slots
             for slot_id in range(self.num_concurrent):
-                if slot_id not in slots or slots[slot_id].done():
+                if slot_id not in self._match_tasks or self._match_tasks[slot_id].done():
                     try:
                         model_a, model_b = self._pick_matchup()
                         task = asyncio.create_task(
                             self._run_match(slot_id, model_a, model_b)
                         )
-                        slots[slot_id] = task
+                        self._match_tasks[slot_id] = task
                     except ValueError:
                         break  # Not enough models
 
@@ -805,7 +1103,7 @@ git commit -m "feat(scheduler): add main run loop with concurrent game slots and
 In `keisei/evaluation/__init__.py`, add:
 
 ```python
-from .scheduler import ContinuousMatchScheduler
+from .scheduler import ContinuousMatchScheduler, MatchResult, SchedulerConfig
 ```
 
 (Check existing exports first — add alongside them.)
