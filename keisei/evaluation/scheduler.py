@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from keisei.utils.agent_loading import load_evaluation_agent
+
 logger = logging.getLogger(__name__)
 
 _ELO_PROXIMITY_SCALE = 200.0
@@ -308,7 +310,6 @@ class ContinuousMatchScheduler:
         """Run a single match: load models, play game, update Elo."""
         import torch
         from keisei.shogi.shogi_game import ShogiGame
-        from keisei.utils.agent_loading import load_evaluation_agent
 
         spectated = slot < self.num_spectated
         name_a = model_a_path.name
@@ -378,10 +379,9 @@ class ContinuousMatchScheduler:
             new_elo_a = self._get_rating(name_a)
             new_elo_b = self._get_rating(name_b)
 
-            self._games_played[name_a] += 1
-            self._games_played[name_b] += 1
-            # Sync games_played back to registry for persistence
-            self._elo_registry.games_played = dict(self._games_played)
+            # games_played is now incremented atomically inside
+            # update_ratings, so just sync the local Counter from registry.
+            self._games_played = Counter(self._elo_registry.games_played)
 
             match_result = {
                 "model_a": name_a,

@@ -226,7 +226,7 @@ class TestEloUpdate:
             # Mock load_evaluation_agent to return dummy agents
             agent_mock = MagicMock()
             with patch(
-                "keisei.utils.agent_loading.load_evaluation_agent",
+                "keisei.evaluation.scheduler.load_evaluation_agent",
                 return_value=agent_mock,
             ) as mock_load, patch(
                 "keisei.shogi.shogi_game.ShogiGame"
