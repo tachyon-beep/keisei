@@ -364,10 +364,10 @@ class TrainingLoopManager:
 
             # Synchronize model with workers if needed
             if (
-                self.agent
-                and self.agent.model
+                self.trainer.agent
+                and self.trainer.agent.model
                 and self.parallel_manager.sync_model_if_needed(
-                    cast(nn.Module, self.agent.model),
+                    cast(nn.Module, self.trainer.agent.model),
                     self.trainer.metrics_manager.global_timestep,
                 )
             ):
@@ -377,9 +377,9 @@ class TrainingLoopManager:
 
             # Collect experiences from workers
             try:
-                if self.buffer:
+                if self.trainer.experience_buffer is not None:
                     experiences_collected = self.parallel_manager.collect_experiences(
-                        self.buffer
+                        self.trainer.experience_buffer
                     )
 
                     if experiences_collected > 0:
