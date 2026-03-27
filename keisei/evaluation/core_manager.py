@@ -6,7 +6,7 @@ import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 # Import strategies to ensure they register with the factory
@@ -80,7 +80,7 @@ class EvaluationManager:
         self.wandb_active = wandb_active
 
     def evaluate_checkpoint(
-        self, agent_checkpoint: str, _opponent_checkpoint: Optional[str] = None
+        self, agent_checkpoint: str, opponent_checkpoint: Optional[str] = None
     ) -> EvaluationResult:
         """Evaluate a saved agent checkpoint."""
         # Validate checkpoint file exists and is readable
@@ -105,12 +105,28 @@ class EvaluationManager:
             ) from e
 
         agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
+
+        # Build environment info with optional opponent
+        env_info: dict[str, Any] = {"device": self.device}
+        if opponent_checkpoint is not None:
+            if not Path(opponent_checkpoint).exists():
+                raise FileNotFoundError(
+                    f"Opponent checkpoint not found: {opponent_checkpoint}"
+                )
+            opponent_info = OpponentInfo(
+                name=Path(opponent_checkpoint).stem,
+                type="ppo",
+                checkpoint_path=opponent_checkpoint,
+            )
+            env_info["opponent_checkpoint"] = opponent_checkpoint
+            env_info["opponent_info"] = opponent_info
+
         context = EvaluationContext(
             session_id=str(uuid4()),
             timestamp=datetime.now(),
             agent_info=agent_info,
             configuration=self.config,
-            environment_info={"device": self.device},
+            environment_info=env_info,
         )
         evaluator = EvaluatorFactory.create(self.config)
         # Set runtime context from training system
@@ -142,7 +158,7 @@ class EvaluationManager:
             return asyncio.run(evaluator.evaluate(agent_info, context))
 
     async def evaluate_checkpoint_async(
-        self, agent_checkpoint: str, _opponent_checkpoint: Optional[str] = None
+        self, agent_checkpoint: str, opponent_checkpoint: Optional[str] = None
     ) -> EvaluationResult:
         """Async version of evaluate_checkpoint for use in async contexts."""
         # Validate checkpoint file exists and is readable
@@ -167,12 +183,28 @@ class EvaluationManager:
             ) from e
 
         agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
+
+        # Build environment info with optional opponent
+        env_info: dict[str, Any] = {"device": self.device}
+        if opponent_checkpoint is not None:
+            if not Path(opponent_checkpoint).exists():
+                raise FileNotFoundError(
+                    f"Opponent checkpoint not found: {opponent_checkpoint}"
+                )
+            opponent_info = OpponentInfo(
+                name=Path(opponent_checkpoint).stem,
+                type="ppo",
+                checkpoint_path=opponent_checkpoint,
+            )
+            env_info["opponent_checkpoint"] = opponent_checkpoint
+            env_info["opponent_info"] = opponent_info
+
         context = EvaluationContext(
             session_id=str(uuid4()),
             timestamp=datetime.now(),
             agent_info=agent_info,
             configuration=self.config,
-            environment_info={"device": self.device},
+            environment_info=env_info,
         )
         evaluator = EvaluatorFactory.create(self.config)
         # Set runtime context from training system
