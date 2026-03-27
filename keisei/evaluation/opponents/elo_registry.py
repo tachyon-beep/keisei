@@ -30,6 +30,7 @@ class EloRegistry:
         self.initial_rating = initial_rating
         self.k_factor = k_factor
         self.ratings: Dict[str, float] = {}
+        self.games_played: Dict[str, int] = {}
         self.load()
 
     def load(self) -> None:
@@ -40,6 +41,9 @@ class EloRegistry:
                     data = json.load(f)
                     self.ratings = {
                         k: float(v) for k, v in data.get("ratings", {}).items()
+                    }
+                    self.games_played = {
+                        k: int(v) for k, v in data.get("games_played", {}).items()
                     }
                 logger.info(f"Loaded {len(self.ratings)} ratings from {self.file_path}")
             except Exception as e:
@@ -53,6 +57,7 @@ class EloRegistry:
 
         data = {
             "ratings": self.ratings,
+            "games_played": self.games_played,
             "metadata": {
                 "initial_rating": self.initial_rating,
                 "k_factor": self.k_factor,

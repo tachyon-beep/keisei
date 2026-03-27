@@ -17,6 +17,10 @@ def _build_evaluation_config(
     policy_mapper,
     input_channels: int,
     input_features: Optional[str] = "core46",
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
     """Build a minimal AppConfig suitable for loading an evaluation agent."""
     from keisei.config_schema import (  # pylint: disable=import-outside-toplevel
@@ -63,10 +67,10 @@ def _build_evaluation_config(
             render_every_steps=1,
             refresh_per_second=4,
             enable_spinner=True,
-            tower_depth=9,
-            tower_width=256,
-            se_ratio=0.25,
-            model_type="resnet",
+            tower_depth=tower_depth,
+            tower_width=tower_width,
+            se_ratio=se_ratio,
+            model_type=model_type,
             mixed_precision=False,
             ddp=False,
             gradient_clip_max_norm=0.5,
@@ -225,7 +229,11 @@ def load_evaluation_agent(
         raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found.")
 
     config = _build_evaluation_config(
-        device_str, policy_mapper, input_channels, input_features
+        device_str, policy_mapper, input_channels, input_features,
+        model_type=model_type,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
     )
 
     temp_model, device = _load_model_from_checkpoint(

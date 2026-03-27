@@ -54,13 +54,13 @@ class TestMatchSelection:
         ac_count = pair_counts.get(("a.pth", "c.pth"), 0)
         assert ab_count > ac_count * 2, f"Close-rated pair {ab_count} should dominate distant {ac_count}"
 
-    def test_new_models_get_weight_boost(self):
-        """Models with <5 games get 3x weight boost."""
+    def test_new_models_get_uncertainty_boost(self):
+        """Models with fewer games get higher uncertainty weight (1/sqrt(games))."""
         ratings = {"a.pth": 1500.0, "b.pth": 1500.0, "c.pth": 1500.0}
         scheduler = self._make_scheduler(["a.pth", "b.pth", "c.pth"], ratings)
-        # a and b have many games, c is new
-        scheduler._games_played["a.pth"] = 20
-        scheduler._games_played["b.pth"] = 20
+        # a and b have many games, c is new — uncertainty weight favors c
+        scheduler._games_played["a.pth"] = 100
+        scheduler._games_played["b.pth"] = 100
         scheduler._games_played["c.pth"] = 1
 
         pair_counts = Counter()
@@ -187,6 +187,67 @@ class TestGameExecution:
             # Should not raise — error is caught and logged
 
 
+class TestEloUpdate:
+    """Verify Elo ratings are updated correctly after a match."""
+
+    @pytest.mark.asyncio
+    async def test_elo_updated_after_win(self):
+        """Winner gains Elo, loser loses Elo after a completed match."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+        from keisei.shogi.shogi_core_definitions import Color
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            elo_path = Path(tmpdir) / "elo.json"
+            state_path = Path(tmpdir) / "state.json"
+
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=elo_path,
+                device="cpu",
+                num_concurrent=1,
+                state_path=state_path,
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            # Seed initial ratings
+            scheduler._elo_registry.get_rating("model_a.pth")  # 1500
+            scheduler._elo_registry.get_rating("model_b.pth")  # 1500
+            old_a = scheduler._elo_registry.get_rating("model_a.pth")
+            old_b = scheduler._elo_registry.get_rating("model_b.pth")
+
+            # Mock _run_game_loop to return a win for model_a (Black)
+            from keisei.evaluation.scheduler import MatchResult
+
+            async def fake_game_loop(game, agent_a, agent_b, spectated, slot):
+                return MatchResult(done=True, winner=0, move_count=10, reason="game_over")
+
+            scheduler._run_game_loop = fake_game_loop
+
+            # Mock load_evaluation_agent to return dummy agents
+            agent_mock = MagicMock()
+            with patch(
+                "keisei.utils.agent_loading.load_evaluation_agent",
+                return_value=agent_mock,
+            ) as mock_load, patch(
+                "keisei.shogi.shogi_game.ShogiGame"
+            ) as game_cls:
+                game_cls.return_value.to_sfen.return_value = "startpos"
+
+                await scheduler._run_match(
+                    0, Path(tmpdir) / "model_a.pth", Path(tmpdir) / "model_b.pth"
+                )
+
+            new_a = scheduler._elo_registry.get_rating("model_a.pth")
+            new_b = scheduler._elo_registry.get_rating("model_b.pth")
+
+            # Winner should gain, loser should lose (equal starting Elo)
+            assert new_a > old_a, f"Winner Elo should increase: {old_a} -> {new_a}"
+            assert new_b < old_b, f"Loser Elo should decrease: {old_b} -> {new_b}"
+            # Games played should be tracked
+            assert scheduler._games_played["model_a.pth"] == 1
+            assert scheduler._games_played["model_b.pth"] == 1
+
+
 class TestStatePublishing:
     """Scheduler writes atomic JSON state for dashboard."""
 
@@ -268,17 +329,20 @@ class TestRunLoop:
             )
             scheduler = ContinuousMatchScheduler(config)
 
+            match_started = asyncio.Event()
             match_count = 0
 
             async def fake_run_match(slot, a, b):
                 nonlocal match_count
                 match_count += 1
+                match_started.set()
                 await asyncio.sleep(0.05)
 
             scheduler._run_match = fake_run_match
 
             task = asyncio.create_task(scheduler.run())
-            await asyncio.sleep(0.5)
+            # Wait for at least one match to start (event-based, no timing dependency)
+            await asyncio.wait_for(match_started.wait(), timeout=5.0)
             task.cancel()
             try:
                 await task

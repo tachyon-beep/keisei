@@ -20,9 +20,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
-_NEWMODEL_GAME_THRESHOLD = 5
-_NEWMODEL_WEIGHT_BOOST = 3.0
 _ELO_PROXIMITY_SCALE = 200.0
+_UNCERTAINTY_MIN_GAMES = 1  # floor for sqrt to avoid division by zero
 
 
 @dataclass
@@ -50,7 +49,7 @@ class SchedulerConfig(BaseModel):
     move_delay: float = Field(1.5, ge=0.0)
     poll_interval: float = Field(30.0, ge=1.0)
     max_moves_per_game: int = Field(500, ge=1)
-    pool_size: int = Field(50, ge=2, le=1000)
+    pool_size: int = Field(50, ge=2, le=200)  # Capped: _pick_matchup is O(n²)
     input_channels: int = 46
     input_features: str = "core46"
     model_type: str = "resnet"
@@ -93,7 +92,8 @@ class ContinuousMatchScheduler:
         self._pool = OpponentPool(pool_size=config.pool_size, elo_registry_path=None)
         self._elo_registry = EloRegistry(config.elo_registry_path)
         self._pool_paths: List[Path] = []
-        self._games_played: Counter = Counter()
+        # Games played is persisted in EloRegistry — survives restarts
+        self._games_played = Counter(self._elo_registry.games_played)
         self._active_matches: Dict[int, Dict[str, Any]] = {}
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
@@ -112,8 +112,13 @@ class ContinuousMatchScheduler:
     def _pick_matchup(self) -> Tuple[Path, Path]:
         """Select two models for a match using weighted random by Elo proximity.
 
-        Weight = 1 / (1 + |elo_a - elo_b| / 200).
-        Models with <5 games get a 3x weight boost.
+        Weight = proximity * uncertainty_a * uncertainty_b, where:
+        - proximity = 1 / (1 + |elo_a - elo_b| / 200)
+        - uncertainty = 1 / sqrt(max(1, games_played))
+
+        The continuous uncertainty weight replaces the old binary 5-game boost,
+        preventing the "Success to the Successful" archetype where models with
+        poor initial ratings get locked out of future matches.
         """
         paths = self._pool_paths
         if len(paths) < 2:
@@ -121,24 +126,26 @@ class ContinuousMatchScheduler:
                 f"Need at least 2 models for a match, have {len(paths)}"
             )
 
-        # Build per-model weights (boost new models)
+        import math
+
+        # Build per-model uncertainty weights: 1/sqrt(games) — naturally
+        # decays as confidence grows, no abrupt threshold cutoff.
         model_weights = {}
         for p in paths:
-            games = self._games_played.get(p.name, 0)
-            boost = _NEWMODEL_WEIGHT_BOOST if games < _NEWMODEL_GAME_THRESHOLD else 1.0
-            model_weights[p] = boost
+            games = max(_UNCERTAINTY_MIN_GAMES, self._games_played.get(p.name, 0))
+            model_weights[p] = 1.0 / math.sqrt(games)
 
-        # Build pair weights
+        # Build pair weights: proximity * uncertainty_a * uncertainty_b
         pairs = []
         weights = []
         for i, a in enumerate(paths):
             for b in paths[i + 1 :]:
                 elo_a = self._get_rating(a.name)
                 elo_b = self._get_rating(b.name)
-                proximity_weight = 1.0 / (
+                proximity = 1.0 / (
                     1.0 + abs(elo_a - elo_b) / _ELO_PROXIMITY_SCALE
                 )
-                pair_weight = proximity_weight * model_weights[a] * model_weights[b]
+                pair_weight = proximity * model_weights[a] * model_weights[b]
                 pairs.append((a, b))
                 weights.append(pair_weight)
 
@@ -243,10 +250,9 @@ class ContinuousMatchScheduler:
             )
 
             # Offload synchronous PyTorch inference to a thread so the
-            # asyncio event loop stays responsive (B3 fix).
-            # Note: is_training is keyword-only in PPOAgent.select_action.
+            # asyncio event loop stays responsive.
             selected_move, _, _, _ = await asyncio.to_thread(
-                lambda: agent.select_action(obs, legal_mask, is_training=False)
+                agent.select_action, obs, legal_mask, is_training=False
             )
 
             if selected_move is None:
@@ -313,15 +319,15 @@ class ContinuousMatchScheduler:
             slot, name_a, name_b, "spectated" if spectated else "background",
         )
 
+        agent_a = None
+        agent_b = None
         try:
-            # W1: Log GPU memory usage when loading models for concurrent slots.
-            if self.device.startswith("cuda"):
-                import torch as _torch
-                if _torch.cuda.is_available():
-                    mem_gb = _torch.cuda.memory_allocated() / 1e9
-                    logger.info(
-                        "Slot %d: GPU memory before load: %.2f GB", slot, mem_gb
-                    )
+            # Log GPU memory before loading models for concurrent slots.
+            if self.device.startswith("cuda") and torch.cuda.is_available():
+                mem_gb = torch.cuda.memory_allocated() / 1e9
+                logger.info(
+                    "Slot %d: GPU memory before load: %.2f GB", slot, mem_gb
+                )
 
             agent_a = load_evaluation_agent(
                 str(model_a_path), self.device, self._policy_mapper,
@@ -374,6 +380,8 @@ class ContinuousMatchScheduler:
 
             self._games_played[name_a] += 1
             self._games_played[name_b] += 1
+            # Sync games_played back to registry for persistence
+            self._elo_registry.games_played = dict(self._games_played)
 
             match_result = {
                 "model_a": name_a,
@@ -402,6 +410,10 @@ class ContinuousMatchScheduler:
         except Exception:
             logger.exception("Slot %d: unexpected match failure", slot)
         finally:
+            # Explicitly free model GPU memory
+            del agent_a, agent_b
+            if self.device.startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self._active_matches.pop(slot, None)
             try:
                 self._publish_state()
@@ -435,6 +447,7 @@ class ContinuousMatchScheduler:
                 logger.info("Awaiting %d in-flight matches...", len(pending))
                 await asyncio.gather(*pending, return_exceptions=True)
             logger.info("Scheduler stopped")
+            raise
 
     async def _manage_game_slots(self) -> None:
         """Keep all N game slots filled with matches."""
