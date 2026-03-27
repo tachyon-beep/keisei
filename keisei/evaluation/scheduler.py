@@ -150,18 +150,58 @@ class ContinuousMatchScheduler:
         return selected[1], selected[0]
 
     def _publish_state(self) -> None:
-        """Write current scheduler state to the state file."""
-        try:
-            state = {
-                "active_matches": self._active_matches,
-                "recent_results": self._recent_results,
-                "timestamp": time.time(),
+        """Write atomic JSON state file for the spectator dashboard.
+
+        Schema: "ladder-v1" — consumed by the future spectator dashboard
+        (see filigree keisei-8f408d3360). NOT compatible with the training
+        dashboard's BroadcastStateEnvelope ("v1.0.0") format. This is a
+        separate file at a separate path for the ladder subsystem.
+        """
+        # Build leaderboard from Elo registry
+        leaderboard = []
+        for name, elo in sorted(
+            self._elo_registry.ratings.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        ):
+            games = self._games_played.get(name, 0)
+            leaderboard.append({
+                "name": name,
+                "elo": round(elo, 1),
+                "games_played": games,
+            })
+
+        # Build matches list (spectated only get full state)
+        matches = []
+        for slot, match in self._active_matches.items():
+            entry = {
+                "slot": slot,
+                "spectated": match.get("spectated", False),
+                "match_id": match.get("match_id", ""),
+                "model_a": match.get("model_a", {}),
+                "model_b": match.get("model_b", {}),
+                "move_count": match.get("move_count", 0),
+                "status": match.get("status", "unknown"),
             }
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._state_path, "w") as f:
-                json.dump(state, f)
-        except Exception:
-            logger.exception("Failed to publish state")
+            if match.get("spectated"):
+                entry["sfen"] = match.get("sfen")
+                entry["move_log"] = match.get("move_log", [])
+            matches.append(entry)
+
+        state = {
+            "schema_version": "ladder-v1",
+            "timestamp": time.time(),
+            "matches": matches,
+            "leaderboard": leaderboard,
+            "recent_results": self._recent_results[-20:],
+        }
+
+        # Use existing atomic write utility — handles cleanup on failure,
+        # uses tempfile.mkstemp + os.replace.
+        from keisei.webui.state_snapshot import write_snapshot_atomic
+
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        write_snapshot_atomic(state, self._state_path)
 
     async def _run_game_loop(
         self,

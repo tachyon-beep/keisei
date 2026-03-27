@@ -1,5 +1,8 @@
 """Unit tests for ContinuousMatchScheduler."""
 
+import json
+import tempfile
+
 import pytest
 from pathlib import Path
 from collections import Counter
@@ -182,3 +185,52 @@ class TestGameExecution:
                 0, Path("/nonexistent/a.pth"), Path("/nonexistent/b.pth")
             )
             # Should not raise — error is caught and logged
+
+
+class TestStatePublishing:
+    """Scheduler writes atomic JSON state for dashboard."""
+
+    def test_publish_state_creates_json(self):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+            scheduler._state_path = Path(tmpdir) / "state.json"
+            scheduler._active_matches = {
+                0: {"match_id": "test", "status": "in_progress", "spectated": True,
+                    "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+                    "model_a": {}, "model_b": {}, "move_count": 0}
+            }
+            scheduler._recent_results = [{"winner": "model_a"}]
+            scheduler._elo_registry = MagicMock()
+            scheduler._elo_registry.ratings = {"model_a": 1520.0, "model_b": 1480.0}
+            scheduler._games_played = Counter({"model_a": 10, "model_b": 5})
+
+            scheduler._publish_state()
+
+            assert scheduler._state_path.exists()
+            data = json.loads(scheduler._state_path.read_text())
+            assert "matches" in data
+            assert "leaderboard" in data
+            assert "recent_results" in data
+            assert data["schema_version"] == "ladder-v1"
+
+    def test_leaderboard_sorted_by_elo(self):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+            scheduler._state_path = Path(tmpdir) / "state.json"
+            scheduler._active_matches = {}
+            scheduler._recent_results = []
+            scheduler._elo_registry = MagicMock()
+            scheduler._elo_registry.ratings = {
+                "weak": 1400.0, "strong": 1600.0, "mid": 1500.0
+            }
+            scheduler._games_played = Counter({"weak": 5, "strong": 5, "mid": 5})
+
+            scheduler._publish_state()
+
+            data = json.loads(scheduler._state_path.read_text())
+            elos = [entry["elo"] for entry in data["leaderboard"]]
+            assert elos == sorted(elos, reverse=True)
