@@ -1,11 +1,16 @@
 """Unit tests for ContinuousMatchScheduler."""
 
+import asyncio
+import itertools
 import json
 import tempfile
-
-import pytest
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
+from unittest.mock import MagicMock, patch, AsyncMock
+
+import numpy as np
+import pytest
+import torch
 
 pytestmark = pytest.mark.unit
 
@@ -21,6 +26,7 @@ class TestMatchSelection:
         scheduler._pool_paths = [Path(c) for c in checkpoints]
         scheduler._games_played = Counter()
         scheduler._elo_registry = None
+        scheduler._failed_checkpoints = set()
 
         # Mock ratings
         scheduler._get_rating = lambda name: (ratings or {}).get(name, 1500.0)
@@ -74,12 +80,6 @@ class TestMatchSelection:
         assert c_appearances > 400, f"New model should appear often, got {c_appearances}/1000"
 
 
-from unittest.mock import MagicMock, patch, AsyncMock
-import asyncio
-import numpy as np
-import torch
-
-
 class TestGameExecution:
     """Scheduler runs games between two models."""
 
@@ -93,8 +93,9 @@ class TestGameExecution:
         scheduler.max_moves_per_game = 10
         scheduler.move_delay = 0
         scheduler.num_spectated = 0
+        scheduler._move_timeout = 30.0
         scheduler._active_matches = {}
-        scheduler._publish_state = MagicMock()
+        scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
         scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
 
@@ -103,10 +104,8 @@ class TestGameExecution:
         game.get_observation.return_value = np.zeros((46, 9, 9))
         game.to_sfen.return_value = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
 
-        player_cycle = [Color.BLACK, Color.WHITE] * 5
-        type(game).current_player = property(
-            lambda self, _cycle=iter(player_cycle): next(_cycle)
-        )
+        _cycle = itertools.cycle([Color.BLACK, Color.WHITE])
+        type(game).current_player = property(lambda self: next(_cycle))
 
         obs = np.zeros((46, 9, 9))
         game.make_move.side_effect = [
@@ -134,8 +133,9 @@ class TestGameExecution:
         scheduler.max_moves_per_game = 3
         scheduler.move_delay = 0
         scheduler.num_spectated = 0
+        scheduler._move_timeout = 30.0
         scheduler._active_matches = {}
-        scheduler._publish_state = MagicMock()
+        scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
         scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
 
@@ -144,10 +144,8 @@ class TestGameExecution:
         game.get_observation.return_value = np.zeros((46, 9, 9))
         game.to_sfen.return_value = "startpos"
 
-        player_cycle = [Color.BLACK, Color.WHITE] * 5
-        type(game).current_player = property(
-            lambda self, _cycle=iter(player_cycle): next(_cycle)
-        )
+        _cycle = itertools.cycle([Color.BLACK, Color.WHITE])
+        type(game).current_player = property(lambda self: next(_cycle))
 
         obs = np.zeros((46, 9, 9))
         game.make_move.return_value = (obs, 0.0, False, {})
@@ -177,6 +175,7 @@ class TestGameExecution:
                 elo_registry_path=Path(tmpdir) / "elo.json",
                 device="cpu",
                 num_concurrent=1,
+                num_spectated=0,
                 state_path=Path(tmpdir) / "state.json",
             )
             scheduler = ContinuousMatchScheduler(config)
@@ -205,6 +204,7 @@ class TestEloUpdate:
                 elo_registry_path=elo_path,
                 device="cpu",
                 num_concurrent=1,
+                num_spectated=0,
                 state_path=state_path,
             )
             scheduler = ContinuousMatchScheduler(config)
@@ -267,7 +267,10 @@ class TestStatePublishing:
             scheduler._elo_registry.ratings = {"model_a": 1520.0, "model_b": 1480.0}
             scheduler._games_played = Counter({"model_a": 10, "model_b": 5})
 
-            scheduler._publish_state()
+            # Test the sync components directly (async _publish_state
+            # delegates to these).
+            state = scheduler._build_state_snapshot()
+            scheduler._write_state_sync(state)
 
             assert scheduler._state_path.exists()
             data = json.loads(scheduler._state_path.read_text())
@@ -290,7 +293,8 @@ class TestStatePublishing:
             }
             scheduler._games_played = Counter({"weak": 5, "strong": 5, "mid": 5})
 
-            scheduler._publish_state()
+            state = scheduler._build_state_snapshot()
+            scheduler._write_state_sync(state)
 
             data = json.loads(scheduler._state_path.read_text())
             elos = [entry["elo"] for entry in data["leaderboard"]]

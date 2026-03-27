@@ -7,16 +7,16 @@ background (full speed, Elo only).
 """
 
 import asyncio
-import json
 import logging
+import math
 import random
 import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from keisei.utils.agent_loading import load_evaluation_agent
 
@@ -41,6 +41,12 @@ class SchedulerConfig(BaseModel):
 
     Defined here for now; move to keisei/config_schema.py when the scheduler
     is wired into the train.py ladder subcommand.
+
+    Note: model_type, tower_depth, tower_width, se_ratio MUST match the
+    architecture used during training. A mismatch will cause state_dict
+    load failures caught as RuntimeError in _run_match. These are
+    duplicated from TrainingConfig until checkpoint metadata includes
+    architecture info (tracked as a follow-up).
     """
 
     checkpoint_dir: Path
@@ -59,8 +65,20 @@ class SchedulerConfig(BaseModel):
     tower_width: int = Field(256, ge=1)
     se_ratio: Optional[float] = 0.25
     state_path: Optional[Path] = None
+    max_consecutive_failures: int = Field(5, ge=1, le=100)
+    move_timeout: float = Field(30.0, ge=1.0, description="Per-move timeout in seconds")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def validate_spectated_within_concurrent(self) -> "SchedulerConfig":
+        """Ensure num_spectated does not exceed num_concurrent."""
+        if self.num_spectated > self.num_concurrent:
+            raise ValueError(
+                f"num_spectated ({self.num_spectated}) must be <= "
+                f"num_concurrent ({self.num_concurrent})"
+            )
+        return self
 
 
 class ContinuousMatchScheduler:
@@ -99,6 +117,12 @@ class ContinuousMatchScheduler:
         self._active_matches: Dict[int, Dict[str, Any]] = {}
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
+        self._move_timeout = config.move_timeout
+        # Blacklist for checkpoints that fail to load — cleared on pool refresh
+        self._failed_checkpoints: Set[Path] = set()
+        # Circuit breaker: consecutive match failures across all slots
+        self._consecutive_failures: int = 0
+        self._max_consecutive_failures: int = config.max_consecutive_failures
         self._state_path = config.state_path or (Path(".keisei_ladder") / "state.json")
 
     def _get_rating(self, name: str) -> float:
@@ -109,6 +133,10 @@ class ContinuousMatchScheduler:
         """Scan checkpoint directory and update internal pool paths."""
         added = self._pool.scan_directory(self.checkpoint_dir)
         self._pool_paths = list(self._pool.get_all())
+        # Clear blacklist on refresh — files may have been restored or
+        # the issue may have been transient (NFS, incomplete write).
+        if added > 0:
+            self._failed_checkpoints.clear()
         return added
 
     def _pick_matchup(self) -> Tuple[Path, Path]:
@@ -122,13 +150,11 @@ class ContinuousMatchScheduler:
         preventing the "Success to the Successful" archetype where models with
         poor initial ratings get locked out of future matches.
         """
-        paths = self._pool_paths
+        paths = [p for p in self._pool_paths if p not in self._failed_checkpoints]
         if len(paths) < 2:
             raise ValueError(
                 f"Need at least 2 models for a match, have {len(paths)}"
             )
-
-        import math
 
         # Build per-model uncertainty weights: 1/sqrt(games) — naturally
         # decays as confidence grows, no abrupt threshold cutoff.
@@ -158,15 +184,8 @@ class ContinuousMatchScheduler:
             return selected[0], selected[1]
         return selected[1], selected[0]
 
-    def _publish_state(self) -> None:
-        """Write atomic JSON state file for the spectator dashboard.
-
-        Schema: "ladder-v1" — consumed by the future spectator dashboard
-        (see filigree keisei-8f408d3360). NOT compatible with the training
-        dashboard's BroadcastStateEnvelope ("v1.0.0") format. This is a
-        separate file at a separate path for the ladder subsystem.
-        """
-        # Build leaderboard from Elo registry
+    def _build_state_snapshot(self) -> Dict[str, Any]:
+        """Build the state dict for publishing (pure computation, no I/O)."""
         leaderboard = []
         for name, elo in sorted(
             self._elo_registry.ratings.items(),
@@ -180,7 +199,6 @@ class ContinuousMatchScheduler:
                 "games_played": games,
             })
 
-        # Build matches list (spectated only get full state)
         matches = []
         for slot, match in self._active_matches.items():
             entry = {
@@ -197,7 +215,7 @@ class ContinuousMatchScheduler:
                 entry["move_log"] = match.get("move_log", [])
             matches.append(entry)
 
-        state = {
+        return {
             "schema_version": "ladder-v1",
             "timestamp": time.time(),
             "matches": matches,
@@ -205,12 +223,25 @@ class ContinuousMatchScheduler:
             "recent_results": self._recent_results[-20:],
         }
 
-        # Use existing atomic write utility — handles cleanup on failure,
-        # uses tempfile.mkstemp + os.replace.
+    def _write_state_sync(self, state: Dict[str, Any]) -> None:
+        """Synchronous file write — called via asyncio.to_thread."""
         from keisei.webui.state_snapshot import write_snapshot_atomic
 
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         write_snapshot_atomic(state, self._state_path)
+
+    async def _publish_state(self) -> None:
+        """Write atomic JSON state file for the spectator dashboard.
+
+        Schema: "ladder-v1" — consumed by the future spectator dashboard
+        (see filigree keisei-8f408d3360). NOT compatible with the training
+        dashboard's BroadcastStateEnvelope ("v1.0.0") format. This is a
+        separate file at a separate path for the ladder subsystem.
+
+        File I/O is offloaded to a thread to avoid blocking the event loop.
+        """
+        state = self._build_state_snapshot()
+        await asyncio.to_thread(self._write_state_sync, state)
 
     async def _run_game_loop(
         self,
@@ -252,10 +283,26 @@ class ContinuousMatchScheduler:
             )
 
             # Offload synchronous PyTorch inference to a thread so the
-            # asyncio event loop stays responsive.
-            selected_move, _, _, _ = await asyncio.to_thread(
-                agent.select_action, obs, legal_mask, is_training=False
-            )
+            # asyncio event loop stays responsive. Timeout prevents hung
+            # inference from permanently consuming a slot.
+            try:
+                selected_move, _, _, _ = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        agent.select_action, obs, legal_mask, is_training=False
+                    ),
+                    timeout=self._move_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Slot %d: inference timed out at move %d (>%.1fs)",
+                    slot, move_count, self._move_timeout,
+                )
+                return MatchResult(
+                    done=True,
+                    winner=1 - current_agent_idx,
+                    move_count=move_count,
+                    reason="inference_timeout",
+                )
 
             if selected_move is None:
                 logger.warning(
@@ -280,7 +327,7 @@ class ContinuousMatchScheduler:
                     "move_log": move_log[-20:],
                     "status": "in_progress",
                 })
-                self._publish_state()
+                await self._publish_state()
                 await asyncio.sleep(self.move_delay)
 
             if done:
@@ -395,6 +442,7 @@ class ContinuousMatchScheduler:
             }
             self._recent_results.append(match_result)
             self._recent_results = self._recent_results[-50:]
+            self._consecutive_failures = 0  # Reset circuit breaker on success
 
             logger.info(
                 "Slot %d: %s (%+.1f) vs %s (%+.1f) — %d moves, %s",
@@ -405,10 +453,16 @@ class ContinuousMatchScheduler:
 
         except FileNotFoundError as e:
             logger.error("Slot %d: checkpoint not found: %s", slot, e)
+            # Blacklist the missing checkpoint(s) so they aren't retried
+            self._failed_checkpoints.add(model_a_path)
+            self._failed_checkpoints.add(model_b_path)
+            self._consecutive_failures += 1
         except ValueError as e:
             logger.error("Slot %d: invalid configuration: %s", slot, e)
+            self._consecutive_failures += 1
         except Exception:
             logger.exception("Slot %d: unexpected match failure", slot)
+            self._consecutive_failures += 1
         finally:
             # Explicitly free model GPU memory
             del agent_a, agent_b
@@ -416,7 +470,7 @@ class ContinuousMatchScheduler:
                 torch.cuda.empty_cache()
             self._active_matches.pop(slot, None)
             try:
-                self._publish_state()
+                await self._publish_state()
             except Exception:
                 logger.exception("Slot %d: failed to publish state", slot)
 
@@ -454,6 +508,18 @@ class ContinuousMatchScheduler:
         while True:
             if len(self._pool_paths) < 2:
                 await asyncio.sleep(1.0)
+                continue
+
+            # Circuit breaker: stop scheduling if too many consecutive failures
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                logger.error(
+                    "Circuit breaker: %d consecutive failures, pausing for %ds",
+                    self._consecutive_failures, 30,
+                )
+                await asyncio.sleep(30.0)
+                # Reset to allow retry after cooldown
+                self._consecutive_failures = 0
+                self._failed_checkpoints.clear()
                 continue
 
             for slot_id in range(self.num_concurrent):
