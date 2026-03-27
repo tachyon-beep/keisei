@@ -563,6 +563,21 @@ class ParallelConfig(BaseModel):
     worker_seed_offset: int = Field(
         1000, description="Offset for worker random seeds to ensure diversity."
     )
+    worker_device_map: str = Field(
+        "auto",
+        description=(
+            "Device assignment for parallel workers. "
+            "'auto' distributes round-robin across available GPUs. "
+            "'cuda:0' puts all workers on one GPU. "
+            "'cpu' forces CPU inference (not recommended for large models)."
+        ),
+    )
+    max_workers_per_gpu: int = Field(
+        8,
+        ge=1,
+        le=32,
+        description="Maximum workers per GPU. Each worker creates a full CUDA context (~400MB overhead).",
+    )
 
     @field_validator("num_workers")
     # pylint: disable=no-self-argument
