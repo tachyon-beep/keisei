@@ -9,14 +9,16 @@ Sequential training at ~7 it/s means each game takes 1-8 minutes per episode (10
 
 ## Solution
 
-Run 24 self-play worker processes (12 per GPU), each with its own `ShogiGame` instance and CUDA model copy. Workers collect experience independently and stream it to the main process via queues. The main process runs PPO updates on GPU 0.
+Run 16 self-play worker processes (8 per GPU), each with its own `ShogiGame` instance and CUDA model copy. Workers collect experience independently and stream it to the main process via queues. The main process runs PPO updates on GPU 0.
+
+Worker count is conservative (8/GPU) because each spawned process creates a full CUDA context (~300-500MB overhead beyond model weights). Actual VRAM per worker should be measured at startup; the `max_workers_per_gpu` config field enforces the cap.
 
 ## Hardware
 
 - 2x NVIDIA RTX 4060 Ti 16GB
 - 24 CPU cores
-- Model size: ~300MB VRAM per copy
-- 12 copies per GPU = ~3.6GB, well within 16GB
+- Model size: ~300MB VRAM per copy + ~400MB CUDA context per process
+- 8 copies per GPU = ~5.6GB, leaving ~10GB headroom
 
 ## Architecture
 
@@ -51,7 +53,7 @@ GPU 0 (cuda:0)                    GPU 1 (cuda:1)
 
 ### 1. ParallelConfig (config_schema.py)
 
-Add one field:
+Add two fields:
 
 ```python
 worker_device_map: str = Field(
@@ -63,13 +65,15 @@ worker_device_map: str = Field(
         "'cpu' forces CPU inference (not recommended for large models)."
     ),
 )
+max_workers_per_gpu: int = Field(
+    8,
+    ge=1,
+    le=32,
+    description="Maximum workers per GPU. Each worker creates a full CUDA context (~400MB overhead).",
+)
 ```
 
-Update defaults:
-
-```python
-num_workers: int = Field(24, ge=1, description="Number of parallel workers")
-```
+Keep `num_workers` schema default at 4 (conservative for unknown hardware). Set 16 in `default_config.yaml` for documented 2-GPU setup.
 
 ### 2. SelfPlayWorker (self_play_worker.py)
 
@@ -123,8 +127,9 @@ No changes. `prepare_model_for_sync()` already calls `.cpu().numpy()` on all ten
 ```yaml
 parallel:
   enabled: false
-  num_workers: 24
+  num_workers: 16
   worker_device_map: "auto"
+  max_workers_per_gpu: 8
   batch_size: 64
   sync_interval: 200
   # ... rest unchanged
@@ -138,20 +143,28 @@ parallel:
 - **Queue management**: `max_queue_size=1000` with timeout handles backpressure during PPO updates
 - **Worker health checks**: `ParallelManager` already verifies workers are alive after spawn
 
+## Design Notes
+
+- **torch.compile**: Workers use non-compiled models (inference-only, compile overhead not justified). The main process may use compiled models; `state_dict()` keys are compatible between compiled and non-compiled models in current PyTorch.
+- **Worker restart**: If a worker dies during training (CUDA OOM, corrupted queue), `ParallelManager` should detect it via `is_alive()` checks during `collect_experiences()`, log a warning, and respawn the worker with a fresh CUDA context. This prevents silent throughput degradation over long runs.
+- **CUDA_VISIBLE_DEVICES**: Each worker should set `os.environ["CUDA_VISIBLE_DEVICES"]` to its assigned GPU index before any torch import in `run()`. This prevents accidental cross-GPU allocations.
+
 ## What We're NOT Doing
 
 - No batched/centralized inference server — each worker runs independently
 - No shared model instances — each worker has its own copy
+- No shared-memory weight broadcast — queue-per-worker is sufficient at 16 workers; shared memory is a future optimization if broadcast latency becomes a bottleneck
 - No double buffering — workers block briefly if queue fills during PPO
 - No mixed precision for workers — FP32 only (mixed precision PPO is a separate bug: keisei-640f840cdf)
 - No DDP — that's Phase 5
 
 ## Expected Performance
 
-- 24 workers × ~7 steps/sec per worker = ~168 steps/sec aggregate
-- PPO epoch (2048 steps) fills in ~12 seconds instead of ~4.5 minutes
-- At 168 steps/sec across 24 games: ~7 moves/sec total, ~0.3 moves/sec per game (~3 seconds between moves per game)
+- 16 workers × ~7 steps/sec per worker = ~112 steps/sec aggregate
+- PPO epoch (2048 steps) fills in ~18 seconds instead of ~4.5 minutes
+- At 112 steps/sec across 16 games: ~7 moves/sec total, ~0.4 moves/sec per game (~2.5 seconds between moves per game)
 - PPO update takes ~14 seconds, queue capacity (1000) absorbs backpressure
+- Can scale to 24+ workers if VRAM measurement confirms headroom
 
 ## Testing
 
