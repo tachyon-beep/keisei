@@ -2,8 +2,9 @@
 """Public interface for the evaluation package."""
 
 from .core_manager import EvaluationManager
+from .scheduler import ContinuousMatchScheduler, MatchResult, SchedulerConfig
 
-__all__ = ["EvaluationManager"]
+__all__ = ["EvaluationManager", "ContinuousMatchScheduler", "MatchResult", "SchedulerConfig"]
 
 # Enhanced features (optional)
 try:

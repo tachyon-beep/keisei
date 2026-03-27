@@ -286,3 +286,11 @@ class TestRunLoop:
                 pass
 
             assert match_count > 0, "Scheduler should have dispatched at least one match"
+
+
+class TestSchedulerExport:
+    """Scheduler is importable from the evaluation package."""
+
+    def test_importable_from_package(self):
+        from keisei.evaluation import ContinuousMatchScheduler
+        assert ContinuousMatchScheduler is not None
