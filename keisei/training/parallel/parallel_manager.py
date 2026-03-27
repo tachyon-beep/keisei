@@ -150,6 +150,53 @@ class ParallelManager:
             self.stop_workers()
             return False
 
+    def _restart_dead_workers(self) -> int:
+        """
+        Detect and restart any dead worker processes.
+
+        Iterates over self.workers, replacing any that have died with fresh
+        SelfPlayWorker instances using the same worker_id, queues, and a
+        new per-worker config (including device assignment).
+
+        Returns:
+            Number of workers that were restarted.
+        """
+        restarted = 0
+        for idx, worker in enumerate(self.workers):
+            if worker.is_alive():
+                continue
+
+            worker_id = worker.worker_id
+            logger.warning(
+                "Worker %d is dead (exit code %s), restarting",
+                worker_id,
+                worker.exitcode,
+            )
+
+            worker_config = dict(self.parallel_config)
+            worker_config["worker_device"] = self._assign_worker_device(worker_id)
+
+            new_worker = SelfPlayWorker(
+                worker_id=worker_id,
+                env_config=self.env_config,
+                model_config=self.model_config,
+                parallel_config=worker_config,
+                experience_queue=self.communicator.experience_queues[worker_id],
+                model_queue=self.communicator.model_queues[worker_id],
+                control_queue=self.communicator.control_queues[worker_id],
+                seed_offset=self.parallel_config["worker_seed_offset"],
+            )
+
+            new_worker.start()
+            self.workers[idx] = new_worker
+            restarted += 1
+
+            logger.info(
+                "Restarted worker %d (new PID: %d)", worker_id, new_worker.pid
+            )
+
+        return restarted
+
     def collect_experiences(self, experience_buffer: ExperienceBuffer) -> int:
         """
         Collect experiences from all workers and add to main buffer.
@@ -162,6 +209,8 @@ class ParallelManager:
         """
         if not self.enabled or not self.is_running:
             return 0
+
+        self._restart_dead_workers()
 
         experiences_collected = 0
 

@@ -1,6 +1,6 @@
 """Tests for GPU device assignment in parallel self-play workers."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,3 +148,88 @@ class TestWorkerDeviceInjection:
         config = {"some_key": "value"}
         device = config.get("worker_device", "cpu")
         assert device == "cpu"
+
+
+class TestWorkerRestart:
+    """Dead workers are detected and the restart method exists."""
+
+    def _make_manager(self, num_workers=2):
+        """Create a ParallelManager with minimal config for testing."""
+        parallel_config = {
+            "enabled": True,
+            "num_workers": num_workers,
+            "batch_size": 32,
+            "sync_interval": 100,
+            "compression_enabled": False,
+            "timeout_seconds": 5.0,
+            "max_queue_size": 100,
+            "worker_seed_offset": 1000,
+            "worker_device_map": "cpu",
+            "max_workers_per_gpu": 8,
+        }
+        return ParallelManager(
+            env_config={},
+            model_config={},
+            parallel_config=parallel_config,
+            device="cpu",
+        )
+
+    def test_restart_method_exists(self):
+        """ParallelManager has _restart_dead_workers method."""
+        assert hasattr(ParallelManager, "_restart_dead_workers")
+
+    def test_restart_returns_zero_when_all_alive(self):
+        """No restarts when all workers are alive."""
+        mgr = self._make_manager(num_workers=2)
+        mgr.is_running = True
+
+        # Create mock workers that are alive
+        for i in range(2):
+            w = MagicMock()
+            w.is_alive.return_value = True
+            w.worker_id = i
+            mgr.workers.append(w)
+
+        result = mgr._restart_dead_workers()
+        assert result == 0
+
+    @patch(
+        "keisei.training.parallel.parallel_manager.SelfPlayWorker",
+        autospec=True,
+    )
+    def test_restart_detects_dead_worker(self, MockWorker):
+        """Dead worker is detected and replaced by _restart_dead_workers."""
+        mgr = self._make_manager(num_workers=2)
+        mgr.is_running = True
+
+        # Worker 0 alive, worker 1 dead
+        alive_worker = MagicMock()
+        alive_worker.is_alive.return_value = True
+        alive_worker.worker_id = 0
+
+        dead_worker = MagicMock()
+        dead_worker.is_alive.return_value = False
+        dead_worker.worker_id = 1
+        dead_worker.exitcode = -9
+
+        mgr.workers = [alive_worker, dead_worker]
+
+        # Configure the mock replacement worker
+        replacement = MockWorker.return_value
+        replacement.pid = 9999
+        replacement.worker_id = 1
+
+        result = mgr._restart_dead_workers()
+        assert result == 1
+
+        # The SelfPlayWorker constructor should have been called for worker_id=1
+        MockWorker.assert_called_once()
+        call_kwargs = MockWorker.call_args[1]
+        assert call_kwargs["worker_id"] == 1
+        assert "worker_device" in call_kwargs["parallel_config"]
+
+        # The replacement should have been started
+        replacement.start.assert_called_once()
+
+        # The dead worker should be replaced in the list
+        assert mgr.workers[1] is replacement
