@@ -55,7 +55,20 @@ class LadderEvaluator(BaseEvaluator):
     def __init__(self, config: EvaluationConfig):  # type: ignore
         super().__init__(config)
         self.config: EvaluationConfig = config  # type: ignore
-        self.elo_tracker = EloTracker()
+        # Load persisted ratings if registry path is configured
+        initial_ratings = None
+        elo_path = getattr(config, "elo_registry_path", None)
+        if elo_path:
+            from pathlib import Path
+
+            from ..opponents.elo_registry import EloRegistry
+
+            self._elo_registry = EloRegistry(Path(elo_path))
+            initial_ratings = dict(self._elo_registry.ratings)
+        else:
+            self._elo_registry = None
+
+        self.elo_tracker = EloTracker(initial_ratings=initial_ratings)
         self.opponent_pool: List[OpponentInfo] = []
         self.policy_mapper = PolicyOutputMapper()  # Add PolicyOutputMapper instance
         # Ensure self.logger is initialized by BaseEvaluator or here
@@ -504,6 +517,10 @@ class LadderEvaluator(BaseEvaluator):
             errors=errors,
             elo_tracker=self.elo_tracker,
         )
+
+        if self._elo_registry is not None:
+            self._elo_registry.ratings = self.elo_tracker.get_all_ratings()
+            self._elo_registry.save()
 
         self.log_evaluation_complete(evaluation_result)
         return evaluation_result
