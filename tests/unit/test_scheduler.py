@@ -234,3 +234,55 @@ class TestStatePublishing:
             data = json.loads(scheduler._state_path.read_text())
             elos = [entry["elo"] for entry in data["leaderboard"]]
             assert elos == sorted(elos, reverse=True)
+
+
+class TestRunLoop:
+    """Scheduler run loop manages concurrent game slots."""
+
+    @pytest.mark.asyncio
+    async def test_run_starts_and_can_be_cancelled(self):
+        """Scheduler starts, runs briefly, and stops on cancellation."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_dir = Path(tmpdir) / "checkpoints"
+            ckpt_dir.mkdir()
+            (ckpt_dir / "checkpoint_ts1000.pth").write_bytes(b"fake")
+            (ckpt_dir / "checkpoint_ts2000.pth").write_bytes(b"fake")
+
+            elo_path = Path(tmpdir) / "elo.json"
+            state_path = Path(tmpdir) / "state.json"
+
+            from keisei.evaluation.scheduler import SchedulerConfig
+
+            config = SchedulerConfig(
+                checkpoint_dir=ckpt_dir,
+                elo_registry_path=elo_path,
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                move_delay=0,
+                poll_interval=1.0,
+                max_moves_per_game=5,
+                state_path=state_path,
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            match_count = 0
+
+            async def fake_run_match(slot, a, b):
+                nonlocal match_count
+                match_count += 1
+                await asyncio.sleep(0.05)
+
+            scheduler._run_match = fake_run_match
+
+            task = asyncio.create_task(scheduler.run())
+            await asyncio.sleep(0.5)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            assert match_count > 0, "Scheduler should have dispatched at least one match"

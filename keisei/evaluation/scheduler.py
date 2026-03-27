@@ -407,3 +407,59 @@ class ContinuousMatchScheduler:
                 self._publish_state()
             except Exception:
                 logger.exception("Slot %d: failed to publish state", slot)
+
+    async def run(self) -> None:
+        """Run the scheduler forever. Cancel to stop."""
+        logger.info("Starting ContinuousMatchScheduler")
+        self._refresh_pool()
+        logger.info("Pool has %d models", len(self._pool_paths))
+
+        if len(self._pool_paths) < 2:
+            logger.warning(
+                "Need at least 2 checkpoints to start. Waiting for models..."
+            )
+
+        poll_task = asyncio.create_task(self._poll_checkpoints_loop())
+        slot_task = asyncio.create_task(self._manage_game_slots())
+
+        try:
+            await asyncio.gather(poll_task, slot_task)
+        except asyncio.CancelledError:
+            poll_task.cancel()
+            slot_task.cancel()
+            # W8 fix: await in-flight match tasks so they can finish
+            pending = [
+                t for t in self._match_tasks.values() if not t.done()
+            ]
+            if pending:
+                logger.info("Awaiting %d in-flight matches...", len(pending))
+                await asyncio.gather(*pending, return_exceptions=True)
+            logger.info("Scheduler stopped")
+
+    async def _manage_game_slots(self) -> None:
+        """Keep all N game slots filled with matches."""
+        while True:
+            if len(self._pool_paths) < 2:
+                await asyncio.sleep(1.0)
+                continue
+
+            for slot_id in range(self.num_concurrent):
+                if slot_id not in self._match_tasks or self._match_tasks[slot_id].done():
+                    try:
+                        model_a, model_b = self._pick_matchup()
+                        task = asyncio.create_task(
+                            self._run_match(slot_id, model_a, model_b)
+                        )
+                        self._match_tasks[slot_id] = task
+                    except ValueError:
+                        break
+
+            await asyncio.sleep(0.1)
+
+    async def _poll_checkpoints_loop(self) -> None:
+        """Periodically scan for new checkpoints."""
+        while True:
+            await asyncio.sleep(self.poll_interval)
+            added = self._refresh_pool()
+            if added > 0:
+                logger.info("Found %d new checkpoints", added)
