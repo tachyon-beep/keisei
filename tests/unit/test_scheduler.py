@@ -910,6 +910,16 @@ class TestFastTrack:
         assert pair is None
         assert len(scheduler._fast_track_queue) == 0
 
+    def test_fast_track_skips_evicted_from_pool(self):
+        """Models no longer in pool_paths are dropped from fast-track queue."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth"])
+        # Enqueue a model that's NOT in pool_paths
+        scheduler._fast_track_queue.append((Path("gone.pth"), 5))
+
+        pair = scheduler._pick_fast_track_matchup()
+        assert pair is None
+        assert len(scheduler._fast_track_queue) == 0
+
     def test_refresh_pool_enqueues_new_models(self):
         """_refresh_pool adds new checkpoints to the fast-track queue."""
         from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig

@@ -140,8 +140,8 @@ class ContinuousMatchScheduler:
         self._pool_paths: List[Path] = []
         # Games played is persisted in EloRegistry — survives restarts
         self._games_played = Counter(self._elo_registry.get_all_games_played())
-        # Wins counter — not persisted (resets on restart, rebuilt from matches)
-        self._wins: Counter = Counter()
+        # Wins persisted in EloRegistry — survives restarts
+        self._wins: Counter = Counter(self._elo_registry.get_all_wins())
         # Fast-track queue: new models get N dedicated games for initial rating
         self._fast_track_queue: deque = deque()
         self._active_matches: Dict[int, ActiveMatchState] = {}
@@ -191,7 +191,11 @@ class ContinuousMatchScheduler:
         """
         while self._fast_track_queue:
             model_path, remaining = self._fast_track_queue[0]
-            if model_path in self._failed_checkpoints:
+            # Drop entries that are blacklisted, evicted from pool, or deleted
+            if (
+                model_path in self._failed_checkpoints
+                or model_path not in self._pool_paths
+            ):
                 self._fast_track_queue.popleft()
                 continue
             # Pick a random opponent that isn't the same model or blacklisted
@@ -502,25 +506,23 @@ class ContinuousMatchScheduler:
             }
             elo_result = elo_result_map[result.winner]
 
-            # Serialize Elo updates so concurrent _run_match tasks
+            # Serialize Elo + win updates so concurrent _run_match tasks
             # don't interleave reads/writes across await boundaries.
             async with self._elo_lock:
                 old_elo_a = self._get_rating(name_a)
                 old_elo_b = self._get_rating(name_b)
                 self._elo_registry.update_ratings(name_a, name_b, [elo_result])
+                if result.winner == MatchOutcome.BLACK_WIN:
+                    self._elo_registry.record_win(name_a)
+                elif result.winner == MatchOutcome.WHITE_WIN:
+                    self._elo_registry.record_win(name_b)
                 await asyncio.to_thread(self._elo_registry.save)
                 new_elo_a = self._get_rating(name_a)
                 new_elo_b = self._get_rating(name_b)
 
-                # games_played is incremented inside update_ratings,
-                # so sync the local Counter from registry.
+                # Sync local counters from registry
                 self._games_played = Counter(self._elo_registry.get_all_games_played())
-
-            # Track wins for win_rate in leaderboard
-            if result.winner == MatchOutcome.BLACK_WIN:
-                self._wins[name_a] += 1
-            elif result.winner == MatchOutcome.WHITE_WIN:
-                self._wins[name_b] += 1
+                self._wins = Counter(self._elo_registry.get_all_wins())
 
             winner_name_map = {
                 MatchOutcome.BLACK_WIN: name_a,
