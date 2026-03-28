@@ -24,7 +24,7 @@ from keisei.utils.agent_loading import load_evaluation_agent
 logger = logging.getLogger(__name__)
 
 _ELO_PROXIMITY_SCALE = 200.0
-_UNCERTAINTY_MIN_GAMES = 1  # floor for sqrt to avoid division by zero
+_UNCERTAINTY_MIN_GAMES = 1  # floor to prevent division by zero in 1/sqrt(games)
 
 
 class MatchOutcome(enum.Enum):
@@ -61,8 +61,8 @@ class ActiveMatchState:
 class SchedulerConfig(BaseModel):
     """Configuration for ContinuousMatchScheduler.
 
-    Defined here for now; move to keisei/config_schema.py when the scheduler
-    is wired into the train.py ladder subcommand.
+    Co-located with the scheduler for cohesion. The ladder subcommand in
+    train.py constructs this from AppConfig defaults + CLI overrides.
 
     Note: model_type, tower_depth, tower_width, se_ratio MUST match the
     architecture used during training. A mismatch will cause state_dict
@@ -130,7 +130,7 @@ class ContinuousMatchScheduler:
 
         # State — scheduler owns the EloRegistry exclusively.
         # OpponentPool gets elo_registry_path=None to prevent a second
-        # registry instance from racing on the same file (B1 fix).
+        # registry instance from racing on the same file.
         self._pool = OpponentPool(pool_size=config.pool_size, elo_registry_path=None)
         self._elo_registry = EloRegistry(config.elo_registry_path)
         self._pool_paths: List[Path] = []
@@ -140,6 +140,9 @@ class ContinuousMatchScheduler:
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
         self._elo_lock = asyncio.Lock()
+        # Serialize GPU inference across concurrent slots — PyTorch's
+        # internal state (cuBLAS workspace, allocator) is not thread-safe.
+        self._inference_semaphore = asyncio.Semaphore(1)
         # Blacklist for checkpoints that fail to load — cleared on pool refresh
         self._failed_checkpoints: Set[Path] = set()
         # Circuit breaker: consecutive match failures across all slots
@@ -167,9 +170,10 @@ class ContinuousMatchScheduler:
         - proximity = 1 / (1 + |elo_a - elo_b| / 200)
         - uncertainty = 1 / sqrt(max(1, games_played))
 
-        The continuous uncertainty weight replaces the old binary 5-game boost,
-        preventing the "Success to the Successful" archetype where models with
-        poor initial ratings get locked out of future matches.
+        A continuous uncertainty weight is used instead of a binary threshold
+        (e.g., a fixed N-game boost for new models). This avoids the "Success
+        to the Successful" archetype where models with poor initial ratings
+        get locked out of future matches.
         """
         paths = [p for p in self._pool_paths if p not in self._failed_checkpoints]
         if len(paths) < 2:
@@ -309,12 +313,13 @@ class ContinuousMatchScheduler:
             # asyncio event loop stays responsive. Timeout prevents hung
             # inference from permanently consuming a slot.
             try:
-                selected_move, _, _, _ = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent.select_action, obs, legal_mask, is_training=False
-                    ),
-                    timeout=self._config.move_timeout,
-                )
+                async with self._inference_semaphore:
+                    selected_move, _, _, _ = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            agent.select_action, obs, legal_mask, is_training=False
+                        ),
+                        timeout=self._config.move_timeout,
+                    )
             except asyncio.TimeoutError:
                 logger.error(
                     "Slot %d: inference timed out at move %d (>%.1fs)",
@@ -347,7 +352,10 @@ class ContinuousMatchScheduler:
                 match_state.move_count = move_count
                 match_state.move_log = move_log[-20:]
                 match_state.status = "in_progress"
-                await self._publish_state()
+                try:
+                    await self._publish_state()
+                except Exception:
+                    logger.exception("Slot %d: failed to publish state mid-game", slot)
                 await asyncio.sleep(self._config.move_delay)
 
             if done:
@@ -490,8 +498,17 @@ class ContinuousMatchScheduler:
         except ValueError as e:
             logger.error("Slot %d: invalid configuration: %s", slot, e)
             self._consecutive_failures += 1
+        except RuntimeError as e:
+            logger.error(
+                "Slot %d: model load/inference failed for %s vs %s: %s",
+                slot, name_a, name_b, e,
+            )
+            # Architecture mismatch or corrupt weights — blacklist both
+            self._failed_checkpoints.add(model_a_path)
+            self._failed_checkpoints.add(model_b_path)
+            self._consecutive_failures += 1
         except Exception:
-            logger.exception("Slot %d: unexpected match failure", slot)
+            logger.exception("Slot %d: unexpected match failure (%s vs %s)", slot, name_a, name_b)
             self._consecutive_failures += 1
         finally:
             # Explicitly free model GPU memory
@@ -523,7 +540,7 @@ class ContinuousMatchScheduler:
         except asyncio.CancelledError:
             poll_task.cancel()
             slot_task.cancel()
-            # W8 fix: await in-flight match tasks so they can finish
+            # Await in-flight match tasks so they can finish cleanly
             pending = [
                 t for t in self._match_tasks.values() if not t.done()
             ]
@@ -543,13 +560,15 @@ class ContinuousMatchScheduler:
             # Circuit breaker: stop scheduling if too many consecutive failures
             if self._consecutive_failures >= self._config.max_consecutive_failures:
                 logger.error(
-                    "Circuit breaker: %d consecutive failures, pausing for %ds",
+                    "Circuit breaker: %d consecutive failures, pausing for %ds. "
+                    "Blacklisted checkpoints: %s",
                     self._consecutive_failures, 30,
+                    [str(p) for p in self._failed_checkpoints],
                 )
                 await asyncio.sleep(30.0)
-                # Reset to allow retry after cooldown
+                # Reset counter but preserve blacklist — blacklist is only
+                # cleared when _refresh_pool discovers new checkpoints.
                 self._consecutive_failures = 0
-                self._failed_checkpoints.clear()
                 continue
 
             for slot_id in range(self._config.num_concurrent):
@@ -561,7 +580,7 @@ class ContinuousMatchScheduler:
                         )
                         self._match_tasks[slot_id] = task
                     except ValueError as e:
-                        logger.debug("Cannot schedule match for slot %d: %s", slot_id, e)
+                        logger.warning("Cannot schedule match for slot %d: %s", slot_id, e)
                         break
 
             await asyncio.sleep(0.1)

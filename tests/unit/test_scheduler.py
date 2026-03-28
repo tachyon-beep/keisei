@@ -101,6 +101,7 @@ class TestGameExecution:
         scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
         scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        scheduler._inference_semaphore = asyncio.Semaphore(1)
 
         game = MagicMock()
         game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
@@ -141,6 +142,7 @@ class TestGameExecution:
         scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
         scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        scheduler._inference_semaphore = asyncio.Semaphore(1)
 
         game = MagicMock()
         game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
@@ -483,6 +485,324 @@ class TestCircuitBreakerAndBlacklist:
             ):
                 await scheduler._run_match(0, Path("/a.pth"), Path("/b.pth"))
 
+            assert scheduler._consecutive_failures == 1
+
+
+class TestGameLoopEdgePaths:
+    """Tests for _run_game_loop error/edge paths (I1)."""
+
+    def _make_scheduler_for_game_loop(self):
+        """Create a minimal scheduler for game loop tests."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, ActiveMatchState
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        mock_config = MagicMock()
+        mock_config.max_moves_per_game = 100
+        mock_config.move_delay = 0
+        mock_config.move_timeout = 0.1  # Short timeout for tests
+        scheduler._config = mock_config
+        scheduler._active_matches = {}
+        scheduler._publish_state = AsyncMock()
+        scheduler._policy_mapper = MagicMock()
+        scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        scheduler._inference_semaphore = asyncio.Semaphore(1)
+        return scheduler
+
+    @pytest.mark.asyncio
+    async def test_no_legal_moves_returns_opponent_win(self):
+        """No legal moves (checkmate) awards win to opponent."""
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = self._make_scheduler_for_game_loop()
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = []  # No legal moves
+        game.to_sfen.return_value = "checkmate_pos"
+        game.current_player = Color.BLACK
+
+        agent_a = MagicMock()
+        agent_b = MagicMock()
+
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=False, slot=0
+        )
+        assert result.winner == MatchOutcome.WHITE_WIN
+        assert result.reason == "no_legal_moves"
+        assert result.move_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_legal_moves_white_turn_returns_black_win(self):
+        """No legal moves on White's turn awards win to Black."""
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = self._make_scheduler_for_game_loop()
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = []
+        game.to_sfen.return_value = "checkmate_pos"
+        game.current_player = Color.WHITE
+
+        result = await scheduler._run_game_loop(
+            game, MagicMock(), MagicMock(), spectated=False, slot=0
+        )
+        assert result.winner == MatchOutcome.BLACK_WIN
+
+    @pytest.mark.asyncio
+    async def test_inference_timeout_returns_opponent_win(self):
+        """Agent inference timeout awards win to opponent."""
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = self._make_scheduler_for_game_loop()
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.current_player = Color.BLACK
+
+        agent_a = MagicMock()
+        # select_action blocks forever — will trigger timeout
+        import time
+        agent_a.select_action.side_effect = lambda *a, **kw: time.sleep(10)
+        agent_b = MagicMock()
+
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=False, slot=0
+        )
+        assert result.winner == MatchOutcome.WHITE_WIN
+        assert result.reason == "inference_timeout"
+
+    @pytest.mark.asyncio
+    async def test_none_action_returns_opponent_win(self):
+        """Agent returning None action awards win to opponent."""
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = self._make_scheduler_for_game_loop()
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.current_player = Color.BLACK
+
+        agent_a = MagicMock()
+        agent_a.select_action.return_value = (None, 0, 0.0, 0.0)
+        agent_b = MagicMock()
+
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=False, slot=0
+        )
+        assert result.winner == MatchOutcome.WHITE_WIN
+        assert result.reason == "no_action_selected"
+
+
+class TestSpectatedGameLoop:
+    """Tests for spectated code path in _run_game_loop (I2)."""
+
+    @pytest.mark.asyncio
+    async def test_spectated_publishes_state_each_move(self):
+        """Spectated games publish state after every move."""
+        from keisei.evaluation.scheduler import (
+            ContinuousMatchScheduler, ActiveMatchState,
+        )
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        mock_config = MagicMock()
+        mock_config.max_moves_per_game = 5
+        mock_config.move_delay = 0
+        mock_config.move_timeout = 30.0
+        scheduler._config = mock_config
+        scheduler._publish_state = AsyncMock()
+        scheduler._policy_mapper = MagicMock()
+        scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        scheduler._inference_semaphore = asyncio.Semaphore(1)
+
+        # Pre-populate active match state for slot 0
+        scheduler._active_matches = {
+            0: ActiveMatchState(
+                match_id="test", status="waiting", spectated=True,
+                sfen="startpos", model_a={}, model_b={},
+                move_count=0, move_log=[],
+            )
+        }
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.to_sfen.return_value = "updated_sfen"
+
+        _cycle = itertools.cycle([Color.BLACK, Color.WHITE])
+        type(game).current_player = property(lambda self: next(_cycle))
+
+        obs = np.zeros((46, 9, 9))
+        game.make_move.side_effect = [
+            (obs, 0.0, False, {}),
+            (obs, 0.0, True, {"winner": "black"}),
+        ]
+
+        agent_a = MagicMock()
+        agent_a.select_action.return_value = ((0, 0, 1, 1, False), 0, 0.0, 0.0)
+        agent_b = MagicMock()
+        agent_b.select_action.return_value = ((0, 0, 1, 1, False), 0, 0.0, 0.0)
+
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=True, slot=0
+        )
+
+        assert result.winner == MatchOutcome.BLACK_WIN
+        # _publish_state called once per move (2 moves)
+        assert scheduler._publish_state.call_count == 2
+        # Match state was updated
+        match_state = scheduler._active_matches[0]
+        assert match_state.sfen == "updated_sfen"
+        assert match_state.move_count == 2
+
+    @pytest.mark.asyncio
+    async def test_spectated_publish_failure_does_not_abort_game(self):
+        """A failed _publish_state in the game loop should not kill the game."""
+        from keisei.evaluation.scheduler import (
+            ContinuousMatchScheduler, ActiveMatchState,
+        )
+        from keisei.shogi.shogi_core_definitions import Color
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        mock_config = MagicMock()
+        mock_config.max_moves_per_game = 5
+        mock_config.move_delay = 0
+        mock_config.move_timeout = 30.0
+        scheduler._config = mock_config
+        # _publish_state raises on every call
+        scheduler._publish_state = AsyncMock(side_effect=OSError("disk full"))
+        scheduler._policy_mapper = MagicMock()
+        scheduler._policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        scheduler._inference_semaphore = asyncio.Semaphore(1)
+
+        scheduler._active_matches = {
+            0: ActiveMatchState(
+                match_id="test", status="waiting", spectated=True,
+                sfen="startpos", model_a={}, model_b={},
+                move_count=0, move_log=[],
+            )
+        }
+
+        game = MagicMock()
+        game.get_legal_moves.return_value = [(0, 0, 1, 1, False)]
+        game.get_observation.return_value = np.zeros((46, 9, 9))
+        game.to_sfen.return_value = "sfen"
+
+        _cycle = itertools.cycle([Color.BLACK, Color.WHITE])
+        type(game).current_player = property(lambda self: next(_cycle))
+
+        obs = np.zeros((46, 9, 9))
+        game.make_move.side_effect = [
+            (obs, 0.0, True, {"winner": "white"}),
+        ]
+
+        agent_a = MagicMock()
+        agent_a.select_action.return_value = ((0, 0, 1, 1, False), 0, 0.0, 0.0)
+        agent_b = MagicMock()
+
+        # Should NOT raise despite publish failures
+        result = await scheduler._run_game_loop(
+            game, agent_a, agent_b, spectated=True, slot=0
+        )
+        assert result.winner == MatchOutcome.WHITE_WIN
+
+
+class TestSchedulerConfigValidation:
+    """Tests for SchedulerConfig Pydantic validators (I3)."""
+
+    def test_rejects_invalid_device_string(self):
+        """Invalid device strings should be rejected."""
+        from keisei.evaluation.scheduler import SchedulerConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="Invalid device"):
+            SchedulerConfig(
+                checkpoint_dir=Path("/tmp"),
+                elo_registry_path=Path("/tmp/elo.json"),
+                device="mps",
+            )
+
+    def test_rejects_spectated_exceeding_concurrent(self):
+        """num_spectated > num_concurrent should be rejected."""
+        from keisei.evaluation.scheduler import SchedulerConfig
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="num_spectated"):
+            SchedulerConfig(
+                checkpoint_dir=Path("/tmp"),
+                elo_registry_path=Path("/tmp/elo.json"),
+                device="cpu",
+                num_concurrent=2,
+                num_spectated=5,
+            )
+
+    def test_accepts_valid_cuda_device(self):
+        """Valid CUDA device strings should be accepted."""
+        from keisei.evaluation.scheduler import SchedulerConfig
+
+        config = SchedulerConfig(
+            checkpoint_dir=Path("/tmp"),
+            elo_registry_path=Path("/tmp/elo.json"),
+            device="cuda:0",
+        )
+        assert config.device == "cuda:0"
+
+    def test_accepts_cpu_device(self):
+        """'cpu' should be accepted."""
+        from keisei.evaluation.scheduler import SchedulerConfig
+
+        config = SchedulerConfig(
+            checkpoint_dir=Path("/tmp"),
+            elo_registry_path=Path("/tmp/elo.json"),
+            device="cpu",
+        )
+        assert config.device == "cpu"
+
+    def test_spectated_equals_concurrent_is_valid(self):
+        """num_spectated == num_concurrent is the boundary case and should pass."""
+        from keisei.evaluation.scheduler import SchedulerConfig
+
+        config = SchedulerConfig(
+            checkpoint_dir=Path("/tmp"),
+            elo_registry_path=Path("/tmp/elo.json"),
+            device="cpu",
+            num_concurrent=3,
+            num_spectated=3,
+        )
+        assert config.num_spectated == 3
+
+
+class TestRuntimeErrorBlacklisting:
+    """RuntimeError in _run_match should blacklist both checkpoints (C2)."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_blacklists_both_models(self):
+        """Architecture mismatch (RuntimeError) blacklists both checkpoints."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                state_path=Path(tmpdir) / "state.json",
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            model_a = Path(tmpdir) / "a.pth"
+            model_b = Path(tmpdir) / "b.pth"
+
+            with patch(
+                "keisei.evaluation.scheduler.load_evaluation_agent",
+                side_effect=RuntimeError("size mismatch for layer.weight"),
+            ):
+                await scheduler._run_match(0, model_a, model_b)
+
+            assert model_a in scheduler._failed_checkpoints
+            assert model_b in scheduler._failed_checkpoints
             assert scheduler._consecutive_failures == 1
 
 

@@ -236,13 +236,21 @@ def load_evaluation_agent(
         se_ratio=se_ratio,
     )
 
-    temp_model, device = _load_model_from_checkpoint(
-        checkpoint_path, device_str, policy_mapper, input_channels,
-        model_type=model_type,
-        tower_depth=tower_depth,
-        tower_width=tower_width,
-        se_ratio=se_ratio,
-    )
+    try:
+        temp_model, device = _load_model_from_checkpoint(
+            checkpoint_path, device_str, policy_mapper, input_channels,
+            model_type=model_type,
+            tower_depth=tower_depth,
+            tower_width=tower_width,
+            se_ratio=se_ratio,
+        )
+    except RuntimeError as e:
+        log_error_to_stderr(
+            "AgentLoading",
+            f"Failed to load model from {checkpoint_path} "
+            f"(type={model_type}, depth={tower_depth}, width={tower_width}): {e}",
+        )
+        raise
 
     agent = _create_ppo_agent(temp_model, config, device, checkpoint_path)
 

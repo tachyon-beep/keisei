@@ -1,13 +1,15 @@
 """Tests for CLI argument parsing in train.py: parsers, training command, main_sync."""
 
 import argparse
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from keisei.training.train import (
     add_evaluation_arguments,
+    add_ladder_arguments,
     add_training_arguments,
     create_main_parser,
     run_training_command,
@@ -313,3 +315,256 @@ class TestMainSync:
             _run_async_entrypoint(mock_entrypoint)
 
         mock_coro.close.assert_called_once()
+
+
+# ===========================================================================
+# Ladder subcommand tests
+# ===========================================================================
+
+
+def _parse_ladder_args(*args: str) -> argparse.Namespace:
+    """Parse ladder arguments, simulating the ladder subcommand."""
+    parser = argparse.ArgumentParser()
+    add_ladder_arguments(parser)
+    return parser.parse_args(list(args))
+
+
+class TestLadderSubcommand:
+    """Verify ladder subcommand is registered and parses correctly."""
+
+    def test_parser_has_ladder_subcommand(self):
+        """Parser accepts 'ladder' subcommand."""
+        parser = create_main_parser()
+        args = parser.parse_args(["ladder", "--checkpoint-dir", "/tmp/models"])
+        assert args.command == "ladder"
+
+    def test_checkpoint_dir_required(self):
+        """--checkpoint-dir is required."""
+        parser = create_main_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["ladder"])
+
+    def test_checkpoint_dir_captured(self):
+        """--checkpoint-dir value is captured."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp/models")
+        assert args.checkpoint_dir == "/tmp/models"
+
+    def test_device_default_none(self):
+        """--device defaults to None."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp/models")
+        assert args.device is None
+
+    def test_device_explicit(self):
+        """--device captures explicit value."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp", "--device", "cuda:1")
+        assert args.device == "cuda:1"
+
+    def test_num_concurrent_default_none(self):
+        """--num-concurrent defaults to None."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp")
+        assert args.num_concurrent is None
+
+    def test_num_concurrent_explicit(self):
+        """--num-concurrent captures integer."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp", "--num-concurrent", "8")
+        assert args.num_concurrent == 8
+
+    def test_num_spectated_explicit(self):
+        """--num-spectated captures integer."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp", "--num-spectated", "2")
+        assert args.num_spectated == 2
+
+    def test_move_delay_explicit(self):
+        """--move-delay captures float."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp", "--move-delay", "0.5")
+        assert args.move_delay == 0.5
+
+    def test_poll_interval_explicit(self):
+        """--poll-interval captures float."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp", "--poll-interval", "60")
+        assert args.poll_interval == 60.0
+
+    def test_state_path_default_none(self):
+        """--state-path defaults to None."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp")
+        assert args.state_path is None
+
+    def test_elo_registry_default_none(self):
+        """--elo-registry defaults to None."""
+        args = _parse_ladder_args("--checkpoint-dir", "/tmp")
+        assert args.elo_registry is None
+
+    def test_override_appends(self):
+        """--override can be specified multiple times."""
+        args = _parse_ladder_args(
+            "--checkpoint-dir", "/tmp",
+            "--override", "training.tower_depth=12",
+            "--override", "env.device=cpu",
+        )
+        assert len(args.override) == 2
+
+    def test_config_flag(self):
+        """--config captures path."""
+        args = _parse_ladder_args(
+            "--checkpoint-dir", "/tmp", "--config", "my_config.yaml"
+        )
+        assert args.config == "my_config.yaml"
+
+
+class TestRunLadderCommand:
+    """Tests for run_ladder_command execution."""
+
+    @pytest.mark.asyncio
+    @patch("keisei.training.train.load_config")
+    async def test_exits_on_missing_checkpoint_dir(self, mock_load):
+        """Exits with error if checkpoint-dir doesn't exist."""
+        from keisei.training.train import run_ladder_command
+
+        args = SimpleNamespace(
+            checkpoint_dir="/nonexistent/dir",
+            config=None,
+            device=None,
+            num_concurrent=None,
+            num_spectated=None,
+            move_delay=None,
+            poll_interval=None,
+            state_path=None,
+            elo_registry=None,
+            override=[],
+        )
+
+        with pytest.raises(SystemExit):
+            await run_ladder_command(args)
+
+        mock_load.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("keisei.evaluation.scheduler.ContinuousMatchScheduler")
+    @patch("keisei.evaluation.scheduler.SchedulerConfig")
+    async def test_creates_scheduler_with_defaults(
+        self, mock_config_cls, mock_scheduler_cls, tmp_path
+    ):
+        """Creates scheduler with default config when no --config given."""
+        from keisei.training.train import run_ladder_command
+
+        mock_config = MagicMock()
+        mock_config.device = "cuda"
+        mock_config.num_concurrent = 6
+        mock_config.num_spectated = 3
+        mock_config_cls.return_value = mock_config
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.run = AsyncMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+
+        args = SimpleNamespace(
+            checkpoint_dir=str(tmp_path),
+            config=None,
+            device="cpu",
+            num_concurrent=4,
+            num_spectated=2,
+            move_delay=None,
+            poll_interval=None,
+            state_path=None,
+            elo_registry=None,
+            override=[],
+        )
+
+        await run_ladder_command(args)
+
+        mock_config_cls.assert_called_once()
+        call_kwargs = mock_config_cls.call_args[1]
+        assert call_kwargs["checkpoint_dir"] == tmp_path
+        assert call_kwargs["device"] == "cpu"
+        assert call_kwargs["num_concurrent"] == 4
+        assert call_kwargs["num_spectated"] == 2
+        mock_scheduler.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("keisei.evaluation.scheduler.ContinuousMatchScheduler")
+    @patch("keisei.evaluation.scheduler.SchedulerConfig")
+    @patch("keisei.training.train.load_config")
+    async def test_loads_config_for_model_architecture(
+        self, mock_load, mock_config_cls, mock_scheduler_cls, tmp_path
+    ):
+        """Pulls model architecture from AppConfig when --config is given."""
+        from keisei.training.train import run_ladder_command
+
+        mock_app_config = MagicMock()
+        mock_app_config.env.device = "cuda"
+        mock_app_config.env.input_channels = 46
+        mock_app_config.training.input_features = "core46"
+        mock_app_config.training.model_type = "resnet"
+        mock_app_config.training.tower_depth = 12
+        mock_app_config.training.tower_width = 128
+        mock_app_config.training.se_ratio = 0.125
+        mock_load.return_value = mock_app_config
+
+        mock_config = MagicMock()
+        mock_config.device = "cuda"
+        mock_config.num_concurrent = 6
+        mock_config.num_spectated = 3
+        mock_config_cls.return_value = mock_config
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.run = AsyncMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+
+        args = SimpleNamespace(
+            checkpoint_dir=str(tmp_path),
+            config="custom.yaml",
+            device=None,
+            num_concurrent=None,
+            num_spectated=None,
+            move_delay=None,
+            poll_interval=None,
+            state_path=None,
+            elo_registry=None,
+            override=[],
+        )
+
+        await run_ladder_command(args)
+
+        mock_load.assert_called_once_with("custom.yaml", {})
+        call_kwargs = mock_config_cls.call_args[1]
+        assert call_kwargs["device"] == "cuda"
+        assert call_kwargs["tower_depth"] == 12
+        assert call_kwargs["tower_width"] == 128
+        assert call_kwargs["se_ratio"] == 0.125
+
+    @pytest.mark.asyncio
+    @patch("keisei.evaluation.scheduler.ContinuousMatchScheduler")
+    @patch("keisei.evaluation.scheduler.SchedulerConfig")
+    async def test_default_elo_registry_path(
+        self, mock_config_cls, mock_scheduler_cls, tmp_path
+    ):
+        """Elo registry defaults to <checkpoint-dir>/elo_ratings.json."""
+        from keisei.training.train import run_ladder_command
+
+        mock_config = MagicMock()
+        mock_config.device = "cpu"
+        mock_config.num_concurrent = 6
+        mock_config.num_spectated = 3
+        mock_config_cls.return_value = mock_config
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.run = AsyncMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+
+        args = SimpleNamespace(
+            checkpoint_dir=str(tmp_path),
+            config=None,
+            device="cpu",
+            num_concurrent=None,
+            num_spectated=None,
+            move_delay=None,
+            poll_interval=None,
+            state_path=None,
+            elo_registry=None,
+            override=[],
+        )
+
+        await run_ladder_command(args)
+
+        call_kwargs = mock_config_cls.call_args[1]
+        assert call_kwargs["elo_registry_path"] == tmp_path / "elo_ratings.json"

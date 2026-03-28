@@ -37,6 +37,12 @@ def create_main_parser():
     eval_parser = subparsers.add_parser("evaluate", help="Evaluate trained agent")
     add_evaluation_arguments(eval_parser)
 
+    # Ladder command (continuous Elo match scheduler)
+    ladder_parser = subparsers.add_parser(
+        "ladder", help="Run continuous Elo ladder match scheduler"
+    )
+    add_ladder_arguments(ladder_parser)
+
     return parser
 
 
@@ -203,6 +209,70 @@ def add_evaluation_arguments(parser):
     )
 
 
+def add_ladder_arguments(parser):
+    """Add ladder-specific arguments to parser."""
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        required=True,
+        help="Directory containing model checkpoints to pit against each other.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a YAML or JSON configuration file (used for model architecture defaults).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use: 'cpu', 'cuda', or 'cuda:N' (default: from config or 'cuda').",
+    )
+    parser.add_argument(
+        "--num-concurrent",
+        type=int,
+        default=None,
+        help="Number of concurrent game slots (default: 6).",
+    )
+    parser.add_argument(
+        "--num-spectated",
+        type=int,
+        default=None,
+        help="Number of spectated (paced) game slots (default: 3).",
+    )
+    parser.add_argument(
+        "--move-delay",
+        type=float,
+        default=None,
+        help="Delay between moves in spectated games, in seconds (default: 1.5).",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=None,
+        help="Seconds between checkpoint directory scans (default: 30).",
+    )
+    parser.add_argument(
+        "--state-path",
+        type=str,
+        default=None,
+        help="Path for the JSON state file consumed by the spectator dashboard.",
+    )
+    parser.add_argument(
+        "--elo-registry",
+        type=str,
+        default=None,
+        help="Path to Elo registry JSON file (default: <checkpoint-dir>/elo_ratings.json).",
+    )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="Override config values via KEY.SUBKEY=VALUE format.",
+    )
+
+
 def create_agent_info_from_checkpoint(checkpoint_path: str):
     """Create AgentInfo from checkpoint path for evaluation."""
     from keisei.evaluation.core import AgentInfo
@@ -333,6 +403,92 @@ async def run_evaluation_command(args):
         raise
 
 
+async def run_ladder_command(args):
+    """Handle the ladder subcommand: run the ContinuousMatchScheduler."""
+    from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+
+    checkpoint_dir = Path(args.checkpoint_dir)
+    if not checkpoint_dir.is_dir():
+        log_error_to_stderr("Ladder", f"Checkpoint directory not found: {checkpoint_dir}")
+        sys.exit(1)
+
+    # Load config for model architecture defaults
+    cli_overrides = {}
+    for override in args.override:
+        if "=" not in override:
+            log_error_to_stderr(
+                "Ladder", f"Malformed override '{override}': expected KEY=VALUE format"
+            )
+            sys.exit(1)
+        k, v = override.split("=", 1)
+        cli_overrides[k] = v
+
+    config: Optional[AppConfig] = None
+    if args.config:
+        config = load_config(args.config, cli_overrides)
+    elif cli_overrides:
+        config = load_config(None, cli_overrides)
+
+    # Build SchedulerConfig, pulling model architecture from AppConfig if available
+    scheduler_kwargs: dict = {
+        "checkpoint_dir": checkpoint_dir,
+        "elo_registry_path": Path(
+            args.elo_registry
+            if args.elo_registry
+            else str(checkpoint_dir / "elo_ratings.json")
+        ),
+    }
+
+    # Device: CLI flag > config > default
+    if args.device is not None:
+        scheduler_kwargs["device"] = args.device
+    elif config is not None:
+        scheduler_kwargs["device"] = config.env.device
+
+    # Scheduler-specific CLI overrides
+    if args.num_concurrent is not None:
+        scheduler_kwargs["num_concurrent"] = args.num_concurrent
+    if args.num_spectated is not None:
+        scheduler_kwargs["num_spectated"] = args.num_spectated
+    if args.move_delay is not None:
+        scheduler_kwargs["move_delay"] = args.move_delay
+    if args.poll_interval is not None:
+        scheduler_kwargs["poll_interval"] = args.poll_interval
+    if args.state_path is not None:
+        scheduler_kwargs["state_path"] = Path(args.state_path)
+
+    # Pull model architecture from AppConfig training section
+    if config is not None:
+        t = config.training
+        scheduler_kwargs.setdefault("input_channels", config.env.input_channels)
+        scheduler_kwargs.setdefault("input_features", t.input_features)
+        scheduler_kwargs.setdefault("model_type", t.model_type)
+        scheduler_kwargs.setdefault("tower_depth", t.tower_depth)
+        scheduler_kwargs.setdefault("tower_width", t.tower_width)
+        scheduler_kwargs.setdefault("se_ratio", t.se_ratio)
+
+    try:
+        scheduler_config = SchedulerConfig(**scheduler_kwargs)
+    except Exception as e:
+        log_error_to_stderr("Ladder", f"Invalid configuration: {e}")
+        sys.exit(1)
+    scheduler = ContinuousMatchScheduler(scheduler_config)
+
+    log_info_to_stderr("Ladder", f"Checkpoint dir: {checkpoint_dir}")
+    log_info_to_stderr("Ladder", f"Device: {scheduler_config.device}")
+    log_info_to_stderr(
+        "Ladder",
+        f"Slots: {scheduler_config.num_concurrent} concurrent, "
+        f"{scheduler_config.num_spectated} spectated",
+    )
+    log_info_to_stderr("Ladder", "Starting scheduler (Ctrl+C to stop)...")
+
+    try:
+        await scheduler.run()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        log_info_to_stderr("Ladder", "Scheduler stopped.")
+
+
 def run_training_command(args):
     """Handle training commands (existing functionality)."""
     # Get W&B sweep overrides if running in a sweep
@@ -385,6 +541,9 @@ async def main():
     elif args.command == "train":
         # Training mode (with optional evaluation)
         run_training_command(args)
+    elif args.command == "ladder":
+        # Continuous Elo ladder match scheduler
+        await run_ladder_command(args)
     else:
         # No command specified, show help
         parser.print_help()

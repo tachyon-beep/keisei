@@ -242,7 +242,7 @@ class ParallelManager:
                     self.communicator.model_queues[worker_id].put(
                         model_data, timeout=self.communicator.timeout
                     )
-                except (RuntimeError, OSError, Exception) as e:
+                except (RuntimeError, OSError) as e:
                     logger.warning(
                         "Could not sync model to restarted worker %d: %s",
                         worker_id, e,
