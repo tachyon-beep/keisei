@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 import torch
 from torch.amp import GradScaler
-from unittest.mock import MagicMock, patch
 
 from keisei.config_schema import (
     AppConfig,
@@ -228,13 +227,13 @@ class TestMixedPrecisionCPUFallback:
             num_actions_total=mapper.get_total_actions(),
         )
 
-        # No scaler, no mixed precision — agent should work fine
+        # Mixed precision flag on CPU should be a no-op
         agent = PPOAgent(
             model=model,
             config=config,
             device=device,
             scaler=None,
-            use_mixed_precision=False,
+            use_mixed_precision=True,
         )
 
         buf = _fill_buffer(agent, config, device)

@@ -373,7 +373,7 @@ class PPOAgent:
                 _use_amp = self.use_mixed_precision and isinstance(
                     self.scaler, GradScaler
                 )
-                with torch.amp.autocast("cuda", enabled=_use_amp):
+                with torch.amp.autocast(self.device.type, enabled=_use_amp):
                     new_log_probs, entropy, new_values = (
                         self.model.evaluate_actions(
                             obs_minibatch,
