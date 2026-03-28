@@ -167,7 +167,10 @@ class PPOAgent:
         # Note: model stays in its current mode (training for rollouts,
         # eval when called from evaluation) — dropout/batchnorm behave
         # accordingly.  Mode is set by the caller (line 149).
-        with torch.no_grad():
+        _use_amp = self.use_mixed_precision and isinstance(self.scaler, GradScaler)
+        with torch.no_grad(), torch.amp.autocast(
+            self.device.type, enabled=_use_amp
+        ):
             if is_training:
                 (
                     selected_policy_index_tensor,
@@ -228,7 +231,10 @@ class PPOAgent:
                 obs_tensor = self.scaler.transform(obs_tensor)
             else:
                 obs_tensor = self.scaler(obs_tensor)
-        with torch.no_grad():
+        _use_amp = self.use_mixed_precision and isinstance(self.scaler, GradScaler)
+        with torch.no_grad(), torch.amp.autocast(
+            self.device.type, enabled=_use_amp
+        ):
             _, _, value_estimate = self.model.get_action_and_value(
                 obs_tensor, deterministic=True
             )
@@ -358,68 +364,73 @@ class PPOAgent:
                     else:
                         obs_minibatch = self.scaler(obs_minibatch)
 
-                # Get new log_probs, entropy, and value from the model
-                if self.use_mixed_precision and isinstance(self.scaler, GradScaler):
-                    with torch.amp.autocast("cuda"):
-                        new_log_probs, entropy, new_values = (
-                            self.model.evaluate_actions(
-                                obs_minibatch,
-                                actions_minibatch,
-                                legal_mask=legal_masks_minibatch,
-                            )
+                # Forward pass + loss computation.
+                # Under mixed precision, autocast must wrap the entire
+                # block so that FP16 model outputs and FP32 buffer tensors
+                # are cast consistently. Wrapping only evaluate_actions()
+                # leaves the loss math mixing FP16/FP32, which causes
+                # "Found dtype Float but expected Half" on backward().
+                _use_amp = self.use_mixed_precision and isinstance(
+                    self.scaler, GradScaler
+                )
+                with torch.amp.autocast(self.device.type, enabled=_use_amp):
+                    new_log_probs, entropy, new_values = (
+                        self.model.evaluate_actions(
+                            obs_minibatch,
+                            actions_minibatch,
+                            legal_mask=legal_masks_minibatch,
                         )
-                else:
-                    new_log_probs, entropy, new_values = self.model.evaluate_actions(
-                        obs_minibatch,
-                        actions_minibatch,
-                        legal_mask=legal_masks_minibatch,
                     )
 
-                # PPO Loss Calculation
-                ratio = torch.exp(new_log_probs - old_log_probs_minibatch)
+                    # PPO Loss Calculation
+                    ratio = torch.exp(new_log_probs - old_log_probs_minibatch)
 
-                clip_mask = (ratio - 1.0).abs() > self.clip_epsilon
-                total_clip_frac += clip_mask.float().mean().item()
+                    clip_mask = (ratio - 1.0).abs() > self.clip_epsilon
+                    total_clip_frac += clip_mask.float().mean().item()
 
-                # Calculate KL divergence approximation
-                kl_div = (old_log_probs_minibatch - new_log_probs).mean()
+                    # Calculate KL divergence approximation
+                    kl_div = (old_log_probs_minibatch - new_log_probs).mean()
 
-                # Clipped surrogate objective
-                surr1 = ratio * advantages_minibatch
-                surr2 = (
-                    torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon)
-                    * advantages_minibatch
-                )
-                policy_loss = -torch.min(surr1, surr2).mean()
-
-                # Value loss with optional clipping
-                if self.config.training.enable_value_clipping:
-                    values_pred_clipped = old_values_minibatch + torch.clamp(
-                        new_values - old_values_minibatch,
-                        -self.clip_epsilon,
-                        self.clip_epsilon,
+                    # Clipped surrogate objective
+                    surr1 = ratio * advantages_minibatch
+                    surr2 = (
+                        torch.clamp(
+                            ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
+                        )
+                        * advantages_minibatch
                     )
-                    value_loss_unclipped = F.mse_loss(
-                        new_values.squeeze(), returns_minibatch.squeeze()
-                    )
-                    value_loss_clipped = F.mse_loss(
-                        values_pred_clipped.squeeze(), returns_minibatch.squeeze()
-                    )
-                    value_loss = torch.max(value_loss_unclipped, value_loss_clipped)
-                else:
-                    value_loss = F.mse_loss(
-                        new_values.squeeze(), returns_minibatch.squeeze()
-                    )
+                    policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Entropy bonus
-                entropy_loss = -entropy.mean()
+                    # Value loss with optional clipping
+                    if self.config.training.enable_value_clipping:
+                        values_pred_clipped = old_values_minibatch + torch.clamp(
+                            new_values - old_values_minibatch,
+                            -self.clip_epsilon,
+                            self.clip_epsilon,
+                        )
+                        value_loss_unclipped = F.mse_loss(
+                            new_values.squeeze(), returns_minibatch.squeeze()
+                        )
+                        value_loss_clipped = F.mse_loss(
+                            values_pred_clipped.squeeze(), returns_minibatch.squeeze()
+                        )
+                        value_loss = torch.max(
+                            value_loss_unclipped, value_loss_clipped
+                        )
+                    else:
+                        value_loss = F.mse_loss(
+                            new_values.squeeze(), returns_minibatch.squeeze()
+                        )
 
-                # Total loss
-                loss = (
-                    policy_loss
-                    + self.value_loss_coeff * value_loss
-                    + self.entropy_coef * entropy_loss
-                )
+                    # Entropy bonus
+                    entropy_loss = -entropy.mean()
+
+                    # Total loss
+                    loss = (
+                        policy_loss
+                        + self.value_loss_coeff * value_loss
+                        + self.entropy_coef * entropy_loss
+                    )
 
                 self._compute_gradient_and_step(loss)
 
