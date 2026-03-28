@@ -131,7 +131,7 @@ class EloRegistry:
         self.set_rating(player1_id, new_rating1)
         self.set_rating(player2_id, new_rating2)
 
-        # Increment games_played atomically alongside ratings so both
+        # Increment games_played alongside ratings so both
         # are persisted together in a single save() call.
         self.games_played[player1_id] = self.games_played.get(player1_id, 0) + len(results)
         self.games_played[player2_id] = self.games_played.get(player2_id, 0) + len(results)

@@ -117,6 +117,7 @@ class ContinuousMatchScheduler:
         self._active_matches: Dict[int, Dict[str, Any]] = {}
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
+        self._elo_lock = asyncio.Lock()
         self._move_timeout = config.move_timeout
         # Blacklist for checkpoints that fail to load — cleared on pool refresh
         self._failed_checkpoints: Set[Path] = set()
@@ -419,16 +420,19 @@ class ContinuousMatchScheduler:
             else:
                 elo_result = "draw"
 
-            old_elo_a = self._get_rating(name_a)
-            old_elo_b = self._get_rating(name_b)
-            self._elo_registry.update_ratings(name_a, name_b, [elo_result])
-            self._elo_registry.save()
-            new_elo_a = self._get_rating(name_a)
-            new_elo_b = self._get_rating(name_b)
+            # Serialize Elo updates so concurrent _run_match tasks
+            # don't interleave reads/writes across await boundaries.
+            async with self._elo_lock:
+                old_elo_a = self._get_rating(name_a)
+                old_elo_b = self._get_rating(name_b)
+                self._elo_registry.update_ratings(name_a, name_b, [elo_result])
+                await asyncio.to_thread(self._elo_registry.save)
+                new_elo_a = self._get_rating(name_a)
+                new_elo_b = self._get_rating(name_b)
 
-            # games_played is now incremented atomically inside
-            # update_ratings, so just sync the local Counter from registry.
-            self._games_played = Counter(self._elo_registry.games_played)
+                # games_played is incremented inside update_ratings,
+                # so sync the local Counter from registry.
+                self._games_played = Counter(self._elo_registry.games_played)
 
             match_result = {
                 "model_a": name_a,

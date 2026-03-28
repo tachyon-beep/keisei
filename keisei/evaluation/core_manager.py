@@ -79,22 +79,22 @@ class EvaluationManager:
         self.model_dir = model_dir
         self.wandb_active = wandb_active
 
-    def evaluate_checkpoint(
+    def _build_checkpoint_context(
         self, agent_checkpoint: str, opponent_checkpoint: Optional[str] = None
-    ) -> EvaluationResult:
-        """Evaluate a saved agent checkpoint."""
-        # Validate checkpoint file exists and is readable
+    ) -> tuple[AgentInfo, EvaluationContext]:
+        """Validate checkpoints and build evaluation context.
+
+        Shared by evaluate_checkpoint and evaluate_checkpoint_async.
+        """
         if not Path(agent_checkpoint).exists():
             raise FileNotFoundError(f"Checkpoint file not found: {agent_checkpoint}")
 
-        # Try to validate the checkpoint file format
         try:
             import torch
 
             checkpoint_data = torch.load(
                 agent_checkpoint, map_location="cpu", weights_only=True
             )
-            # Basic validation - should be a dictionary with expected keys
             if not isinstance(checkpoint_data, dict):
                 raise ValueError(
                     f"Checkpoint file is not a valid PyTorch checkpoint: {agent_checkpoint}"
@@ -106,7 +106,6 @@ class EvaluationManager:
 
         agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
 
-        # Build environment info with optional opponent
         env_info: dict[str, Any] = {"device": self.device}
         if opponent_checkpoint is not None:
             if not Path(opponent_checkpoint).exists():
@@ -127,6 +126,15 @@ class EvaluationManager:
             agent_info=agent_info,
             configuration=self.config,
             environment_info=env_info,
+        )
+        return agent_info, context
+
+    def evaluate_checkpoint(
+        self, agent_checkpoint: str, opponent_checkpoint: Optional[str] = None
+    ) -> EvaluationResult:
+        """Evaluate a saved agent checkpoint."""
+        agent_info, context = self._build_checkpoint_context(
+            agent_checkpoint, opponent_checkpoint
         )
         evaluator = EvaluatorFactory.create(self.config)
         # Set runtime context from training system
@@ -161,50 +169,8 @@ class EvaluationManager:
         self, agent_checkpoint: str, opponent_checkpoint: Optional[str] = None
     ) -> EvaluationResult:
         """Async version of evaluate_checkpoint for use in async contexts."""
-        # Validate checkpoint file exists and is readable
-        if not Path(agent_checkpoint).exists():
-            raise FileNotFoundError(f"Checkpoint file not found: {agent_checkpoint}")
-
-        # Try to validate the checkpoint file format
-        try:
-            import torch
-
-            checkpoint_data = torch.load(
-                agent_checkpoint, map_location="cpu", weights_only=True
-            )
-            # Basic validation - should be a dictionary with expected keys
-            if not isinstance(checkpoint_data, dict):
-                raise ValueError(
-                    f"Checkpoint file is not a valid PyTorch checkpoint: {agent_checkpoint}"
-                )
-        except (ValueError, RuntimeError, OSError) as e:
-            raise ValueError(
-                f"Failed to load checkpoint file {agent_checkpoint}: {e}"
-            ) from e
-
-        agent_info = AgentInfo(name="current_agent", checkpoint_path=agent_checkpoint)
-
-        # Build environment info with optional opponent
-        env_info: dict[str, Any] = {"device": self.device}
-        if opponent_checkpoint is not None:
-            if not Path(opponent_checkpoint).exists():
-                raise FileNotFoundError(
-                    f"Opponent checkpoint not found: {opponent_checkpoint}"
-                )
-            opponent_info = OpponentInfo(
-                name=Path(opponent_checkpoint).stem,
-                type="ppo",
-                checkpoint_path=opponent_checkpoint,
-            )
-            env_info["opponent_checkpoint"] = opponent_checkpoint
-            env_info["opponent_info"] = opponent_info
-
-        context = EvaluationContext(
-            session_id=str(uuid4()),
-            timestamp=datetime.now(),
-            agent_info=agent_info,
-            configuration=self.config,
-            environment_info=env_info,
+        agent_info, context = self._build_checkpoint_context(
+            agent_checkpoint, opponent_checkpoint
         )
         evaluator = EvaluatorFactory.create(self.config)
         # Set runtime context from training system

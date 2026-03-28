@@ -81,12 +81,22 @@ class OpponentPool:
             logger.warning("Scan directory does not exist: %s", d)
             return 0
 
-        matches = sorted(d.glob(pattern), key=lambda p: p.stat().st_mtime)
+        def _safe_mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        matches = sorted(d.glob(pattern), key=_safe_mtime)
         already_known = self.known_paths()
         added = 0
         for match in matches:
             if match.resolve() not in already_known:
-                self.add_checkpoint(match)
+                try:
+                    self.add_checkpoint(match)
+                except (FileNotFoundError, ValueError) as e:
+                    logger.debug("Skipping vanished checkpoint %s: %s", match, e)
+                    continue
                 already_known.add(match.resolve())
                 added += 1
 

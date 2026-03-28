@@ -2,12 +2,12 @@
 Ladder (ELO-based) evaluation strategy implementation.
 """
 
-import logging  # Add logging
+import logging
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-import torch  # Add torch
+import torch
 
 from keisei.shogi.shogi_core_definitions import Color
 from keisei.shogi.shogi_game import ShogiGame
@@ -24,9 +24,6 @@ from ..core import (
     OpponentInfo,
     SummaryStats,
 )
-
-# Explicitly import create_game_result if it's a direct function, or use GameResult constructor
-# from ..core.evaluation_result import create_game_result # Assuming GameResult constructor is used
 
 # Define constants for termination reasons (copied from tournament.py for now)
 TERMINATION_REASON_MAX_MOVES = "Max moves reached"

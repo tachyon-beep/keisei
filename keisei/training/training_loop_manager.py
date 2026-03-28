@@ -387,7 +387,7 @@ class TrainingLoopManager:
                         self.trainer.metrics_manager.increment_timestep_by(
                             experiences_collected
                         )
-                        # Fix B11: Update SPS calculation counter for parallel mode
+                        # Update SPS calculation counter for parallel mode
                         self.steps_since_last_time_for_sps += experiences_collected
 
                         log_both(

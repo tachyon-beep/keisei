@@ -72,6 +72,8 @@ class ParallelManager:
 
         # State tracking
         self._last_synced_state_dict = None
+        self._worker_restart_counts: Dict[int, int] = {}
+        self._max_restarts_per_worker = 5
         self.total_steps_collected = 0
         self.total_batches_received = 0
         self.last_sync_time = time.time()
@@ -185,10 +187,21 @@ class ParallelManager:
                 continue
 
             worker_id = worker.worker_id
+            restart_count = self._worker_restart_counts.get(worker_id, 0)
+            if restart_count >= self._max_restarts_per_worker:
+                logger.error(
+                    "Worker %d exceeded max restarts (%d), not restarting",
+                    worker_id,
+                    self._max_restarts_per_worker,
+                )
+                continue
+
             logger.warning(
-                "Worker %d is dead (exit code %s), restarting",
+                "Worker %d is dead (exit code %s), restarting (%d/%d)",
                 worker_id,
                 worker.exitcode,
+                restart_count + 1,
+                self._max_restarts_per_worker,
             )
 
             worker_config = dict(self.parallel_config)
@@ -211,6 +224,7 @@ class ParallelManager:
                 logger.error("Failed to restart worker %d: %s", worker_id, e)
                 continue
             self.workers[idx] = new_worker
+            self._worker_restart_counts[worker_id] = restart_count + 1
             restarted += 1
 
             logger.info(
