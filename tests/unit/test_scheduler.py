@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 import torch
 
+from keisei.evaluation.scheduler import MatchOutcome, MatchResult
+
 pytestmark = pytest.mark.unit
 
 
@@ -90,10 +92,11 @@ class TestGameExecution:
         from keisei.shogi.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
-        scheduler.max_moves_per_game = 10
-        scheduler.move_delay = 0
-        scheduler.num_spectated = 0
-        scheduler._move_timeout = 30.0
+        mock_config = MagicMock()
+        mock_config.max_moves_per_game = 10
+        mock_config.move_delay = 0
+        mock_config.move_timeout = 30.0
+        scheduler._config = mock_config
         scheduler._active_matches = {}
         scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
@@ -120,20 +123,20 @@ class TestGameExecution:
         result = await scheduler._run_game_loop(
             game, agent_a, agent_b, spectated=False, slot=0
         )
-        assert result.done is True
-        assert result.winner == 0  # Black wins
+        assert result.winner == MatchOutcome.BLACK_WIN
 
     @pytest.mark.asyncio
     async def test_run_game_loop_draw_on_max_moves(self):
         """Game returns draw when max_moves reached without winner."""
-        from keisei.evaluation.scheduler import ContinuousMatchScheduler, MatchResult
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
         from keisei.shogi.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
-        scheduler.max_moves_per_game = 3
-        scheduler.move_delay = 0
-        scheduler.num_spectated = 0
-        scheduler._move_timeout = 30.0
+        mock_config = MagicMock()
+        mock_config.max_moves_per_game = 3
+        mock_config.move_delay = 0
+        mock_config.move_timeout = 30.0
+        scheduler._config = mock_config
         scheduler._active_matches = {}
         scheduler._publish_state = AsyncMock()
         scheduler._policy_mapper = MagicMock()
@@ -158,8 +161,7 @@ class TestGameExecution:
         result = await scheduler._run_game_loop(
             game, agent_a, agent_b, spectated=False, slot=0
         )
-        assert result.done is True
-        assert result.winner is None
+        assert result.winner == MatchOutcome.DRAW
         assert result.move_count == 3
         assert result.reason == "max_moves"
 
@@ -216,10 +218,8 @@ class TestEloUpdate:
             old_b = scheduler._elo_registry.get_rating("model_b.pth")
 
             # Mock _run_game_loop to return a win for model_a (Black)
-            from keisei.evaluation.scheduler import MatchResult
-
             async def fake_game_loop(game, agent_a, agent_b, spectated, slot):
-                return MatchResult(done=True, winner=0, move_count=10, reason="game_over")
+                return MatchResult(winner=MatchOutcome.BLACK_WIN, move_count=10, reason="game_over")
 
             scheduler._run_game_loop = fake_game_loop
 
@@ -252,19 +252,21 @@ class TestStatePublishing:
     """Scheduler writes atomic JSON state for dashboard."""
 
     def test_publish_state_creates_json(self):
-        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+        from keisei.evaluation.scheduler import ActiveMatchState, ContinuousMatchScheduler
 
         with tempfile.TemporaryDirectory() as tmpdir:
             scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
             scheduler._state_path = Path(tmpdir) / "state.json"
             scheduler._active_matches = {
-                0: {"match_id": "test", "status": "in_progress", "spectated": True,
-                    "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
-                    "model_a": {}, "model_b": {}, "move_count": 0}
+                0: ActiveMatchState(
+                    match_id="test", status="in_progress", spectated=True,
+                    sfen="lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+                    model_a={}, model_b={}, move_count=0, move_log=[],
+                )
             }
             scheduler._recent_results = [{"winner": "model_a"}]
             scheduler._elo_registry = MagicMock()
-            scheduler._elo_registry.ratings = {"model_a": 1520.0, "model_b": 1480.0}
+            scheduler._elo_registry.get_all_ratings.return_value = {"model_a": 1520.0, "model_b": 1480.0}
             scheduler._games_played = Counter({"model_a": 10, "model_b": 5})
 
             # Test the sync components directly (async _publish_state
@@ -288,7 +290,7 @@ class TestStatePublishing:
             scheduler._active_matches = {}
             scheduler._recent_results = []
             scheduler._elo_registry = MagicMock()
-            scheduler._elo_registry.ratings = {
+            scheduler._elo_registry.get_all_ratings.return_value = {
                 "weak": 1400.0, "strong": 1600.0, "mid": 1500.0
             }
             scheduler._games_played = Counter({"weak": 5, "strong": 5, "mid": 5})
@@ -442,7 +444,7 @@ class TestCircuitBreakerAndBlacklist:
             scheduler._consecutive_failures = 3  # pre-set some failures
 
             async def fake_game_loop(game, agent_a, agent_b, spectated, slot):
-                return MatchResult(done=True, winner=0, move_count=5, reason="game_over")
+                return MatchResult(winner=MatchOutcome.BLACK_WIN, move_count=5, reason="game_over")
 
             scheduler._run_game_loop = fake_game_loop
 

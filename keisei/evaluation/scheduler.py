@@ -7,6 +7,7 @@ background (full speed, Elo only).
 """
 
 import asyncio
+import enum
 import logging
 import math
 import random
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from keisei.utils.agent_loading import load_evaluation_agent
 
@@ -26,14 +27,35 @@ _ELO_PROXIMITY_SCALE = 200.0
 _UNCERTAINTY_MIN_GAMES = 1  # floor for sqrt to avoid division by zero
 
 
+class MatchOutcome(enum.Enum):
+    """Winner of a completed game."""
+
+    BLACK_WIN = "black_win"
+    WHITE_WIN = "white_win"
+    DRAW = "draw"
+
+
 @dataclass
 class MatchResult:
-    """Typed result from a completed game."""
+    """Result from a completed game."""
 
-    done: bool
-    winner: Optional[int]  # 0=Black, 1=White, None=Draw
+    winner: MatchOutcome
     move_count: int
     reason: str
+
+
+@dataclass
+class ActiveMatchState:
+    """Typed state for an in-progress match slot."""
+
+    match_id: str
+    model_a: Dict[str, Any]
+    model_b: Dict[str, Any]
+    sfen: str
+    move_count: int
+    move_log: List[str]
+    status: str
+    spectated: bool
 
 
 class SchedulerConfig(BaseModel):
@@ -70,6 +92,18 @@ class SchedulerConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    @field_validator("device")
+    @classmethod
+    def validate_device_string(cls, v: str) -> str:
+        """Reject invalid device strings early instead of failing in PyTorch."""
+        import re
+
+        if not re.match(r"^(cpu|cuda(:\d+)?)$", v):
+            raise ValueError(
+                f"Invalid device '{v}': must be 'cpu', 'cuda', or 'cuda:N'"
+            )
+        return v
+
     @model_validator(mode="after")
     def validate_spectated_within_concurrent(self) -> "SchedulerConfig":
         """Ensure num_spectated does not exceed num_concurrent."""
@@ -89,19 +123,7 @@ class ContinuousMatchScheduler:
         from keisei.evaluation.opponents.opponent_pool import OpponentPool
         from keisei.utils.utils import PolicyOutputMapper
 
-        self.checkpoint_dir = Path(config.checkpoint_dir)
-        self.device = config.device
-        self.num_concurrent = config.num_concurrent
-        self.num_spectated = config.num_spectated
-        self.move_delay = config.move_delay
-        self.poll_interval = config.poll_interval
-        self.max_moves_per_game = config.max_moves_per_game
-        self.input_channels = config.input_channels
-        self.input_features = config.input_features
-        self.model_type = config.model_type
-        self.tower_depth = config.tower_depth
-        self.tower_width = config.tower_width
-        self.se_ratio = config.se_ratio
+        self._config = config
 
         # Shared policy mapper (one instance, reused across all matches)
         self._policy_mapper = PolicyOutputMapper()
@@ -113,17 +135,15 @@ class ContinuousMatchScheduler:
         self._elo_registry = EloRegistry(config.elo_registry_path)
         self._pool_paths: List[Path] = []
         # Games played is persisted in EloRegistry — survives restarts
-        self._games_played = Counter(self._elo_registry.games_played)
-        self._active_matches: Dict[int, Dict[str, Any]] = {}
+        self._games_played = Counter(self._elo_registry.get_all_games_played())
+        self._active_matches: Dict[int, ActiveMatchState] = {}
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
         self._elo_lock = asyncio.Lock()
-        self._move_timeout = config.move_timeout
         # Blacklist for checkpoints that fail to load — cleared on pool refresh
         self._failed_checkpoints: Set[Path] = set()
         # Circuit breaker: consecutive match failures across all slots
         self._consecutive_failures: int = 0
-        self._max_consecutive_failures: int = config.max_consecutive_failures
         self._state_path = config.state_path or (Path(".keisei_ladder") / "state.json")
 
     def _get_rating(self, name: str) -> float:
@@ -132,7 +152,7 @@ class ContinuousMatchScheduler:
 
     def _refresh_pool(self) -> int:
         """Scan checkpoint directory and update internal pool paths."""
-        added = self._pool.scan_directory(self.checkpoint_dir)
+        added = self._pool.scan_directory(self._config.checkpoint_dir)
         self._pool_paths = list(self._pool.get_all())
         # Clear blacklist on refresh — files may have been restored or
         # the issue may have been transient (NFS, incomplete write).
@@ -189,7 +209,7 @@ class ContinuousMatchScheduler:
         """Build the state dict for publishing (pure computation, no I/O)."""
         leaderboard = []
         for name, elo in sorted(
-            self._elo_registry.ratings.items(),
+            self._elo_registry.get_all_ratings().items(),
             key=lambda x: x[1],
             reverse=True,
         ):
@@ -204,16 +224,16 @@ class ContinuousMatchScheduler:
         for slot, match in self._active_matches.items():
             entry = {
                 "slot": slot,
-                "spectated": match.get("spectated", False),
-                "match_id": match.get("match_id", ""),
-                "model_a": match.get("model_a", {}),
-                "model_b": match.get("model_b", {}),
-                "move_count": match.get("move_count", 0),
-                "status": match.get("status", "unknown"),
+                "spectated": match.spectated,
+                "match_id": match.match_id,
+                "model_a": match.model_a,
+                "model_b": match.model_b,
+                "move_count": match.move_count,
+                "status": match.status,
             }
-            if match.get("spectated"):
-                entry["sfen"] = match.get("sfen")
-                entry["move_log"] = match.get("move_log", [])
+            if match.spectated:
+                entry["sfen"] = match.sfen
+                entry["move_log"] = match.move_log
             matches.append(entry)
 
         return {
@@ -260,7 +280,10 @@ class ContinuousMatchScheduler:
         agents = {Color.BLACK: agent_a, Color.WHITE: agent_b}
         move_log: List[str] = []
 
-        while move_count < self.max_moves_per_game:
+        def _opponent_wins(agent_idx: int) -> MatchOutcome:
+            return MatchOutcome.WHITE_WIN if agent_idx == 0 else MatchOutcome.BLACK_WIN
+
+        while move_count < self._config.max_moves_per_game:
             current_color = game.current_player
             current_agent_idx = 0 if current_color == Color.BLACK else 1
             agent = agents[current_color]
@@ -272,8 +295,7 @@ class ContinuousMatchScheduler:
                     slot, move_count, game.to_sfen(),
                 )
                 return MatchResult(
-                    done=True,
-                    winner=1 - current_agent_idx,
+                    winner=_opponent_wins(current_agent_idx),
                     move_count=move_count,
                     reason="no_legal_moves",
                 )
@@ -291,16 +313,15 @@ class ContinuousMatchScheduler:
                     asyncio.to_thread(
                         agent.select_action, obs, legal_mask, is_training=False
                     ),
-                    timeout=self._move_timeout,
+                    timeout=self._config.move_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.error(
                     "Slot %d: inference timed out at move %d (>%.1fs)",
-                    slot, move_count, self._move_timeout,
+                    slot, move_count, self._config.move_timeout,
                 )
                 return MatchResult(
-                    done=True,
-                    winner=1 - current_agent_idx,
+                    winner=_opponent_wins(current_agent_idx),
                     move_count=move_count,
                     reason="inference_timeout",
                 )
@@ -311,8 +332,7 @@ class ContinuousMatchScheduler:
                     slot, move_count,
                 )
                 return MatchResult(
-                    done=True,
-                    winner=1 - current_agent_idx,
+                    winner=_opponent_wins(current_agent_idx),
                     move_count=move_count,
                     reason="no_action_selected",
                 )
@@ -322,32 +342,30 @@ class ContinuousMatchScheduler:
             move_log.append(str(selected_move))
 
             if spectated:
-                self._active_matches[slot].update({
-                    "sfen": game.to_sfen(),
-                    "move_count": move_count,
-                    "move_log": move_log[-20:],
-                    "status": "in_progress",
-                })
+                match_state = self._active_matches[slot]
+                match_state.sfen = game.to_sfen()
+                match_state.move_count = move_count
+                match_state.move_log = move_log[-20:]
+                match_state.status = "in_progress"
                 await self._publish_state()
-                await asyncio.sleep(self.move_delay)
+                await asyncio.sleep(self._config.move_delay)
 
             if done:
-                winner = info.get("winner")
-                winner_idx = None
-                if winner == "black" or winner == 0:
-                    winner_idx = 0
-                elif winner == "white" or winner == 1:
-                    winner_idx = 1
+                winner_raw = info.get("winner")
+                if winner_raw == "black" or winner_raw == 0:
+                    outcome = MatchOutcome.BLACK_WIN
+                elif winner_raw == "white" or winner_raw == 1:
+                    outcome = MatchOutcome.WHITE_WIN
+                else:
+                    outcome = MatchOutcome.DRAW
                 return MatchResult(
-                    done=True,
-                    winner=winner_idx,
+                    winner=outcome,
                     move_count=move_count,
                     reason=info.get("terminal_reason", "game_over"),
                 )
 
         return MatchResult(
-            done=True,
-            winner=None,
+            winner=MatchOutcome.DRAW,
             move_count=move_count,
             reason="max_moves",
         )
@@ -359,7 +377,8 @@ class ContinuousMatchScheduler:
         import torch
         from keisei.shogi.shogi_game import ShogiGame
 
-        spectated = slot < self.num_spectated
+        cfg = self._config
+        spectated = slot < cfg.num_spectated
         name_a = model_a_path.name
         name_b = model_b_path.name
 
@@ -372,53 +391,53 @@ class ContinuousMatchScheduler:
         agent_b = None
         try:
             # Log GPU memory before loading models for concurrent slots.
-            if self.device.startswith("cuda") and torch.cuda.is_available():
+            if cfg.device.startswith("cuda") and torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / 1e9
                 logger.info(
                     "Slot %d: GPU memory before load: %.2f GB", slot, mem_gb
                 )
 
             agent_a = load_evaluation_agent(
-                str(model_a_path), self.device, self._policy_mapper,
-                self.input_channels, self.input_features,
-                model_type=self.model_type,
-                tower_depth=self.tower_depth,
-                tower_width=self.tower_width,
-                se_ratio=self.se_ratio,
+                str(model_a_path), cfg.device, self._policy_mapper,
+                cfg.input_channels, cfg.input_features,
+                model_type=cfg.model_type,
+                tower_depth=cfg.tower_depth,
+                tower_width=cfg.tower_width,
+                se_ratio=cfg.se_ratio,
             )
             agent_b = load_evaluation_agent(
-                str(model_b_path), self.device, self._policy_mapper,
-                self.input_channels, self.input_features,
-                model_type=self.model_type,
-                tower_depth=self.tower_depth,
-                tower_width=self.tower_width,
-                se_ratio=self.se_ratio,
+                str(model_b_path), cfg.device, self._policy_mapper,
+                cfg.input_channels, cfg.input_features,
+                model_type=cfg.model_type,
+                tower_depth=cfg.tower_depth,
+                tower_width=cfg.tower_width,
+                se_ratio=cfg.se_ratio,
             )
 
-            game = ShogiGame(max_moves_per_game=self.max_moves_per_game)
+            game = ShogiGame(max_moves_per_game=cfg.max_moves_per_game)
             game.reset()
 
-            self._active_matches[slot] = {
-                "match_id": f"{name_a}_vs_{name_b}_{int(time.time())}",
-                "model_a": {"name": name_a, "elo": self._get_rating(name_a)},
-                "model_b": {"name": name_b, "elo": self._get_rating(name_b)},
-                "sfen": game.to_sfen(),
-                "move_count": 0,
-                "move_log": [],
-                "status": "in_progress",
-                "spectated": spectated,
-            }
+            self._active_matches[slot] = ActiveMatchState(
+                match_id=f"{name_a}_vs_{name_b}_{int(time.time())}",
+                model_a={"name": name_a, "elo": self._get_rating(name_a)},
+                model_b={"name": name_b, "elo": self._get_rating(name_b)},
+                sfen=game.to_sfen(),
+                move_count=0,
+                move_log=[],
+                status="in_progress",
+                spectated=spectated,
+            )
 
             result = await self._run_game_loop(
                 game, agent_a, agent_b, spectated, slot
             )
 
-            if result.winner == 0:
-                elo_result = "agent_win"
-            elif result.winner == 1:
-                elo_result = "opponent_win"
-            else:
-                elo_result = "draw"
+            elo_result_map = {
+                MatchOutcome.BLACK_WIN: "agent_win",
+                MatchOutcome.WHITE_WIN: "opponent_win",
+                MatchOutcome.DRAW: "draw",
+            }
+            elo_result = elo_result_map[result.winner]
 
             # Serialize Elo updates so concurrent _run_match tasks
             # don't interleave reads/writes across await boundaries.
@@ -432,12 +451,17 @@ class ContinuousMatchScheduler:
 
                 # games_played is incremented inside update_ratings,
                 # so sync the local Counter from registry.
-                self._games_played = Counter(self._elo_registry.games_played)
+                self._games_played = Counter(self._elo_registry.get_all_games_played())
 
+            winner_name_map = {
+                MatchOutcome.BLACK_WIN: name_a,
+                MatchOutcome.WHITE_WIN: name_b,
+                MatchOutcome.DRAW: "draw",
+            }
             match_result = {
                 "model_a": name_a,
                 "model_b": name_b,
-                "winner": name_a if result.winner == 0 else (name_b if result.winner == 1 else "draw"),
+                "winner": winner_name_map[result.winner],
                 "elo_delta_a": round(new_elo_a - old_elo_a, 1),
                 "elo_delta_b": round(new_elo_b - old_elo_b, 1),
                 "move_count": result.move_count,
@@ -472,7 +496,7 @@ class ContinuousMatchScheduler:
         finally:
             # Explicitly free model GPU memory
             del agent_a, agent_b
-            if self.device.startswith("cuda") and torch.cuda.is_available():
+            if cfg.device.startswith("cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             self._active_matches.pop(slot, None)
             try:
@@ -517,7 +541,7 @@ class ContinuousMatchScheduler:
                 continue
 
             # Circuit breaker: stop scheduling if too many consecutive failures
-            if self._consecutive_failures >= self._max_consecutive_failures:
+            if self._consecutive_failures >= self._config.max_consecutive_failures:
                 logger.error(
                     "Circuit breaker: %d consecutive failures, pausing for %ds",
                     self._consecutive_failures, 30,
@@ -528,7 +552,7 @@ class ContinuousMatchScheduler:
                 self._failed_checkpoints.clear()
                 continue
 
-            for slot_id in range(self.num_concurrent):
+            for slot_id in range(self._config.num_concurrent):
                 if slot_id not in self._match_tasks or self._match_tasks[slot_id].done():
                     try:
                         model_a, model_b = self._pick_matchup()
@@ -545,7 +569,7 @@ class ContinuousMatchScheduler:
     async def _poll_checkpoints_loop(self) -> None:
         """Periodically scan for new checkpoints."""
         while True:
-            await asyncio.sleep(self.poll_interval)
+            await asyncio.sleep(self._config.poll_interval)
             added = self._refresh_pool()
             if added > 0:
                 logger.info("Found %d new checkpoints", added)

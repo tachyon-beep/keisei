@@ -141,9 +141,17 @@ class EloRegistry:
             f"{player2_id}: {rating2:.1f} -> {new_rating2:.1f}"
         )
 
+    def set_all_ratings(self, ratings: Dict[str, float]) -> None:
+        """Bulk-replace all ratings (e.g. from EloTracker sync)."""
+        self.ratings = dict(ratings)
+
     def get_all_ratings(self) -> Dict[str, float]:
         """Get all current ratings."""
         return self.ratings.copy()
+
+    def get_all_games_played(self) -> Dict[str, int]:
+        """Get all games_played counts."""
+        return self.games_played.copy()
 
     def get_top_players(self, limit: int = 10) -> List[tuple[str, float]]:
         """Get top players by rating."""

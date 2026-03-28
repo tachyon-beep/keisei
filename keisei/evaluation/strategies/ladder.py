@@ -61,7 +61,7 @@ class LadderEvaluator(BaseEvaluator):
             from ..opponents.elo_registry import EloRegistry
 
             self._elo_registry = EloRegistry(Path(elo_path))
-            initial_ratings = dict(self._elo_registry.ratings)
+            initial_ratings = self._elo_registry.get_all_ratings()
         else:
             self._elo_registry = None
 
@@ -516,7 +516,7 @@ class LadderEvaluator(BaseEvaluator):
         )
 
         if self._elo_registry is not None:
-            self._elo_registry.ratings = self.elo_tracker.get_all_ratings()
+            self._elo_registry.set_all_ratings(self.elo_tracker.get_all_ratings())
             self._elo_registry.save()
 
         self.log_evaluation_complete(evaluation_result)
