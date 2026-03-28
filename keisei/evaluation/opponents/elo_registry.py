@@ -46,8 +46,11 @@ class EloRegistry:
                         k: int(v) for k, v in data.get("games_played", {}).items()
                     }
                 logger.info(f"Loaded {len(self.ratings)} ratings from {self.file_path}")
-            except Exception as e:
-                logger.warning("Failed to load ratings from %s: %s", self.file_path, e)
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                logger.error(
+                    "Corrupt ratings file %s, starting fresh: %s",
+                    self.file_path, e,
+                )
                 self.ratings = {}
                 self.games_played = {}
 

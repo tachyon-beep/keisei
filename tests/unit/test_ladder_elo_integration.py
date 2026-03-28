@@ -5,7 +5,7 @@ Tests for ladder evaluator integration with the real EloTracker and EloRegistry.
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,3 +148,58 @@ class TestLadderEloPersistence:
             registry3 = EloRegistry(path)
             assert registry3.ratings["agent"] > 1500.0
             assert registry3.ratings["opp"] < 1500.0
+
+    def test_elo_registry_games_played_roundtrip(self):
+        """games_played should survive a save/load cycle."""
+        from keisei.evaluation.opponents.elo_registry import EloRegistry
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "elo_ratings.json"
+
+            registry = EloRegistry(path)
+            registry.update_ratings("a", "b", ["agent_win"])
+            registry.save()
+
+            registry2 = EloRegistry(path)
+            assert registry2.games_played["a"] == 1
+            assert registry2.games_played["b"] == 1
+
+    def test_atomic_save_preserves_original_on_write_failure(self):
+        """If json.dump fails during save, the original file should be preserved."""
+        from keisei.evaluation.opponents.elo_registry import EloRegistry
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "elo_ratings.json"
+
+            # Write initial valid state
+            registry = EloRegistry(path)
+            registry.ratings = {"model_a": 1600.0}
+            registry.games_played = {"model_a": 10}
+            registry.save()
+
+            # Verify initial save worked
+            assert path.exists()
+            original_content = path.read_text()
+
+            # Now attempt a save that fails during json.dump
+            registry.ratings = {"model_a": 1700.0, "model_b": 1300.0}
+            with patch("json.dump", side_effect=OSError("disk full")):
+                with pytest.raises(OSError, match="disk full"):
+                    registry.save()
+
+            # Original file should be untouched
+            assert path.read_text() == original_content
+            reloaded = json.loads(path.read_text())
+            assert reloaded["ratings"]["model_a"] == 1600.0
+
+    def test_load_rejects_permission_error(self):
+        """PermissionError on load should propagate, not silently reset ratings."""
+        from keisei.evaluation.opponents.elo_registry import EloRegistry
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "elo_ratings.json"
+            path.write_text('{"ratings": {"a": 1500.0}, "games_played": {"a": 5}}')
+
+            with patch("builtins.open", side_effect=PermissionError("denied")):
+                with pytest.raises(PermissionError):
+                    EloRegistry(path)

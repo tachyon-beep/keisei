@@ -1,7 +1,9 @@
-"""Tests for opponent_checkpoint parameter in EvaluationManager.
+"""Tests for opponent_checkpoint parameter in EvaluationManager
+and model_factory integration in agent_loading.
 
 Verifies that evaluate_checkpoint() and evaluate_checkpoint_async() properly
-accept and use the opponent_checkpoint parameter (not underscore-prefixed).
+accept and use the opponent_checkpoint parameter (not underscore-prefixed),
+and that _load_model_from_checkpoint delegates to model_factory correctly.
 """
 
 from __future__ import annotations
@@ -188,3 +190,124 @@ class TestEvaluateCheckpointAsyncOpponent:
         assert opp.name == "opponent_model"
         assert opp.type == "ppo"
         assert opp.checkpoint_path == fake_opponent_checkpoint
+
+
+class TestModelFactoryIntegration:
+    """_load_model_from_checkpoint delegates to model_factory with correct kwargs."""
+
+    def test_model_factory_receives_architecture_params(self):
+        """model_factory should be called with the exact architecture kwargs."""
+        from keisei.utils.agent_loading import _load_model_from_checkpoint
+
+        mock_model = MagicMock()
+        mock_model.to.return_value = mock_model
+
+        policy_mapper = MagicMock()
+        policy_mapper.get_total_actions.return_value = 13527
+
+        with patch(
+            "keisei.training.models.model_factory", return_value=mock_model
+        ) as mock_factory:
+            model, device = _load_model_from_checkpoint(
+                checkpoint_path="/fake/model.pth",
+                device_str="cpu",
+                policy_mapper=policy_mapper,
+                input_channels=46,
+                model_type="resnet",
+                tower_depth=5,
+                tower_width=128,
+                se_ratio=0.125,
+            )
+
+        mock_factory.assert_called_once_with(
+            model_type="resnet",
+            obs_shape=(46, 9, 9),
+            num_actions=13527,
+            tower_depth=5,
+            tower_width=128,
+            se_ratio=0.125,
+        )
+        mock_model.to.assert_called_once()
+        assert model is mock_model
+
+    def test_model_factory_cnn_architecture(self):
+        """model_factory should also work with cnn model_type."""
+        from keisei.utils.agent_loading import _load_model_from_checkpoint
+
+        mock_model = MagicMock()
+        mock_model.to.return_value = mock_model
+
+        policy_mapper = MagicMock()
+        policy_mapper.get_total_actions.return_value = 13527
+
+        with patch(
+            "keisei.training.models.model_factory", return_value=mock_model
+        ) as mock_factory:
+            _load_model_from_checkpoint(
+                checkpoint_path="/fake/model.pth",
+                device_str="cpu",
+                policy_mapper=policy_mapper,
+                input_channels=46,
+                model_type="cnn",
+                tower_depth=3,
+                tower_width=64,
+                se_ratio=None,
+            )
+
+        mock_factory.assert_called_once_with(
+            model_type="cnn",
+            obs_shape=(46, 9, 9),
+            num_actions=13527,
+            tower_depth=3,
+            tower_width=64,
+            se_ratio=None,
+        )
+
+    def test_load_evaluation_agent_propagates_architecture_params(self):
+        """load_evaluation_agent should pass architecture params through."""
+        import os
+        import tempfile
+
+        from keisei.utils.agent_loading import load_evaluation_agent
+
+        mock_model = MagicMock()
+        mock_model.to.return_value = mock_model
+        mock_model.eval.return_value = mock_model
+
+        policy_mapper = MagicMock()
+        policy_mapper.get_total_actions.return_value = 13527
+
+        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as f:
+            f.write(b"fake")
+            checkpoint_path = f.name
+
+        try:
+            with patch(
+                "keisei.training.models.model_factory", return_value=mock_model
+            ) as mock_factory, patch(
+                "keisei.core.ppo_agent.PPOAgent"
+            ) as mock_ppo_cls:
+                mock_agent = MagicMock()
+                mock_ppo_cls.return_value = mock_agent
+
+                load_evaluation_agent(
+                    checkpoint_path=checkpoint_path,
+                    device_str="cpu",
+                    policy_mapper=policy_mapper,
+                    input_channels=46,
+                    model_type="resnet",
+                    tower_depth=7,
+                    tower_width=192,
+                    se_ratio=0.5,
+                )
+
+            mock_factory.assert_called_once_with(
+                model_type="resnet",
+                obs_shape=(46, 9, 9),
+                num_actions=13527,
+                tower_depth=7,
+                tower_width=192,
+                se_ratio=0.5,
+            )
+        finally:
+            os.unlink(checkpoint_path)

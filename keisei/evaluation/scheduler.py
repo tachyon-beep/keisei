@@ -453,9 +453,11 @@ class ContinuousMatchScheduler:
 
         except FileNotFoundError as e:
             logger.error("Slot %d: checkpoint not found: %s", slot, e)
-            # Blacklist the missing checkpoint(s) so they aren't retried
-            self._failed_checkpoints.add(model_a_path)
-            self._failed_checkpoints.add(model_b_path)
+            # Blacklist only the checkpoint(s) that are actually missing
+            if not model_a_path.exists():
+                self._failed_checkpoints.add(model_a_path)
+            if not model_b_path.exists():
+                self._failed_checkpoints.add(model_b_path)
             self._consecutive_failures += 1
         except ValueError as e:
             logger.error("Slot %d: invalid configuration: %s", slot, e)
@@ -530,7 +532,8 @@ class ContinuousMatchScheduler:
                             self._run_match(slot_id, model_a, model_b)
                         )
                         self._match_tasks[slot_id] = task
-                    except ValueError:
+                    except ValueError as e:
+                        logger.debug("Cannot schedule match for slot %d: %s", slot_id, e)
                         break
 
             await asyncio.sleep(0.1)

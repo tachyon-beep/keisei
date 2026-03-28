@@ -71,6 +71,7 @@ class ParallelManager:
         self.worker_stats: Dict[int, Dict] = {}
 
         # State tracking
+        self._last_synced_state_dict = None
         self.total_steps_collected = 0
         self.total_batches_received = 0
         self.last_sync_time = time.time()
@@ -79,13 +80,30 @@ class ParallelManager:
         logger.info("ParallelManager initialized with %d workers", self.num_workers)
 
     def _assign_worker_device(self, worker_id: int) -> str:
-        """Assign a CUDA device to a worker based on the device map config."""
+        """Assign a CUDA device to a worker based on the device map config.
+
+        When device_map is 'auto', distributes workers round-robin across GPUs
+        and logs a warning if the max_workers_per_gpu cap would be exceeded.
+        """
         device_map = self.parallel_config.get("worker_device_map", "auto")
         if device_map == "auto":
             gpu_count = torch.cuda.device_count()
             if gpu_count == 0:
                 return "cpu"
-            return f"cuda:{worker_id % gpu_count}"
+            gpu_id = worker_id % gpu_count
+            max_per_gpu = self.parallel_config.get("max_workers_per_gpu", 8)
+            workers_on_gpu = sum(
+                1 for wid in range(self.num_workers)
+                if wid != worker_id and wid % gpu_count == gpu_id
+            )
+            if workers_on_gpu >= max_per_gpu:
+                logger.warning(
+                    "GPU %d already has %d workers (max_workers_per_gpu=%d), "
+                    "assigning worker %d to CPU instead",
+                    gpu_id, workers_on_gpu, max_per_gpu, worker_id,
+                )
+                return "cpu"
+            return f"cuda:{gpu_id}"
         return device_map
 
     def start_workers(self, initial_model: nn.Module) -> bool:
@@ -187,13 +205,34 @@ class ParallelManager:
                 seed_offset=self.parallel_config["worker_seed_offset"],
             )
 
-            new_worker.start()
+            try:
+                new_worker.start()
+            except (OSError, RuntimeError) as e:
+                logger.error("Failed to restart worker %d: %s", worker_id, e)
+                continue
             self.workers[idx] = new_worker
             restarted += 1
 
             logger.info(
                 "Restarted worker %d (new PID: %d)", worker_id, new_worker.pid
             )
+
+            # Sync current model weights so the restarted worker doesn't
+            # run with uninitialized weights until the next periodic sync.
+            if self._last_synced_state_dict is not None:
+                try:
+                    model_data = self.communicator._prepare_model_data(
+                        self._last_synced_state_dict,
+                        compress=self.parallel_config["compression_enabled"],
+                    )
+                    self.communicator.model_queues[worker_id].put(
+                        model_data, timeout=self.communicator.timeout
+                    )
+                except (RuntimeError, OSError, Exception) as e:
+                    logger.warning(
+                        "Could not sync model to restarted worker %d: %s",
+                        worker_id, e,
+                    )
 
         return restarted
 
@@ -280,8 +319,10 @@ class ParallelManager:
         """
         try:
             # Send model weights to workers
+            state_dict = model.state_dict()
+            self._last_synced_state_dict = state_dict
             self.communicator.send_model_weights(
-                model.state_dict(),
+                state_dict,
                 compression_enabled=self.parallel_config["compression_enabled"],
             )
 

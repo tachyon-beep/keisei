@@ -356,6 +356,134 @@ class TestRunLoop:
             assert match_count > 0, "Scheduler should have dispatched at least one match"
 
 
+class TestBlacklist:
+    """Blacklisting excludes failed checkpoints from matchup selection."""
+
+    def _make_scheduler(self, checkpoints, ratings=None):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        scheduler._pool_paths = [Path(c) for c in checkpoints]
+        scheduler._games_played = Counter()
+        scheduler._elo_registry = None
+        scheduler._failed_checkpoints = set()
+        scheduler._get_rating = lambda name: (ratings or {}).get(name, 1500.0)
+        return scheduler
+
+    def test_pick_excludes_blacklisted_checkpoints(self):
+        """Blacklisted checkpoints should never appear in matchup results."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth", "c.pth"])
+        scheduler._failed_checkpoints.add(Path("c.pth"))
+
+        for _ in range(100):
+            a, b = scheduler._pick_matchup()
+            assert a != Path("c.pth"), "Blacklisted checkpoint appeared as model_a"
+            assert b != Path("c.pth"), "Blacklisted checkpoint appeared as model_b"
+
+    def test_pick_raises_when_all_but_one_blacklisted(self):
+        """Should raise ValueError if blacklisting leaves fewer than 2 models."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth", "c.pth"])
+        scheduler._failed_checkpoints.add(Path("b.pth"))
+        scheduler._failed_checkpoints.add(Path("c.pth"))
+
+        with pytest.raises(ValueError, match="at least 2"):
+            scheduler._pick_matchup()
+
+
+class TestCircuitBreakerAndBlacklist:
+    """_run_match error paths properly update circuit breaker and blacklist."""
+
+    @pytest.mark.asyncio
+    async def test_missing_checkpoint_blacklists_only_missing_file(self):
+        """Only the actually-missing checkpoint should be blacklisted."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            existing = Path(tmpdir) / "exists.pth"
+            existing.write_bytes(b"fake")
+            missing = Path(tmpdir) / "missing.pth"
+
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                state_path=Path(tmpdir) / "state.json",
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            # Load missing first so FileNotFoundError is raised for it
+            await scheduler._run_match(0, missing, existing)
+
+            assert missing in scheduler._failed_checkpoints
+            assert existing not in scheduler._failed_checkpoints
+            assert scheduler._consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_consecutive_failures_reset_on_success(self):
+        """A successful match should reset _consecutive_failures to 0."""
+        from keisei.evaluation.scheduler import (
+            ContinuousMatchScheduler,
+            MatchResult,
+            SchedulerConfig,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                state_path=Path(tmpdir) / "state.json",
+            )
+            scheduler = ContinuousMatchScheduler(config)
+            scheduler._consecutive_failures = 3  # pre-set some failures
+
+            async def fake_game_loop(game, agent_a, agent_b, spectated, slot):
+                return MatchResult(done=True, winner=0, move_count=5, reason="game_over")
+
+            scheduler._run_game_loop = fake_game_loop
+
+            agent_mock = MagicMock()
+            with patch(
+                "keisei.evaluation.scheduler.load_evaluation_agent",
+                return_value=agent_mock,
+            ), patch("keisei.shogi.shogi_game.ShogiGame") as game_cls:
+                game_cls.return_value.to_sfen.return_value = "startpos"
+                scheduler._elo_registry.get_rating("a.pth")
+                scheduler._elo_registry.get_rating("b.pth")
+
+                await scheduler._run_match(0, Path(tmpdir) / "a.pth", Path(tmpdir) / "b.pth")
+
+            assert scheduler._consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_value_error_increments_circuit_breaker(self):
+        """ValueError during match should increment _consecutive_failures."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = SchedulerConfig(
+                checkpoint_dir=Path(tmpdir),
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                state_path=Path(tmpdir) / "state.json",
+            )
+            scheduler = ContinuousMatchScheduler(config)
+
+            with patch(
+                "keisei.evaluation.scheduler.load_evaluation_agent",
+                side_effect=ValueError("bad config"),
+            ):
+                await scheduler._run_match(0, Path("/a.pth"), Path("/b.pth"))
+
+            assert scheduler._consecutive_failures == 1
+
+
 class TestSchedulerExport:
     """Scheduler is importable from the evaluation package."""
 
