@@ -71,6 +71,27 @@ def _piece_image_key(piece: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 _SAMPLE_STATE_PATH = Path(__file__).parent / "sample_state.json"
+_DEFAULT_LADDER_STATE_PATH = Path(".keisei_ladder") / "state.json"
+
+
+def load_ladder_state(
+    ladder_file: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Load ladder state from JSON file.
+
+    Returns None if the file doesn't exist (ladder not running).
+    """
+    path = Path(ladder_file) if ladder_file else _DEFAULT_LADDER_STATE_PATH
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if data.get("schema_version") != "ladder-v1":
+            return None
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def load_state(state_file: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1052,25 +1073,140 @@ def render_lineage_tab(env: EnvelopeParser) -> None:
     render_lineage_panel(env)
 
 
-def _render_dashboard_content(env: EnvelopeParser) -> None:
+def extract_playing_models(matches: List[Dict[str, Any]]) -> set:
+    """Extract names of models currently in active matches."""
+    playing = set()
+    for match in matches:
+        model_a = match.get("model_a", {})
+        model_b = match.get("model_b", {})
+        if isinstance(model_a, dict):
+            playing.add(model_a.get("name", ""))
+        if isinstance(model_b, dict):
+            playing.add(model_b.get("name", ""))
+    return playing
+
+
+def compute_recent_deltas(
+    recent_results: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Sum recent Elo deltas per model for trend arrows."""
+    deltas: Dict[str, float] = {}
+    for result in recent_results[-20:]:
+        name_a = result.get("model_a", "")
+        name_b = result.get("model_b", "")
+        delta_a = result.get("elo_delta_a", 0.0)
+        delta_b = result.get("elo_delta_b", 0.0)
+        deltas[name_a] = deltas.get(name_a, 0.0) + delta_a
+        deltas[name_b] = deltas.get(name_b, 0.0) + delta_b
+    return deltas
+
+
+def format_elo_arrow(delta: float) -> str:
+    """Format a recent Elo delta as a Streamlit-markdown arrow indicator."""
+    if delta > 0.5:
+        return f":green[+{delta:.0f} ↑]"
+    elif delta < -0.5:
+        return f":red[{delta:.0f} ↓]"
+    return "—"
+
+
+def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
+    """Render the Ladder tab: live Elo leaderboard with match indicators."""
+    if ladder_state is None:
+        st.info(
+            "No ladder data available. Start the scheduler with "
+            "`python train.py ladder --checkpoint-dir <path>`"
+        )
+        return
+
+    leaderboard = ladder_state.get("leaderboard", [])
+    matches = ladder_state.get("matches", [])
+    recent_results = ladder_state.get("recent_results", [])
+
+    if not leaderboard:
+        st.warning("Ladder is running but no models have been rated yet.")
+        return
+
+    playing_now = extract_playing_models(matches)
+    recent_deltas = compute_recent_deltas(recent_results)
+
+    # Summary metrics — games_played is per-model, so divide by 2 for unique games
+    total_model_games = sum(e.get("games_played", 0) for e in leaderboard)
+    active_matches = len(matches)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Models", len(leaderboard))
+    col2.metric("Games Played", total_model_games // 2)
+    col3.metric("Active Matches", active_matches)
+
+    # Leaderboard table
+    st.subheader("Elo Leaderboard")
+
+    # Header row
+    header = st.columns([0.5, 3, 1.5, 1, 1.5, 1.5])
+    header[0].write("**#**")
+    header[1].write("**Model**")
+    header[2].write("**Elo**")
+    header[3].write("**Games**")
+    header[4].write("**Win %**")
+    header[5].write("**Trend**")
+
+    for rank, entry in enumerate(leaderboard, 1):
+        name = entry.get("name", "?")
+        elo = entry.get("elo", 1500.0)
+        games = entry.get("games_played", 0)
+        win_rate = entry.get("win_rate", 0.0)
+        is_playing = name in playing_now
+        arrow = format_elo_arrow(recent_deltas.get(name, 0.0))
+        status = " :green_circle:" if is_playing else ""
+
+        cols = st.columns([0.5, 3, 1.5, 1, 1.5, 1.5])
+        cols[0].write(f"**#{rank}**")
+        cols[1].write(f"**{name}**{status}")
+        cols[2].write(f"**{elo:.0f}**")
+        cols[3].write(f"{games}")
+        cols[4].write(f"{win_rate:.1%}")
+        cols[5].write(arrow)
+
+    # Timestamp
+    ts = ladder_state.get("timestamp")
+    if ts is not None:
+        st.caption(f"Updated {time.time() - ts:.0f}s ago")
+    else:
+        st.caption("Timestamp unavailable")
+
+
+def _render_dashboard_content(
+    env: EnvelopeParser,
+    ladder_state: Optional[Dict[str, Any]] = None,
+) -> None:
     """Render header metrics + tab-based content from a parsed envelope."""
     _render_header_metrics(env)
 
-    # Build tab list — Overview first, Lineage only when data available
+    # Build tab list — Overview first, optional Lineage & Ladder
     tab_names = ["Overview", "Metrics", "Game"]
     if env.has_view("lineage"):
         tab_names.append("Lineage")
+    if ladder_state is not None:
+        tab_names.append("Ladder")
 
     tabs = st.tabs(tab_names)
-    with tabs[0]:
+    tab_idx = 0
+    with tabs[tab_idx]:
         render_overview_tab(env)
-    with tabs[1]:
+    tab_idx += 1
+    with tabs[tab_idx]:
         render_metrics_tab(env)
-    with tabs[2]:
+    tab_idx += 1
+    with tabs[tab_idx]:
         render_game_tab(env)
-    if len(tabs) > 3:
-        with tabs[3]:
+    if env.has_view("lineage"):
+        tab_idx += 1
+        with tabs[tab_idx]:
             render_lineage_tab(env)
+    if ladder_state is not None:
+        tab_idx += 1
+        with tabs[tab_idx]:
+            render_ladder_tab(ladder_state)
 
 
 def main() -> None:
@@ -1085,8 +1221,14 @@ def main() -> None:
     arg_parser.add_argument(
         "--state-file", default=None, help="Path to state JSON file"
     )
+    arg_parser.add_argument(
+        "--ladder-state-file",
+        default=None,
+        help="Path to ladder state JSON file (default: .keisei_ladder/state.json)",
+    )
     args, _ = arg_parser.parse_known_args()
     state_file: Optional[str] = args.state_file
+    ladder_state_file: Optional[str] = args.ladder_state_file
 
     # --- Sidebar controls (outside the fragment — rendered once) ---
     # Restore toggle state from URL query params (survives browser refresh)
@@ -1132,7 +1274,8 @@ def main() -> None:
             if paused_by_focus:
                 st.info("Paused — inspecting board")
             render_stale_warning(env)
-            _render_dashboard_content(env)
+            ladder = st.session_state.get("last_ladder_state")
+            _render_dashboard_content(env, ladder_state=ladder)
         else:
             state = load_state(state_file)
             if state is None:
@@ -1142,13 +1285,20 @@ def main() -> None:
             env = EnvelopeParser(state)
             st.session_state.last_state = state
 
+            # Load ladder state (separate file, separate schema)
+            ladder = load_ladder_state(ladder_state_file)
+            if ladder is not None:
+                st.session_state.last_ladder_state = ladder
+            else:
+                ladder = st.session_state.get("last_ladder_state")
+
             # Clear selection and focus when board disappears between episodes
             if env.board_state is None:
                 st.session_state.selected_square = None
                 st.session_state.last_move_count = None
 
             render_stale_warning(env)
-            _render_dashboard_content(env)
+            _render_dashboard_content(env, ladder_state=ladder)
 
     _live_data_section()
 
