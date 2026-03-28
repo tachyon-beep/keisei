@@ -8,15 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_has_streamlit = pytest.importorskip is not None
-try:
-    import streamlit  # noqa: F401
-    _has_streamlit = True
-except ImportError:
-    _has_streamlit = False
 
-
-@pytest.mark.skipif(not _has_streamlit, reason="streamlit not installed")
 class TestLoadLadderState:
     """Tests for load_ladder_state file loading."""
 
