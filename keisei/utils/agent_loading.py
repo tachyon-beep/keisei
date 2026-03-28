@@ -17,6 +17,10 @@ def _build_evaluation_config(
     policy_mapper,
     input_channels: int,
     input_features: Optional[str] = "core46",
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
     """Build a minimal AppConfig suitable for loading an evaluation agent."""
     from keisei.config_schema import (  # pylint: disable=import-outside-toplevel
@@ -63,10 +67,10 @@ def _build_evaluation_config(
             render_every_steps=1,
             refresh_per_second=4,
             enable_spinner=True,
-            tower_depth=9,
-            tower_width=256,
-            se_ratio=0.25,
-            model_type="resnet",
+            tower_depth=tower_depth,
+            tower_width=tower_width,
+            se_ratio=se_ratio,
+            model_type=model_type,
             mixed_precision=False,
             ddp=False,
             gradient_clip_max_norm=0.5,
@@ -157,22 +161,33 @@ def _build_evaluation_config(
 
 
 def _load_model_from_checkpoint(
-    checkpoint_path: str,
     device_str: str,
     policy_mapper,
     input_channels: int,
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
-    """Create a model and load weights from a checkpoint file."""
+    """Create a model via model_factory and place it on the target device."""
     import torch  # pylint: disable=import-outside-toplevel
 
-    from keisei.core.neural_network import (  # pylint: disable=import-outside-toplevel
-        ActorCritic,
+    from keisei.training.models import (  # pylint: disable=import-outside-toplevel
+        model_factory,
     )
 
     device = torch.device(device_str)
-    temp_model = ActorCritic(input_channels, policy_mapper.get_total_actions()).to(
-        device
-    )
+    num_actions = policy_mapper.get_total_actions()
+    obs_shape = (input_channels, 9, 9)
+
+    temp_model = model_factory(
+        model_type=model_type,
+        obs_shape=obs_shape,
+        num_actions=num_actions,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
+    ).to(device)
     return temp_model, device
 
 
@@ -201,6 +216,10 @@ def load_evaluation_agent(
     policy_mapper,
     input_channels: int,
     input_features: Optional[str] = "core46",
+    model_type: str = "resnet",
+    tower_depth: int = 9,
+    tower_width: int = 256,
+    se_ratio: Optional[float] = 0.25,
 ) -> Any:
     if not os.path.isfile(checkpoint_path):
         log_error_to_stderr(
@@ -209,12 +228,28 @@ def load_evaluation_agent(
         raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found.")
 
     config = _build_evaluation_config(
-        device_str, policy_mapper, input_channels, input_features
+        device_str, policy_mapper, input_channels, input_features,
+        model_type=model_type,
+        tower_depth=tower_depth,
+        tower_width=tower_width,
+        se_ratio=se_ratio,
     )
 
-    temp_model, device = _load_model_from_checkpoint(
-        checkpoint_path, device_str, policy_mapper, input_channels
-    )
+    try:
+        temp_model, device = _load_model_from_checkpoint(
+            device_str, policy_mapper, input_channels,
+            model_type=model_type,
+            tower_depth=tower_depth,
+            tower_width=tower_width,
+            se_ratio=se_ratio,
+        )
+    except RuntimeError as e:
+        log_error_to_stderr(
+            "AgentLoading",
+            f"Failed to load model from {checkpoint_path} "
+            f"(type={model_type}, depth={tower_depth}, width={tower_width}): {e}",
+        )
+        raise
 
     agent = _create_ppo_agent(temp_model, config, device, checkpoint_path)
 

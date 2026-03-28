@@ -439,15 +439,15 @@ parallel:
 
   # Number of parallel worker processes for experience collection
   # Recommended: number of CPU cores - 1 (leave one for main process)
-  num_workers: 4
+  num_workers: 16
 
   # Batch size for experience transmission from workers to main process
   # Larger batches reduce communication overhead but increase memory usage
-  batch_size: 32
+  batch_size: 64
 
   # Steps between model weight synchronization across workers
   # Lower values ensure workers have more up-to-date policy, higher values reduce overhead
-  sync_interval: 100
+  sync_interval: 200
 
   # Enable compression for model weight transmission to reduce bandwidth
   compression_enabled: true
@@ -463,6 +463,12 @@ parallel:
   # Random seed offset for worker processes to ensure diverse experience collection
   # Worker i gets seed = base_seed + (i * worker_seed_offset)
   worker_seed_offset: 1000
+
+  # Device assignment: "auto" round-robins across GPUs, "cuda:0" for single GPU, "cpu" for CPU-only
+  worker_device_map: "auto"
+
+  # Maximum workers per GPU (each creates a ~400MB CUDA context)
+  max_workers_per_gpu: 8
 
 
 # =============================================================================

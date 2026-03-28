@@ -495,13 +495,14 @@ class TestRunEpochParallel:
         tlm._run_epoch_sequential.assert_called_once()
 
     def test_handles_no_buffer(self):
-        """Breaks when buffer is None."""
+        """Returns 0 when experience buffer is None."""
         trainer = _make_trainer(total_timesteps=100, steps_per_epoch=10)
+        trainer.experience_buffer = None
         tlm = _make_training_loop_manager(trainer)
         mock_pm = MagicMock()
         mock_pm.sync_model_if_needed.return_value = False
+        mock_pm.collect_experiences.return_value = 0
         tlm.parallel_manager = mock_pm
-        tlm.buffer = None
         tlm.episode_state = _make_episode_state()
 
         result = tlm._run_epoch_parallel(trainer.log_both)

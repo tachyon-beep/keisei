@@ -30,6 +30,7 @@ class EloRegistry:
         self.initial_rating = initial_rating
         self.k_factor = k_factor
         self.ratings: Dict[str, float] = {}
+        self.games_played: Dict[str, int] = {}
         self.load()
 
     def load(self) -> None:
@@ -41,27 +42,45 @@ class EloRegistry:
                     self.ratings = {
                         k: float(v) for k, v in data.get("ratings", {}).items()
                     }
+                    self.games_played = {
+                        k: int(v) for k, v in data.get("games_played", {}).items()
+                    }
                 logger.info(f"Loaded {len(self.ratings)} ratings from {self.file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load ratings from {self.file_path}: {e}")
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                logger.error(
+                    "Corrupt ratings file %s, starting fresh: %s",
+                    self.file_path, e,
+                )
                 self.ratings = {}
+                self.games_played = {}
 
     def save(self) -> None:
-        """Save ratings to file."""
+        """Persist ratings to disk atomically."""
+        import os
+        import tempfile
+
+        data = {
+            "ratings": self.ratings,
+            "games_played": self.games_played,
+            "metadata": {
+                "initial_rating": self.initial_rating,
+                "k_factor": self.k_factor,
+            },
+        }
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.file_path.parent), suffix=".tmp"
+        )
         try:
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "ratings": self.ratings,
-                "metadata": {
-                    "initial_rating": self.initial_rating,
-                    "k_factor": self.k_factor,
-                },
-            }
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            logger.debug(f"Saved {len(self.ratings)} ratings to {self.file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save ratings to {self.file_path}: {e}")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, str(self.file_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def get_rating(self, player_id: str) -> float:
         """Get rating for a player, creating if new."""
@@ -113,14 +132,27 @@ class EloRegistry:
         self.set_rating(player1_id, new_rating1)
         self.set_rating(player2_id, new_rating2)
 
+        # Increment games_played alongside ratings so both
+        # are persisted together in a single save() call.
+        self.games_played[player1_id] = self.games_played.get(player1_id, 0) + len(results)
+        self.games_played[player2_id] = self.games_played.get(player2_id, 0) + len(results)
+
         logger.debug(
             f"Updated ratings: {player1_id}: {rating1:.1f} -> {new_rating1:.1f}, "
             f"{player2_id}: {rating2:.1f} -> {new_rating2:.1f}"
         )
 
+    def set_all_ratings(self, ratings: Dict[str, float]) -> None:
+        """Bulk-replace all ratings (e.g. from EloTracker sync)."""
+        self.ratings = dict(ratings)
+
     def get_all_ratings(self) -> Dict[str, float]:
         """Get all current ratings."""
         return self.ratings.copy()
+
+    def get_all_games_played(self) -> Dict[str, int]:
+        """Get all games_played counts."""
+        return self.games_played.copy()
 
     def get_top_players(self, limit: int = 10) -> List[tuple[str, float]]:
         """Get top players by rating."""

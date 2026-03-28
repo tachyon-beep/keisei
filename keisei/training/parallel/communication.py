@@ -43,16 +43,20 @@ class WorkerCommunicator:
         self.num_workers = num_workers
         self.timeout = timeout
 
+        # Use spawn context for all queues — fork deadlocks with CUDA
+        ctx = mp.get_context("spawn")
+        self.mp_context = ctx
+
         # Create queues for each worker
         self.experience_queues: List[mp.Queue] = [
-            mp.Queue(maxsize=max_queue_size) for _ in range(num_workers)
+            ctx.Queue(maxsize=max_queue_size) for _ in range(num_workers)
         ]
         self.model_queues: List[mp.Queue] = [
-            mp.Queue(maxsize=10)
+            ctx.Queue(maxsize=10)
             for _ in range(num_workers)  # Smaller for model weights
         ]
         self.control_queues: List[mp.Queue] = [
-            mp.Queue(maxsize=10) for _ in range(num_workers)  # Control commands
+            ctx.Queue(maxsize=10) for _ in range(num_workers)  # Control commands
         ]
 
         logger.info("Initialized worker communication for %d workers", num_workers)

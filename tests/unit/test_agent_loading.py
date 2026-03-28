@@ -71,16 +71,17 @@ class TestLoadEvaluationAgent:
 
     @patch("keisei.utils.agent_loading.os.path.isfile", return_value=True)
     def test_model_placed_on_correct_device(self, mock_isfile, mock_policy_mapper):
+        import torch
+
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
 
-        mock_actor_critic_cls = MagicMock(return_value=mock_model)
         mock_ppo_agent_cls = MagicMock(return_value=MagicMock())
 
         with (
             patch(
-                "keisei.core.neural_network.ActorCritic",
-                mock_actor_critic_cls,
+                "keisei.training.models.model_factory",
+                return_value=mock_model,
             ),
             patch(
                 "keisei.core.ppo_agent.PPOAgent",
@@ -94,9 +95,7 @@ class TestLoadEvaluationAgent:
                 input_channels=46,
             )
 
-        # The model's .to() should have been called with a torch.device("cpu")
-        import torch
-
+        # model_factory returns the model, then .to(device) is called on it
         mock_model.to.assert_called_once_with(torch.device("cpu"))
 
     @patch("keisei.utils.agent_loading.os.path.isfile", return_value=True)
@@ -104,13 +103,13 @@ class TestLoadEvaluationAgent:
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
 
-        mock_actor_critic_cls = MagicMock(return_value=mock_model)
+        mock_factory = MagicMock(return_value=mock_model)
         mock_ppo_agent_cls = MagicMock(return_value=MagicMock())
 
         with (
             patch(
-                "keisei.core.neural_network.ActorCritic",
-                mock_actor_critic_cls,
+                "keisei.training.models.model_factory",
+                mock_factory,
             ),
             patch(
                 "keisei.core.ppo_agent.PPOAgent",
@@ -125,8 +124,11 @@ class TestLoadEvaluationAgent:
             )
 
         mock_policy_mapper.get_total_actions.assert_called()
-        # ActorCritic should have been called with (input_channels, total_actions)
-        mock_actor_critic_cls.assert_called_once_with(46, 13527)
+        # model_factory should receive num_actions from policy_mapper
+        mock_factory.assert_called_once()
+        call_kwargs = mock_factory.call_args
+        assert call_kwargs.kwargs["num_actions"] == 13527
+        assert call_kwargs.kwargs["obs_shape"] == (46, 9, 9)
 
     @patch("keisei.utils.agent_loading.os.path.isfile", return_value=True)
     def test_custom_input_features_passed_to_config(

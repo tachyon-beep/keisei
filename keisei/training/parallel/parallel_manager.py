@@ -71,12 +71,42 @@ class ParallelManager:
         self.worker_stats: Dict[int, Dict] = {}
 
         # State tracking
+        self._last_synced_state_dict = None
+        self._worker_restart_counts: Dict[int, int] = {}
+        self._max_restarts_per_worker = 5
         self.total_steps_collected = 0
         self.total_batches_received = 0
         self.last_sync_time = time.time()
         self.is_running = False
 
         logger.info("ParallelManager initialized with %d workers", self.num_workers)
+
+    def _assign_worker_device(self, worker_id: int) -> str:
+        """Assign a CUDA device to a worker based on the device map config.
+
+        When device_map is 'auto', distributes workers round-robin across GPUs
+        and logs a warning if the max_workers_per_gpu cap would be exceeded.
+        """
+        device_map = self.parallel_config.get("worker_device_map", "auto")
+        if device_map == "auto":
+            gpu_count = torch.cuda.device_count()
+            if gpu_count == 0:
+                return "cpu"
+            gpu_id = worker_id % gpu_count
+            max_per_gpu = self.parallel_config.get("max_workers_per_gpu", 8)
+            workers_on_gpu = sum(
+                1 for wid in range(self.num_workers)
+                if wid != worker_id and wid % gpu_count == gpu_id
+            )
+            if workers_on_gpu >= max_per_gpu:
+                logger.warning(
+                    "GPU %d already has %d workers (max_workers_per_gpu=%d), "
+                    "assigning worker %d to CPU instead",
+                    gpu_id, workers_on_gpu, max_per_gpu, worker_id,
+                )
+                return "cpu"
+            return f"cuda:{gpu_id}"
+        return device_map
 
     def start_workers(self, initial_model: nn.Module) -> bool:
         """
@@ -92,14 +122,31 @@ class ParallelManager:
             logger.info("Parallel collection disabled, skipping worker startup")
             return True
 
+        # Validate num_workers against GPU capacity
+        device_map = self.parallel_config.get("worker_device_map", "auto")
+        if device_map == "auto":
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 0:
+                max_per_gpu = self.parallel_config.get("max_workers_per_gpu", 8)
+                max_gpu_workers = gpu_count * max_per_gpu
+                if self.num_workers > max_gpu_workers:
+                    logger.warning(
+                        "num_workers (%d) exceeds GPU capacity (%d GPUs × %d max_workers_per_gpu = %d). "
+                        "Excess workers will be assigned to CPU.",
+                        self.num_workers, gpu_count, max_per_gpu, max_gpu_workers,
+                    )
+
         try:
             # Create and start worker processes
             for worker_id in range(self.num_workers):
+                worker_config = dict(self.parallel_config)
+                worker_config["worker_device"] = self._assign_worker_device(worker_id)
+
                 worker = SelfPlayWorker(
                     worker_id=worker_id,
                     env_config=self.env_config,
                     model_config=self.model_config,
-                    parallel_config=self.parallel_config,
+                    parallel_config=worker_config,
                     experience_queue=self.communicator.experience_queues[worker_id],
                     model_queue=self.communicator.model_queues[worker_id],
                     control_queue=self.communicator.control_queues[worker_id],
@@ -110,6 +157,20 @@ class ParallelManager:
                 self.workers.append(worker)
 
                 logger.info("Started worker %d (PID: %d)", worker_id, worker.pid)
+
+            # Verify workers are alive after spawn (catch immediate crashes)
+            time.sleep(1)
+            dead = [w for w in self.workers if not w.is_alive()]
+            if dead:
+                for w in dead:
+                    logger.error(
+                        "Worker %d died immediately (exit code %s)",
+                        w.worker_id,
+                        w.exitcode,
+                    )
+                raise RuntimeError(
+                    f"{len(dead)}/{len(self.workers)} workers died on startup"
+                )
 
             # Send initial model to all workers
             self._sync_model_to_workers(initial_model)
@@ -123,6 +184,89 @@ class ParallelManager:
             self.stop_workers()
             return False
 
+    def _restart_dead_workers(self) -> int:
+        """
+        Detect and restart any dead worker processes.
+
+        Iterates over self.workers, replacing any that have died with fresh
+        SelfPlayWorker instances using the same worker_id, queues, and a
+        new per-worker config (including device assignment).
+
+        Returns:
+            Number of workers that were restarted.
+        """
+        restarted = 0
+        for idx, worker in enumerate(self.workers):
+            if worker.is_alive():
+                continue
+
+            worker_id = worker.worker_id
+            restart_count = self._worker_restart_counts.get(worker_id, 0)
+            if restart_count >= self._max_restarts_per_worker:
+                logger.error(
+                    "Worker %d exceeded max restarts (%d), not restarting",
+                    worker_id,
+                    self._max_restarts_per_worker,
+                )
+                continue
+
+            logger.warning(
+                "Worker %d is dead (exit code %s), restarting (%d/%d)",
+                worker_id,
+                worker.exitcode,
+                restart_count + 1,
+                self._max_restarts_per_worker,
+            )
+
+            # Reap the dead process to avoid zombies on POSIX
+            worker.join(timeout=1.0)
+
+            worker_config = dict(self.parallel_config)
+            worker_config["worker_device"] = self._assign_worker_device(worker_id)
+
+            new_worker = SelfPlayWorker(
+                worker_id=worker_id,
+                env_config=self.env_config,
+                model_config=self.model_config,
+                parallel_config=worker_config,
+                experience_queue=self.communicator.experience_queues[worker_id],
+                model_queue=self.communicator.model_queues[worker_id],
+                control_queue=self.communicator.control_queues[worker_id],
+                seed_offset=self.parallel_config["worker_seed_offset"],
+            )
+
+            try:
+                new_worker.start()
+            except (OSError, RuntimeError) as e:
+                logger.error("Failed to restart worker %d: %s", worker_id, e)
+                continue
+            self.workers[idx] = new_worker
+            self._worker_restart_counts[worker_id] = restart_count + 1
+            restarted += 1
+
+            logger.info(
+                "Restarted worker %d (new PID: %d)", worker_id, new_worker.pid
+            )
+
+            # Sync current model weights so the restarted worker doesn't
+            # run with uninitialized weights until the next periodic sync.
+            if self._last_synced_state_dict is not None:
+                try:
+                    model_data = self.communicator._prepare_model_data(
+                        self._last_synced_state_dict,
+                        compress=self.parallel_config["compression_enabled"],
+                    )
+                    self.communicator.model_queues[worker_id].put(
+                        model_data, timeout=self.communicator.timeout
+                    )
+                except (RuntimeError, OSError) as e:
+                    logger.warning(
+                        "Could not sync model to restarted worker %d: %s",
+                        worker_id, e,
+                    )
+
+        return restarted
+
     def collect_experiences(self, experience_buffer: ExperienceBuffer) -> int:
         """
         Collect experiences from all workers and add to main buffer.
@@ -135,6 +279,8 @@ class ParallelManager:
         """
         if not self.enabled or not self.is_running:
             return 0
+
+        self._restart_dead_workers()
 
         experiences_collected = 0
 
@@ -204,8 +350,10 @@ class ParallelManager:
         """
         try:
             # Send model weights to workers
+            state_dict = model.state_dict()
+            self._last_synced_state_dict = state_dict
             self.communicator.send_model_weights(
-                model.state_dict(),
+                state_dict,
                 compression_enabled=self.parallel_config["compression_enabled"],
             )
 
