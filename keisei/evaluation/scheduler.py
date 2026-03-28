@@ -12,7 +12,7 @@ import logging
 import math
 import random
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -89,6 +89,10 @@ class SchedulerConfig(BaseModel):
     state_path: Optional[Path] = None
     max_consecutive_failures: int = Field(5, ge=1, le=100)
     move_timeout: float = Field(30.0, ge=1.0, description="Per-move timeout in seconds")
+    fast_track_games: int = Field(
+        8, ge=0, le=50,
+        description="Games to play immediately when a new checkpoint is discovered",
+    )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -136,6 +140,10 @@ class ContinuousMatchScheduler:
         self._pool_paths: List[Path] = []
         # Games played is persisted in EloRegistry — survives restarts
         self._games_played = Counter(self._elo_registry.get_all_games_played())
+        # Wins persisted in EloRegistry — survives restarts
+        self._wins: Counter = Counter(self._elo_registry.get_all_wins())
+        # Fast-track queue: new models get N dedicated games for initial rating
+        self._fast_track_queue: deque = deque()
         self._active_matches: Dict[int, ActiveMatchState] = {}
         self._match_tasks: Dict[int, asyncio.Task] = {}
         self._recent_results: List[Dict[str, Any]] = []
@@ -155,13 +163,59 @@ class ContinuousMatchScheduler:
 
     def _refresh_pool(self) -> int:
         """Scan checkpoint directory and update internal pool paths."""
+        old_paths = set(self._pool_paths)
         added = self._pool.scan_directory(self._config.checkpoint_dir)
         self._pool_paths = list(self._pool.get_all())
         # Clear blacklist on refresh — files may have been restored or
         # the issue may have been transient (NFS, incomplete write).
         if added > 0:
             self._failed_checkpoints.clear()
+            # Fast-track new models for initial rating
+            if self._config.fast_track_games > 0:
+                new_paths = set(self._pool_paths) - old_paths
+                for path in new_paths:
+                    self._fast_track_queue.append(
+                        (path, self._config.fast_track_games)
+                    )
+                    logger.info(
+                        "Fast-tracking %s for %d initial games",
+                        path.name, self._config.fast_track_games,
+                    )
         return added
+
+    def _pick_fast_track_matchup(self) -> Optional[Tuple[Path, Path]]:
+        """Pick a match for a fast-tracked model, or None if queue is empty.
+
+        Pairs the fast-tracked model with a random opponent from the pool.
+        Decrements the remaining games counter; removes from queue when done.
+        """
+        while self._fast_track_queue:
+            model_path, remaining = self._fast_track_queue[0]
+            # Drop entries that are blacklisted, evicted from pool, or deleted
+            if (
+                model_path in self._failed_checkpoints
+                or model_path not in self._pool_paths
+            ):
+                self._fast_track_queue.popleft()
+                continue
+            # Pick a random opponent that isn't the same model or blacklisted
+            candidates = [
+                p for p in self._pool_paths
+                if p != model_path and p not in self._failed_checkpoints
+            ]
+            if not candidates:
+                break
+            opponent = random.choice(candidates)
+            # Decrement or remove from queue
+            if remaining <= 1:
+                self._fast_track_queue.popleft()
+            else:
+                self._fast_track_queue[0] = (model_path, remaining - 1)
+            # Randomize who plays Black/White
+            if random.random() < 0.5:
+                return model_path, opponent
+            return opponent, model_path
+        return None
 
     def _pick_matchup(self) -> Tuple[Path, Path]:
         """Select two models for a match using weighted random by Elo proximity.
@@ -218,10 +272,12 @@ class ContinuousMatchScheduler:
             reverse=True,
         ):
             games = self._games_played.get(name, 0)
+            wins = self._wins.get(name, 0)
             leaderboard.append({
                 "name": name,
                 "elo": round(elo, 1),
                 "games_played": games,
+                "win_rate": round(wins / games, 3) if games > 0 else 0.0,
             })
 
         matches = []
@@ -450,19 +506,23 @@ class ContinuousMatchScheduler:
             }
             elo_result = elo_result_map[result.winner]
 
-            # Serialize Elo updates so concurrent _run_match tasks
+            # Serialize Elo + win updates so concurrent _run_match tasks
             # don't interleave reads/writes across await boundaries.
             async with self._elo_lock:
                 old_elo_a = self._get_rating(name_a)
                 old_elo_b = self._get_rating(name_b)
                 self._elo_registry.update_ratings(name_a, name_b, [elo_result])
+                if result.winner == MatchOutcome.BLACK_WIN:
+                    self._elo_registry.record_win(name_a)
+                elif result.winner == MatchOutcome.WHITE_WIN:
+                    self._elo_registry.record_win(name_b)
                 await asyncio.to_thread(self._elo_registry.save)
                 new_elo_a = self._get_rating(name_a)
                 new_elo_b = self._get_rating(name_b)
 
-                # games_played is incremented inside update_ratings,
-                # so sync the local Counter from registry.
+                # Sync local counters from registry
                 self._games_played = Counter(self._elo_registry.get_all_games_played())
+                self._wins = Counter(self._elo_registry.get_all_wins())
 
             winner_name_map = {
                 MatchOutcome.BLACK_WIN: name_a,
@@ -576,15 +636,20 @@ class ContinuousMatchScheduler:
 
             for slot_id in range(self._config.num_concurrent):
                 if slot_id not in self._match_tasks or self._match_tasks[slot_id].done():
-                    try:
-                        model_a, model_b = self._pick_matchup()
-                        task = asyncio.create_task(
-                            self._run_match(slot_id, model_a, model_b)
-                        )
-                        self._match_tasks[slot_id] = task
-                    except ValueError as e:
-                        logger.warning("Cannot schedule match for slot %d: %s", slot_id, e)
-                        break
+                    # Fast-track new models first, then normal weighted selection
+                    ft_pair = self._pick_fast_track_matchup()
+                    if ft_pair is not None:
+                        model_a, model_b = ft_pair
+                    else:
+                        try:
+                            model_a, model_b = self._pick_matchup()
+                        except ValueError as e:
+                            logger.warning("Cannot schedule match for slot %d: %s", slot_id, e)
+                            break
+                    task = asyncio.create_task(
+                        self._run_match(slot_id, model_a, model_b)
+                    )
+                    self._match_tasks[slot_id] = task
 
             await asyncio.sleep(0.1)
 

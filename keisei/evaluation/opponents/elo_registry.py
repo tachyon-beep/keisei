@@ -31,6 +31,7 @@ class EloRegistry:
         self.k_factor = k_factor
         self.ratings: Dict[str, float] = {}
         self.games_played: Dict[str, int] = {}
+        self.wins: Dict[str, int] = {}
         self.load()
 
     def load(self) -> None:
@@ -45,6 +46,9 @@ class EloRegistry:
                     self.games_played = {
                         k: int(v) for k, v in data.get("games_played", {}).items()
                     }
+                    self.wins = {
+                        k: int(v) for k, v in data.get("wins", {}).items()
+                    }
                 logger.info(f"Loaded {len(self.ratings)} ratings from {self.file_path}")
             except (json.JSONDecodeError, ValueError, KeyError) as e:
                 logger.error(
@@ -53,6 +57,7 @@ class EloRegistry:
                 )
                 self.ratings = {}
                 self.games_played = {}
+                self.wins = {}
 
     def save(self) -> None:
         """Persist ratings to disk atomically."""
@@ -62,6 +67,7 @@ class EloRegistry:
         data = {
             "ratings": self.ratings,
             "games_played": self.games_played,
+            "wins": self.wins,
             "metadata": {
                 "initial_rating": self.initial_rating,
                 "k_factor": self.k_factor,
@@ -153,6 +159,14 @@ class EloRegistry:
     def get_all_games_played(self) -> Dict[str, int]:
         """Get all games_played counts."""
         return self.games_played.copy()
+
+    def get_all_wins(self) -> Dict[str, int]:
+        """Get all win counts."""
+        return self.wins.copy()
+
+    def record_win(self, player_id: str) -> None:
+        """Increment win count for a player."""
+        self.wins[player_id] = self.wins.get(player_id, 0) + 1
 
     def get_top_players(self, limit: int = 10) -> List[tuple[str, float]]:
         """Get top players by rating."""

@@ -164,6 +164,23 @@ class TestLadderEloPersistence:
             assert registry2.games_played["a"] == 1
             assert registry2.games_played["b"] == 1
 
+    def test_elo_registry_wins_roundtrip(self):
+        """wins should survive a save/load cycle."""
+        from keisei.evaluation.opponents.elo_registry import EloRegistry
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "elo_ratings.json"
+
+            registry = EloRegistry(path)
+            registry.record_win("a")
+            registry.record_win("a")
+            registry.record_win("b")
+            registry.save()
+
+            registry2 = EloRegistry(path)
+            assert registry2.wins["a"] == 2
+            assert registry2.wins["b"] == 1
+
     def test_atomic_save_preserves_original_on_write_failure(self):
         """If json.dump fails during save, the original file should be preserved."""
         from keisei.evaluation.opponents.elo_registry import EloRegistry

@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import json
 import tempfile
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -270,6 +270,7 @@ class TestStatePublishing:
             scheduler._elo_registry = MagicMock()
             scheduler._elo_registry.get_all_ratings.return_value = {"model_a": 1520.0, "model_b": 1480.0}
             scheduler._games_played = Counter({"model_a": 10, "model_b": 5})
+            scheduler._wins = Counter({"model_a": 7, "model_b": 2})
 
             # Test the sync components directly (async _publish_state
             # delegates to these).
@@ -296,6 +297,7 @@ class TestStatePublishing:
                 "weak": 1400.0, "strong": 1600.0, "mid": 1500.0
             }
             scheduler._games_played = Counter({"weak": 5, "strong": 5, "mid": 5})
+            scheduler._wins = Counter({"weak": 1, "strong": 4, "mid": 2})
 
             state = scheduler._build_state_snapshot()
             scheduler._write_state_sync(state)
@@ -804,6 +806,156 @@ class TestRuntimeErrorBlacklisting:
             assert model_a in scheduler._failed_checkpoints
             assert model_b in scheduler._failed_checkpoints
             assert scheduler._consecutive_failures == 1
+
+
+class TestWinRateInLeaderboard:
+    """Leaderboard entries include win_rate computed from wins/games_played."""
+
+    def test_win_rate_computed_correctly(self):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+            scheduler._state_path = Path(tmpdir) / "state.json"
+            scheduler._active_matches = {}
+            scheduler._recent_results = []
+            scheduler._elo_registry = MagicMock()
+            scheduler._elo_registry.get_all_ratings.return_value = {
+                "model_a": 1600.0, "model_b": 1400.0
+            }
+            scheduler._games_played = Counter({"model_a": 10, "model_b": 10})
+            scheduler._wins = Counter({"model_a": 7, "model_b": 3})
+
+            state = scheduler._build_state_snapshot()
+            lb = {e["name"]: e for e in state["leaderboard"]}
+            assert lb["model_a"]["win_rate"] == 0.7
+            assert lb["model_b"]["win_rate"] == 0.3
+
+    def test_win_rate_zero_when_no_games(self):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+            scheduler._state_path = Path(tmpdir) / "state.json"
+            scheduler._active_matches = {}
+            scheduler._recent_results = []
+            scheduler._elo_registry = MagicMock()
+            scheduler._elo_registry.get_all_ratings.return_value = {"new_model": 1500.0}
+            scheduler._games_played = Counter()
+            scheduler._wins = Counter()
+
+            state = scheduler._build_state_snapshot()
+            assert state["leaderboard"][0]["win_rate"] == 0.0
+
+
+class TestFastTrack:
+    """New checkpoints get fast-tracked for initial rating games."""
+
+    def _make_scheduler(self, checkpoints, fast_track_games=8):
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler
+
+        scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
+        scheduler._pool_paths = [Path(c) for c in checkpoints]
+        scheduler._games_played = Counter()
+        scheduler._wins = Counter()
+        scheduler._elo_registry = None
+        scheduler._failed_checkpoints = set()
+        scheduler._fast_track_queue = deque()
+        scheduler._config = MagicMock()
+        scheduler._config.fast_track_games = fast_track_games
+        scheduler._get_rating = lambda name: 1500.0
+        return scheduler
+
+    def test_pick_fast_track_returns_pair(self):
+        """Fast-track queue returns a valid pair with the new model."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth", "c.pth"])
+        scheduler._fast_track_queue.append((Path("c.pth"), 3))
+
+        pair = scheduler._pick_fast_track_matchup()
+        assert pair is not None
+        a, b = pair
+        # c.pth must be one of the pair
+        assert Path("c.pth") in (a, b)
+
+    def test_fast_track_decrements_remaining(self):
+        """Each call decrements the remaining games counter."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth"])
+        scheduler._fast_track_queue.append((Path("b.pth"), 3))
+
+        scheduler._pick_fast_track_matchup()
+        assert len(scheduler._fast_track_queue) == 1
+        _, remaining = scheduler._fast_track_queue[0]
+        assert remaining == 2
+
+    def test_fast_track_removes_when_exhausted(self):
+        """Model is removed from queue when remaining hits 0."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth"])
+        scheduler._fast_track_queue.append((Path("b.pth"), 1))
+
+        scheduler._pick_fast_track_matchup()
+        assert len(scheduler._fast_track_queue) == 0
+
+    def test_fast_track_returns_none_when_empty(self):
+        """Returns None when the fast-track queue is empty."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth"])
+        assert scheduler._pick_fast_track_matchup() is None
+
+    def test_fast_track_skips_blacklisted(self):
+        """Blacklisted models are skipped in the fast-track queue."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth", "c.pth"])
+        scheduler._fast_track_queue.append((Path("b.pth"), 5))
+        scheduler._failed_checkpoints.add(Path("b.pth"))
+
+        pair = scheduler._pick_fast_track_matchup()
+        assert pair is None
+        assert len(scheduler._fast_track_queue) == 0
+
+    def test_fast_track_skips_evicted_from_pool(self):
+        """Models no longer in pool_paths are dropped from fast-track queue."""
+        scheduler = self._make_scheduler(["a.pth", "b.pth"])
+        # Enqueue a model that's NOT in pool_paths
+        scheduler._fast_track_queue.append((Path("gone.pth"), 5))
+
+        pair = scheduler._pick_fast_track_matchup()
+        assert pair is None
+        assert len(scheduler._fast_track_queue) == 0
+
+    def test_refresh_pool_enqueues_new_models(self):
+        """_refresh_pool adds new checkpoints to the fast-track queue."""
+        from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_dir = Path(tmpdir) / "checkpoints"
+            ckpt_dir.mkdir()
+            (ckpt_dir / "checkpoint_ts1000.pth").write_bytes(b"fake")
+
+            config = SchedulerConfig(
+                checkpoint_dir=ckpt_dir,
+                elo_registry_path=Path(tmpdir) / "elo.json",
+                device="cpu",
+                num_concurrent=1,
+                num_spectated=0,
+                state_path=Path(tmpdir) / "state.json",
+                fast_track_games=5,
+            )
+            scheduler = ContinuousMatchScheduler(config)
+            # Seed the pool with the existing checkpoint
+            scheduler._refresh_pool()
+            # First refresh enqueues the initial checkpoint
+            initial_count = len(scheduler._fast_track_queue)
+            assert initial_count == 1  # checkpoint_ts1000.pth
+
+            # Drain the initial fast-track entry
+            scheduler._fast_track_queue.clear()
+
+            # Add a second checkpoint and refresh
+            (ckpt_dir / "checkpoint_ts2000.pth").write_bytes(b"fake2")
+            scheduler._refresh_pool()
+
+            assert len(scheduler._fast_track_queue) == 1
+            path, remaining = scheduler._fast_track_queue[0]
+            assert path.name == "checkpoint_ts2000.pth"
+            assert remaining == 5
 
 
 class TestSchedulerExport:
