@@ -1073,6 +1073,43 @@ def render_lineage_tab(env: EnvelopeParser) -> None:
     render_lineage_panel(env)
 
 
+def extract_playing_models(matches: List[Dict[str, Any]]) -> set:
+    """Extract names of models currently in active matches."""
+    playing = set()
+    for match in matches:
+        model_a = match.get("model_a", {})
+        model_b = match.get("model_b", {})
+        if isinstance(model_a, dict):
+            playing.add(model_a.get("name", ""))
+        if isinstance(model_b, dict):
+            playing.add(model_b.get("name", ""))
+    return playing
+
+
+def compute_recent_deltas(
+    recent_results: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Sum recent Elo deltas per model for trend arrows."""
+    deltas: Dict[str, float] = {}
+    for result in recent_results[-20:]:
+        name_a = result.get("model_a", "")
+        name_b = result.get("model_b", "")
+        delta_a = result.get("elo_delta_a", 0.0)
+        delta_b = result.get("elo_delta_b", 0.0)
+        deltas[name_a] = deltas.get(name_a, 0.0) + delta_a
+        deltas[name_b] = deltas.get(name_b, 0.0) + delta_b
+    return deltas
+
+
+def format_elo_arrow(delta: float) -> str:
+    """Format a recent Elo delta as a Streamlit-markdown arrow indicator."""
+    if delta > 0.5:
+        return f":green[+{delta:.0f} ↑]"
+    elif delta < -0.5:
+        return f":red[{delta:.0f} ↓]"
+    return "—"
+
+
 def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
     """Render the Ladder tab: live Elo leaderboard with match indicators."""
     if ladder_state is None:
@@ -1090,53 +1127,36 @@ def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
         st.warning("Ladder is running but no models have been rated yet.")
         return
 
-    # Build set of currently playing model names
-    playing_now = set()
-    for match in matches:
-        model_a = match.get("model_a", {})
-        model_b = match.get("model_b", {})
-        if isinstance(model_a, dict):
-            playing_now.add(model_a.get("name", ""))
-        if isinstance(model_b, dict):
-            playing_now.add(model_b.get("name", ""))
+    playing_now = extract_playing_models(matches)
+    recent_deltas = compute_recent_deltas(recent_results)
 
-    # Build recent Elo deltas from recent_results for arrow indicators
-    recent_deltas: Dict[str, float] = {}
-    for result in recent_results[-20:]:
-        name_a = result.get("model_a", "")
-        name_b = result.get("model_b", "")
-        delta_a = result.get("elo_delta_a", 0.0)
-        delta_b = result.get("elo_delta_b", 0.0)
-        recent_deltas[name_a] = recent_deltas.get(name_a, 0.0) + delta_a
-        recent_deltas[name_b] = recent_deltas.get(name_b, 0.0) + delta_b
-
-    # Summary metrics
-    total_games = sum(e.get("games_played", 0) for e in leaderboard)
+    # Summary metrics — games_played is per-model, so divide by 2 for unique games
+    total_model_games = sum(e.get("games_played", 0) for e in leaderboard)
     active_matches = len(matches)
     col1, col2, col3 = st.columns(3)
     col1.metric("Models", len(leaderboard))
-    col2.metric("Total Games", total_games)
+    col2.metric("Games Played", total_model_games // 2)
     col3.metric("Active Matches", active_matches)
 
     # Leaderboard table
     st.subheader("Elo Leaderboard")
+
+    # Header row
+    header = st.columns([0.5, 3, 1.5, 1, 1.5, 1.5])
+    header[0].write("**#**")
+    header[1].write("**Model**")
+    header[2].write("**Elo**")
+    header[3].write("**Games**")
+    header[4].write("**Win %**")
+    header[5].write("**Trend**")
+
     for rank, entry in enumerate(leaderboard, 1):
         name = entry.get("name", "?")
         elo = entry.get("elo", 1500.0)
         games = entry.get("games_played", 0)
         win_rate = entry.get("win_rate", 0.0)
         is_playing = name in playing_now
-        delta = recent_deltas.get(name, 0.0)
-
-        # Arrow indicator for recent rating change
-        if delta > 0.5:
-            arrow = f":green[+{delta:.0f} ↑]"
-        elif delta < -0.5:
-            arrow = f":red[{delta:.0f} ↓]"
-        else:
-            arrow = "—"
-
-        # Playing indicator
+        arrow = format_elo_arrow(recent_deltas.get(name, 0.0))
         status = " :green_circle:" if is_playing else ""
 
         cols = st.columns([0.5, 3, 1.5, 1, 1.5, 1.5])
@@ -1147,11 +1167,12 @@ def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
         cols[4].write(f"{win_rate:.1%}")
         cols[5].write(arrow)
 
-    # Column headers (rendered after to avoid Streamlit ordering issues)
-    # We use a caption row above the data
-    st.caption(
-        f"Updated {time.time() - ladder_state.get('timestamp', 0):.0f}s ago"
-    )
+    # Timestamp
+    ts = ladder_state.get("timestamp")
+    if ts is not None:
+        st.caption(f"Updated {time.time() - ts:.0f}s ago")
+    else:
+        st.caption("Timestamp unavailable")
 
 
 def _render_dashboard_content(
