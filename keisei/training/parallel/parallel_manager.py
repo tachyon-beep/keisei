@@ -122,6 +122,20 @@ class ParallelManager:
             logger.info("Parallel collection disabled, skipping worker startup")
             return True
 
+        # Validate num_workers against GPU capacity
+        device_map = self.parallel_config.get("worker_device_map", "auto")
+        if device_map == "auto":
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 0:
+                max_per_gpu = self.parallel_config.get("max_workers_per_gpu", 8)
+                max_gpu_workers = gpu_count * max_per_gpu
+                if self.num_workers > max_gpu_workers:
+                    logger.warning(
+                        "num_workers (%d) exceeds GPU capacity (%d GPUs × %d max_workers_per_gpu = %d). "
+                        "Excess workers will be assigned to CPU.",
+                        self.num_workers, gpu_count, max_per_gpu, max_gpu_workers,
+                    )
+
         try:
             # Create and start worker processes
             for worker_id in range(self.num_workers):
@@ -203,6 +217,9 @@ class ParallelManager:
                 restart_count + 1,
                 self._max_restarts_per_worker,
             )
+
+            # Reap the dead process to avoid zombies on POSIX
+            worker.join(timeout=1.0)
 
             worker_config = dict(self.parallel_config)
             worker_config["worker_device"] = self._assign_worker_device(worker_id)

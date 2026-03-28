@@ -305,8 +305,11 @@ class ContinuousMatchScheduler:
                 )
 
             obs = game.get_observation()
+            agent_device = getattr(agent, "device", torch.device("cpu"))
+            if isinstance(agent_device, str):
+                agent_device = torch.device(agent_device)
             legal_mask = self._policy_mapper.get_legal_mask(
-                legal_moves, device=torch.device("cpu")
+                legal_moves, device=agent_device
             )
 
             # Offload synchronous PyTorch inference to a thread so the

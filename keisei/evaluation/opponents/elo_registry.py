@@ -67,11 +67,12 @@ class EloRegistry:
                 "k_factor": self.k_factor,
             },
         }
-        dir_path = str(self.file_path.parent)
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.file_path.parent), suffix=".tmp"
+        )
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f)
             os.replace(tmp_path, str(self.file_path))
         except BaseException:

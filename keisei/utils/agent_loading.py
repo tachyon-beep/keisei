@@ -161,7 +161,6 @@ def _build_evaluation_config(
 
 
 def _load_model_from_checkpoint(
-    checkpoint_path: str,
     device_str: str,
     policy_mapper,
     input_channels: int,
@@ -170,7 +169,7 @@ def _load_model_from_checkpoint(
     tower_width: int = 256,
     se_ratio: Optional[float] = 0.25,
 ) -> Any:
-    """Create a model using model_factory and return it with the device."""
+    """Create a model via model_factory and place it on the target device."""
     import torch  # pylint: disable=import-outside-toplevel
 
     from keisei.training.models import (  # pylint: disable=import-outside-toplevel
@@ -238,7 +237,7 @@ def load_evaluation_agent(
 
     try:
         temp_model, device = _load_model_from_checkpoint(
-            checkpoint_path, device_str, policy_mapper, input_channels,
+            device_str, policy_mapper, input_channels,
             model_type=model_type,
             tower_depth=tower_depth,
             tower_width=tower_width,

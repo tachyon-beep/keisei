@@ -72,7 +72,7 @@ class TestEvaluateCheckpointOpponent:
         )
 
     @patch("keisei.evaluation.core_manager.EvaluatorFactory")
-    @patch("keisei.evaluation.core_manager.torch.load" if False else "torch.load")
+    @patch("torch.load")
     def test_missing_opponent_file_raises(
         self, mock_torch_load, mock_factory, manager, fake_agent_checkpoint
     ):
@@ -117,9 +117,9 @@ class TestEvaluateCheckpointOpponent:
         assert captured_context["opponent_checkpoint"] == fake_opponent_checkpoint
         assert "opponent_info" in captured_context
         opp = captured_context["opponent_info"]
-        assert opp.name == "opponent_model"
-        assert opp.type == "ppo"
-        assert opp.checkpoint_path == fake_opponent_checkpoint
+        assert opp["name"] == "opponent_model"
+        assert opp["type"] == "ppo"
+        assert opp["checkpoint_path"] == fake_opponent_checkpoint
 
 
 class TestEvaluateCheckpointAsyncOpponent:
@@ -187,9 +187,9 @@ class TestEvaluateCheckpointAsyncOpponent:
         assert captured_context["opponent_checkpoint"] == fake_opponent_checkpoint
         assert "opponent_info" in captured_context
         opp = captured_context["opponent_info"]
-        assert opp.name == "opponent_model"
-        assert opp.type == "ppo"
-        assert opp.checkpoint_path == fake_opponent_checkpoint
+        assert opp["name"] == "opponent_model"
+        assert opp["type"] == "ppo"
+        assert opp["checkpoint_path"] == fake_opponent_checkpoint
 
 
 class TestModelFactoryIntegration:
@@ -209,7 +209,6 @@ class TestModelFactoryIntegration:
             "keisei.training.models.model_factory", return_value=mock_model
         ) as mock_factory:
             model, device = _load_model_from_checkpoint(
-                checkpoint_path="/fake/model.pth",
                 device_str="cpu",
                 policy_mapper=policy_mapper,
                 input_channels=46,
@@ -244,7 +243,6 @@ class TestModelFactoryIntegration:
             "keisei.training.models.model_factory", return_value=mock_model
         ) as mock_factory:
             _load_model_from_checkpoint(
-                checkpoint_path="/fake/model.pth",
                 device_str="cpu",
                 policy_mapper=policy_mapper,
                 input_channels=46,

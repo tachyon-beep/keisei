@@ -434,8 +434,8 @@ class LadderEvaluator(BaseEvaluator):
                 initial_rating = opp_config_data.get(
                     "initial_rating", self.elo_tracker.default_initial_rating
                 )
-                # Ensure opponent is in EloTracker (get_rating auto-creates)
-                self.elo_tracker.get_rating(name)
+                # Seed opponent in EloTracker with configured initial rating
+                self.elo_tracker.add_entity(name, rating=initial_rating)
                 self.opponent_pool.append(
                     OpponentInfo(
                         name=name,

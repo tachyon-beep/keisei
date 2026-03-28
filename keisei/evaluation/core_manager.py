@@ -118,7 +118,7 @@ class EvaluationManager:
                 checkpoint_path=opponent_checkpoint,
             )
             env_info["opponent_checkpoint"] = opponent_checkpoint
-            env_info["opponent_info"] = opponent_info
+            env_info["opponent_info"] = opponent_info.to_dict()
 
         context = EvaluationContext(
             session_id=str(uuid4()),
