@@ -467,9 +467,11 @@ async def run_ladder_command(args):
         scheduler_kwargs.setdefault("tower_width", t.tower_width)
         scheduler_kwargs.setdefault("se_ratio", t.se_ratio)
 
+    from pydantic import ValidationError
+
     try:
         scheduler_config = SchedulerConfig(**scheduler_kwargs)
-    except Exception as e:
+    except (ValidationError, ValueError) as e:
         log_error_to_stderr("Ladder", f"Invalid configuration: {e}")
         sys.exit(1)
     scheduler = ContinuousMatchScheduler(scheduler_config)
@@ -497,9 +499,13 @@ def run_training_command(args):
     # Build CLI overrides dict (dot notation)
     cli_overrides = {}
     for override in args.override:
-        if "=" in override:
-            k, v = override.split("=", 1)
-            cli_overrides[k] = v
+        if "=" not in override:
+            log_error_to_stderr(
+                "Training", f"Malformed override '{override}': expected KEY=VALUE format"
+            )
+            sys.exit(1)
+        k, v = override.split("=", 1)
+        cli_overrides[k] = v
 
     # Add direct CLI args as overrides using shared utility
     direct_cli_overrides = build_cli_overrides(args)
