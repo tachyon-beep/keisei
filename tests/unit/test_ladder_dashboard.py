@@ -259,3 +259,105 @@ class TestRenderLadderTab:
         render_ladder_tab(state)
         # 10 + 10 = 20 model-games, divided by 2 = 10 unique games
         mock_col2.metric.assert_called_with("Games Played", 10)
+
+
+class TestSelectDisplayMatches:
+    """Tests for select_display_matches helper."""
+
+    def _make_match(self, match_id, elo_a, elo_b, spectated=True, sfen="4k4/9/9/9/9/9/9/9/4K4 b - 1"):
+        return {
+            "match_id": match_id,
+            "model_a": {"name": f"model_a_{match_id}", "elo": elo_a},
+            "model_b": {"name": f"model_b_{match_id}", "elo": elo_b},
+            "spectated": spectated,
+            "sfen": sfen,
+            "move_count": 10,
+            "move_log": [],
+            "status": "in_progress",
+            "slot": 0,
+        }
+
+    def test_empty_matches(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        primary, secondaries, pin = select_display_matches([], None)
+        assert primary is None
+        assert secondaries == []
+        assert pin is None
+
+    def test_single_match_becomes_primary(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [self._make_match("m1", 1600, 1500)]
+        primary, secondaries, pin = select_display_matches(matches, None)
+        assert primary["match_id"] == "m1"
+        assert secondaries == []
+        assert pin is None
+
+    def test_highest_combined_elo_is_primary(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [
+            self._make_match("low", 1400, 1400),
+            self._make_match("high", 1700, 1600),
+            self._make_match("mid", 1500, 1500),
+        ]
+        primary, secondaries, pin = select_display_matches(matches, None)
+        assert primary["match_id"] == "high"
+        assert len(secondaries) == 2
+        assert secondaries[0]["match_id"] == "mid"
+        assert secondaries[1]["match_id"] == "low"
+
+    def test_pinned_match_becomes_primary(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [
+            self._make_match("high", 1700, 1600),
+            self._make_match("low", 1400, 1400),
+        ]
+        primary, secondaries, pin = select_display_matches(matches, "low")
+        assert primary["match_id"] == "low"
+        assert secondaries[0]["match_id"] == "high"
+        assert pin == "low"
+
+    def test_stale_pin_clears(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [self._make_match("m1", 1600, 1500)]
+        primary, secondaries, pin = select_display_matches(matches, "gone")
+        assert primary["match_id"] == "m1"
+        assert pin is None
+
+    def test_non_spectated_filtered(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [
+            self._make_match("spectated", 1500, 1500, spectated=True),
+            self._make_match("background", 1700, 1700, spectated=False),
+        ]
+        primary, secondaries, pin = select_display_matches(matches, None)
+        assert primary["match_id"] == "spectated"
+        assert secondaries == []
+
+    def test_missing_sfen_filtered(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [
+            self._make_match("has_sfen", 1500, 1500),
+            self._make_match("no_sfen", 1700, 1700, sfen=None),
+        ]
+        primary, secondaries, pin = select_display_matches(matches, None)
+        assert primary["match_id"] == "has_sfen"
+        assert secondaries == []
+
+    def test_two_matches(self):
+        from keisei.webui.streamlit_app import select_display_matches
+
+        matches = [
+            self._make_match("m1", 1600, 1500),
+            self._make_match("m2", 1400, 1400),
+        ]
+        primary, secondaries, pin = select_display_matches(matches, None)
+        assert primary["match_id"] == "m1"
+        assert len(secondaries) == 1
+        assert secondaries[0]["match_id"] == "m2"
