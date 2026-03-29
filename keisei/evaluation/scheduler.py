@@ -304,6 +304,12 @@ class ContinuousMatchScheduler:
             "recent_results": self._recent_results[-20:],
         }
 
+    def _append_match_log(self, result: Dict[str, Any]) -> None:
+        """Append a match result to the persistent JSONL log."""
+        log_path = self._state_path.parent / "match_log.jsonl"
+        with open(log_path, "a") as f:
+            f.write(json.dumps(result) + "\n")
+
     def _write_state_sync(self, state: Dict[str, Any]) -> None:
         """Synchronous file write — called via asyncio.to_thread."""
         from keisei.webui.state_snapshot import write_snapshot_atomic
@@ -540,6 +546,7 @@ class ContinuousMatchScheduler:
                 "timestamp": time.time(),
             }
             self._recent_results.append(match_result)
+            self._append_match_log(match_result)
             self._recent_results = self._recent_results[-50:]
             self._consecutive_failures = 0  # Reset circuit breaker on success
 
