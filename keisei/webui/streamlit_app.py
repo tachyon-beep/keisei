@@ -1233,7 +1233,27 @@ def render_secondary_board(match: Dict[str, Any]) -> None:
     )
 
 
-def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
+def render_elo_history_section(
+    ladder_state: Dict[str, Any],
+    log_path: Path,
+) -> None:
+    """Render the Elo rating history line chart."""
+    from keisei.webui.elo_chart import build_elo_timelines
+
+    leaderboard = ladder_state.get("leaderboard", [])
+    timelines = build_elo_timelines(log_path, top_n=10, leaderboard=leaderboard)
+    if not timelines:
+        st.caption("Rating history will appear after matches complete")
+        return
+    st.subheader("Rating History")
+    st.line_chart(timelines)
+    st.caption(f"Top {len(timelines)} models by Elo")
+
+
+def render_ladder_tab(
+    ladder_state: Optional[Dict[str, Any]],
+    log_path: Optional[Path] = None,
+) -> None:
     """Render the Ladder tab: live Elo leaderboard with match indicators."""
     if ladder_state is None:
         st.info(
@@ -1297,6 +1317,11 @@ def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
     else:
         st.caption("Timestamp unavailable")
 
+    # --- Rating History chart ---
+    if log_path is not None:
+        st.markdown("---")
+        render_elo_history_section(ladder_state, log_path)
+
     # --- Live Games section ---
     st.markdown("---")
     st.subheader("Live Games")
@@ -1334,6 +1359,7 @@ def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
 def _render_dashboard_content(
     env: EnvelopeParser,
     ladder_state: Optional[Dict[str, Any]] = None,
+    ladder_log_path: Optional[Path] = None,
 ) -> None:
     """Render header metrics + tab-based content from a parsed envelope."""
     _render_header_metrics(env)
@@ -1362,7 +1388,7 @@ def _render_dashboard_content(
     if ladder_state is not None:
         tab_idx += 1
         with tabs[tab_idx]:
-            render_ladder_tab(ladder_state)
+            render_ladder_tab(ladder_state, log_path=ladder_log_path)
 
 
 def main() -> None:
@@ -1385,6 +1411,10 @@ def main() -> None:
     args, _ = arg_parser.parse_known_args()
     state_file: Optional[str] = args.state_file
     ladder_state_file: Optional[str] = args.ladder_state_file
+
+    # Derive match log path from ladder state file location
+    _ladder_dir = Path(ladder_state_file).parent if ladder_state_file else _DEFAULT_LADDER_STATE_PATH.parent
+    _match_log_path = _ladder_dir / "match_log.jsonl"
 
     # --- Sidebar controls (outside the fragment — rendered once) ---
     # Restore toggle state from URL query params (survives browser refresh)
@@ -1431,7 +1461,7 @@ def main() -> None:
                 st.info("Paused — inspecting board")
             render_stale_warning(env)
             ladder = st.session_state.get("last_ladder_state")
-            _render_dashboard_content(env, ladder_state=ladder)
+            _render_dashboard_content(env, ladder_state=ladder, ladder_log_path=_match_log_path)
         else:
             state = load_state(state_file)
             if state is None:
@@ -1454,7 +1484,7 @@ def main() -> None:
                 st.session_state.last_move_count = None
 
             render_stale_warning(env)
-            _render_dashboard_content(env, ladder_state=ladder)
+            _render_dashboard_content(env, ladder_state=ladder, ladder_log_path=_match_log_path)
 
     _live_data_section()
 
