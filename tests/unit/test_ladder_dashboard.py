@@ -361,3 +361,70 @@ class TestSelectDisplayMatches:
         assert primary["match_id"] == "m1"
         assert len(secondaries) == 1
         assert secondaries[0]["match_id"] == "m2"
+
+
+class TestFormatMatchResult:
+    """Tests for format_match_result helper."""
+
+    def _make_result(self, winner="model_a", delta_a=12.0, delta_b=-12.0, moves=142):
+        return {
+            "model_a": "model_a",
+            "model_b": "model_b",
+            "winner": winner,
+            "elo_delta_a": delta_a,
+            "elo_delta_b": delta_b,
+            "move_count": moves,
+            "reason": "checkmate",
+            "timestamp": 1.0,
+        }
+
+    def test_win_by_model_a(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        result = format_match_result(self._make_result(winner="model_a"))
+        assert ":green[**model_a**]" in result
+        assert ":red[**model_b**]" in result
+        assert "beat" in result
+        assert "+12" in result
+        assert "-12" in result
+        assert "142 moves" in result
+
+    def test_win_by_model_b(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        result = format_match_result(self._make_result(winner="model_b", delta_a=-8.0, delta_b=8.0))
+        assert ":red[**model_a**]" in result
+        assert ":green[**model_b**]" in result
+        assert "lost to" in result
+
+    def test_draw(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        result = format_match_result(self._make_result(winner="draw", delta_a=0.0, delta_b=0.0))
+        assert ":green[" not in result
+        assert ":red[" not in result
+        assert "drew" in result
+        assert "**model_a**" in result
+        assert "**model_b**" in result
+
+    def test_delta_formatting(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        result = format_match_result(self._make_result(delta_a=12.5, delta_b=-12.5))
+        assert "+12" in result or "+13" in result
+
+    def test_missing_winner_treated_as_draw(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        r = self._make_result()
+        del r["winner"]
+        result = format_match_result(r)
+        assert "drew" in result
+
+    def test_missing_move_count(self):
+        from keisei.webui.streamlit_app import format_match_result
+
+        r = self._make_result()
+        del r["move_count"]
+        result = format_match_result(r)
+        assert "? moves" in result

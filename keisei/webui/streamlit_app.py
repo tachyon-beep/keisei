@@ -1103,6 +1103,45 @@ def format_elo_arrow(delta: float) -> str:
     return "—"
 
 
+def format_match_result(result: Dict[str, Any]) -> str:
+    """Format a match result as a color-coded Streamlit markdown string."""
+    model_a = result.get("model_a", "?")
+    model_b = result.get("model_b", "?")
+    winner = result.get("winner")
+    delta_a = result.get("elo_delta_a", 0.0)
+    delta_b = result.get("elo_delta_b", 0.0)
+    moves = result.get("move_count")
+    moves_str = f"{moves} moves" if moves is not None else "? moves"
+
+    da = f"+{delta_a:.0f}" if delta_a >= 0 else f"{delta_a:.0f}"
+    db = f"+{delta_b:.0f}" if delta_b >= 0 else f"{delta_b:.0f}"
+
+    if winner == model_a:
+        return (
+            f":green[**{model_a}**] beat :red[**{model_b}**]"
+            f" \u2014 {da} / {db} Elo, {moves_str}"
+        )
+    elif winner == model_b:
+        return (
+            f":red[**{model_a}**] lost to :green[**{model_b}**]"
+            f" \u2014 {da} / {db} Elo, {moves_str}"
+        )
+    else:
+        return (
+            f"**{model_a}** drew **{model_b}**" f" \u2014 {da} / {db} Elo, {moves_str}"
+        )
+
+
+def render_recent_results_section(recent_results: List[Dict[str, Any]]) -> None:
+    """Render a feed of recent match results with color-coded outcomes."""
+    if not recent_results:
+        st.caption("No completed matches yet")
+        return
+    st.subheader("Recent Results")
+    for result in reversed(recent_results):
+        st.markdown(format_match_result(result))
+
+
 def select_display_matches(
     matches: List[Dict[str, Any]],
     pinned_match_id: Optional[str],
@@ -1321,6 +1360,11 @@ def render_ladder_tab(
     if log_path is not None:
         st.markdown("---")
         render_elo_history_section(ladder_state, log_path)
+
+    # --- Recent Results feed ---
+    if recent_results:
+        st.markdown("---")
+        render_recent_results_section(recent_results)
 
     # --- Live Games section ---
     st.markdown("---")
