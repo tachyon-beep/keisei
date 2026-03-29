@@ -803,10 +803,7 @@ def render_overview_tab(env: EnvelopeParser) -> None:
 
     # Square actions + auto-select hottest square
     square_actions = insight.get("square_actions", {}) if insight else {}
-    if (
-        st.session_state.get("overview_selected_square") is None
-        and square_actions
-    ):
+    if st.session_state.get("overview_selected_square") is None and square_actions:
         hottest_key = max(
             square_actions.keys(),
             key=lambda k: square_actions[k][0]["prob"] if square_actions[k] else 0,
@@ -835,9 +832,7 @@ def render_overview_tab(env: EnvelopeParser) -> None:
             if insight:
                 v = insight.get("value_estimate", 0.0)
                 label = (
-                    "Black +"
-                    if v > 0.05
-                    else ("Even" if abs(v) <= 0.05 else "White +")
+                    "Black +" if v > 0.05 else ("Even" if abs(v) <= 0.05 else "White +")
                 )
                 st.caption(f"V(s): {v:+.3f}  ({label})")
 
@@ -855,9 +850,7 @@ def render_overview_tab(env: EnvelopeParser) -> None:
             def _hand_compact(hand: Dict[str, int]) -> str:
                 if not hand:
                     return "(empty)"
-                return "  ".join(
-                    f"{k[0].upper()}{v}" for k, v in sorted(hand.items())
-                )
+                return "  ".join(f"{k[0].upper()}{v}" for k, v in sorted(hand.items()))
 
             st.caption(f"Black: {_hand_compact(bh)}  |  White: {_hand_compact(wh)}")
         else:
@@ -1121,11 +1114,7 @@ def select_display_matches(
         pinned_match_id if still valid, or None if cleared.
     """
     # Filter to spectated matches with valid SFEN
-    eligible = [
-        m
-        for m in matches
-        if m.get("spectated") and m.get("sfen")
-    ]
+    eligible = [m for m in matches if m.get("spectated") and m.get("sfen")]
 
     if not eligible:
         return None, [], None
@@ -1147,7 +1136,9 @@ def select_display_matches(
         if pinned:
             primary = pinned[0]
             effective_pin = pinned_match_id
-            secondaries = [m for m in sorted_matches if m.get("match_id") != pinned_match_id]
+            secondaries = [
+                m for m in sorted_matches if m.get("match_id") != pinned_match_id
+            ]
             return primary, secondaries[:2], effective_pin
 
     # Auto-select: highest combined Elo
@@ -1177,9 +1168,7 @@ def render_primary_board(match: Dict[str, Any]) -> None:
     elo_b = model_b.get("elo", 1500) if isinstance(model_b, dict) else 1500
 
     # Player header
-    st.markdown(
-        f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})"
-    )
+    st.markdown(f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})")
 
     # Board
     board_state = sfen_to_board_state(match["sfen"])
@@ -1189,8 +1178,14 @@ def render_primary_board(match: Dict[str, Any]) -> None:
     black_hand = board_state.get("black_hand", {})
     white_hand = board_state.get("white_hand", {})
     if black_hand or white_hand:
-        bh = ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in black_hand.items()) or "\u2014"
-        wh = ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in white_hand.items()) or "\u2014"
+        bh = (
+            ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in black_hand.items())
+            or "\u2014"
+        )
+        wh = (
+            ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in white_hand.items())
+            or "\u2014"
+        )
         st.caption(f"\u2617 Hand: {bh} \u2003\u2003 \u2616 Hand: {wh}")
 
     # Move log
@@ -1220,9 +1215,7 @@ def render_secondary_board(match: Dict[str, Any]) -> None:
     elo_a = model_a.get("elo", 1500) if isinstance(model_a, dict) else 1500
     elo_b = model_b.get("elo", 1500) if isinstance(model_b, dict) else 1500
 
-    st.markdown(
-        f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})"
-    )
+    st.markdown(f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})")
 
     board_state = sfen_to_board_state(match["sfen"])
     render_board(board_state, cell_size=32)
