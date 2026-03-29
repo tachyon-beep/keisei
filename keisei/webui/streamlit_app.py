@@ -1413,7 +1413,11 @@ def main() -> None:
     ladder_state_file: Optional[str] = args.ladder_state_file
 
     # Derive match log path from ladder state file location
-    _ladder_dir = Path(ladder_state_file).parent if ladder_state_file else _DEFAULT_LADDER_STATE_PATH.parent
+    _ladder_dir = (
+        Path(ladder_state_file).parent
+        if ladder_state_file
+        else _DEFAULT_LADDER_STATE_PATH.parent
+    )
     _match_log_path = _ladder_dir / "match_log.jsonl"
 
     # --- Sidebar controls (outside the fragment — rendered once) ---
@@ -1461,7 +1465,9 @@ def main() -> None:
                 st.info("Paused — inspecting board")
             render_stale_warning(env)
             ladder = st.session_state.get("last_ladder_state")
-            _render_dashboard_content(env, ladder_state=ladder, ladder_log_path=_match_log_path)
+            _render_dashboard_content(
+                env, ladder_state=ladder, ladder_log_path=_match_log_path
+            )
         else:
             state = load_state(state_file)
             if state is None:
@@ -1484,7 +1490,9 @@ def main() -> None:
                 st.session_state.last_move_count = None
 
             render_stale_warning(env)
-            _render_dashboard_content(env, ladder_state=ladder, ladder_log_path=_match_log_path)
+            _render_dashboard_content(
+                env, ladder_state=ladder, ladder_log_path=_match_log_path
+            )
 
     _live_data_section()
 

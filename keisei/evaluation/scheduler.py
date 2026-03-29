@@ -8,6 +8,7 @@ background (full speed, Elo only).
 
 import asyncio
 import enum
+import json
 import logging
 import math
 import random
@@ -90,7 +91,9 @@ class SchedulerConfig(BaseModel):
     max_consecutive_failures: int = Field(5, ge=1, le=100)
     move_timeout: float = Field(30.0, ge=1.0, description="Per-move timeout in seconds")
     fast_track_games: int = Field(
-        8, ge=0, le=50,
+        8,
+        ge=0,
+        le=50,
         description="Games to play immediately when a new checkpoint is discovered",
     )
 
@@ -174,12 +177,11 @@ class ContinuousMatchScheduler:
             if self._config.fast_track_games > 0:
                 new_paths = set(self._pool_paths) - old_paths
                 for path in new_paths:
-                    self._fast_track_queue.append(
-                        (path, self._config.fast_track_games)
-                    )
+                    self._fast_track_queue.append((path, self._config.fast_track_games))
                     logger.info(
                         "Fast-tracking %s for %d initial games",
-                        path.name, self._config.fast_track_games,
+                        path.name,
+                        self._config.fast_track_games,
                     )
         return added
 
@@ -200,7 +202,8 @@ class ContinuousMatchScheduler:
                 continue
             # Pick a random opponent that isn't the same model or blacklisted
             candidates = [
-                p for p in self._pool_paths
+                p
+                for p in self._pool_paths
                 if p != model_path and p not in self._failed_checkpoints
             ]
             if not candidates:
@@ -231,9 +234,7 @@ class ContinuousMatchScheduler:
         """
         paths = [p for p in self._pool_paths if p not in self._failed_checkpoints]
         if len(paths) < 2:
-            raise ValueError(
-                f"Need at least 2 models for a match, have {len(paths)}"
-            )
+            raise ValueError(f"Need at least 2 models for a match, have {len(paths)}")
 
         # Build per-model uncertainty weights: 1/sqrt(games) — naturally
         # decays as confidence grows, no abrupt threshold cutoff.
@@ -249,9 +250,7 @@ class ContinuousMatchScheduler:
             for b in paths[i + 1 :]:
                 elo_a = self._get_rating(a.name)
                 elo_b = self._get_rating(b.name)
-                proximity = 1.0 / (
-                    1.0 + abs(elo_a - elo_b) / _ELO_PROXIMITY_SCALE
-                )
+                proximity = 1.0 / (1.0 + abs(elo_a - elo_b) / _ELO_PROXIMITY_SCALE)
                 pair_weight = proximity * model_weights[a] * model_weights[b]
                 pairs.append((a, b))
                 weights.append(pair_weight)
@@ -273,12 +272,14 @@ class ContinuousMatchScheduler:
         ):
             games = self._games_played.get(name, 0)
             wins = self._wins.get(name, 0)
-            leaderboard.append({
-                "name": name,
-                "elo": round(elo, 1),
-                "games_played": games,
-                "win_rate": round(wins / games, 3) if games > 0 else 0.0,
-            })
+            leaderboard.append(
+                {
+                    "name": name,
+                    "elo": round(elo, 1),
+                    "games_played": games,
+                    "win_rate": round(wins / games, 3) if games > 0 else 0.0,
+                }
+            )
 
         matches = []
         for slot, match in self._active_matches.items():
@@ -358,7 +359,9 @@ class ContinuousMatchScheduler:
             if not legal_moves:
                 logger.warning(
                     "Slot %d: no legal moves at move %d (SFEN: %s)",
-                    slot, move_count, game.to_sfen(),
+                    slot,
+                    move_count,
+                    game.to_sfen(),
                 )
                 return MatchResult(
                     winner=_opponent_wins(current_agent_idx),
@@ -388,7 +391,9 @@ class ContinuousMatchScheduler:
             except asyncio.TimeoutError:
                 logger.error(
                     "Slot %d: inference timed out at move %d (>%.1fs)",
-                    slot, move_count, self._config.move_timeout,
+                    slot,
+                    move_count,
+                    self._config.move_timeout,
                 )
                 return MatchResult(
                     winner=_opponent_wins(current_agent_idx),
@@ -399,7 +404,8 @@ class ContinuousMatchScheduler:
             if selected_move is None:
                 logger.warning(
                     "Slot %d: agent returned None action at move %d",
-                    slot, move_count,
+                    slot,
+                    move_count,
                 )
                 return MatchResult(
                     winner=_opponent_wins(current_agent_idx),
@@ -457,7 +463,10 @@ class ContinuousMatchScheduler:
 
         logger.info(
             "Slot %d: %s vs %s (%s)",
-            slot, name_a, name_b, "spectated" if spectated else "background",
+            slot,
+            name_a,
+            name_b,
+            "spectated" if spectated else "background",
         )
 
         agent_a = None
@@ -466,21 +475,25 @@ class ContinuousMatchScheduler:
             # Log GPU memory before loading models for concurrent slots.
             if cfg.device.startswith("cuda") and torch.cuda.is_available():
                 mem_gb = torch.cuda.memory_allocated() / 1e9
-                logger.info(
-                    "Slot %d: GPU memory before load: %.2f GB", slot, mem_gb
-                )
+                logger.info("Slot %d: GPU memory before load: %.2f GB", slot, mem_gb)
 
             agent_a = load_evaluation_agent(
-                str(model_a_path), cfg.device, self._policy_mapper,
-                cfg.input_channels, cfg.input_features,
+                str(model_a_path),
+                cfg.device,
+                self._policy_mapper,
+                cfg.input_channels,
+                cfg.input_features,
                 model_type=cfg.model_type,
                 tower_depth=cfg.tower_depth,
                 tower_width=cfg.tower_width,
                 se_ratio=cfg.se_ratio,
             )
             agent_b = load_evaluation_agent(
-                str(model_b_path), cfg.device, self._policy_mapper,
-                cfg.input_channels, cfg.input_features,
+                str(model_b_path),
+                cfg.device,
+                self._policy_mapper,
+                cfg.input_channels,
+                cfg.input_features,
                 model_type=cfg.model_type,
                 tower_depth=cfg.tower_depth,
                 tower_width=cfg.tower_width,
@@ -501,9 +514,7 @@ class ContinuousMatchScheduler:
                 spectated=spectated,
             )
 
-            result = await self._run_game_loop(
-                game, agent_a, agent_b, spectated, slot
-            )
+            result = await self._run_game_loop(game, agent_a, agent_b, spectated, slot)
 
             elo_result_map = {
                 MatchOutcome.BLACK_WIN: "agent_win",
@@ -552,9 +563,13 @@ class ContinuousMatchScheduler:
 
             logger.info(
                 "Slot %d: %s (%+.1f) vs %s (%+.1f) — %d moves, %s",
-                slot, name_a, new_elo_a - old_elo_a,
-                name_b, new_elo_b - old_elo_b,
-                result.move_count, result.reason,
+                slot,
+                name_a,
+                new_elo_a - old_elo_a,
+                name_b,
+                new_elo_b - old_elo_b,
+                result.move_count,
+                result.reason,
             )
 
         except FileNotFoundError as e:
@@ -571,14 +586,19 @@ class ContinuousMatchScheduler:
         except RuntimeError as e:
             logger.error(
                 "Slot %d: model load/inference failed for %s vs %s: %s",
-                slot, name_a, name_b, e,
+                slot,
+                name_a,
+                name_b,
+                e,
             )
             # Architecture mismatch or corrupt weights — blacklist both
             self._failed_checkpoints.add(model_a_path)
             self._failed_checkpoints.add(model_b_path)
             self._consecutive_failures += 1
         except Exception:
-            logger.exception("Slot %d: unexpected match failure (%s vs %s)", slot, name_a, name_b)
+            logger.exception(
+                "Slot %d: unexpected match failure (%s vs %s)", slot, name_a, name_b
+            )
             self._consecutive_failures += 1
         finally:
             # Explicitly free model GPU memory
@@ -611,9 +631,7 @@ class ContinuousMatchScheduler:
             poll_task.cancel()
             slot_task.cancel()
             # Await in-flight match tasks so they can finish cleanly
-            pending = [
-                t for t in self._match_tasks.values() if not t.done()
-            ]
+            pending = [t for t in self._match_tasks.values() if not t.done()]
             if pending:
                 logger.info("Awaiting %d in-flight matches...", len(pending))
                 await asyncio.gather(*pending, return_exceptions=True)
@@ -632,7 +650,8 @@ class ContinuousMatchScheduler:
                 logger.error(
                     "Circuit breaker: %d consecutive failures, pausing for %ds. "
                     "Blacklisted checkpoints: %s",
-                    self._consecutive_failures, 30,
+                    self._consecutive_failures,
+                    30,
                     [str(p) for p in self._failed_checkpoints],
                 )
                 await asyncio.sleep(30.0)
@@ -642,7 +661,10 @@ class ContinuousMatchScheduler:
                 continue
 
             for slot_id in range(self._config.num_concurrent):
-                if slot_id not in self._match_tasks or self._match_tasks[slot_id].done():
+                if (
+                    slot_id not in self._match_tasks
+                    or self._match_tasks[slot_id].done()
+                ):
                     # Fast-track new models first, then normal weighted selection
                     ft_pair = self._pick_fast_track_matchup()
                     if ft_pair is not None:
@@ -651,7 +673,9 @@ class ContinuousMatchScheduler:
                         try:
                             model_a, model_b = self._pick_matchup()
                         except ValueError as e:
-                            logger.warning("Cannot schedule match for slot %d: %s", slot_id, e)
+                            logger.warning(
+                                "Cannot schedule match for slot %d: %s", slot_id, e
+                            )
                             break
                     task = asyncio.create_task(
                         self._run_match(slot_id, model_a, model_b)
