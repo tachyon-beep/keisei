@@ -18,7 +18,7 @@ import math
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -1108,6 +1108,61 @@ def format_elo_arrow(delta: float) -> str:
     elif delta < -0.5:
         return f":red[{delta:.0f} ↓]"
     return "—"
+
+
+def select_display_matches(
+    matches: List[Dict[str, Any]],
+    pinned_match_id: Optional[str],
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], Optional[str]]:
+    """Select primary and secondary matches for the spectator board display.
+
+    Returns:
+        (primary, secondaries, effective_pin) where effective_pin is the
+        pinned_match_id if still valid, or None if cleared.
+    """
+    # Filter to spectated matches with valid SFEN
+    eligible = [
+        m
+        for m in matches
+        if m.get("spectated") and m.get("sfen")
+    ]
+
+    if not eligible:
+        return None, [], None
+
+    # Sort by combined Elo descending
+    def combined_elo(m: Dict[str, Any]) -> float:
+        a = m.get("model_a", {})
+        b = m.get("model_b", {})
+        elo_a = a.get("elo", 1500.0) if isinstance(a, dict) else 1500.0
+        elo_b = b.get("elo", 1500.0) if isinstance(b, dict) else 1500.0
+        return elo_a + elo_b
+
+    sorted_matches = sorted(eligible, key=combined_elo, reverse=True)
+
+    # Check if pinned match is still active
+    effective_pin = None
+    if pinned_match_id is not None:
+        pinned = [m for m in sorted_matches if m.get("match_id") == pinned_match_id]
+        if pinned:
+            primary = pinned[0]
+            effective_pin = pinned_match_id
+            secondaries = [m for m in sorted_matches if m.get("match_id") != pinned_match_id]
+            return primary, secondaries[:2], effective_pin
+
+    # Auto-select: highest combined Elo
+    primary = sorted_matches[0]
+    secondaries = sorted_matches[1:3]
+    return primary, secondaries, effective_pin
+
+
+def set_primary_match(match_id: Optional[str]) -> None:
+    """Pin a match as primary, or pass None to reset to auto-selection.
+
+    This is the promotion API — the same entry point that UI buttons
+    and future integrations (e.g., Twitch voting) use.
+    """
+    st.session_state["ladder_primary_match_id"] = match_id
 
 
 def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
