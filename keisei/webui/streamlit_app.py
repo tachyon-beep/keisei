@@ -1165,6 +1165,81 @@ def set_primary_match(match_id: Optional[str]) -> None:
     st.session_state["ladder_primary_match_id"] = match_id
 
 
+def render_primary_board(match: Dict[str, Any]) -> None:
+    """Render the primary spectator board with full match details."""
+    from keisei.webui.sfen_utils import sfen_to_board_state
+
+    model_a = match.get("model_a", {})
+    model_b = match.get("model_b", {})
+    name_a = model_a.get("name", "?") if isinstance(model_a, dict) else "?"
+    name_b = model_b.get("name", "?") if isinstance(model_b, dict) else "?"
+    elo_a = model_a.get("elo", 1500) if isinstance(model_a, dict) else 1500
+    elo_b = model_b.get("elo", 1500) if isinstance(model_b, dict) else 1500
+
+    # Player header
+    st.markdown(
+        f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})"
+    )
+
+    # Board
+    board_state = sfen_to_board_state(match["sfen"])
+    render_board(board_state, cell_size=40)
+
+    # Hand pieces
+    black_hand = board_state.get("black_hand", {})
+    white_hand = board_state.get("white_hand", {})
+    if black_hand or white_hand:
+        bh = ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in black_hand.items()) or "\u2014"
+        wh = ", ".join(f"{v}\u00d7{k[0].upper()}" for k, v in white_hand.items()) or "\u2014"
+        st.caption(f"\u2617 Hand: {bh} \u2003\u2003 \u2616 Hand: {wh}")
+
+    # Move log
+    move_log = match.get("move_log", [])
+    if move_log:
+        recent = move_log[-10:]
+        start_idx = max(1, len(move_log) - len(recent) + 1)
+        moves_text = " \u2003 ".join(
+            f"{i}. {m}" for i, m in enumerate(recent, start_idx)
+        )
+        st.text(moves_text)
+
+    # Status
+    move_count = match.get("move_count", board_state.get("move_count", 0))
+    current = board_state["current_player"].capitalize()
+    st.caption(f"Move {move_count} \u00b7 {current} to play")
+
+
+def render_secondary_board(match: Dict[str, Any]) -> None:
+    """Render a compact secondary spectator board."""
+    from keisei.webui.sfen_utils import sfen_to_board_state
+
+    model_a = match.get("model_a", {})
+    model_b = match.get("model_b", {})
+    name_a = model_a.get("name", "?") if isinstance(model_a, dict) else "?"
+    name_b = model_b.get("name", "?") if isinstance(model_b, dict) else "?"
+    elo_a = model_a.get("elo", 1500) if isinstance(model_a, dict) else 1500
+    elo_b = model_b.get("elo", 1500) if isinstance(model_b, dict) else 1500
+
+    st.markdown(
+        f"**{name_a}** ({elo_a:.0f}) vs **{name_b}** ({elo_b:.0f})"
+    )
+
+    board_state = sfen_to_board_state(match["sfen"])
+    render_board(board_state, cell_size=32)
+
+    move_count = match.get("move_count", board_state.get("move_count", 0))
+    current = board_state["current_player"].capitalize()
+    col_status, col_btn = st.columns([3, 1])
+    col_status.caption(f"Move {move_count} \u00b7 {current} to play")
+    match_id = match.get("match_id", "")
+    col_btn.button(
+        "Watch",
+        key=f"watch_{match_id}",
+        on_click=set_primary_match,
+        args=(match_id,),
+    )
+
+
 def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
     """Render the Ladder tab: live Elo leaderboard with match indicators."""
     if ladder_state is None:
@@ -1228,6 +1303,39 @@ def render_ladder_tab(ladder_state: Optional[Dict[str, Any]]) -> None:
         st.caption(f"Updated {time.time() - ts:.0f}s ago")
     else:
         st.caption("Timestamp unavailable")
+
+    # --- Live Games section ---
+    st.markdown("---")
+    st.subheader("Live Games")
+
+    pinned = st.session_state.get("ladder_primary_match_id")
+    primary, secondaries, effective_pin = select_display_matches(matches, pinned)
+
+    if effective_pin != pinned:
+        st.session_state["ladder_primary_match_id"] = effective_pin
+
+    if primary is None:
+        st.info("No live games \u2014 waiting for spectated matches")
+    else:
+        if secondaries:
+            primary_col, secondary_col = st.columns([3, 2])
+        else:
+            primary_col = st.container()
+            secondary_col = None
+
+        with primary_col:
+            render_primary_board(primary)
+
+        if secondary_col is not None:
+            with secondary_col:
+                for match in secondaries:
+                    render_secondary_board(match)
+                if st.session_state.get("ladder_primary_match_id"):
+                    st.button(
+                        "\u21bb Auto-select primary",
+                        on_click=set_primary_match,
+                        args=(None,),
+                    )
 
 
 def _render_dashboard_content(

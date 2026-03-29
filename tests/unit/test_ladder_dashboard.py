@@ -214,7 +214,7 @@ class TestRenderLadderTab:
         }
         render_ladder_tab(state)
 
-        mock_st.subheader.assert_called_with("Elo Leaderboard")
+        mock_st.subheader.assert_any_call("Elo Leaderboard")
         # header row + 2 data rows + metrics row = 4 st.columns calls
         assert mock_st.columns.call_count >= 4
 
