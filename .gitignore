@@ -101,3 +101,6 @@ venv/
 # Issue trackers
 .filigree/
 .superpowers/brainstorm/
+
+# Worktrees
+.worktrees/
