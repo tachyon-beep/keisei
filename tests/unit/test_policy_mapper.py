@@ -2,6 +2,7 @@
 policy network output indices."""
 
 import pytest
+import torch
 
 from keisei.utils.utils import PolicyOutputMapper
 from keisei.shogi.shogi_core_definitions import PieceType, get_unpromoted_types
@@ -162,4 +163,83 @@ class TestBoundaryAndConsistency:
             )
             assert len(move) == 5, (
                 f"Move at index {idx} has length {len(move)}, expected 5"
+            )
+
+
+class TestPerspectiveAlignment:
+    """Tests for perspective-aware action mapping methods."""
+
+    def test_flip_board_move(self, mapper):
+        """Flipping (6,0,5,0,False) should give (2,8,3,8,False)."""
+        move = (6, 0, 5, 0, False)
+        flipped = PolicyOutputMapper.flip_move(move)
+        assert flipped == (2, 8, 3, 8, False)
+
+    def test_flip_board_move_with_promotion(self, mapper):
+        """Promotion flag is preserved through flip."""
+        move = (6, 0, 5, 0, True)
+        flipped = PolicyOutputMapper.flip_move(move)
+        assert flipped == (2, 8, 3, 8, True)
+
+    def test_flip_drop_move(self, mapper):
+        """Drop move flips target square, preserves piece type."""
+        move = (None, None, 2, 3, PieceType.PAWN)
+        flipped = PolicyOutputMapper.flip_move(move)
+        assert flipped == (None, None, 6, 5, PieceType.PAWN)
+
+    def test_flip_is_involution(self, mapper):
+        """Flipping twice returns the original."""
+        board_move = (6, 0, 5, 0, False)
+        assert PolicyOutputMapper.flip_move(PolicyOutputMapper.flip_move(board_move)) == board_move
+
+        drop_move = (None, None, 2, 3, PieceType.SILVER)
+        assert PolicyOutputMapper.flip_move(PolicyOutputMapper.flip_move(drop_move)) == drop_move
+
+    def test_get_legal_mask_perspective_black_unchanged(self, mapper):
+        """For Black (is_white=False), mask identical to non-perspective version."""
+        device = torch.device("cpu")
+        legal_moves = [(0, 0, 1, 0, False), (None, None, 4, 4, PieceType.PAWN)]
+        mask_plain = mapper.get_legal_mask(legal_moves, device)
+        mask_persp = mapper.get_legal_mask_perspective(legal_moves, device, is_white=False)
+        assert torch.equal(mask_plain, mask_persp)
+
+    def test_get_legal_mask_perspective_white_differs(self, mapper):
+        """For White, perspective mask differs from absolute mask."""
+        device = torch.device("cpu")
+        # Use an asymmetric move so flipping actually changes it
+        legal_moves = [(6, 0, 5, 0, False)]
+        mask_plain = mapper.get_legal_mask(legal_moves, device)
+        mask_persp = mapper.get_legal_mask_perspective(legal_moves, device, is_white=True)
+        assert not torch.equal(mask_plain, mask_persp)
+
+    def test_perspective_roundtrip_white(self, mapper):
+        """Flipping legal moves, picking an index, and flipping back gives a valid absolute move."""
+        device = torch.device("cpu")
+        legal_moves = [(6, 0, 5, 0, False), (None, None, 2, 3, PieceType.PAWN)]
+        mask = mapper.get_legal_mask_perspective(legal_moves, device, is_white=True)
+        # Pick the first legal index in the perspective mask
+        legal_indices = torch.where(mask)[0]
+        assert len(legal_indices) > 0
+        idx = legal_indices[0].item()
+        absolute_move = mapper.perspective_index_to_absolute_move(idx, is_white=True)
+        assert absolute_move in legal_moves
+
+    def test_perspective_roundtrip_all_white_moves(self, mapper):
+        """Every legal move for White survives the roundtrip."""
+        device = torch.device("cpu")
+        legal_moves = [
+            (6, 0, 5, 0, False),
+            (8, 4, 7, 4, False),
+            (None, None, 2, 3, PieceType.PAWN),
+            (None, None, 0, 0, PieceType.ROOK),
+        ]
+        mask = mapper.get_legal_mask_perspective(legal_moves, device, is_white=True)
+        legal_indices = torch.where(mask)[0]
+        # Count of legal indices equals count of legal moves
+        assert len(legal_indices) == len(legal_moves)
+        # Every index roundtrips to a legal move
+        for idx in legal_indices:
+            absolute_move = mapper.perspective_index_to_absolute_move(idx.item(), is_white=True)
+            assert absolute_move in legal_moves, (
+                f"Index {idx.item()} roundtripped to {absolute_move}, not in legal_moves"
             )

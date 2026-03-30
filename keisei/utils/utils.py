@@ -341,6 +341,45 @@ class PolicyOutputMapper:
 
         return mask
 
+    @staticmethod
+    def flip_move(move: "MoveTuple") -> "MoveTuple":
+        """Flip move coordinates 180° for perspective transformation.
+        Board moves: (r, c) -> (8-r, 8-c) for both source and destination.
+        Drop moves: only the target square is flipped.
+        The promotion flag / piece type (element 4) is preserved.
+        """
+        if move[0] is None:  # Drop move
+            return (None, None, 8 - move[2], 8 - move[3], move[4])
+        return (8 - move[0], 8 - move[1], 8 - move[2], 8 - move[3], move[4])
+
+    def get_legal_mask_perspective(
+        self,
+        legal_shogi_moves: List["MoveTuple"],
+        device: torch.device,
+        is_white: bool,
+    ) -> torch.Tensor:
+        """Create a legal move mask in the current player's perspective space.
+        When is_white=True, legal moves (absolute coords) are flipped to perspective
+        coords before index lookup, so the mask aligns with White's rotated observation.
+        When is_white=False, identical to get_legal_mask().
+        """
+        if not is_white:
+            return self.get_legal_mask(legal_shogi_moves, device)
+        flipped_moves = [self.flip_move(m) for m in legal_shogi_moves]
+        return self.get_legal_mask(flipped_moves, device)
+
+    def perspective_index_to_absolute_move(
+        self, idx: int, is_white: bool
+    ) -> "MoveTuple":
+        """Convert a policy index (perspective space) back to an absolute move.
+        When is_white=True, the move at idx is in perspective coords, so flip back.
+        When is_white=False, identical to policy_index_to_shogi_move().
+        """
+        move = self.policy_index_to_shogi_move(idx)
+        if is_white:
+            return self.flip_move(move)
+        return move
+
     def _usi_sq(self, r: int, c: int) -> str:
         """Converts 0-indexed (row, col) to USI square string (e.g., (0,0) -> '9a')."""
         if not (0 <= r <= 8 and 0 <= c <= 8):
