@@ -261,8 +261,9 @@ class StepManager:
                     info={"terminal_reason": "no_legal_moves"},
                 )
 
-            legal_mask_tensor = self.policy_mapper.get_legal_mask(
-                legal_shogi_moves, device=self.device
+            is_white = self.game.current_player == Color.WHITE
+            legal_mask_tensor = self.policy_mapper.get_legal_mask_perspective(
+                legal_shogi_moves, device=self.device, is_white=is_white
             )
 
             # Stash for policy insight snapshot
@@ -275,6 +276,12 @@ class StepManager:
                     episode_state.current_obs, legal_mask_tensor, is_training=True
                 )
             )
+
+            # Convert perspective-space move back to absolute coordinates
+            if selected_shogi_move is not None and is_white:
+                selected_shogi_move = self.policy_mapper.flip_move(
+                    selected_shogi_move
+                )
 
             # Check if agent failed to select a move.
             # Note: done=False here is intentional — the caller

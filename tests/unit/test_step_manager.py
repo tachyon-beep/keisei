@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from keisei.shogi import Color
 from keisei.training.step_manager import EpisodeState, StepManager, StepResult
 
 pytestmark = pytest.mark.unit
@@ -52,8 +53,7 @@ def _make_step_manager():
     config = _make_config()
     game = MagicMock()
     game.reset.return_value = _make_obs()
-    game.current_player = MagicMock()
-    game.current_player.name = "BLACK"
+    game.current_player = Color.BLACK
 
     agent = MagicMock()
     policy_mapper = MagicMock()
@@ -195,7 +195,7 @@ class TestExecuteStep:
     def test_calls_agent_select_action(self):
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 1, 0, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.ones(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.ones(13527)
         sm.agent.select_action.return_value = (
             (0, 0, 1, 0, False),  # move
             42,  # policy_index
@@ -213,7 +213,7 @@ class TestExecuteStep:
     def test_stores_experience_in_buffer(self):
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 1, 0, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.ones(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.ones(13527)
         sm.agent.select_action.return_value = (
             (0, 0, 1, 0, False),
             42,
@@ -241,7 +241,7 @@ class TestExecuteStep:
     def test_handles_agent_returning_none_move(self):
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 1, 0, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.ones(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.ones(13527)
         sm.agent.select_action.return_value = (None, 0, 0.0, 0.0)
 
         state = _make_episode_state()
@@ -338,7 +338,7 @@ class TestCapturePromotionTracking:
     def test_capture_tracking(self):
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 1, 0, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.ones(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.ones(13527)
         sm.agent.select_action.return_value = (
             (0, 0, 1, 0, False),
             42,
@@ -602,7 +602,7 @@ class TestExecuteStepExceptionHandling:
         """Set up a StepManager where make_move raises the given error."""
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 1, 0, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.ones(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.ones(13527)
         sm.agent.select_action.return_value = (
             (0, 0, 1, 0, False),
             42,
@@ -707,12 +707,10 @@ class TestObsSnapshotCache:
         """After a successful execute_step, both caches are populated."""
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.zeros(13527)
         sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
         sm.game.make_move.return_value = (_make_obs(), 0.0, False, {})
-        sm.game.current_player = MagicMock()
-        sm.game.current_player.name = "BLACK"
-        sm.game.current_player.value = 0
+        sm.game.current_player = Color.BLACK
 
         episode = _make_episode_state()
         result = sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
@@ -729,12 +727,10 @@ class TestObsSnapshotCache:
         """The stashed obs matches the episode's current_obs (numpy array)."""
         sm = _make_step_manager()
         sm.game.get_legal_moves.return_value = [(0, 0, 2, 2, False)]
-        sm.policy_mapper.get_legal_mask.return_value = torch.zeros(13527)
+        sm.policy_mapper.get_legal_mask_perspective.return_value = torch.zeros(13527)
         sm.agent.select_action.return_value = ((0, 0, 2, 2, False), 42, -0.5, 0.3)
         sm.game.make_move.return_value = (_make_obs(), 0.0, False, {})
-        sm.game.current_player = MagicMock()
-        sm.game.current_player.name = "BLACK"
-        sm.game.current_player.value = 0
+        sm.game.current_player = Color.BLACK
 
         episode = _make_episode_state()
         sm.execute_step(episode, global_timestep=1, logger_func=_noop_logger)
