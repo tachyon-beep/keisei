@@ -289,7 +289,15 @@ class Trainer:
         with torch.no_grad():
             last_value_pred_for_gae = self.agent.get_value(current_obs_np)
 
-        self.experience_buffer.compute_advantages_and_returns(last_value_pred_for_gae)
+        # The last_value is from the perspective of whoever is about to move
+        from keisei.shogi import Color
+
+        last_value_is_white = (
+            self.game is not None and self.game.current_player == Color.WHITE
+        )
+        self.experience_buffer.compute_advantages_and_returns(
+            last_value_pred_for_gae, last_value_is_white=last_value_is_white
+        )
         # Only clone weights for delta tracking when WebUI needs it
         if self.webui_manager is not None:
             model_any: Any = getattr(self.agent, "model", None)

@@ -336,6 +336,7 @@ class StepManager:
                 value_pred,
                 done,
                 legal_mask_tensor,
+                is_white=is_white,
             )
 
             return StepResult(

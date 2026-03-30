@@ -249,6 +249,7 @@ class SelfPlayWorker(mp.get_context("spawn").Process):
                 value=value.squeeze().item(),
                 done=bool(done),
                 legal_mask=legal_mask.cpu(),
+                is_white=is_white,
             )
 
             # Update current observation

@@ -22,6 +22,7 @@ class Experience:
     value: float
     done: bool
     legal_mask: torch.Tensor
+    is_white: bool = False
 
 
 class ExperienceBuffer:
@@ -61,6 +62,8 @@ class ExperienceBuffer:
         self.values = torch.zeros(buffer_size, dtype=torch.float32, device=self.device)
         # Done flags: (buffer_size,) - Episode termination flags
         self.dones = torch.zeros(buffer_size, dtype=torch.bool, device=self.device)
+        # Player identity: True if White's turn (for GAE sign correction in self-play)
+        self.is_white = torch.zeros(buffer_size, dtype=torch.bool, device=self.device)
         # Legal masks: (buffer_size, num_actions) - Legal action masks
         self.legal_masks = torch.zeros(
             (buffer_size, num_actions), dtype=torch.bool, device=self.device
@@ -82,12 +85,15 @@ class ExperienceBuffer:
         log_prob: float,
         value: float,
         done: bool,
-        legal_mask: torch.Tensor,  # Added legal_mask
+        legal_mask: torch.Tensor,
+        is_white: bool = False,
     ) -> bool:
         """
         Add a transition to the buffer.
         'obs' is expected to be a PyTorch tensor of shape (C, H, W) on self.device.
         'legal_mask' is expected to be a PyTorch tensor on self.device.
+        'is_white' indicates whether this experience is from White's perspective
+        (used for GAE sign correction in self-play).
 
         Returns:
             True if the experience was added, False if the buffer was full.
@@ -105,17 +111,27 @@ class ExperienceBuffer:
         self.log_probs[self.ptr] = log_prob
         self.values[self.ptr] = value
         self.dones[self.ptr] = done
+        self.is_white[self.ptr] = is_white
         self.legal_masks[self.ptr] = legal_mask.to(self.device)
         self.ptr += 1
         return True
 
     def compute_advantages_and_returns(
-        self, last_value: float
-    ):  # last_value is a float
+        self, last_value: float, last_value_is_white: bool = False
+    ):
         """
         Computes Generalized Advantage Estimation (GAE) and returns for the collected experiences.
         This should be called after the buffer is full (i.e., self.ptr == self.buffer_size).
         Uses PyTorch tensor operations for GAE calculation.
+
+        In self-play, consecutive experiences alternate between players. Since the
+        value function predicts "value for the current player" and the game is
+        zero-sum, we negate the bootstrap value and carried GAE when crossing
+        player boundaries (the opponent's gain is my loss).
+
+        Args:
+            last_value: Value prediction for the state after the last stored experience.
+            last_value_is_white: Whether last_value is from White's perspective.
         """
         if self.ptr == 0:
             log_warning_to_stderr(
@@ -129,6 +145,17 @@ class ExperienceBuffer:
         values_tensor = self.values[: self.ptr]
         dones_tensor = self.dones[: self.ptr].float()  # Convert bool to float for mask
         masks_tensor = 1.0 - dones_tensor
+        is_white_tensor = self.is_white[: self.ptr]
+
+        # Build perspective sign for each step: -1 when the next experience is
+        # from a different player (zero-sum sign flip), +1 when same player.
+        perspective_signs = torch.ones(self.ptr, device=self.device)
+        for t in range(self.ptr - 1):
+            if is_white_tensor[t] != is_white_tensor[t + 1]:
+                perspective_signs[t] = -1.0
+        # Last step: compare with the player who owns last_value
+        if self.ptr > 0 and is_white_tensor[self.ptr - 1] != last_value_is_white:
+            perspective_signs[self.ptr - 1] = -1.0
 
         # Initialize GAE variables
         gae = torch.tensor(0.0, device=self.device)
@@ -143,12 +170,14 @@ class ExperienceBuffer:
             else:
                 current_next_value = values_tensor[t + 1]
 
+            # Negate next value and carried GAE when crossing player boundaries
+            sign = perspective_signs[t]
             delta = (
                 rewards_tensor[t]
-                + self.gamma * current_next_value * masks_tensor[t]
+                + self.gamma * sign * current_next_value * masks_tensor[t]
                 - values_tensor[t]
             )
-            gae = delta + self.gamma * self.lambda_gae * masks_tensor[t] * gae
+            gae = delta + self.gamma * self.lambda_gae * masks_tensor[t] * sign * gae
 
             # Store computed values directly in pre-allocated tensors
             self.advantages[t] = gae
@@ -241,6 +270,7 @@ class ExperienceBuffer:
                 value=exp.value,
                 done=exp.done,
                 legal_mask=exp.legal_mask,
+                is_white=exp.is_white,
             ):
                 dropped = len(experiences) - added
                 log_warning_to_stderr(
