@@ -238,17 +238,18 @@ class TournamentEvaluator(BaseEvaluator):
 
             try:
                 # Convert legal moves to legal mask for agent action selection
+                is_white = game.current_player == Color.WHITE
                 legal_mask = None
                 if hasattr(current_player, "select_action") and hasattr(
                     current_player, "device"
                 ):
                     # This is an agent that needs a legal mask tensor
-                    legal_mask = self.policy_mapper.get_legal_mask(
-                        legal_moves, current_player.device
+                    legal_mask = self.policy_mapper.get_legal_mask_perspective(
+                        legal_moves, current_player.device, is_white=is_white
                     )
 
                 move = await self._get_player_action(
-                    current_player, game, legal_moves, legal_mask
+                    current_player, game, legal_moves, legal_mask, is_white=is_white
                 )
                 if move is None:
                     break
@@ -520,6 +521,7 @@ class TournamentEvaluator(BaseEvaluator):
         game: ShogiGame,
         legal_moves: List[Any],
         legal_mask: Any = None,
+        is_white: bool = False,
     ) -> Any:
         """Gets an action from the player entity (agent or opponent)."""
         move = None
@@ -536,6 +538,9 @@ class TournamentEvaluator(BaseEvaluator):
             )
             if move_tuple is not None:
                 move = move_tuple[0] if isinstance(move_tuple, tuple) else move_tuple
+            # Convert perspective-space move back to absolute coordinates
+            if move is not None and is_white:
+                move = self.policy_mapper.flip_move(move)
         elif (
             hasattr(player_entity, "select_move")
             and player_entity.select_move is not None

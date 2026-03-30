@@ -373,8 +373,9 @@ class ContinuousMatchScheduler:
             agent_device = getattr(agent, "device", torch.device("cpu"))
             if isinstance(agent_device, str):
                 agent_device = torch.device(agent_device)
-            legal_mask = self._policy_mapper.get_legal_mask(
-                legal_moves, device=agent_device
+            is_white = current_color == Color.WHITE
+            legal_mask = self._policy_mapper.get_legal_mask_perspective(
+                legal_moves, device=agent_device, is_white=is_white
             )
 
             # Offload synchronous PyTorch inference to a thread so the
@@ -400,6 +401,10 @@ class ContinuousMatchScheduler:
                     move_count=move_count,
                     reason="inference_timeout",
                 )
+
+            # Convert perspective-space move back to absolute coordinates
+            if selected_move is not None and is_white:
+                selected_move = self._policy_mapper.flip_move(selected_move)
 
             if selected_move is None:
                 logger.warning(

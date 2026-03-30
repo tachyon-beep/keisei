@@ -95,7 +95,7 @@ class SingleOpponentEvaluator(BaseEvaluator):
         raise ValueError(f"Unknown entity type for loading: {type(entity_info)}")
 
     async def _get_player_action(
-        self, player_entity: Any, game: ShogiGame, legal_mask: Any
+        self, player_entity: Any, game: ShogiGame, legal_mask: Any, is_white: bool = False
     ) -> Any:
         """Gets an action from the player entity (agent or opponent)."""
         move = None
@@ -107,6 +107,9 @@ class SingleOpponentEvaluator(BaseEvaluator):
             )
             if move_tuple is not None:
                 move = move_tuple[0] if isinstance(move_tuple, tuple) else move_tuple
+            # Convert perspective-space move back to absolute coordinates
+            if move is not None and is_white:
+                move = self.policy_mapper.flip_move(move)
         elif hasattr(player_entity, "select_move"):  # Heuristic or other BaseOpponent
             move = player_entity.select_move(game)
         else:
@@ -194,12 +197,13 @@ class SingleOpponentEvaluator(BaseEvaluator):
                     getattr(current_player_entity, "device", "cpu")
                 )
 
-            legal_mask = self.policy_mapper.get_legal_mask(legal_moves, device_obj)
+            is_white = game.current_player == Color.WHITE
+            legal_mask = self.policy_mapper.get_legal_mask_perspective(legal_moves, device_obj, is_white=is_white)
 
             move = None
             try:
                 move = await self._get_player_action(
-                    current_player_entity, game, legal_mask
+                    current_player_entity, game, legal_mask, is_white=is_white
                 )
             except Exception as e:
                 logger.error(
