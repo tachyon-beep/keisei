@@ -16,6 +16,7 @@ import torch
 
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.experience_buffer import Experience
+from keisei.shogi.shogi_core_definitions import Color
 from keisei.shogi.shogi_game import ShogiGame
 from keisei.utils.utils import PolicyOutputMapper
 
@@ -196,9 +197,10 @@ class SelfPlayWorker(mp.get_context("spawn").Process):
 
                 # Get legal moves and create action mask using PolicyOutputMapper
                 legal_moves = self.game.get_legal_moves()
+                is_white = self.game.current_player == Color.WHITE
                 if self.policy_mapper is not None:
-                    legal_mask = self.policy_mapper.get_legal_mask(
-                        legal_moves, self.device
+                    legal_mask = self.policy_mapper.get_legal_mask_perspective(
+                        legal_moves, self.device, is_white=is_white
                     )
                 else:
                     logger.error(
@@ -218,8 +220,8 @@ class SelfPlayWorker(mp.get_context("spawn").Process):
             # Convert action index to move using PolicyOutputMapper
             if self.policy_mapper is not None:
                 try:
-                    selected_move = self.policy_mapper.policy_index_to_shogi_move(
-                        int(action.item())
+                    selected_move = self.policy_mapper.perspective_index_to_absolute_move(
+                        int(action.item()), is_white=is_white
                     )
                 except (IndexError, ValueError) as e:
                     logger.error(
