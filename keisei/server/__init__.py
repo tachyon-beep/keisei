@@ -1,0 +1,1 @@
+"""FastAPI spectator dashboard server."""
