@@ -429,6 +429,46 @@ mod tests {
         assert!(GameResult::MaxMoves.is_truncation());
     }
 
+    #[test]
+    fn test_game_result_is_truncation_exhaustive() {
+        // Ensure ALL non-MaxMoves variants return false
+        assert!(!GameResult::PerpetualCheck { winner: Color::Black }.is_truncation());
+        assert!(!GameResult::PerpetualCheck { winner: Color::White }.is_truncation());
+        assert!(!GameResult::Impasse { winner: None }.is_truncation());
+        assert!(!GameResult::Impasse { winner: Some(Color::Black) }.is_truncation());
+        assert!(!GameResult::Impasse { winner: Some(Color::White) }.is_truncation());
+        assert!(!GameResult::Checkmate { winner: Color::White }.is_truncation());
+    }
+
+    // -- ShogiError Display ---------------------------------------------------
+
+    #[test]
+    fn test_shogi_error_display() {
+        let e1 = ShogiError::InvalidSfen("bad data".into());
+        assert_eq!(format!("{}", e1), "invalid SFEN: bad data");
+
+        let e2 = ShogiError::InvalidSquare(99);
+        assert_eq!(format!("{}", e2), "invalid square index: 99");
+
+        let e3 = ShogiError::GameOver(GameResult::MaxMoves);
+        let s = format!("{}", e3);
+        assert!(s.contains("game is over"), "GameOver display should contain 'game is over': {}", s);
+
+        let e4 = ShogiError::IllegalMove(Move::Drop {
+            to: Square::new(40).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        });
+        let s = format!("{}", e4);
+        assert!(s.contains("illegal move"), "IllegalMove display: {}", s);
+    }
+
+    #[test]
+    fn test_shogi_error_is_std_error() {
+        // Verify ShogiError implements std::error::Error
+        let e: Box<dyn std::error::Error> = Box::new(ShogiError::InvalidSquare(99));
+        assert!(e.to_string().contains("99"));
+    }
+
     // -- Move: compile-time check that Drop has no King ----------------------
     // There is no King variant in HandPieceType, so this is enforced by the
     // type system at compile time. The test below simply verifies construction.

@@ -1355,4 +1355,197 @@ mod tests {
             other => panic!("Expected Impasse with Black winner, got {:?}", other),
         }
     }
+
+    /// Asymmetric impasse: White reaches 24 but Black doesn't.
+    #[test]
+    fn test_impasse_one_sided_white_wins() {
+        let mut pos = Position::empty();
+
+        // Black king at (0,4) — in White's camp
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king at (8,4) — in Black's camp
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+
+        // 10 Black pieces in zone with LOW value
+        for c in 0u8..9 {
+            if c == 4 { continue; }
+            pos.set_piece(
+                Square::from_row_col(0, c).unwrap(),
+                Piece::new(PieceType::Pawn, Color::Black, false),
+            );
+        }
+        pos.set_piece(
+            Square::from_row_col(1, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // Black: 10 pawns in zone = 10 points < 24
+
+        // 10 White pieces in zone with HIGH value
+        for c in 0u8..9 {
+            if c == 4 { continue; }
+            pos.set_piece(
+                Square::from_row_col(8, c).unwrap(),
+                Piece::new(PieceType::Gold, Color::White, false),
+            );
+        }
+        pos.set_piece(
+            Square::from_row_col(7, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(7, 1).unwrap(),
+            Piece::new(PieceType::Bishop, Color::White, false),
+        );
+        // White in zone: King + 8 Gold(1) + Rook(5) + Bishop(5) = 18
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 7);
+        // White total: 18 + 7 = 25 >= 24 ✓
+
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+        let gs = GameState::from_position(pos, 500);
+
+        let result = check_impasse(&gs);
+        assert!(result.is_some(), "Impasse should trigger");
+        match result.unwrap() {
+            GameResult::Impasse { winner: Some(Color::White) } => {}
+            other => panic!("Expected Impasse with White winner, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // piece_attacks_square: coverage for all piece types
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_piece_attacks_square_knight() {
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::Black, false);
+        // Black knight at (4,4) should attack (2,3) and (2,5)
+        let target1 = Square::from_row_col(2, 3).unwrap();
+        let target2 = Square::from_row_col(2, 5).unwrap();
+        assert!(piece_attacks_square(&pos, sq, knight, target1), "Knight should attack (2,3)");
+        assert!(piece_attacks_square(&pos, sq, knight, target2), "Knight should attack (2,5)");
+        // Should NOT attack (3,4)
+        let non_target = Square::from_row_col(3, 4).unwrap();
+        assert!(!piece_attacks_square(&pos, sq, knight, non_target));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_white_knight() {
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::White, false);
+        // White knight at (4,4) jumps DOWN: targets (6,3) and (6,5)
+        let target1 = Square::from_row_col(6, 3).unwrap();
+        let target2 = Square::from_row_col(6, 5).unwrap();
+        assert!(piece_attacks_square(&pos, sq, knight, target1));
+        assert!(piece_attacks_square(&pos, sq, knight, target2));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_lance() {
+        let mut pos = Position::empty();
+        let sq = Square::from_row_col(6, 4).unwrap();
+        let lance = Piece::new(PieceType::Lance, Color::Black, false);
+        // Black lance slides UP from (6,4) — should attack (5,4), (4,4), etc.
+        let target = Square::from_row_col(3, 4).unwrap();
+        assert!(piece_attacks_square(&pos, sq, lance, target));
+
+        // Place blocker at (4,4) — should NOT attack (3,4) anymore
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        assert!(!piece_attacks_square(&pos, sq, lance, target), "Lance should be blocked");
+        // But should still attack (4,4) — the blocker itself
+        let blocker_sq = Square::from_row_col(4, 4).unwrap();
+        assert!(piece_attacks_square(&pos, sq, lance, blocker_sq));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_silver() {
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let silver = Piece::new(PieceType::Silver, Color::Black, false);
+        // Black silver attacks: forward(3,4), fwd-left(3,3), fwd-right(3,5),
+        // back-left(5,3), back-right(5,5)
+        assert!(piece_attacks_square(&pos, sq, silver, Square::from_row_col(3, 4).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, silver, Square::from_row_col(3, 3).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, silver, Square::from_row_col(3, 5).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, silver, Square::from_row_col(5, 3).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, silver, Square::from_row_col(5, 5).unwrap()));
+        // Should NOT attack directly left/right/backward-center
+        assert!(!piece_attacks_square(&pos, sq, silver, Square::from_row_col(4, 3).unwrap()));
+        assert!(!piece_attacks_square(&pos, sq, silver, Square::from_row_col(5, 4).unwrap()));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_gold() {
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        // Black gold attacks: forward(3,4), fwd-left(3,3), fwd-right(3,5),
+        // left(4,3), right(4,5), backward(5,4)
+        assert!(piece_attacks_square(&pos, sq, gold, Square::from_row_col(3, 4).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, gold, Square::from_row_col(3, 3).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, gold, Square::from_row_col(4, 3).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, gold, Square::from_row_col(5, 4).unwrap()));
+        // Should NOT attack diagonally backward
+        assert!(!piece_attacks_square(&pos, sq, gold, Square::from_row_col(5, 3).unwrap()));
+        assert!(!piece_attacks_square(&pos, sq, gold, Square::from_row_col(5, 5).unwrap()));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_bishop_diagonal() {
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let bishop = Piece::new(PieceType::Bishop, Color::Black, false);
+        // Bishop slides diagonally
+        assert!(piece_attacks_square(&pos, sq, bishop, Square::from_row_col(2, 2).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, bishop, Square::from_row_col(6, 6).unwrap()));
+        // Should NOT attack orthogonally
+        assert!(!piece_attacks_square(&pos, sq, bishop, Square::from_row_col(4, 6).unwrap()));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_promoted_rook() {
+        // Dragon (promoted rook) = rook slides + king-like diagonal steps
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let dragon = Piece::new(PieceType::Rook, Color::Black, true);
+        // Rook slides
+        assert!(piece_attacks_square(&pos, sq, dragon, Square::from_row_col(4, 8).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, dragon, Square::from_row_col(0, 4).unwrap()));
+        // Diagonal steps (king-like)
+        assert!(piece_attacks_square(&pos, sq, dragon, Square::from_row_col(3, 3).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, dragon, Square::from_row_col(5, 5).unwrap()));
+        // NOT diagonal slide (2 squares diagonal)
+        assert!(!piece_attacks_square(&pos, sq, dragon, Square::from_row_col(2, 2).unwrap()));
+    }
+
+    #[test]
+    fn test_piece_attacks_square_promoted_bishop() {
+        // Horse (promoted bishop) = bishop slides + king-like orthogonal steps
+        let pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let horse = Piece::new(PieceType::Bishop, Color::Black, true);
+        // Bishop slides
+        assert!(piece_attacks_square(&pos, sq, horse, Square::from_row_col(2, 2).unwrap()));
+        // Orthogonal steps (king-like)
+        assert!(piece_attacks_square(&pos, sq, horse, Square::from_row_col(3, 4).unwrap()));
+        assert!(piece_attacks_square(&pos, sq, horse, Square::from_row_col(4, 5).unwrap()));
+        // NOT orthogonal slide (2 squares)
+        assert!(!piece_attacks_square(&pos, sq, horse, Square::from_row_col(2, 4).unwrap()));
+    }
 }

@@ -636,4 +636,101 @@ mod tests {
         assert!(piece.is_promoted());
         assert_eq!(pos.to_sfen(), sfen);
     }
+
+    // -----------------------------------------------------------------------
+    // White-to-move roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_white_to_move() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.current_player, Color::White);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "White-to-move roundtrip failed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Roundtrip with both colors having pieces in hand
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_mixed_hands_both_colors() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 2G3Prbp 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Gold), 2);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Pawn), 3);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Rook), 1);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Bishop), 1);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Pawn), 1);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "Mixed hands roundtrip failed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_rank_too_short() {
+        // First rank has only 7 columns (missing 2)
+        let sfen = "lnsgkgs/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with 7 columns should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_rank_too_long() {
+        // First rank has 10 columns
+        let sfen = "lnsgkgsnll/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with 10 columns should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_plus_at_end_of_rank() {
+        // '+' at end of rank with no following piece character
+        let sfen = "lnsgkgsn+/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "'+' at end of rank should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_hand_ends_after_count() {
+        // Hand string "3" — count with no following piece
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 3 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "hand string ending after count should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_invalid_hand_piece_char() {
+        // 'X' is not a valid hand piece
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b X 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "invalid hand piece character should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_unexpected_char_in_board() {
+        // '!' is not valid in board string
+        let sfen = "!nsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "unexpected character in board should be rejected");
+    }
+
+    // -----------------------------------------------------------------------
+    // Hash consistency: parsed SFEN hash == computed hash (White to move)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_hash_correct_white_to_move() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 w 2Pp 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(
+            pos.hash,
+            pos.compute_hash(),
+            "parsed hash must equal recomputed hash (White to move with hands)"
+        );
+    }
 }

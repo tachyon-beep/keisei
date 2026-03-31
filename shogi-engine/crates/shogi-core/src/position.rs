@@ -355,4 +355,117 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Hash sensitivity: board mutation must change hash
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_hash_changes_on_board_mutation() {
+        let pos = Position::startpos();
+        let orig_hash = pos.hash;
+
+        // Move a pawn off the board — hash must change
+        let mut mutated = pos.clone();
+        let sq = Square::from_row_col(6, 0).unwrap();
+        mutated.clear_square(sq);
+        mutated.hash = mutated.compute_hash();
+        assert_ne!(
+            orig_hash, mutated.hash,
+            "removing a piece must change the hash"
+        );
+    }
+
+    #[test]
+    fn test_compute_hash_changes_with_side_to_move() {
+        let pos = Position::startpos();
+        assert_eq!(pos.current_player, Color::Black);
+
+        let mut flipped = pos.clone();
+        flipped.current_player = Color::White;
+        flipped.hash = flipped.compute_hash();
+        assert_ne!(
+            pos.hash, flipped.hash,
+            "flipping side to move must change the hash (White XOR branch)"
+        );
+    }
+
+    #[test]
+    fn test_compute_hash_changes_on_hand_mutation() {
+        let pos = Position::startpos();
+
+        let mut mutated = pos.clone();
+        mutated.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        mutated.hash = mutated.compute_hash();
+        assert_ne!(
+            pos.hash, mutated.hash,
+            "adding a hand piece must change the hash"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // set_piece / clear_square do NOT modify hash (caller's job)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_clear_do_not_modify_hash() {
+        let mut pos = Position::startpos();
+        let hash_before = pos.hash;
+
+        let sq = Square::from_row_col(6, 0).unwrap();
+        pos.clear_square(sq);
+        assert_eq!(
+            pos.hash, hash_before,
+            "clear_square must not change hash (caller updates it)"
+        );
+
+        let pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        pos.set_piece(sq, pawn);
+        assert_eq!(
+            pos.hash, hash_before,
+            "set_piece must not change hash (caller updates it)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // find_king returns None when king is absent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_king_returns_none_when_absent() {
+        let pos = Position::empty();
+        assert_eq!(pos.find_king(Color::Black), None);
+        assert_eq!(pos.find_king(Color::White), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // hand_count / set_hand_count roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hand_count_set_roundtrip() {
+        let mut pos = Position::empty();
+        for &color in &[Color::Black, Color::White] {
+            for &hpt in &HandPieceType::ALL {
+                pos.set_hand_count(color, hpt, 5);
+                assert_eq!(
+                    pos.hand_count(color, hpt), 5,
+                    "hand_count roundtrip failed for {:?}/{:?}",
+                    color, hpt
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Debug formatting doesn't panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_debug_formatting() {
+        let pos = Position::startpos();
+        let debug_str = format!("{:?}", pos);
+        assert!(debug_str.contains("Position"), "Debug output should contain 'Position'");
+        assert!(debug_str.contains("Black"), "Debug output should mention a color");
+    }
 }

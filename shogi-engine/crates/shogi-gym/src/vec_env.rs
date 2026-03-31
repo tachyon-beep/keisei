@@ -836,4 +836,207 @@ mod tests {
         let reward = compute_reward(&env.games[0].result, env.games[0].position.current_player.opponent());
         assert_eq!(reward, 0.0, "MaxMoves should give 0.0 reward");
     }
+
+    // -----------------------------------------------------------------------
+    // Episode counter and auto-reset simulation (no Python needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_episode_counters_after_max_ply() {
+        let mut env = VecEnv::new(1, 2);
+        env.write_obs_and_mask(0);
+
+        // Drive game to terminal via max_ply = 2
+        let mv1 = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv1);
+        env.games[0].check_termination();
+
+        let mv2 = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv2);
+        env.games[0].check_termination();
+
+        assert_eq!(env.games[0].result, GameResult::MaxMoves);
+
+        // Simulate the counter updates that step() would do
+        let result = env.games[0].result;
+        let truncated = result.is_truncation();
+        assert!(truncated, "MaxMoves should be a truncation");
+
+        env.episodes_completed.fetch_add(1, Ordering::Relaxed);
+        env.total_episode_ply.fetch_add(env.games[0].ply as u64, Ordering::Relaxed);
+        if truncated {
+            env.episodes_truncated.fetch_add(1, Ordering::Relaxed);
+        }
+
+        assert_eq!(env.episodes_completed.load(Ordering::Relaxed), 1);
+        assert_eq!(env.episodes_truncated.load(Ordering::Relaxed), 1);
+        assert_eq!(env.total_episode_ply.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_auto_reset_produces_startpos_obs() {
+        let mut env = VecEnv::new(1, 2);
+        env.write_obs_and_mask(0);
+
+        // Snapshot startpos observation
+        let startpos_obs: Vec<f32> = env.obs_buffer[..BUFFER_LEN].to_vec();
+        let startpos_mask_count: usize = env.legal_mask_buffer[..ACTION_SPACE_SIZE]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+        // Play 2 moves to terminate
+        let mv1 = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv1);
+        env.write_obs_and_mask(0);
+        let mv2 = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv2);
+        env.games[0].check_termination();
+        assert_eq!(env.games[0].result, GameResult::MaxMoves);
+
+        // Save terminal obs
+        let terminal_obs: Vec<f32> = {
+            let mut buf = vec![0.0f32; BUFFER_LEN];
+            let perspective = env.games[0].position.current_player;
+            env.obs_gen.generate(&env.games[0], perspective, &mut buf);
+            buf
+        };
+
+        // Auto-reset
+        env.games[0] = GameState::with_max_ply(2);
+        env.write_obs_and_mask(0);
+
+        // After reset, obs should match startpos again
+        let post_reset_obs: Vec<f32> = env.obs_buffer[..BUFFER_LEN].to_vec();
+        assert_eq!(
+            post_reset_obs, startpos_obs,
+            "After auto-reset, observation should match startpos"
+        );
+
+        // Legal mask count should be 30 again
+        let post_reset_mask_count: usize = env.legal_mask_buffer[..ACTION_SPACE_SIZE]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+        assert_eq!(
+            post_reset_mask_count, startpos_mask_count,
+            "After auto-reset, legal move count should match startpos (30)"
+        );
+
+        // Terminal obs should differ from startpos (position changed after 2 moves)
+        assert_ne!(
+            terminal_obs, startpos_obs,
+            "Terminal observation should differ from startpos"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // reset_stats clears counters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reset_stats() {
+        let env = VecEnv::new(1, 500);
+        env.episodes_completed.fetch_add(10, Ordering::Relaxed);
+        env.episodes_drawn.fetch_add(3, Ordering::Relaxed);
+        env.episodes_truncated.fetch_add(2, Ordering::Relaxed);
+        env.total_episode_ply.fetch_add(1000, Ordering::Relaxed);
+
+        env.reset_stats();
+
+        assert_eq!(env.episodes_completed.load(Ordering::Relaxed), 0);
+        assert_eq!(env.episodes_drawn.load(Ordering::Relaxed), 0);
+        assert_eq!(env.episodes_truncated.load(Ordering::Relaxed), 0);
+        assert_eq!(env.total_episode_ply.load(Ordering::Relaxed), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // current_players_buffer correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_current_players_buffer_after_move() {
+        let mut env = VecEnv::new(2, 500);
+
+        // At startpos, both should be Black (0)
+        env.current_players_buffer[0] = match env.games[0].position.current_player {
+            Color::Black => 0,
+            Color::White => 1,
+        };
+        env.current_players_buffer[1] = match env.games[1].position.current_player {
+            Color::Black => 0,
+            Color::White => 1,
+        };
+        assert_eq!(env.current_players_buffer[0], 0, "Game 0 should start as Black");
+        assert_eq!(env.current_players_buffer[1], 0, "Game 1 should start as Black");
+
+        // Make a move in game 0 only
+        let mv = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv);
+        env.current_players_buffer[0] = match env.games[0].position.current_player {
+            Color::Black => 0,
+            Color::White => 1,
+        };
+
+        assert_eq!(env.current_players_buffer[0], 1, "Game 0 should be White after one move");
+        assert_eq!(env.current_players_buffer[1], 0, "Game 1 should still be Black");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_reward: draw variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reward_draw_variants_all_zero() {
+        // Repetition, Impasse(None), MaxMoves, InProgress — all 0.0
+        let draws = [
+            GameResult::Repetition,
+            GameResult::Impasse { winner: None },
+            GameResult::MaxMoves,
+            GameResult::InProgress,
+        ];
+        for result in &draws {
+            assert_eq!(
+                compute_reward(result, Color::Black), 0.0,
+                "{:?} should give 0.0 reward for Black",
+                result
+            );
+            assert_eq!(
+                compute_reward(result, Color::White), 0.0,
+                "{:?} should give 0.0 reward for White",
+                result
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-env buffer isolation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multi_env_obs_isolation() {
+        let mut env = VecEnv::new(3, 500);
+
+        // Write obs for all envs
+        for i in 0..3 {
+            env.write_obs_and_mask(i);
+        }
+
+        // All three should have identical observations at startpos
+        let obs0 = &env.obs_buffer[0..BUFFER_LEN];
+        let obs1 = &env.obs_buffer[BUFFER_LEN..2 * BUFFER_LEN];
+        let obs2 = &env.obs_buffer[2 * BUFFER_LEN..3 * BUFFER_LEN];
+        assert_eq!(obs0, obs1, "Env 0 and 1 should have same obs at startpos");
+        assert_eq!(obs1, obs2, "Env 1 and 2 should have same obs at startpos");
+
+        // Make a move in env 1 only
+        let mv = env.games[1].legal_moves()[0];
+        env.games[1].make_move(mv);
+        env.write_obs_and_mask(1);
+
+        // Now env 1 should differ from env 0
+        let obs0_after = &env.obs_buffer[0..BUFFER_LEN];
+        let obs1_after = &env.obs_buffer[BUFFER_LEN..2 * BUFFER_LEN];
+        assert_ne!(obs0_after, obs1_after, "After a move, env 1 obs should differ from env 0");
+    }
 }

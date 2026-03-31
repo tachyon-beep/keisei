@@ -1696,4 +1696,187 @@ mod tests {
             "hot-path move set differs from ergonomic move set (with drops + nifu)"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Drop + unmake roundtrip: hash, board, hands, pawn_columns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_make_unmake_drop_roundtrip_hash_and_hands() {
+        // Position with a pawn in hand, drop it, then unmake.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+        let original_pawn_cols = gs.pawn_columns;
+
+        // Drop a gold on an empty square
+        let drop_mv = Move::Drop {
+            to: Square::from_row_col(4, 4).unwrap(),
+            piece_type: HandPieceType::Gold,
+        };
+        let undo = gs.make_move(drop_mv);
+
+        // Verify the drop took effect
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Gold), 1,
+            "Hand count should decrease after drop"
+        );
+        assert!(
+            gs.position.piece_at(Square::from_row_col(4, 4).unwrap()).is_some(),
+            "Dropped piece should be on the board"
+        );
+
+        // Unmake
+        gs.unmake_move(drop_mv, undo);
+
+        assert_eq!(gs.position.hash, original_hash, "Hash not restored after drop+unmake");
+        assert_eq!(gs.position.board, original_board, "Board not restored after drop+unmake");
+        assert_eq!(gs.position.hands, original_hands, "Hands not restored after drop+unmake");
+        assert_eq!(gs.pawn_columns, original_pawn_cols, "pawn_columns not restored after drop+unmake");
+    }
+
+    // -----------------------------------------------------------------------
+    // Pawn drop + unmake: pawn_columns consistency
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pawn_columns_after_pawn_drop_unmake() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Column 2 should have no pawn before drop
+        assert!(!gs.pawn_columns[Color::Black as usize][2]);
+
+        let drop_mv = Move::Drop {
+            to: Square::from_row_col(5, 2).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let undo = gs.make_move(drop_mv);
+
+        // After drop, column 2 should have a pawn
+        // Note: pawn_columns is recomputed from perspective of the new position
+        // but the dropped pawn's column was set in make_move.
+        // After make_move, current_player flipped, so check the original color's columns.
+        assert!(
+            gs.pawn_columns[Color::Black as usize][2],
+            "pawn_columns should mark col 2 after pawn drop"
+        );
+
+        gs.unmake_move(drop_mv, undo);
+
+        // After unmake, column 2 should be clear again
+        assert!(
+            !gs.pawn_columns[Color::Black as usize][2],
+            "pawn_columns should clear col 2 after pawn drop unmake"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // check_termination idempotence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_termination_idempotent() {
+        // A position that IS terminal (max_ply = 0)
+        let mut gs = GameState::with_max_ply(0);
+        gs.check_termination();
+        let first_result = gs.result;
+        assert_eq!(first_result, GameResult::MaxMoves);
+
+        // Calling again should return the same result
+        gs.check_termination();
+        assert_eq!(gs.result, first_result, "check_termination should be idempotent");
+    }
+
+    #[test]
+    fn test_check_termination_idempotent_checkmate() {
+        // Reuse the checkmate position from earlier
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Gold, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 1).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        gs.check_termination();
+        let first = gs.result;
+        assert!(first.is_terminal());
+
+        gs.check_termination();
+        assert_eq!(gs.result, first, "check_termination should be idempotent for checkmate");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_pawn_columns: direct verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_pawn_columns_correctness() {
+        let mut pos = Position::empty();
+        // Black unpromoted pawn on col 3
+        pos.set_piece(
+            Square::from_row_col(6, 3).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // Black PROMOTED pawn on col 5 — should NOT count
+        pos.set_piece(
+            Square::from_row_col(4, 5).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true),
+        );
+        // White unpromoted pawn on col 7
+        pos.set_piece(
+            Square::from_row_col(2, 7).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+
+        let cols = compute_pawn_columns(&pos);
+        assert!(cols[Color::Black as usize][3], "Black should have pawn on col 3");
+        assert!(!cols[Color::Black as usize][5], "Promoted pawn should NOT count for nifu");
+        assert!(cols[Color::White as usize][7], "White should have pawn on col 7");
+        assert!(!cols[Color::White as usize][0], "No pawn on col 0");
+    }
 }
