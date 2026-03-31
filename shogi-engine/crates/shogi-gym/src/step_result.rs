@@ -86,3 +86,61 @@ pub struct ResetResult {
     #[pyo3(get)]
     pub legal_masks: Py<PyArray2<bool>>,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shogi_core::{Color, GameResult};
+
+    #[test]
+    fn test_termination_reason_in_progress() {
+        let r = TerminationReason::from_game_result(GameResult::InProgress);
+        assert_eq!(r as u8, 0);
+    }
+
+    #[test]
+    fn test_termination_reason_checkmate() {
+        let r = TerminationReason::from_game_result(GameResult::Checkmate {
+            winner: Color::Black,
+        });
+        assert_eq!(r as u8, 1);
+    }
+
+    #[test]
+    fn test_termination_reason_repetition() {
+        let r = TerminationReason::from_game_result(GameResult::Repetition);
+        assert_eq!(r as u8, 2);
+    }
+
+    #[test]
+    fn test_termination_reason_perpetual_check() {
+        let r = TerminationReason::from_game_result(GameResult::PerpetualCheck {
+            winner: Color::White,
+        });
+        assert_eq!(r as u8, 3);
+    }
+
+    #[test]
+    fn test_termination_reason_impasse() {
+        let r = TerminationReason::from_game_result(GameResult::Impasse {
+            winner: Some(Color::Black),
+        });
+        assert_eq!(r as u8, 4);
+    }
+
+    #[test]
+    fn test_termination_reason_impasse_draw() {
+        let r = TerminationReason::from_game_result(GameResult::Impasse { winner: None });
+        assert_eq!(r as u8, 4);
+    }
+
+    #[test]
+    fn test_termination_reason_max_moves() {
+        let r = TerminationReason::from_game_result(GameResult::MaxMoves);
+        assert_eq!(r as u8, 5);
+    }
+}

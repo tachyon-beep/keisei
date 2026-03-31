@@ -420,4 +420,169 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // White perspective movegen — Gap #7
+    // -----------------------------------------------------------------------
+
+    /// White pawn moves DOWN (forward for White).
+    #[test]
+    fn test_white_pawn_moves_forward() {
+        let pos = lone_piece_pos(2, 4, PieceType::Pawn, Color::White, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::White, &mut moves);
+
+        // White pawn at row 2 → moves to row 3 (DOWN).
+        // Row 3 is NOT in White's promotion zone (rows 6-8), so no promotion variant.
+        assert_eq!(moves.len(), 1, "White pawn at (2,4) should have 1 move");
+        match moves[0] {
+            Move::Board { from, to, promote: false } => {
+                assert_eq!(from.row(), 2);
+                assert_eq!(to.row(), 3);
+                assert_eq!(to.col(), 4);
+            }
+            _ => panic!("Expected non-promoting board move, got {:?}", moves[0]),
+        }
+    }
+
+    /// White pawn approaching promotion zone gets optional promotion.
+    #[test]
+    fn test_white_pawn_optional_promotion() {
+        // White pawn at row 5 → moves to row 6 (inside White's promotion zone)
+        let pos = lone_piece_pos(5, 4, PieceType::Pawn, Color::White, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::White, &mut moves);
+
+        assert_eq!(
+            moves.len(), 2,
+            "White pawn at (5,4) should have 2 moves (promote + non-promote)"
+        );
+        let has_promote = moves.iter().any(|m| matches!(m, Move::Board { promote: true, .. }));
+        let has_non_promote = moves.iter().any(|m| matches!(m, Move::Board { promote: false, .. }));
+        assert!(has_promote, "Missing promotion move");
+        assert!(has_non_promote, "Missing non-promotion move");
+    }
+
+    /// White pawn at row 7 must promote when moving to row 8.
+    #[test]
+    fn test_white_pawn_forced_promotion() {
+        let pos = lone_piece_pos(7, 4, PieceType::Pawn, Color::White, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::White, &mut moves);
+
+        assert_eq!(moves.len(), 1, "White pawn at (7,4) should have 1 forced promotion");
+        match moves[0] {
+            Move::Board { promote: true, .. } => {}
+            _ => panic!("Expected forced promotion move"),
+        }
+    }
+
+    /// White knight jumps DOWN 2 rows.
+    #[test]
+    fn test_white_knight_forward_direction() {
+        let pos = lone_piece_pos(4, 4, PieceType::Knight, Color::White, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::White, &mut moves);
+
+        // White knight at (4,4) targets (6,3) and (6,5).
+        // Row 6 is in White's promotion zone → each target gets 2 moves.
+        let t1 = Square::from_row_col(6, 3).unwrap();
+        let t2 = Square::from_row_col(6, 5).unwrap();
+
+        let targets: Vec<Square> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(*to) } else { None })
+            .collect();
+        assert!(targets.contains(&t1), "White knight should target (6,3)");
+        assert!(targets.contains(&t2), "White knight should target (6,5)");
+        assert_eq!(moves.len(), 4, "White knight at (4,4) with both targets in promotion zone should have 4 moves");
+    }
+
+    /// White startpos opening moves count.
+    #[test]
+    fn test_startpos_white_board_moves() {
+        let pos = Position::startpos();
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::White, &mut moves);
+
+        // White pawns on row 2, each pushes to row 3 (outside promo zone).
+        let pawn_pushes = moves
+            .iter()
+            .filter(|m| matches!(m, Move::Board { from, to, promote: false } if from.row() == 2 && to.row() == 3))
+            .count();
+        assert_eq!(pawn_pushes, 9, "White should have 9 pawn pushes from row 2");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sliding piece move generation — Gap #8
+    // -----------------------------------------------------------------------
+
+    /// Lone rook on empty board at center should attack 16 squares
+    /// (4 in each cardinal direction from center of 9×9).
+    #[test]
+    fn test_lone_rook_move_count() {
+        // Rook at (4,4) on empty board: 4 squares in each of 4 directions = 16 targets.
+        // None are in Black's promotion zone (rows 0-2), except targets at rows 0-2 col 4:
+        //   row 0-2 = 3 targets in promotion zone.
+        // From (4,4) to rows 0-2: optional promotion → each produces 2 moves.
+        // From (4,4) to rows 3, 5-8 and cols 0-3, 5-8: no promotion → 1 move each.
+        // Row targets: 0,1,2 (3 promo zone), 3,5,6,7,8 (5 normal) = 8 total row targets.
+        // Col targets: 0,1,2,3,5,6,7,8 = 8 total col targets, none in promo zone for Black.
+        // Promo moves: 3 targets × 2 = 6
+        // Normal moves: 5 row targets × 1 + 8 col targets × 1 = 13
+        // Total: 6 + 13 = 19
+        let pos = lone_piece_pos(4, 4, PieceType::Rook, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        assert_eq!(
+            moves.len(), 19,
+            "Lone rook at (4,4) should have 19 moves (including promotion variants)"
+        );
+    }
+
+    /// Lone bishop on empty board at center.
+    #[test]
+    fn test_lone_bishop_move_count() {
+        // Bishop at (4,4) on empty board.
+        // Diagonals from (4,4):
+        //   UP_LEFT: (3,3), (2,2), (1,1), (0,0) → 4 targets
+        //   UP_RIGHT: (3,5), (2,6), (1,7), (0,8) → 4 targets
+        //   DOWN_LEFT: (5,3), (6,2), (7,1), (8,0) → 4 targets
+        //   DOWN_RIGHT: (5,5), (6,6), (7,7), (8,8) → 4 targets
+        // Total: 16 unique target squares.
+        // Promotion zone for Black = rows 0-2.
+        // In promo zone: (2,2), (1,1), (0,0), (2,6), (1,7), (0,8) = 6 targets
+        // Also: from-square (4,4) is NOT in promo zone.
+        // So each of those 6 targets gets 2 moves (promote + non-promote).
+        // Remaining 10 targets get 1 move each.
+        // Total: 6*2 + 10*1 = 22
+        let pos = lone_piece_pos(4, 4, PieceType::Bishop, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        assert_eq!(
+            moves.len(), 22,
+            "Lone bishop at (4,4) should have 22 moves (including promotion variants)"
+        );
+    }
+
+    /// Lone lance slides only forward (UP for Black).
+    #[test]
+    fn test_lone_lance_move_count() {
+        // Black lance at (4,4) slides UP only: (3,4), (2,4), (1,4), (0,4) = 4 targets.
+        // Promo zone targets (rows 0-2): (2,4), (1,4), (0,4) = 3
+        //   (0,4) = forced promotion → 1 move
+        //   (1,4) and (2,4) = optional promotion → 2 moves each
+        // Non-promo: (3,4) → 1 move
+        // Total: 1 + 2 + 2 + 1 = 6
+        let pos = lone_piece_pos(4, 4, PieceType::Lance, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        assert_eq!(
+            moves.len(), 6,
+            "Lone lance at (4,4) should have 6 moves (including promotion variants)"
+        );
+    }
 }

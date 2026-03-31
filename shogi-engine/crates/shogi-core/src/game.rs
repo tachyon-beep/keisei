@@ -79,8 +79,8 @@ impl GameState {
         Ok(Self::from_position(position, max_ply))
     }
 
-    /// Internal: build a GameState from an already-constructed Position.
-    fn from_position(position: Position, max_ply: u32) -> GameState {
+    /// Build a GameState from an already-constructed Position.
+    pub fn from_position(position: Position, max_ply: u32) -> GameState {
         let attack_map = compute_attack_map(&position);
         let pawn_columns = compute_pawn_columns(&position);
         let mut repetition_map = HashMap::with_capacity(max_ply as usize);
@@ -885,5 +885,311 @@ mod tests {
             ergonomic, hot_path,
             "hot-path move set differs from ergonomic move set"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // test_capture_promoted_piece_reverts — Gap #5
+    // -----------------------------------------------------------------------
+
+    /// Capturing a promoted piece should add the BASE (unpromoted) type to hand.
+    #[test]
+    fn test_capture_promoted_piece_reverts_to_base() {
+        // Place a promoted White bishop (+B = Horse) and capture it with Black.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White's promoted bishop (Horse) at (4,4)
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Bishop, Color::White, true),
+        );
+        // Black rook at (4,0) — can capture the Horse at (4,4)
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Verify no bishop in hand initially
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Bishop), 0);
+
+        // Black rook captures promoted bishop
+        let capture = Move::Board {
+            from: Square::from_row_col(4, 0).unwrap(),
+            to: Square::from_row_col(4, 4).unwrap(),
+            promote: false,
+        };
+        let _undo = gs.make_move(capture);
+
+        // Black should have a BISHOP (not promoted) in hand
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Bishop),
+            1,
+            "Capturing a promoted bishop should add base Bishop to hand"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // test_stalemate_is_loss — Gap #6
+    // -----------------------------------------------------------------------
+
+    /// In Shogi, stalemate (no legal moves, not in check) = loss for the
+    /// player without moves. The code treats this as Checkmate{winner: opponent}.
+    ///
+    /// Position: Black king at (0,0), cornered.
+    /// Adjacent squares (0,1), (1,0), (1,1) must all be attacked by White
+    /// pieces WITHOUT those pieces also attacking (0,0).
+    ///
+    /// Strategy: use White knights — they jump and don't create line attacks.
+    ///   - White knight at (2,0) attacks (0,1) [row-2, col+1 for White knight?]
+    ///     Wait: White knight jumps DOWN 2 rows. From (2,0): (4,-1)=OOB, (4,1).
+    ///     That doesn't attack (0,1).
+    ///
+    /// Better strategy: White gold at (1,2).
+    ///   For White gold: forward=DOWN, backward=UP, left=LEFT, right=RIGHT,
+    ///   fwd_left=DOWN_RIGHT, fwd_right=DOWN_LEFT.
+    ///   So White gold at (1,2) attacks:
+    ///     DOWN=(2,2), DOWN_RIGHT=(2,1), DOWN_LEFT=(2,3),
+    ///     LEFT=(1,1), RIGHT=(1,3), UP=(0,2).
+    ///   Attacks (1,1) ✓ but NOT (0,1) or (1,0) or (0,0). Good partial coverage.
+    ///
+    /// White gold at (1,2) covers (1,1).
+    /// White silver at (2,1) for White: forward=DOWN, fwd_left=DOWN_RIGHT,
+    ///   fwd_right=DOWN_LEFT, bwd_left=UP_RIGHT, bwd_right=UP_LEFT.
+    ///   From (2,1): DOWN=(3,1), DOWN_RIGHT=(3,0), DOWN_LEFT=(3,2),
+    ///   UP_RIGHT=(1,2), UP_LEFT=(1,0).
+    ///   Attacks (1,0) ✓ but NOT (0,0). Good.
+    ///
+    /// (0,1) still needs coverage. White gold at (1,2) attacks (0,2) and (1,1)
+    /// but not (0,1). Use another piece.
+    /// White knight at (2,2): White knight jumps DOWN 2 → targets (4,1) and (4,3).
+    ///   Doesn't help. White knights go DOWN, not UP.
+    ///
+    /// White bishop at (1,2) — slides diagonally, attacks (0,1) ✓ and also (0,3).
+    /// Does it attack (0,0)? Diagonal from (1,2): UP_LEFT=(0,1), yes but
+    /// actually UP_LEFT from (1,2) is (0,1), not (0,0). UP_LEFT goes row-1,col-1.
+    /// (0,0) would be 2 steps UP_LEFT — but that's blocked by (0,1) which is...
+    /// empty. So actually bishop slides from (1,2) in UP_LEFT direction:
+    /// (0,1) — and stops if something is there. (0,1) is empty, so it attacks (0,1). ✓
+    /// Next step would be (-1,0) = out of bounds. So bishop does NOT attack (0,0). ✓
+    ///
+    /// But bishop at (1,2) is a piece — and it's the same square as gold.
+    /// We can't have both. Let's use bishop instead of gold.
+    ///
+    /// Final position:
+    ///   Black king at (0,0)
+    ///   White king at (4,4) (far away, no interference)
+    ///   White bishop at (1,2): attacks (0,1) via UP_LEFT ✓, does NOT attack (0,0) ✓
+    ///   White silver at (2,1): attacks (1,0) via bwd_right(UP_LEFT from (2,1)=(1,0)) ✓,
+    ///     does NOT attack (0,0) ✓
+    ///   White gold at (1,2)... wait, bishop is already there.
+    ///
+    ///   Need (1,1) covered too. White bishop at (1,2) attacks (0,1), (2,1), (2,3), (0,3).
+    ///   Does NOT attack (1,1). Need another piece.
+    ///   White silver at (2,1) attacks: (1,0) via UP_LEFT ✓. Also (1,2) via UP_RIGHT.
+    ///   Does NOT attack (1,1).
+    ///
+    /// OK, let me just use a simpler approach: fill the 3 adjacent squares
+    /// with White pieces that are each defended by another White piece, so the
+    /// Black king can't capture them.
+    ///
+    /// Place White pawns at (0,1), (1,0), (1,1). White pawns attack DOWN
+    /// (forward for White), so none of them attack (0,0). ✓ Not in check.
+    /// Black king wants to capture one of them, but each must be defended:
+    ///   - (0,1) defended by White king at (0,2)? No — White king at (0,2) attacks
+    ///     (0,1) but also (1,1), (1,2). Does it attack (0,0)? King step from (0,2)
+    ///     to (0,1) yes, to (1,1) yes, but (0,0) is 2 cols away — NO. ✓
+    ///   - But then (0,1) is defended by White king. And (1,1) is also defended. ✓
+    ///   - (1,0) — not defended yet. White knight at (3,1): jumps to (5,0) and (5,2)
+    ///     for White. Wrong direction. Use White gold at (2,1):
+    ///     White gold at (2,1): backward=UP=(1,1), RIGHT=(2,2), LEFT=(2,0),
+    ///     forward=DOWN=(3,1), fwd_left=DOWN_RIGHT=(3,0), fwd_right=DOWN_LEFT=(3,2).
+    ///     Attacks (1,1) ✓ but NOT (1,0). Hmm.
+    ///
+    /// Actually, simplest approach: use White rooks to defend the pawns, with
+    /// the pawns themselves blocking the rook's ray to (0,0).
+    ///   - White pawn at (1,0), White rook at (3,0). Rook slides UP: (2,0), (1,0)=blocked.
+    ///     Rook attacks (2,0) and (1,0). (1,0) is the pawn — rook defends it. ✓
+    ///     Rook does NOT reach (0,0) because pawn blocks. ✓
+    ///   - White pawn at (0,1), White rook at (0,3). Rook slides LEFT: (0,2), (0,1)=blocked.
+    ///     Rook defends (0,1). ✓ Does NOT reach (0,0). ✓
+    ///   - (1,1): defended by White king at (0,2) ✓
+    ///   - But king at (0,2)... do we still need it? Let me check.
+    ///     Without king at (0,2), who defends (1,1)?
+    ///     Rook at (3,0) attacks (1,0) but not (1,1).
+    ///     Rook at (0,3) attacks (0,1) but not (1,1).
+    ///     Need (1,1) defended. White pawn at (1,1) — is it defended?
+    ///     Place White rook at (1,3). Rook slides LEFT: (1,2), (1,1)=blocked.
+    ///     Defends (1,1). ✓ Does NOT attack (0,0) (different row). ✓
+    ///
+    /// Final clean position:
+    ///   Black king (0,0)
+    ///   White king (8,8) — far corner
+    ///   White pawn (0,1) — blocks king, defended by rook at (0,3)
+    ///   White pawn (1,0) — blocks king, defended by rook at (3,0)
+    ///   White pawn (1,1) — blocks king, defended by rook at (1,3)
+    ///   White rook (0,3) — defends (0,1) via row 0 slide
+    ///   White rook (3,0) — defends (1,0) via col 0 slide
+    ///   White rook (1,3) — wait, we already used 2 rooks and each player only
+    ///   has 1. But for testing we can place whatever we want.
+    ///
+    /// Alternatively, use 1 rook + defensive positioning:
+    ///   White pawn (0,1), (1,0), (1,1)
+    ///   White king at (2,1) — king attacks all 8 adjacent:
+    ///     (1,0) ✓, (1,1) ✓, (1,2), (2,0), (2,2), (3,0), (3,1), (3,2).
+    ///     Does NOT attack (0,0) — too far. ✓
+    ///     Defends (1,0) ✓ and (1,1) ✓.
+    ///   (0,1) still needs defense. White rook at (0,5):
+    ///     Slides LEFT: (0,4), (0,3), (0,2), (0,1)=blocked by pawn.
+    ///     Defends (0,1) ✓. Does NOT reach (0,0) because pawn blocks. ✓
+    #[test]
+    fn test_stalemate_is_loss() {
+        let mut pos = Position::empty();
+        // Black king cornered
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king at (2,1) — defends (1,0) and (1,1), not (0,0)
+        pos.set_piece(
+            Square::from_row_col(2, 1).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White pawns blocking all 3 adjacent squares
+        // Pawns attack DOWN (forward for White), NOT toward (0,0)
+        pos.set_piece(
+            Square::from_row_col(0, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        // White rook at (0,5) defends pawn at (0,1) via row 0 slide
+        // (ray blocked by pawn at (0,1), so doesn't reach (0,0))
+        pos.set_piece(
+            Square::from_row_col(0, 5).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Verify Black is NOT in check
+        assert!(!gs.is_in_check(), "Black king should NOT be in check");
+
+        // Verify Black has no legal moves
+        let moves = gs.legal_moves();
+        assert!(
+            moves.is_empty(),
+            "Black should have no legal moves (stalemate), got {} moves: {:?}",
+            moves.len(),
+            moves
+        );
+
+        // check_termination should declare White the winner
+        gs.check_termination();
+        assert_eq!(
+            gs.result,
+            GameResult::Checkmate { winner: Color::White },
+            "Stalemate should result in loss for the player without moves"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // test_multi_ply_consistency — Gap #11
+    // -----------------------------------------------------------------------
+
+    /// Play 20+ moves and verify hash and attack map remain consistent
+    /// with from-scratch recomputation after every move.
+    #[test]
+    fn test_multi_ply_hash_and_attack_consistency() {
+        let mut gs = GameState::new();
+
+        for ply in 0..30 {
+            let moves = gs.legal_moves();
+            if moves.is_empty() {
+                break;
+            }
+
+            // Pick a deterministic "random" move using ply as seed
+            let mv = moves[ply % moves.len()];
+            gs.make_move(mv);
+
+            // Verify hash
+            let recomputed_hash = gs.position.compute_hash();
+            assert_eq!(
+                gs.position.hash, recomputed_hash,
+                "Hash mismatch at ply {} after {:?}",
+                ply + 1,
+                mv
+            );
+
+            // Verify attack map
+            let recomputed_map = compute_attack_map(&gs.position);
+            assert_eq!(
+                gs.attack_map, recomputed_map,
+                "Attack map mismatch at ply {} after {:?}",
+                ply + 1,
+                mv
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // test_write_legal_mask_into — Gap #16
+    // -----------------------------------------------------------------------
+
+    /// Verify write_legal_mask_into produces a mask with exactly 30 true bits
+    /// at startpos (matching legal_moves().len()).
+    #[test]
+    fn test_write_legal_mask_into_startpos() {
+        let mut gs = GameState::new();
+
+        // Use a trivial identity encoder for testing
+        let encode_fn = |mv: Move| -> usize {
+            // Encode each move to a unique index based on its debug repr hash.
+            // This is just for testing — we only need injectivity within the 30 moves.
+            match mv {
+                Move::Board { from, to, promote } => {
+                    from.index() * 162 + to.index() * 2 + if promote { 1 } else { 0 }
+                }
+                Move::Drop { to, piece_type } => {
+                    81 * 162 + to.index() * 7 + piece_type.index()
+                }
+            }
+        };
+
+        let mask_size = 81 * 162 + 81 * 7; // large enough for our encoding
+        let mut mask = vec![false; mask_size];
+        gs.write_legal_mask_into(&mut mask, &encode_fn);
+
+        let true_count = mask.iter().filter(|&&x| x).count();
+        assert_eq!(
+            true_count, 30,
+            "Startpos legal mask should have exactly 30 true bits, got {}",
+            true_count
+        );
+
+        // Verify consistency with legal_moves
+        let legal = gs.legal_moves();
+        for mv in &legal {
+            let idx = encode_fn(*mv);
+            assert!(mask[idx], "Legal move {:?} not set in mask at index {}", mv, idx);
+        }
     }
 }
