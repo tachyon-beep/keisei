@@ -226,6 +226,206 @@ pub fn compute_attack_map(pos: &Position) -> AttackMap {
 }
 
 // ---------------------------------------------------------------------------
+// Incremental update helpers
+// ---------------------------------------------------------------------------
+
+/// Decrement attack counts for all squares that `piece` at `sq` was attacking.
+///
+/// Call BEFORE removing the piece from the board so that sliding rays still
+/// see the same blockers they did before the removal.
+pub fn remove_piece_attacks(map: &mut AttackMap, pos: &Position, sq: Square, piece: Piece) {
+    let color = piece.color();
+    let color_idx = color as usize;
+    let pt = piece.piece_type();
+    let promoted = piece.is_promoted();
+
+    // Knights need special handling
+    if pt == PieceType::Knight && !promoted {
+        for target in compute_knight_attacks(sq, color) {
+            map[color_idx][target.index()] = map[color_idx][target.index()].saturating_sub(1);
+        }
+        return;
+    }
+
+    let (steps, slides) = piece_attack_dirs(pt, color, promoted);
+
+    // Step attacks
+    for delta in steps {
+        if !would_wrap_file(sq, delta) {
+            if let Some(target) = sq.offset(delta) {
+                map[color_idx][target.index()] = map[color_idx][target.index()].saturating_sub(1);
+            }
+        }
+    }
+
+    // Slide attacks (ray-cast, stopping at the first blocker — same logic as compute_attack_map)
+    for delta in slides {
+        let mut cur = sq;
+        loop {
+            if would_wrap_file(cur, delta) {
+                break;
+            }
+            match cur.offset(delta) {
+                None => break,
+                Some(next) => {
+                    map[color_idx][next.index()] = map[color_idx][next.index()].saturating_sub(1);
+                    if pos.piece_at(next).is_some() {
+                        break;
+                    }
+                    cur = next;
+                }
+            }
+        }
+    }
+}
+
+/// Increment attack counts for all squares that `piece` at `sq` now attacks.
+///
+/// Call AFTER placing the piece on the board so that sliding rays see the new
+/// blockers.
+pub fn add_piece_attacks(map: &mut AttackMap, pos: &Position, sq: Square, piece: Piece) {
+    let color = piece.color();
+    let color_idx = color as usize;
+    let pt = piece.piece_type();
+    let promoted = piece.is_promoted();
+
+    // Knights need special handling
+    if pt == PieceType::Knight && !promoted {
+        for target in compute_knight_attacks(sq, color) {
+            map[color_idx][target.index()] = map[color_idx][target.index()].saturating_add(1);
+        }
+        return;
+    }
+
+    let (steps, slides) = piece_attack_dirs(pt, color, promoted);
+
+    // Step attacks
+    for delta in steps {
+        if !would_wrap_file(sq, delta) {
+            if let Some(target) = sq.offset(delta) {
+                map[color_idx][target.index()] = map[color_idx][target.index()].saturating_add(1);
+            }
+        }
+    }
+
+    // Slide attacks (ray-cast, stopping at the first blocker)
+    for delta in slides {
+        let mut cur = sq;
+        loop {
+            if would_wrap_file(cur, delta) {
+                break;
+            }
+            match cur.offset(delta) {
+                None => break,
+                Some(next) => {
+                    map[color_idx][next.index()] = map[color_idx][next.index()].saturating_add(1);
+                    if pos.piece_at(next).is_some() {
+                        break;
+                    }
+                    cur = next;
+                }
+            }
+        }
+    }
+}
+
+/// Update attack counts for sliding pieces whose rays pass through `sq`.
+///
+/// When a piece is removed from (`piece_removed = true`) or placed at
+/// (`piece_removed = false`) `sq`, every sliding piece that was previously
+/// blocked at `sq` (or unblocked through `sq`) needs its ray extended or
+/// truncated.
+///
+/// For each of the 8 directions we:
+/// 1. Look in `look_dir` from `sq` to find the first piece.
+/// 2. Check whether that piece slides in the opposite direction (`extend_dir`)
+///    through `sq`.
+/// 3. If yes and `piece_removed`: the ray is now unblocked at `sq` — add
+///    attack counts for the squares beyond `sq` until the next blocker.
+/// 4. If yes and `!piece_removed`: the ray is now blocked at `sq` — remove
+///    attack counts for the squares beyond `sq` until the next blocker.
+pub fn update_rays_through_square(
+    map: &mut AttackMap,
+    pos: &Position,
+    sq: Square,
+    piece_removed: bool,
+) {
+    // (look_dir, extend_dir) pairs covering all 8 axes.
+    // We look in look_dir to find a slider; the slider fires its ray in extend_dir.
+    let dir_pairs: [(i8, i8); 8] = [
+        (UP, DOWN),
+        (DOWN, UP),
+        (LEFT, RIGHT),
+        (RIGHT, LEFT),
+        (UP_LEFT, DOWN_RIGHT),
+        (DOWN_RIGHT, UP_LEFT),
+        (UP_RIGHT, DOWN_LEFT),
+        (DOWN_LEFT, UP_RIGHT),
+    ];
+
+    for (look_dir, extend_dir) in dir_pairs {
+        // Walk in look_dir from sq until we find a piece or leave the board.
+        // Returns Some((slider_color_idx,)) if a slider is found that fires in extend_dir.
+        let maybe_slider_color: Option<usize> = {
+            let mut found = None;
+            let mut cur = sq;
+            'search: loop {
+                if would_wrap_file(cur, look_dir) {
+                    break 'search;
+                }
+                match cur.offset(look_dir) {
+                    None => break 'search,
+                    Some(next) => {
+                        if let Some(p) = pos.piece_at(next) {
+                            // We found a piece. Check if it slides in extend_dir.
+                            let pt = p.piece_type();
+                            let promoted = p.is_promoted();
+                            // Knights are never sliders.
+                            if !(pt == PieceType::Knight && !promoted) {
+                                let (_, slides) = piece_attack_dirs(pt, p.color(), promoted);
+                                if slides.contains(&extend_dir) {
+                                    found = Some(p.color() as usize);
+                                }
+                            }
+                            break 'search; // first piece terminates search regardless
+                        }
+                        cur = next;
+                    }
+                }
+            }
+            found
+        };
+
+        if let Some(color_idx) = maybe_slider_color {
+            // Extend the ray in extend_dir starting just past sq.
+            let mut ray_cur = sq;
+            loop {
+                if would_wrap_file(ray_cur, extend_dir) {
+                    break;
+                }
+                match ray_cur.offset(extend_dir) {
+                    None => break,
+                    Some(beyond) => {
+                        if piece_removed {
+                            map[color_idx][beyond.index()] =
+                                map[color_idx][beyond.index()].saturating_add(1);
+                        } else {
+                            map[color_idx][beyond.index()] =
+                                map[color_idx][beyond.index()].saturating_sub(1);
+                        }
+                        // Stop if there is a blocking piece at `beyond`.
+                        if pos.piece_at(beyond).is_some() {
+                            break;
+                        }
+                        ray_cur = beyond;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -499,5 +699,101 @@ mod tests {
             2,
             "Square (4,4) should be attacked by both rooks (count=2)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental: remove and re-add a pawn from startpos matches oracle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incremental_add_remove_matches_from_scratch() {
+        // Step 1: Start with startpos and compute the attack map from scratch.
+        let mut pos = Position::startpos();
+        let mut map = compute_attack_map(&pos);
+
+        // Pick the Black pawn at (6, 4).
+        let pawn_sq = Square::from_row_col(6, 4).unwrap();
+        let pawn = pos.piece_at(pawn_sq).expect("pawn must be at (6,4) in startpos");
+        assert_eq!(pawn.piece_type(), PieceType::Pawn);
+        assert_eq!(pawn.color(), Color::Black);
+
+        // Step 2: Remove pawn attacks from map (before clearing the square).
+        remove_piece_attacks(&mut map, &pos, pawn_sq, pawn);
+
+        // Step 3: Clear the square and update rays through it.
+        pos.clear_square(pawn_sq);
+        update_rays_through_square(&mut map, &pos, pawn_sq, true /* piece_removed */);
+
+        // Step 4: Verify map matches oracle.
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "map after removing pawn at (6,4) should match oracle"
+        );
+
+        // Step 5: Add the piece back.
+        pos.set_piece(pawn_sq, pawn);
+        // Update rays BEFORE adding piece attacks (piece is now a blocker again).
+        update_rays_through_square(&mut map, &pos, pawn_sq, false /* piece_added */);
+        add_piece_attacks(&mut map, &pos, pawn_sq, pawn);
+
+        // Step 6: Verify map matches oracle again (should be back to startpos map).
+        let oracle2 = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle2,
+            "map after re-adding pawn at (6,4) should match oracle"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental: removing a pawn unblocks a rook's ray
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incremental_sliding_piece_unblock() {
+        // Step 1: Create position with rook at (4,0) and blocking pawn at (4,3).
+        let mut pos = Position::empty();
+        let rook_sq = Square::from_row_col(4, 0).unwrap();
+        let pawn_sq = Square::from_row_col(4, 3).unwrap();
+        let rook = Piece::new(PieceType::Rook, Color::Black, false);
+        let pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        pos.set_piece(rook_sq, rook);
+        pos.set_piece(pawn_sq, pawn);
+
+        // Step 2: Compute initial attack map.
+        let mut map = compute_attack_map(&pos);
+
+        // Sanity: rook should NOT reach (4,4) through (4,8) yet.
+        for col in 4u8..9 {
+            let sq = Square::from_row_col(4, col).unwrap();
+            assert_eq!(
+                map[Color::Black as usize][sq.index()],
+                0,
+                "Rook at (4,0) blocked by pawn at (4,3) — should not attack (4,{})",
+                col
+            );
+        }
+
+        // Step 3: Remove the pawn incrementally.
+        remove_piece_attacks(&mut map, &pos, pawn_sq, pawn);
+        pos.clear_square(pawn_sq);
+        update_rays_through_square(&mut map, &pos, pawn_sq, true /* piece_removed */);
+
+        // Step 4: Verify map matches oracle after pawn removal.
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "map after removing pawn at (4,3) should match oracle"
+        );
+
+        // Step 5: Rook should now attack (4,4) through (4,8).
+        for col in 4u8..9 {
+            let sq = Square::from_row_col(4, col).unwrap();
+            assert!(
+                map[Color::Black as usize][sq.index()] >= 1,
+                "Rook at (4,0) unblocked — should now attack (4,{})",
+                col
+            );
+        }
     }
 }
