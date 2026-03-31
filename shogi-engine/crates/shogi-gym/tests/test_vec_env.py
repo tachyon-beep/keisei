@@ -50,9 +50,9 @@ class TestVecEnvStepping:
         assert truncated.shape == (2,)
 
     def test_step_wrong_num_actions(self):
-        env = VecEnv(num_envs=2)
+        env = VecEnv(num_envs=2, max_ply=100)
         env.reset()
-        with pytest.raises((ValueError, RuntimeError)):
+        with pytest.raises(ValueError):
             env.step([0])
 
     def test_step_illegal_action(self):
@@ -86,4 +86,63 @@ class TestVecEnvStepping:
                 legal = np.where(masks[i])[0]
                 actions.append(int(legal[np.random.randint(len(legal))]))
             step_result = env.step(actions)
+            masks = np.asarray(step_result.legal_masks)
+
+    def test_autoreset_on_truncation(self):
+        """Verify auto-reset produces valid initial state after truncation."""
+        env = VecEnv(num_envs=1, max_ply=1)  # forces truncation after 1 move
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        action = [int(np.where(masks[0])[0][0])]
+        step_result = env.step(action)
+        # Should be truncated
+        assert np.asarray(step_result.truncated)[0], "expected truncation at max_ply=1"
+        # After auto-reset, legal masks should be the start-position masks (30 legal moves)
+        assert np.asarray(step_result.legal_masks)[0].sum() == 30
+        # Terminal observations should be non-zero (the game state before reset)
+        term_obs = np.asarray(step_result.terminal_observations)
+        assert term_obs.shape == (1, 46, 9, 9)
+        assert term_obs[0].sum() != 0.0, "terminal obs should be non-zero"
+        # Current player should be Black (just reset)
+        assert np.asarray(step_result.current_players)[0] == 0, "reset game should start with Black"
+
+    def test_terminal_observations_shape(self):
+        """Verify terminal_observations has correct shape."""
+        env = VecEnv(num_envs=2, max_ply=100)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        actions = [int(np.where(masks[i])[0][0]) for i in range(2)]
+        step_result = env.step(actions)
+        term_obs = np.asarray(step_result.terminal_observations)
+        assert term_obs.shape == (2, 46, 9, 9)
+        assert term_obs.dtype == np.float32
+
+    def test_current_players_output(self):
+        """Verify current_players is in the step result."""
+        env = VecEnv(num_envs=2, max_ply=100)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        actions = [int(np.where(masks[i])[0][0]) for i in range(2)]
+        step_result = env.step(actions)
+        players = np.asarray(step_result.current_players)
+        assert players.shape == (2,)
+        assert players.dtype == np.uint8
+        # After first move, current player should be White (1)
+        for p in players:
+            assert p in (0, 1)
+
+    def test_reward_values_in_range(self):
+        """Rewards should only be -1.0, 0.0, or 1.0."""
+        env = VecEnv(num_envs=4, max_ply=50)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        for _ in range(30):
+            actions = []
+            for i in range(4):
+                legal = np.where(masks[i])[0]
+                actions.append(int(legal[np.random.randint(len(legal))]))
+            step_result = env.step(actions)
+            rewards = np.asarray(step_result.rewards)
+            for r in rewards:
+                assert r in (-1.0, 0.0, 1.0), f"unexpected reward: {r}"
             masks = np.asarray(step_result.legal_masks)

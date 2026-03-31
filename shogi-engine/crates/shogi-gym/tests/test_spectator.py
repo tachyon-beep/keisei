@@ -30,15 +30,23 @@ class TestSpectatorEnv:
         assert state["current_player"] == "white"
 
     def test_no_auto_reset(self):
-        env = SpectatorEnv(max_ply=2)
+        """SpectatorEnv should NOT auto-reset on game end."""
+        env = SpectatorEnv(max_ply=1)
         env.reset()
-        for _ in range(10):
-            if env.is_over:
-                break
-            legal = env.legal_actions()
-            env.step(legal[0])
-        if env.is_over:
-            assert env.ply <= 2
+        legal = env.legal_actions()
+        env.step(legal[0])
+        assert env.is_over, "game should be over after max_ply=1"
+        assert env.ply == 1
+
+    def test_step_after_game_over_raises(self):
+        """Stepping a finished game should raise RuntimeError."""
+        env = SpectatorEnv(max_ply=1)
+        env.reset()
+        legal = env.legal_actions()
+        env.step(legal[0])  # truncated at ply=1
+        assert env.is_over
+        with pytest.raises(RuntimeError, match="game is already over"):
+            env.step(0)
 
     def test_to_dict(self):
         env = SpectatorEnv()

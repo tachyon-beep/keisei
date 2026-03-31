@@ -412,4 +412,31 @@ mod tests {
         assert!(trait_decode(&m, ACTION_SPACE_SIZE + 1, Color::Black).is_err());
         assert!(trait_decode(&m, usize::MAX, Color::Black).is_err());
     }
+
+    #[test]
+    fn test_exhaustive_board_move_roundtrip_white() {
+        let mapper = DefaultActionMapper;
+        let perspective = Color::White;
+        let mut seen = vec![false; BOARD_MOVE_COUNT];
+
+        for from_idx in 0u8..81 {
+            for to_idx in 0u8..81 {
+                if from_idx == to_idx { continue; }
+                for promote in [false, true] {
+                    let mv = Move::Board {
+                        from: Square::new_unchecked(from_idx),
+                        to: Square::new_unchecked(to_idx),
+                        promote,
+                    };
+                    let encoded = <DefaultActionMapper as ActionMapper>::encode(&mapper, mv, perspective);
+                    assert!(encoded < BOARD_MOVE_COUNT, "index {} out of board range", encoded);
+                    assert!(!seen[encoded], "collision at index {} (white perspective)", encoded);
+                    seen[encoded] = true;
+                    let decoded = <DefaultActionMapper as ActionMapper>::decode(&mapper, encoded, perspective).unwrap();
+                    assert_eq!(decoded, mv, "white perspective roundtrip failed");
+                }
+            }
+        }
+        assert!(seen.iter().all(|&v| v), "not all board indices covered (white)");
+    }
 }
