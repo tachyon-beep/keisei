@@ -1,12 +1,12 @@
-import json
+
+from pathlib import Path
 
 import pytest
-from pathlib import Path
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
+from keisei.db import init_db, write_metrics, write_training_state
 from keisei.server.app import create_app
-from keisei.db import init_db, write_training_state, write_metrics
 
 
 @pytest.fixture
@@ -57,3 +57,18 @@ def test_ws_sends_init_on_connect(db_path: str) -> None:
         assert "metrics" in msg
         assert "training_state" in msg
         assert msg["training_state"]["display_name"] == "TestBot"
+
+
+@pytest.mark.asyncio
+async def test_serves_index_html(db_path: str) -> None:
+    """If static/ dir exists with index.html, GET / returns it."""
+    static_dir = Path(__file__).parent.parent / "keisei" / "server" / "static"
+    if not static_dir.is_dir():
+        pytest.skip("No built SPA in keisei/server/static/")
+
+    app = create_app(db_path)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "html" in resp.headers.get("content-type", "").lower()

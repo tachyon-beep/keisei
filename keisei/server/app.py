@@ -8,13 +8,12 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from keisei.db import read_metrics_since, read_game_snapshots, read_training_state
+from keisei.db import read_game_snapshots, read_metrics_since, read_training_state
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +160,7 @@ async def _keepalive(ws: WebSocket) -> None:
 def main() -> None:
     """CLI entry point: keisei-serve."""
     import argparse
+
     import uvicorn
 
     from keisei.config import load_config
