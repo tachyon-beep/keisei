@@ -832,4 +832,219 @@ mod tests {
         generate_pseudo_legal_drops(&pos, Color::Black, &mut moves);
         assert!(moves.is_empty(), "No drops should be generated with empty hand");
     }
+
+    // -----------------------------------------------------------------------
+    // Gold-equivalent promoted piece movement
+    // -----------------------------------------------------------------------
+
+    /// Promoted pawn (Tokin) should move exactly like Gold.
+    #[test]
+    fn test_promoted_pawn_moves_like_gold() {
+        let pos_tokin = lone_piece_pos(4, 4, PieceType::Pawn, Color::Black, true);
+        let pos_gold = lone_piece_pos(4, 4, PieceType::Gold, Color::Black, false);
+
+        let mut tokin_moves = Vec::new();
+        let mut gold_moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos_tokin, Color::Black, &mut tokin_moves);
+        generate_pseudo_legal_board_moves(&pos_gold, Color::Black, &mut gold_moves);
+
+        // Sort by destination for comparison (Gold can't promote, Tokin already promoted)
+        let mut tokin_targets: Vec<u8> = tokin_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        let mut gold_targets: Vec<u8> = gold_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        tokin_targets.sort();
+        gold_targets.sort();
+
+        assert_eq!(
+            tokin_targets, gold_targets,
+            "Promoted pawn (Tokin) at (4,4) should have same targets as Gold"
+        );
+    }
+
+    /// Promoted lance should move exactly like Gold.
+    #[test]
+    fn test_promoted_lance_moves_like_gold() {
+        let pos_plance = lone_piece_pos(4, 4, PieceType::Lance, Color::Black, true);
+        let pos_gold = lone_piece_pos(4, 4, PieceType::Gold, Color::Black, false);
+
+        let mut plance_moves = Vec::new();
+        let mut gold_moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos_plance, Color::Black, &mut plance_moves);
+        generate_pseudo_legal_board_moves(&pos_gold, Color::Black, &mut gold_moves);
+
+        let mut plance_targets: Vec<u8> = plance_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        let mut gold_targets: Vec<u8> = gold_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        plance_targets.sort();
+        gold_targets.sort();
+
+        assert_eq!(
+            plance_targets, gold_targets,
+            "Promoted lance at (4,4) should have same targets as Gold"
+        );
+    }
+
+    /// Promoted knight should move exactly like Gold.
+    #[test]
+    fn test_promoted_knight_moves_like_gold() {
+        let pos_pknight = lone_piece_pos(4, 4, PieceType::Knight, Color::Black, true);
+        let pos_gold = lone_piece_pos(4, 4, PieceType::Gold, Color::Black, false);
+
+        let mut pknight_moves = Vec::new();
+        let mut gold_moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos_pknight, Color::Black, &mut pknight_moves);
+        generate_pseudo_legal_board_moves(&pos_gold, Color::Black, &mut gold_moves);
+
+        let mut pknight_targets: Vec<u8> = pknight_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        let mut gold_targets: Vec<u8> = gold_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        pknight_targets.sort();
+        gold_targets.sort();
+
+        assert_eq!(
+            pknight_targets, gold_targets,
+            "Promoted knight at (4,4) should have same targets as Gold"
+        );
+    }
+
+    /// Promoted silver should move exactly like Gold.
+    #[test]
+    fn test_promoted_silver_moves_like_gold() {
+        let pos_psilver = lone_piece_pos(4, 4, PieceType::Silver, Color::Black, true);
+        let pos_gold = lone_piece_pos(4, 4, PieceType::Gold, Color::Black, false);
+
+        let mut psilver_moves = Vec::new();
+        let mut gold_moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos_psilver, Color::Black, &mut psilver_moves);
+        generate_pseudo_legal_board_moves(&pos_gold, Color::Black, &mut gold_moves);
+
+        let mut psilver_targets: Vec<u8> = psilver_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        let mut gold_targets: Vec<u8> = gold_moves.iter().map(|m| match m {
+            Move::Board { to, .. } => to.index() as u8,
+            _ => unreachable!(),
+        }).collect();
+        psilver_targets.sort();
+        gold_targets.sort();
+
+        assert_eq!(
+            psilver_targets, gold_targets,
+            "Promoted silver at (4,4) should have same targets as Gold"
+        );
+    }
+
+    /// White promoted pieces should also move like Gold (with correct direction).
+    #[test]
+    fn test_white_promoted_pieces_move_like_gold() {
+        for pt in [PieceType::Pawn, PieceType::Lance, PieceType::Knight, PieceType::Silver] {
+            let pos_promoted = lone_piece_pos(4, 4, pt, Color::White, true);
+            let pos_gold = lone_piece_pos(4, 4, PieceType::Gold, Color::White, false);
+
+            let mut promoted_moves = Vec::new();
+            let mut gold_moves = Vec::new();
+            generate_pseudo_legal_board_moves(&pos_promoted, Color::White, &mut promoted_moves);
+            generate_pseudo_legal_board_moves(&pos_gold, Color::White, &mut gold_moves);
+
+            let mut promoted_targets: Vec<u8> = promoted_moves.iter().map(|m| match m {
+                Move::Board { to, .. } => to.index() as u8,
+                _ => unreachable!(),
+            }).collect();
+            let mut gold_targets: Vec<u8> = gold_moves.iter().map(|m| match m {
+                Move::Board { to, .. } => to.index() as u8,
+                _ => unreachable!(),
+            }).collect();
+            promoted_targets.sort();
+            gold_targets.sort();
+
+            assert_eq!(
+                promoted_targets, gold_targets,
+                "White promoted {:?} at (4,4) should have same targets as White Gold",
+                pt
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-type hand drops
+    // -----------------------------------------------------------------------
+
+    /// Drops generated with all 7 hand piece types simultaneously.
+    #[test]
+    fn test_drops_with_all_hand_piece_types() {
+        let mut pos = Position::empty();
+        // Kings only on board
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Give Black one of each hand piece type
+        for &hpt in &HandPieceType::ALL {
+            pos.set_hand_count(Color::Black, hpt, 1);
+        }
+        pos.current_player = Color::Black;
+
+        let mut moves = Vec::new();
+        generate_pseudo_legal_drops(&pos, Color::Black, &mut moves);
+
+        // Count drops per hand piece type
+        let empty_squares = 81 - 2; // 2 kings on board
+        for &hpt in &HandPieceType::ALL {
+            let drops_for_type: usize = moves.iter().filter(|m| {
+                matches!(m, Move::Drop { piece_type, .. } if *piece_type == hpt)
+            }).count();
+
+            // Calculate expected: empty_squares minus dead-drop exclusions
+            let dead_drop_exclusions = match hpt {
+                // Black pawn/lance: can't drop on row 0
+                HandPieceType::Pawn | HandPieceType::Lance => {
+                    // Count empty squares on row 0 (col 4 has White king, so 8 empty)
+                    8
+                }
+                // Black knight: can't drop on rows 0 or 1
+                HandPieceType::Knight => {
+                    // Row 0: 8 empty, Row 1: 9 empty = 17
+                    17
+                }
+                _ => 0,
+            };
+            let expected = empty_squares - dead_drop_exclusions;
+            assert_eq!(
+                drops_for_type, expected,
+                "Black {:?} drops: expected {}, got {}",
+                hpt, expected, drops_for_type
+            );
+        }
+
+        // Total drops should be sum of all types
+        let total_expected = 4 * empty_squares // Gold, Silver, Bishop, Rook (no restrictions)
+            + (empty_squares - 8)              // Pawn (exclude row 0)
+            + (empty_squares - 8)              // Lance (exclude row 0)
+            + (empty_squares - 17);            // Knight (exclude rows 0-1)
+        assert_eq!(
+            moves.len(), total_expected,
+            "Total drops with all 7 hand piece types: expected {}, got {}",
+            total_expected, moves.len()
+        );
+    }
 }

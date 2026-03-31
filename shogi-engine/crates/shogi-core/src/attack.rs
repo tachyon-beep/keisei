@@ -850,4 +850,140 @@ mod tests {
         assert!(!would_wrap_file(sq_left, UP), "UP from col 0 should not wrap");
         assert!(!would_wrap_file(sq_left, DOWN), "DOWN from col 0 should not wrap");
     }
+
+    // -----------------------------------------------------------------------
+    // Incremental: removing a piece unblocks a bishop's diagonal ray
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incremental_diagonal_slider_unblock() {
+        // Bishop at (4,4), blocking pawn at (2,2). Remove pawn → bishop's ray
+        // extends through (2,2) to (1,1) and (0,0).
+        let mut pos = Position::empty();
+        let bishop_sq = Square::from_row_col(4, 4).unwrap();
+        let blocker_sq = Square::from_row_col(2, 2).unwrap();
+        let bishop = Piece::new(PieceType::Bishop, Color::Black, false);
+        let pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        pos.set_piece(bishop_sq, bishop);
+        pos.set_piece(blocker_sq, pawn);
+
+        let mut map = compute_attack_map(&pos);
+
+        // Bishop should attack (3,3) and (2,2) but NOT (1,1) or (0,0)
+        let sq_11 = Square::from_row_col(1, 1).unwrap();
+        let sq_00 = Square::from_row_col(0, 0).unwrap();
+        assert_eq!(
+            map[Color::Black as usize][sq_11.index()], 0,
+            "Bishop blocked — should not reach (1,1)"
+        );
+        assert_eq!(
+            map[Color::Black as usize][sq_00.index()], 0,
+            "Bishop blocked — should not reach (0,0)"
+        );
+
+        // Remove the blocker incrementally
+        remove_piece_attacks(&mut map, &pos, blocker_sq, pawn);
+        pos.clear_square(blocker_sq);
+        update_rays_through_square(&mut map, &pos, blocker_sq, true);
+
+        // Verify against oracle
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Incremental map after removing diagonal blocker must match oracle"
+        );
+
+        // Bishop should now reach (1,1) and (0,0)
+        assert!(
+            map[Color::Black as usize][sq_11.index()] >= 1,
+            "Bishop unblocked — should now reach (1,1)"
+        );
+        assert!(
+            map[Color::Black as usize][sq_00.index()] >= 1,
+            "Bishop unblocked — should now reach (0,0)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental: placing a piece blocks a bishop's diagonal ray
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incremental_diagonal_slider_block() {
+        // Bishop at (4,4) on empty board. Place a pawn at (2,2) → ray truncated.
+        let mut pos = Position::empty();
+        let bishop_sq = Square::from_row_col(4, 4).unwrap();
+        let bishop = Piece::new(PieceType::Bishop, Color::Black, false);
+        pos.set_piece(bishop_sq, bishop);
+
+        let mut map = compute_attack_map(&pos);
+
+        // Bishop should reach (1,1) and (0,0) on empty board
+        let sq_11 = Square::from_row_col(1, 1).unwrap();
+        let sq_00 = Square::from_row_col(0, 0).unwrap();
+        assert!(
+            map[Color::Black as usize][sq_11.index()] >= 1,
+            "Bishop should reach (1,1) on empty board"
+        );
+        assert!(
+            map[Color::Black as usize][sq_00.index()] >= 1,
+            "Bishop should reach (0,0) on empty board"
+        );
+
+        // Place blocker at (2,2) incrementally
+        let blocker_sq = Square::from_row_col(2, 2).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        pos.set_piece(blocker_sq, pawn);
+        update_rays_through_square(&mut map, &pos, blocker_sq, false);
+        add_piece_attacks(&mut map, &pos, blocker_sq, pawn);
+
+        // Verify against oracle
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Incremental map after placing diagonal blocker must match oracle"
+        );
+
+        // Bishop should no longer reach (1,1) or (0,0)
+        assert_eq!(
+            map[Color::Black as usize][sq_11.index()], 0,
+            "Bishop blocked at (2,2) — should not reach (1,1)"
+        );
+        assert_eq!(
+            map[Color::Black as usize][sq_00.index()], 0,
+            "Bishop blocked at (2,2) — should not reach (0,0)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental: multiple sliders through the same square
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incremental_multiple_sliders_through_square() {
+        // Rook at (2,4) and Bishop at (2,2) both have rays passing through (2,3).
+        // Place a piece at (2,3) and verify both rays are correctly truncated.
+        let mut pos = Position::empty();
+        let rook_sq = Square::from_row_col(2, 4).unwrap();
+        let bishop_sq = Square::from_row_col(4, 1).unwrap();
+        let rook = Piece::new(PieceType::Rook, Color::Black, false);
+        let bishop = Piece::new(PieceType::Bishop, Color::Black, false);
+        pos.set_piece(rook_sq, rook);
+        pos.set_piece(bishop_sq, bishop);
+
+        let mut map = compute_attack_map(&pos);
+
+        // Place pawn at (2,3) — blocks rook's leftward ray AND bishop's UP_RIGHT ray
+        let blocker_sq = Square::from_row_col(2, 3).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        pos.set_piece(blocker_sq, pawn);
+        update_rays_through_square(&mut map, &pos, blocker_sq, false);
+        add_piece_attacks(&mut map, &pos, blocker_sq, pawn);
+
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Incremental map with multiple sliders through same square must match oracle"
+        );
+    }
 }

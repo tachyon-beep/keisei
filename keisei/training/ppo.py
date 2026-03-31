@@ -111,7 +111,8 @@ class PPOAlgorithm:
 
         advantages = all_advantages.reshape(-1)
         returns = advantages + data["values"]
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         total_samples = T * N
         batch_size = min(self.params.batch_size, total_samples)

@@ -1039,4 +1039,103 @@ mod tests {
         let obs1_after = &env.obs_buffer[BUFFER_LEN..2 * BUFFER_LEN];
         assert_ne!(obs0_after, obs1_after, "After a move, env 1 obs should differ from env 0");
     }
+
+    // -----------------------------------------------------------------------
+    // VecEnv at scale: buffer construction above PARALLEL_THRESHOLD
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_large_vecenv_buffer_construction() {
+        let n = 128; // above PARALLEL_THRESHOLD (64)
+        let env = VecEnv::new(n, 100);
+        assert_eq!(env.num_envs, n);
+        assert_eq!(env.games.len(), n);
+        assert_eq!(env.obs_buffer.len(), n * BUFFER_LEN);
+        assert_eq!(env.legal_mask_buffer.len(), n * ACTION_SPACE_SIZE);
+        assert_eq!(env.reward_buffer.len(), n);
+        assert_eq!(env.terminated_buffer.len(), n);
+        assert_eq!(env.truncated_buffer.len(), n);
+        assert_eq!(env.terminal_obs_buffer.len(), n * BUFFER_LEN);
+        assert_eq!(env.current_players_buffer.len(), n);
+    }
+
+    #[test]
+    fn test_large_vecenv_obs_mask_consistency() {
+        let n = 128;
+        let mut env = VecEnv::new(n, 500);
+
+        // Write obs and mask for all envs
+        for i in 0..n {
+            env.write_obs_and_mask(i);
+        }
+
+        // All envs start at startpos — obs should be identical across all
+        let obs_ref = &env.obs_buffer[0..BUFFER_LEN];
+        for i in 1..n {
+            let obs_i = &env.obs_buffer[i * BUFFER_LEN..(i + 1) * BUFFER_LEN];
+            assert_eq!(
+                obs_ref, obs_i,
+                "Env {} obs should match env 0 at startpos", i
+            );
+        }
+
+        // All envs should have exactly 30 legal moves at startpos
+        for i in 0..n {
+            let mask_start = i * ACTION_SPACE_SIZE;
+            let mask_end = mask_start + ACTION_SPACE_SIZE;
+            let legal_count: usize = env.legal_mask_buffer[mask_start..mask_end]
+                .iter()
+                .filter(|&&x| x)
+                .count();
+            assert_eq!(
+                legal_count, 30,
+                "Env {} should have 30 legal moves at startpos, got {}", i, legal_count
+            );
+        }
+    }
+
+    #[test]
+    fn test_large_vecenv_obs_isolation_after_move() {
+        let n = 128;
+        let mut env = VecEnv::new(n, 500);
+
+        // Write initial obs for all
+        for i in 0..n {
+            env.write_obs_and_mask(i);
+        }
+
+        // Make a move in env 0 only
+        let mv = env.games[0].legal_moves()[0];
+        env.games[0].make_move(mv);
+        env.write_obs_and_mask(0);
+
+        // Env 0 should differ from env 1 (which is still at startpos)
+        let obs0 = &env.obs_buffer[0..BUFFER_LEN];
+        let obs1 = &env.obs_buffer[BUFFER_LEN..2 * BUFFER_LEN];
+        assert_ne!(obs0, obs1, "Env 0 obs should differ after a move");
+
+        // Env 1 should still match env 127 (both at startpos)
+        let obs_last = &env.obs_buffer[127 * BUFFER_LEN..128 * BUFFER_LEN];
+        assert_eq!(obs1, obs_last, "Unmoved envs should still have matching obs");
+    }
+
+    #[test]
+    fn test_large_vecenv_episode_counters_after_max_ply() {
+        let n = 128;
+        let env = VecEnv::new(n, 0); // max_ply=0 → immediate truncation
+
+        // Verify the episode counters are at zero before any step
+        assert_eq!(
+            env.episodes_completed.load(Ordering::Relaxed), 0,
+            "episodes_completed should start at 0"
+        );
+        assert_eq!(
+            env.episodes_truncated.load(Ordering::Relaxed), 0,
+            "episodes_truncated should start at 0"
+        );
+        assert_eq!(
+            env.episodes_drawn.load(Ordering::Relaxed), 0,
+            "episodes_drawn should start at 0"
+        );
+    }
 }
