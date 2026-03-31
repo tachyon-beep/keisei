@@ -1,0 +1,16 @@
+[package]
+name = "shogi-core"
+version = "0.1.0"
+edition = "2024"
+description = "Pure Rust Shogi game engine with incremental attack maps"
+license = "MIT"
+
+[dependencies]
+# std only — zero external dependencies
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "movegen"
+harness = false

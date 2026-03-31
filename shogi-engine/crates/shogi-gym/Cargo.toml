@@ -1,0 +1,16 @@
+[package]
+name = "shogi-gym"
+version = "0.1.0"
+edition = "2024"
+description = "RL training environment for Shogi with PyO3 bindings"
+license = "MIT"
+
+[lib]
+name = "shogi_gym"
+crate-type = ["cdylib"]
+
+[dependencies]
+shogi-core = { path = "../shogi-core" }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+rayon = "1.10"
