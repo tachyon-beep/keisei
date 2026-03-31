@@ -178,15 +178,11 @@ class TrainingLoop:
                 if ep_completed
                 else None,
                 "draw_rate": getattr(self.vecenv, "draw_rate", None),
-                "truncation_rate": (
-                    self.vecenv.truncation_rate()
-                    if hasattr(self.vecenv, "truncation_rate")
-                    else None
+                "truncation_rate": getattr(
+                    self.vecenv, "truncation_rate", None
                 ),
-                "avg_episode_length": (
-                    self.vecenv.mean_episode_length()
-                    if hasattr(self.vecenv, "mean_episode_length")
-                    else None
+                "avg_episode_length": getattr(
+                    self.vecenv, "mean_episode_length", None
                 ),
                 "episodes_completed": ep_completed,
             }

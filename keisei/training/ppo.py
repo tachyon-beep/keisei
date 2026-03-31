@@ -138,8 +138,12 @@ class PPOAlgorithm:
                 log_probs_all = F.log_softmax(masked_logits, dim=-1)
                 new_log_probs = log_probs_all.gather(1, batch_actions.unsqueeze(1)).squeeze(1)
 
+                # Entropy over legal actions only. Use the categorical distribution
+                # which handles the 0*log(0) case correctly.
                 probs = F.softmax(masked_logits, dim=-1)
-                entropy = -(probs * log_probs_all).sum(dim=-1).mean()
+                # Replace -inf with 0 in log_probs to avoid 0 * -inf = NaN
+                safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
+                entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
                 ratio = (new_log_probs - batch_old_log_probs).exp()
                 clip = self.params.clip_epsilon
