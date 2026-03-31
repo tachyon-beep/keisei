@@ -146,6 +146,56 @@ class TestVecEnvConstruction:
             assert masks[i].sum() > 0, f"env {i} has no legal moves at start"
 
 
+class TestVecEnvEpisodeStats:
+    def test_mean_episode_length_zero_before_completion(self):
+        env = VecEnv(num_envs=1, max_ply=100)
+        env.reset()
+        assert env.mean_episode_length == 0.0
+
+    def test_truncation_rate_zero_before_completion(self):
+        env = VecEnv(num_envs=1, max_ply=100)
+        env.reset()
+        assert env.truncation_rate == 0.0
+
+    def test_truncation_rate_after_max_ply(self):
+        env = VecEnv(num_envs=2, max_ply=1)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        actions = [int(np.where(masks[i])[0][0]) for i in range(2)]
+        env.step(actions)
+        assert env.episodes_completed == 2
+        assert env.truncation_rate == 1.0
+
+    def test_mean_episode_length_after_truncation(self):
+        env = VecEnv(num_envs=2, max_ply=1)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        actions = [int(np.where(masks[i])[0][0]) for i in range(2)]
+        env.step(actions)
+        assert env.mean_episode_length == 1.0
+
+    def test_mean_episode_length_accumulates(self):
+        env = VecEnv(num_envs=1, max_ply=1)
+        result = env.reset()
+        for _ in range(5):
+            masks = np.asarray(result.legal_masks)
+            action = [int(np.where(masks[0])[0][0])]
+            result = env.step(action)
+        assert env.episodes_completed == 5
+        assert env.mean_episode_length == 1.0
+
+    def test_reset_stats_clears_episode_length(self):
+        env = VecEnv(num_envs=1, max_ply=1)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        action = [int(np.where(masks[0])[0][0])]
+        env.step(action)
+        assert env.mean_episode_length == 1.0
+        env.reset_stats()
+        assert env.mean_episode_length == 0.0
+        assert env.truncation_rate == 0.0
+
+
 class TestVecEnvStepping:
     def test_step_shapes(self):
         env = VecEnv(num_envs=2, max_ply=100)

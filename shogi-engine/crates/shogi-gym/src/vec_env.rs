@@ -105,6 +105,7 @@ pub struct VecEnv {
     episodes_completed: AtomicU64,
     episodes_drawn: AtomicU64,     // Repetition or Impasse(None)
     episodes_truncated: AtomicU64, // MaxMoves
+    total_episode_ply: AtomicU64,  // sum of ply at episode end (for mean_episode_length)
 }
 
 impl VecEnv {
@@ -167,6 +168,7 @@ impl VecEnv {
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
             episodes_truncated: AtomicU64::new(0),
+            total_episode_ply: AtomicU64::new(0),
         }
     }
 
@@ -272,6 +274,7 @@ impl VecEnv {
             let ep_completed = &self.episodes_completed;
             let ep_drawn = &self.episodes_drawn;
             let ep_truncated = &self.episodes_truncated;
+            let ep_total_ply = &self.total_episode_ply;
 
             // Local copies — both are stateless. Shared refs used in closure.
             let mapper = DefaultActionMapper;
@@ -320,6 +323,7 @@ impl VecEnv {
                     if terminated || truncated {
                         // Update episode counters
                         ep_completed.fetch_add(1, Ordering::Relaxed);
+                        ep_total_ply.fetch_add(game.ply as u64, Ordering::Relaxed);
                         match result {
                             GameResult::Repetition
                             | GameResult::Impasse { winner: None } => {
@@ -474,11 +478,34 @@ impl VecEnv {
         }
     }
 
+    /// Mean episode length across all completed episodes since last reset_stats().
+    #[getter]
+    pub fn mean_episode_length(&self) -> f64 {
+        let completed = self.episodes_completed.load(Ordering::Relaxed);
+        if completed == 0 {
+            0.0
+        } else {
+            self.total_episode_ply.load(Ordering::Relaxed) as f64 / completed as f64
+        }
+    }
+
+    /// Fraction of completed episodes that were truncated (hit max_ply).
+    #[getter]
+    pub fn truncation_rate(&self) -> f64 {
+        let completed = self.episodes_completed.load(Ordering::Relaxed);
+        if completed == 0 {
+            0.0
+        } else {
+            self.episodes_truncated.load(Ordering::Relaxed) as f64 / completed as f64
+        }
+    }
+
     /// Reset episode counters to zero.
     pub fn reset_stats(&self) {
         self.episodes_completed.store(0, Ordering::Relaxed);
         self.episodes_drawn.store(0, Ordering::Relaxed);
         self.episodes_truncated.store(0, Ordering::Relaxed);
+        self.total_episode_ply.store(0, Ordering::Relaxed);
     }
 
     /// Get the SFEN string for a single game by index.
