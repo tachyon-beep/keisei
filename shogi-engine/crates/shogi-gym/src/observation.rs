@@ -477,6 +477,165 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Promoted piece observation channels
+    // -----------------------------------------------------------------------
+
+    /// A promoted bishop (Horse) owned by current player should appear in channel 12
+    /// (8 + promoted_channel(Bishop) = 8 + 4 = 12).
+    #[test]
+    fn test_promoted_bishop_observation_channel() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Promoted bishop (Horse) for Black at (4, 4) = index 40
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, true),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 12 = 8 + promoted_channel(Bishop) = 8 + 4
+        let sq_idx = 4 * 9 + 4; // row 4, col 4 = index 36
+        assert_eq!(
+            buf[12 * NUM_SQUARES + sq_idx], 1.0,
+            "Promoted bishop (Horse) should appear in channel 12 at square {}",
+            sq_idx
+        );
+
+        // Should NOT appear in unpromoted bishop channel (5)
+        assert_eq!(
+            buf[5 * NUM_SQUARES + sq_idx], 0.0,
+            "Promoted bishop should NOT appear in unpromoted channel 5"
+        );
+    }
+
+    /// A promoted rook (Dragon) owned by the opponent should appear in channel 27
+    /// (22 + promoted_channel(Rook) = 22 + 5 = 27).
+    #[test]
+    fn test_promoted_rook_opponent_observation_channel() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Promoted rook (Dragon) for White at (3, 3) — opponent from Black's perspective
+        pos.set_piece(
+            Square::from_row_col(3, 3).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, true),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 27 = 22 + promoted_channel(Rook) = 22 + 5
+        let sq_idx = 3 * 9 + 3; // row 3, col 3 = index 30
+        assert_eq!(
+            buf[27 * NUM_SQUARES + sq_idx], 1.0,
+            "Opponent's promoted rook (Dragon) should appear in channel 27"
+        );
+    }
+
+    /// A promoted pawn (Tokin) should appear in channel 8 (8 + promoted_channel(Pawn) = 8 + 0).
+    #[test]
+    fn test_promoted_pawn_observation_channel() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Promoted pawn (Tokin) for Black at (2, 4)
+        pos.set_piece(
+            Square::from_row_col(2, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        let sq_idx = 2 * 9 + 4; // index 22
+        // Channel 8 = 8 + promoted_channel(Pawn) = 8 + 0
+        assert_eq!(
+            buf[8 * NUM_SQUARES + sq_idx], 1.0,
+            "Promoted pawn (Tokin) should appear in channel 8"
+        );
+        // Should NOT appear in unpromoted pawn channel (0)
+        assert_eq!(
+            buf[0 * NUM_SQUARES + sq_idx], 0.0,
+            "Promoted pawn should NOT appear in unpromoted channel 0"
+        );
+    }
+
+    /// Promoted piece from White's perspective: board should be flipped.
+    #[test]
+    fn test_promoted_piece_white_perspective_flipped() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White promoted silver at (6, 2) = index 56
+        pos.set_piece(
+            Square::from_row_col(6, 2).unwrap(),
+            Piece::new(PieceType::Silver, Color::White, true),
+        );
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::White, &mut buf);
+
+        // From White's perspective, White's promoted silver is "current player's promoted"
+        // Channel = 8 + promoted_channel(Silver) = 8 + 3 = 11
+        // Square is flipped: 80 - 56 = 24
+        assert_eq!(
+            buf[11 * NUM_SQUARES + 24], 1.0,
+            "White's promoted silver should appear in ch11 at flipped square 24"
+        );
+    }
+
     /// Opponent's hand pieces should appear in channels 35-41.
     #[test]
     fn test_opponent_hand_channels() {

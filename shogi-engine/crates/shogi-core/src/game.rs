@@ -1195,4 +1195,280 @@ mod tests {
             assert!(mask[idx], "Legal move {:?} not set in mask at index {}", mv, idx);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Perft tests — move generation ground truth
+    // -----------------------------------------------------------------------
+
+    /// Recursive perft: count leaf nodes at `depth` from the current position.
+    fn perft(gs: &mut GameState, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+        let moves = gs.legal_moves();
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        let mut nodes = 0u64;
+        for mv in moves {
+            let undo = gs.make_move(mv);
+            nodes += perft(gs, depth - 1);
+            gs.unmake_move(mv, undo);
+        }
+        nodes
+    }
+
+    #[test]
+    fn test_perft_depth_1_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(perft(&mut gs, 1), 30, "perft(1) from startpos must be 30");
+    }
+
+    #[test]
+    fn test_perft_depth_2_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(perft(&mut gs, 2), 900, "perft(2) from startpos must be 900");
+    }
+
+    #[test]
+    fn test_perft_depth_3_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(
+            perft(&mut gs, 3),
+            25470,
+            "perft(3) from startpos must be 25470"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Nifu edge case: promoted pawn does NOT block pawn drop
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nifu_promoted_pawn_does_not_block_drop() {
+        // A promoted pawn (Tokin) on col 4 should NOT prevent dropping
+        // an unpromoted pawn on col 4. Only unpromoted pawns trigger nifu.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Promoted pawn (Tokin) on col 4 — should NOT trigger nifu
+        pos.set_piece(
+            Square::from_row_col(5, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true), // promoted!
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Pawn drops on col 4 should be ALLOWED (Tokin doesn't count as unpromoted pawn)
+        let moves = gs.legal_moves();
+        let col4_pawn_drops: Vec<_> = moves
+            .iter()
+            .filter(|m| matches!(m, Move::Drop { to, piece_type: HandPieceType::Pawn } if to.col() == 4))
+            .collect();
+
+        assert!(
+            !col4_pawn_drops.is_empty(),
+            "Promoted pawn (Tokin) on col 4 should NOT block pawn drops on col 4"
+        );
+    }
+
+    #[test]
+    fn test_nifu_white_pawn_drop_blocked() {
+        // White has an unpromoted pawn on col 3 and a pawn in hand.
+        // Dropping on col 3 should be blocked; other columns allowed.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(3, 3).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 1);
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let moves = gs.legal_moves();
+
+        let col3_drops: Vec<_> = moves
+            .iter()
+            .filter(|m| matches!(m, Move::Drop { to, piece_type: HandPieceType::Pawn } if to.col() == 3))
+            .collect();
+
+        assert!(
+            col3_drops.is_empty(),
+            "White nifu: pawn drops on col 3 should be blocked, found {:?}",
+            col3_drops
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Deep make/unmake roundtrip with captures and drops
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deep_make_unmake_roundtrip_with_captures() {
+        // Set up a position where captures and drops are possible.
+        let mut pos = Position::empty();
+        // Kings
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black rook at (4,0) and White pawn at (4,4) — capturable
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        // Black pawn to move forward
+        pos.set_piece(
+            Square::from_row_col(6, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // White rook
+        pos.set_piece(
+            Square::from_row_col(2, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+
+        // Play several moves, collecting undo info
+        let mut history: Vec<(Move, UndoInfo)> = Vec::new();
+
+        // Move 1: Black pawn (6,0) -> (5,0)
+        let mv1 = Move::Board {
+            from: Square::from_row_col(6, 0).unwrap(),
+            to: Square::from_row_col(5, 0).unwrap(),
+            promote: false,
+        };
+        history.push((mv1, gs.make_move(mv1)));
+
+        // Move 2: White rook (2,8) -> (2,0)
+        let mv2 = Move::Board {
+            from: Square::from_row_col(2, 8).unwrap(),
+            to: Square::from_row_col(2, 0).unwrap(),
+            promote: false,
+        };
+        history.push((mv2, gs.make_move(mv2)));
+
+        // Move 3: Black rook captures White pawn at (4,4)
+        let mv3 = Move::Board {
+            from: Square::from_row_col(4, 0).unwrap(),
+            to: Square::from_row_col(4, 4).unwrap(),
+            promote: false,
+        };
+        history.push((mv3, gs.make_move(mv3)));
+
+        // Move 4: White king moves (0,4) -> (0,3)
+        let mv4 = Move::Board {
+            from: Square::from_row_col(0, 4).unwrap(),
+            to: Square::from_row_col(0, 3).unwrap(),
+            promote: false,
+        };
+        history.push((mv4, gs.make_move(mv4)));
+
+        // Move 5: Black drops the captured pawn
+        let mv5 = Move::Drop {
+            to: Square::from_row_col(3, 3).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        history.push((mv5, gs.make_move(mv5)));
+
+        // Now unmake all moves in reverse order
+        while let Some((mv, undo)) = history.pop() {
+            gs.unmake_move(mv, undo);
+        }
+
+        assert_eq!(
+            gs.position.hash, original_hash,
+            "Hash not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(
+            gs.position.board, original_board,
+            "Board not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(
+            gs.position.hands, original_hands,
+            "Hands not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(gs.ply, 0, "Ply not restored after deep make/unmake");
+    }
+
+    // -----------------------------------------------------------------------
+    // Hot-path equivalence with drops and nifu
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hot_path_matches_ergonomic_with_drops() {
+        // Position with pieces in hand so drops are generated
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Unpromoted pawn on col 4 to trigger nifu filtering
+        pos.set_piece(
+            Square::from_row_col(6, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 2);
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        let mut ergonomic = gs.legal_moves();
+        ergonomic.sort_by_key(|m| format!("{:?}", m));
+
+        let mut ml = MoveList::new();
+        gs.generate_legal_moves_into(&mut ml);
+        let mut hot_path: Vec<Move> = ml.iter().copied().collect();
+        hot_path.sort_by_key(|m| format!("{:?}", m));
+
+        assert_eq!(
+            ergonomic.len(),
+            hot_path.len(),
+            "hot-path produced {} moves but ergonomic produced {} (with drops + nifu)",
+            hot_path.len(),
+            ergonomic.len(),
+        );
+        assert_eq!(
+            ergonomic, hot_path,
+            "hot-path move set differs from ergonomic move set (with drops + nifu)"
+        );
+    }
 }

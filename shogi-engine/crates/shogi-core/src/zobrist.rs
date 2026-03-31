@@ -234,4 +234,81 @@ mod tests {
         let h = table.hash_piece_at(sq, piece);
         assert_eq!(h, table.piece_square[40][piece.to_u8() as usize]);
     }
+
+    // -----------------------------------------------------------------------
+    // Zobrist: different hand counts produce different hashes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_zobrist_different_hand_counts_different_hashes() {
+        let table = ZobristTable::new();
+
+        // 1 pawn in hand vs 2 pawns in hand should have different hash values
+        for &hpt in &HandPieceType::ALL {
+            let h1 = table.hash_hand(Color::Black, hpt, 1);
+            let h2 = table.hash_hand(Color::Black, hpt, 2);
+            assert_ne!(
+                h1, h2,
+                "Hand hash for {:?} count=1 and count=2 must differ",
+                hpt
+            );
+        }
+    }
+
+    #[test]
+    fn test_zobrist_same_piece_different_colors_different_hashes() {
+        let table = ZobristTable::new();
+        let sq = Square::new(40).unwrap();
+
+        let black_pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        let white_pawn = Piece::new(PieceType::Pawn, Color::White, false);
+
+        let h_black = table.hash_piece_at(sq, black_pawn);
+        let h_white = table.hash_piece_at(sq, white_pawn);
+        assert_ne!(
+            h_black, h_white,
+            "Same piece type, different colors, on same square must have different hashes"
+        );
+    }
+
+    #[test]
+    fn test_zobrist_side_to_move_produces_distinct_position_hashes() {
+        use crate::position::Position;
+
+        let pos1 = Position::startpos(); // Black to move
+
+        let mut pos2 = Position::startpos();
+        pos2.current_player = Color::White;
+        pos2.hash = pos2.compute_hash();
+
+        assert_ne!(
+            pos1.hash, pos2.hash,
+            "Same board, different side to move must have different hashes"
+        );
+        // The difference should be exactly the side_to_move XOR
+        assert_eq!(
+            pos1.hash ^ pos2.hash,
+            ZOBRIST.side_to_move,
+            "Hash difference should be exactly the side_to_move value"
+        );
+    }
+
+    #[test]
+    fn test_zobrist_hand_counts_all_unique() {
+        let table = ZobristTable::new();
+
+        // For each hand piece type, verify all counts 1..18 produce unique hashes
+        for &hpt in &HandPieceType::ALL {
+            let mut seen = std::collections::HashSet::new();
+            for count in 1u8..=18 {
+                let h = table.hash_hand(Color::Black, hpt, count);
+                assert!(
+                    seen.insert(h),
+                    "Collision in hand hash for {:?} at count {}",
+                    hpt,
+                    count
+                );
+            }
+        }
+    }
 }

@@ -484,4 +484,91 @@ mod tests {
         let reserialized = pos.to_sfen();
         assert_eq!(reserialized, sfen, "multi-digit hand roundtrip failed");
     }
+
+    // -----------------------------------------------------------------------
+    // SFEN: promoted pieces on board survive roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_all_promoted_types() {
+        // Position with every promotable piece type promoted on the board
+        let sfen = "4k4/9/9/9/+P+L+N+S+B+R3/9/9/9/4K4 b - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        let reserialized = pos.to_sfen();
+        assert_eq!(
+            reserialized, sfen,
+            "roundtrip with all promoted piece types failed"
+        );
+    }
+
+    #[test]
+    fn test_sfen_roundtrip_white_only_in_hand() {
+        // White has pieces in hand, Black has none
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 2r3b 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Rook), 2);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Bishop), 3);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 0);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "roundtrip with White-only hand failed");
+    }
+
+    /// Simulate capturing a promoted piece: the hand should have the base type.
+    /// We verify this through SFEN by creating a position with a capture result.
+    #[test]
+    fn test_sfen_captured_promoted_piece_in_hand_as_base() {
+        use crate::game::GameState;
+        use crate::types::Move;
+
+        // White promoted rook (Dragon) at (4,4). Black rook at (4,0) captures it.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, true), // promoted
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Capture the promoted rook
+        let capture = Move::Board {
+            from: Square::from_row_col(4, 0).unwrap(),
+            to: Square::from_row_col(4, 4).unwrap(),
+            promote: false,
+        };
+        gs.make_move(capture);
+
+        // Black should have 1 Rook (base type) in hand
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Rook), 1);
+
+        // Serialize to SFEN and verify hand shows 'R' (not '+R')
+        let sfen = gs.position.to_sfen();
+        assert!(
+            sfen.contains(" R ") || sfen.contains(" R") || sfen.split_whitespace().nth(2).unwrap().contains('R'),
+            "SFEN hand should show 'R' (base type), got hand part: {}",
+            sfen.split_whitespace().nth(2).unwrap()
+        );
+
+        // Verify roundtrip
+        let reparsed = Position::from_sfen(&sfen).expect("re-parse failed");
+        assert_eq!(
+            reparsed.hand_count(Color::Black, HandPieceType::Rook),
+            1,
+            "Roundtrip after capture: Black should still have 1 Rook in hand"
+        );
+        assert_eq!(reparsed.board, gs.position.board, "Board mismatch after SFEN roundtrip");
+    }
 }

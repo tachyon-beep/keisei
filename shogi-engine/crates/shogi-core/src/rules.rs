@@ -969,6 +969,325 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Uchi-fu-zume: pinned defender cannot capture the dropped pawn
+    // -----------------------------------------------------------------------
+
+    /// A piece that appears to capture the dropped pawn is pinned to its king.
+    /// The drop should still be uchi-fu-zume since the pin prevents the capture.
+    ///
+    /// Position:
+    ///   - White king at (0,0)
+    ///   - White gold at (1,0) — could capture a pawn dropped at (1,0)... but see below
+    ///   Wait — the gold is at (1,0) and the pawn would be dropped at (1,0)? No.
+    ///   Let me set this up properly.
+    ///
+    ///   - White king at (0,0)
+    ///   - White silver at (0,1) — pinned by Black rook at (0,8) along row 0
+    ///   - Black drops pawn at (1,0), giving check to White king
+    ///   - White silver at (0,1) attacks (1,0) via backward-left, but moving it
+    ///     would expose the king to the rook on row 0 → pinned
+    ///   - King can't go to (1,0) (occupied by pawn), (0,1) (own piece),
+    ///     or (1,1) (must be covered by Black)
+    ///   → Uchi-fu-zume
+    #[test]
+    fn test_uchi_fu_zume_pinned_defender() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        // White king cornered at (0,0)
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White silver at (0,1) — pinned to king by Black rook along row 0
+        // Silver attacks (1,0) normally (bwd_left for White = UP_LEFT = row-1,col-1
+        // from (0,1)? No, for White silver: forward=DOWN.
+        // bwd_left = UP_RIGHT = (row-1, col+1) from (0,1) = (-1,2) OOB.
+        // bwd_right = UP_LEFT = (row-1, col-1) = (-1,0) OOB.
+        // Hmm, White silver can't reach (1,0) from (0,1).
+        //
+        // Let me use a White gold at (0,1) instead.
+        // White gold forward=DOWN. Directions: DOWN, DOWN_LEFT, DOWN_RIGHT, LEFT, RIGHT, UP.
+        // From (0,1): DOWN=(1,1), DOWN_LEFT=(1,0)✓, DOWN_RIGHT=(1,2), LEFT=(0,0)=king,
+        // RIGHT=(0,2), UP=(-1,1)=OOB.
+        // Gold at (0,1) attacks (1,0) ✓. Gold is pinned by rook on row 0.
+        pos.set_piece(
+            Square::from_row_col(0, 1).unwrap(),
+            Piece::new(PieceType::Gold, Color::White, false),
+        );
+        // Black rook at (0,8) — pins the gold along row 0
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        // Black gold at (2, 1) — covers (1,1) so king can't escape there
+        // Black gold forward=UP. From (2,1): UP=(1,1)✓.
+        pos.set_piece(
+            Square::from_row_col(2, 1).unwrap(),
+            Piece::new(PieceType::Gold, Color::Black, false),
+        );
+        // Black lance at (8,0) — covers column 0, protects the dropped pawn
+        pos.set_piece(
+            Square::from_row_col(8, 0).unwrap(),
+            Piece::new(PieceType::Lance, Color::Black, false),
+        );
+        // Black king far away
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Drop pawn at (1,0): attacks (0,0) = check on White king.
+        // White gold at (0,1) attacks (1,0) but is pinned by rook on row 0.
+        // King can't go to (0,1) — own gold. (1,0) — the pawn. (1,1) — covered by Black gold.
+        let drop_sq = Square::from_row_col(1, 0).unwrap();
+        assert!(
+            is_uchi_fu_zume(&mut gs, drop_sq, Color::Black),
+            "Pawn drop at (1,0) should be uchi-fu-zume: gold at (0,1) is pinned"
+        );
+    }
+
+    /// White drops a pawn to deliver uchi-fu-zume (test with White as the dropper).
+    #[test]
+    fn test_uchi_fu_zume_white_as_dropper() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        // Black king cornered at (8,8)
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king far away
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White rook at (8,0) — covers row 8, attacks (8,7) blocking king escape
+        pos.set_piece(
+            Square::from_row_col(8, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        // White gold at (6,7) — covers (7,7) via forward (DOWN for White = toward row 8)
+        // White gold forward=DOWN. From (6,7): DOWN=(7,7)✓, DOWN_LEFT=(7,6),
+        // DOWN_RIGHT=(7,8)✓. Also covers (7,8).
+        pos.set_piece(
+            Square::from_row_col(6, 7).unwrap(),
+            Piece::new(PieceType::Gold, Color::White, false),
+        );
+        // White lance at (0,8) — slides down column 8
+        // Wait: White lance slides DOWN (forward for White). From (0,8) slides
+        // through (1,8)...(7,8). (7,8) is covered by gold already.
+        // The lance protects the dropped pawn at (7,8).
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Lance, Color::White, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 1);
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // White pawn dropped at (7,8): White pawn attacks DOWN = (8,8) = Black king.
+        // King escapes: (8,7) attacked by rook. (7,7) attacked by gold.
+        // (7,8) = the pawn.
+        let drop_sq = Square::from_row_col(7, 8).unwrap();
+        assert!(
+            is_uchi_fu_zume(&mut gs, drop_sq, Color::White),
+            "White pawn drop at (7,8) should be uchi-fu-zume"
+        );
+    }
+
+    /// King can directly capture the dropped pawn — NOT uchi-fu-zume.
+    #[test]
+    fn test_uchi_fu_zume_king_captures_pawn() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        // White king at (0,4)
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black king far away
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Drop pawn at (1,4): gives check. King at (0,4) can capture at (1,4)
+        // if (1,4) is not defended by other Black pieces.
+        let drop_sq = Square::from_row_col(1, 4).unwrap();
+        assert!(
+            !is_uchi_fu_zume(&mut gs, drop_sq, Color::Black),
+            "King can capture the dropped pawn — not uchi-fu-zume"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Perpetual check: White perpetually checks Black
+    // -----------------------------------------------------------------------
+
+    /// Symmetric perpetual check test: White checks Black repeatedly.
+    /// This verifies winner attribution works correctly when roles are reversed.
+    #[test]
+    fn test_perpetual_check_white_checks_black() {
+        use crate::types::Move;
+
+        let mut pos = Position::empty();
+        // Black king at (8,8)
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king far away at (0,0)
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // White rook at (8,0) — gives check along row 8 to Black king
+        pos.set_piece(
+            Square::from_row_col(8, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Black is in check from the White rook.
+        assert!(gs.is_in_check(), "Black king should be in check initially");
+
+        // Cycle:
+        // 1. Black king (8,8)→(7,8) — escapes check
+        // 2. White rook (8,0)→(7,0) — gives check along row 7
+        // 3. Black king (7,8)→(8,8) — escapes check
+        // 4. White rook (7,0)→(8,0) — gives check along row 8 → back to start
+        let bk_escape = Move::Board {
+            from: Square::from_row_col(8, 8).unwrap(),
+            to: Square::from_row_col(7, 8).unwrap(),
+            promote: false,
+        };
+        let wr_chase_1 = Move::Board {
+            from: Square::from_row_col(8, 0).unwrap(),
+            to: Square::from_row_col(7, 0).unwrap(),
+            promote: false,
+        };
+        let bk_return = Move::Board {
+            from: Square::from_row_col(7, 8).unwrap(),
+            to: Square::from_row_col(8, 8).unwrap(),
+            promote: false,
+        };
+        let wr_chase_2 = Move::Board {
+            from: Square::from_row_col(7, 0).unwrap(),
+            to: Square::from_row_col(8, 0).unwrap(),
+            promote: false,
+        };
+
+        for _ in 0..3 {
+            gs.make_move(bk_escape);
+            gs.make_move(wr_chase_1);
+            gs.make_move(bk_return);
+            gs.make_move(wr_chase_2);
+        }
+
+        let result = check_sennichite(&gs);
+        assert!(result.is_some(), "Should detect perpetual check (White checking Black)");
+        match result.unwrap() {
+            GameResult::PerpetualCheck { winner } => {
+                // White is the checker; Black (the victim) wins.
+                assert_eq!(
+                    winner,
+                    Color::Black,
+                    "Black (the victim of White's perpetual check) should win"
+                );
+            }
+            other => panic!("Expected PerpetualCheck, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Impasse scoring: promoted pawn (Tokin) and promoted bishop (Horse)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_impasse_score_promoted_pawn_worth_1() {
+        let mut pos = Position::empty();
+        // Promoted pawn (Tokin) — worth 1 point (base type is Pawn)
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        let score = compute_impasse_score(&pos, Color::Black);
+        assert_eq!(score, 1, "Promoted pawn (Tokin) should be worth 1 point, not 5");
+    }
+
+    #[test]
+    fn test_impasse_score_promoted_bishop_worth_5() {
+        let mut pos = Position::empty();
+        // Promoted bishop (Horse) — worth 5 points (base type is Bishop)
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, true),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        let score = compute_impasse_score(&pos, Color::Black);
+        assert_eq!(score, 5, "Promoted bishop (Horse) should be worth 5 points");
+    }
+
+    #[test]
+    fn test_impasse_score_mixed_promoted_and_unpromoted() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Unpromoted rook: 5
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        // Promoted bishop (Horse): 5
+        pos.set_piece(
+            Square::from_row_col(4, 1).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, true),
+        );
+        // Promoted pawn (Tokin): 1
+        pos.set_piece(
+            Square::from_row_col(4, 2).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true),
+        );
+        // Unpromoted gold: 1
+        pos.set_piece(
+            Square::from_row_col(4, 3).unwrap(),
+            Piece::new(PieceType::Gold, Color::Black, false),
+        );
+        // Silver in hand: 1
+        pos.set_hand_count(Color::Black, HandPieceType::Silver, 1);
+
+        let score = compute_impasse_score(&pos, Color::Black);
+        assert_eq!(score, 13, "Mixed score: Rook(5) + Horse(5) + Tokin(1) + Gold(1) + Silver-hand(1) = 13");
+    }
+
     /// Test impasse where only one side reaches 24 points.
     #[test]
     fn test_impasse_one_sided_winner() {
