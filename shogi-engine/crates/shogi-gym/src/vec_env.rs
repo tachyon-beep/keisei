@@ -1,1 +1,466 @@
-// vec_env: VecEnv — to be implemented
+//! VecEnv — vectorized batch environment for N Shogi games.
+//!
+//! Pre-allocates all output buffers at construction time and writes in-place
+//! each step. Uses a two-phase step contract:
+//!   Phase 1: decode + validate all N actions (read-only, no state mutation)
+//!   Phase 2: apply all moves with GIL released via `py.allow_threads()`
+//!
+//! Auto-resets terminated/truncated games, saving terminal observations in a
+//! separate buffer before resetting.
+
+use crate::action_mapper::{ActionMapper, DefaultActionMapper, ACTION_SPACE_SIZE};
+use crate::observation::{
+    DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS,
+};
+use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReason};
+
+use numpy::{PyArrayMethods, ToPyArray};
+use pyo3::prelude::*;
+use shogi_core::{Color, GameResult, GameState, HandPieceType, Move};
+
+// ---------------------------------------------------------------------------
+// Reward computation
+// ---------------------------------------------------------------------------
+
+/// Compute the scalar reward for the player who just moved.
+///
+/// `last_mover` is the color of the player who made the move (i.e.
+/// `game.position.current_player.opponent()` after `make_move`, since
+/// `make_move` flips the current player).
+fn compute_reward(result: &GameResult, last_mover: Color) -> f32 {
+    match result {
+        GameResult::Checkmate { winner } | GameResult::PerpetualCheck { winner } => {
+            if *winner == last_mover {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        GameResult::Impasse {
+            winner: Some(winner),
+        } => {
+            if *winner == last_mover {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        GameResult::Impasse { winner: None }
+        | GameResult::Repetition
+        | GameResult::MaxMoves
+        | GameResult::InProgress => 0.0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VecEnv
+// ---------------------------------------------------------------------------
+
+#[pyclass]
+pub struct VecEnv {
+    games: Vec<GameState>,
+    num_envs: usize,
+    max_ply: u32,
+
+    // Rust-owned flat buffers written in-place each step
+    obs_buffer: Vec<f32>,          // N * BUFFER_LEN
+    legal_mask_buffer: Vec<bool>,  // N * ACTION_SPACE_SIZE
+    reward_buffer: Vec<f32>,       // N
+    terminated_buffer: Vec<bool>,  // N
+    truncated_buffer: Vec<bool>,   // N
+    captured_buffer: Vec<u8>,      // N (metadata)
+    term_reason_buffer: Vec<u8>,   // N (metadata)
+    ply_buffer: Vec<u16>,          // N (metadata)
+    terminal_obs_buffer: Vec<f32>, // N * BUFFER_LEN
+
+    mapper: DefaultActionMapper,
+    obs_gen: DefaultObservationGenerator,
+}
+
+impl VecEnv {
+    /// Write observation and legal mask for environment `i` into the main buffers.
+    fn write_obs_and_mask(&mut self, i: usize) {
+        let perspective = self.games[i].position.current_player;
+
+        // Write observation
+        let obs_start = i * BUFFER_LEN;
+        let obs_slice = &mut self.obs_buffer[obs_start..obs_start + BUFFER_LEN];
+        self.obs_gen.generate(&self.games[i], perspective, obs_slice);
+
+        // Write legal mask
+        let mask_start = i * ACTION_SPACE_SIZE;
+        let mask_slice = &mut self.legal_mask_buffer[mask_start..mask_start + ACTION_SPACE_SIZE];
+        mask_slice.fill(false);
+        let moves = self.games[i].legal_moves();
+        for mv in &moves {
+            let idx = self.mapper.encode(*mv, perspective);
+            mask_slice[idx] = true;
+        }
+    }
+
+    /// Write observation for environment `i` into the terminal obs buffer.
+    fn write_terminal_obs(&mut self, i: usize) {
+        let perspective = self.games[i].position.current_player;
+        let obs_start = i * BUFFER_LEN;
+        let obs_slice = &mut self.terminal_obs_buffer[obs_start..obs_start + BUFFER_LEN];
+        self.obs_gen.generate(&self.games[i], perspective, obs_slice);
+    }
+}
+
+#[pymethods]
+impl VecEnv {
+    /// Create a new VecEnv with `num_envs` parallel games.
+    #[new]
+    #[pyo3(signature = (num_envs = 512, max_ply = 500))]
+    pub fn new(num_envs: usize, max_ply: u32) -> Self {
+        let games: Vec<GameState> = (0..num_envs)
+            .map(|_| GameState::with_max_ply(max_ply))
+            .collect();
+
+        VecEnv {
+            games,
+            num_envs,
+            max_ply,
+            obs_buffer: vec![0.0; num_envs * BUFFER_LEN],
+            legal_mask_buffer: vec![false; num_envs * ACTION_SPACE_SIZE],
+            reward_buffer: vec![0.0; num_envs],
+            terminated_buffer: vec![false; num_envs],
+            truncated_buffer: vec![false; num_envs],
+            captured_buffer: vec![255; num_envs],
+            term_reason_buffer: vec![0; num_envs],
+            ply_buffer: vec![0; num_envs],
+            terminal_obs_buffer: vec![0.0; num_envs * BUFFER_LEN],
+            mapper: DefaultActionMapper,
+            obs_gen: DefaultObservationGenerator::new(),
+        }
+    }
+
+    /// Reset all games to the starting position.
+    ///
+    /// Returns a `ResetResult` with initial observations and legal masks.
+    pub fn reset(&mut self, py: Python<'_>) -> PyResult<ResetResult> {
+        // Reset all games
+        for i in 0..self.num_envs {
+            self.games[i] = GameState::with_max_ply(self.max_ply);
+        }
+
+        // Write initial obs + legal masks for all games
+        for i in 0..self.num_envs {
+            self.write_obs_and_mask(i);
+        }
+
+        // Build numpy arrays
+        let obs_array = self.obs_buffer.to_pyarray(py);
+        let obs_4d = obs_array
+            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        let mask_array = self.legal_mask_buffer.to_pyarray(py);
+        let mask_2d = mask_array
+            .reshape([self.num_envs, ACTION_SPACE_SIZE])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        Ok(ResetResult {
+            observations: obs_4d.unbind(),
+            legal_masks: mask_2d.unbind(),
+        })
+    }
+
+    /// Step all environments with the given actions.
+    ///
+    /// Two-phase contract:
+    ///   Phase 1: Decode and validate all N actions (no state mutation).
+    ///   Phase 2: Apply all moves with GIL released.
+    pub fn step(&mut self, py: Python<'_>, actions: Vec<i64>) -> PyResult<StepResult> {
+        // --- Phase 1: Validate (read-only) ---
+
+        if actions.len() != self.num_envs {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "expected {} actions, got {}",
+                self.num_envs,
+                actions.len()
+            )));
+        }
+
+        // Decode all actions and validate against legal masks
+        let mut decoded_moves: Vec<Move> = Vec::with_capacity(self.num_envs);
+        for i in 0..self.num_envs {
+            let action_idx = actions[i] as usize;
+            let perspective = self.games[i].position.current_player;
+
+            let mv = <DefaultActionMapper as ActionMapper>::decode(
+                &self.mapper,
+                action_idx,
+                perspective,
+            )
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "env {}: invalid action index {}: {}",
+                    i, action_idx, e
+                ))
+            })?;
+
+            // Check legal mask
+            let mask_start = i * ACTION_SPACE_SIZE;
+            if !self.legal_mask_buffer[mask_start + action_idx] {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "env {}: action index {} is not legal",
+                    i, action_idx
+                )));
+            }
+
+            decoded_moves.push(mv);
+        }
+
+        // --- Phase 2: Apply (GIL released) ---
+
+        py.allow_threads(|| {
+            for i in 0..self.num_envs {
+                let mv = decoded_moves[i];
+
+                // Apply move
+                let undo_info = self.games[i].make_move(mv);
+
+                // last_mover is the player who just moved (current_player has flipped)
+                let last_mover = self.games[i].position.current_player.opponent();
+
+                // Check termination
+                self.games[i].check_termination();
+
+                let result = self.games[i].result;
+                let terminated = result.is_terminal() && !result.is_truncation();
+                let truncated = result.is_truncation();
+
+                // Set metadata buffers
+                self.terminated_buffer[i] = terminated;
+                self.truncated_buffer[i] = truncated;
+                self.reward_buffer[i] = compute_reward(&result, last_mover);
+                self.term_reason_buffer[i] = TerminationReason::from_game_result(result) as u8;
+                self.ply_buffer[i] = self.games[i].ply as u16;
+
+                // Captured piece metadata
+                if let Some(captured_piece) = undo_info.captured {
+                    let pt = captured_piece.piece_type();
+                    match HandPieceType::from_piece_type(pt) {
+                        Some(hpt) => self.captured_buffer[i] = hpt.index() as u8,
+                        None => self.captured_buffer[i] = 255,
+                    }
+                } else {
+                    self.captured_buffer[i] = 255;
+                }
+
+                if terminated || truncated {
+                    // Save terminal observation
+                    self.write_terminal_obs(i);
+
+                    // Auto-reset
+                    self.games[i] = GameState::with_max_ply(self.max_ply);
+
+                    // Write initial obs+mask for the reset game
+                    self.write_obs_and_mask(i);
+                } else {
+                    // Write obs+mask for continuing game
+                    self.write_obs_and_mask(i);
+                }
+            }
+        });
+
+        // --- Build Python result (GIL held) ---
+
+        let obs_array = self.obs_buffer.to_pyarray(py);
+        let obs_4d = obs_array
+            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        let mask_array = self.legal_mask_buffer.to_pyarray(py);
+        let mask_2d = mask_array
+            .reshape([self.num_envs, ACTION_SPACE_SIZE])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        let rewards = self.reward_buffer.to_pyarray(py);
+        let terminated = self.terminated_buffer.to_pyarray(py);
+        let truncated = self.truncated_buffer.to_pyarray(py);
+
+        let captured_arr = self.captured_buffer.to_pyarray(py);
+        let term_reason_arr = self.term_reason_buffer.to_pyarray(py);
+        let ply_arr = self.ply_buffer.to_pyarray(py);
+
+        let metadata = Py::new(
+            py,
+            StepMetadata {
+                captured_piece: captured_arr.unbind(),
+                termination_reason: term_reason_arr.unbind(),
+                ply_count: ply_arr.unbind(),
+            },
+        )?;
+
+        Ok(StepResult {
+            observations: obs_4d.unbind(),
+            legal_masks: mask_2d.unbind(),
+            rewards: rewards.unbind(),
+            terminated: terminated.unbind(),
+            truncated: truncated.unbind(),
+            step_metadata: metadata,
+        })
+    }
+
+    /// Total number of actions in the action space.
+    #[getter]
+    pub fn action_space_size(&self) -> usize {
+        ACTION_SPACE_SIZE
+    }
+
+    /// Number of observation channels.
+    #[getter]
+    pub fn observation_channels(&self) -> usize {
+        NUM_CHANNELS
+    }
+
+    /// Number of parallel environments.
+    #[getter]
+    pub fn num_envs(&self) -> usize {
+        self.num_envs
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shogi_core::Color;
+
+    // -----------------------------------------------------------------------
+    // compute_reward tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reward_checkmate_winner_is_last_mover() {
+        let result = GameResult::Checkmate {
+            winner: Color::Black,
+        };
+        assert_eq!(compute_reward(&result, Color::Black), 1.0);
+    }
+
+    #[test]
+    fn test_reward_checkmate_winner_is_not_last_mover() {
+        let result = GameResult::Checkmate {
+            winner: Color::White,
+        };
+        assert_eq!(compute_reward(&result, Color::Black), -1.0);
+    }
+
+    #[test]
+    fn test_reward_perpetual_check_winner_is_last_mover() {
+        let result = GameResult::PerpetualCheck {
+            winner: Color::White,
+        };
+        assert_eq!(compute_reward(&result, Color::White), 1.0);
+    }
+
+    #[test]
+    fn test_reward_perpetual_check_winner_is_not_last_mover() {
+        let result = GameResult::PerpetualCheck {
+            winner: Color::Black,
+        };
+        assert_eq!(compute_reward(&result, Color::White), -1.0);
+    }
+
+    #[test]
+    fn test_reward_impasse_with_winner_is_last_mover() {
+        let result = GameResult::Impasse {
+            winner: Some(Color::Black),
+        };
+        assert_eq!(compute_reward(&result, Color::Black), 1.0);
+    }
+
+    #[test]
+    fn test_reward_impasse_with_winner_is_not_last_mover() {
+        let result = GameResult::Impasse {
+            winner: Some(Color::White),
+        };
+        assert_eq!(compute_reward(&result, Color::Black), -1.0);
+    }
+
+    #[test]
+    fn test_reward_impasse_draw() {
+        let result = GameResult::Impasse { winner: None };
+        assert_eq!(compute_reward(&result, Color::Black), 0.0);
+    }
+
+    #[test]
+    fn test_reward_repetition() {
+        let result = GameResult::Repetition;
+        assert_eq!(compute_reward(&result, Color::Black), 0.0);
+        assert_eq!(compute_reward(&result, Color::White), 0.0);
+    }
+
+    #[test]
+    fn test_reward_max_moves() {
+        let result = GameResult::MaxMoves;
+        assert_eq!(compute_reward(&result, Color::Black), 0.0);
+        assert_eq!(compute_reward(&result, Color::White), 0.0);
+    }
+
+    #[test]
+    fn test_reward_in_progress() {
+        let result = GameResult::InProgress;
+        assert_eq!(compute_reward(&result, Color::Black), 0.0);
+        assert_eq!(compute_reward(&result, Color::White), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // VecEnv construction tests (no Python needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_buffer_sizes() {
+        let env = VecEnv::new(4, 100);
+        assert_eq!(env.num_envs, 4);
+        assert_eq!(env.max_ply, 100);
+        assert_eq!(env.obs_buffer.len(), 4 * BUFFER_LEN);
+        assert_eq!(env.legal_mask_buffer.len(), 4 * ACTION_SPACE_SIZE);
+        assert_eq!(env.reward_buffer.len(), 4);
+        assert_eq!(env.terminated_buffer.len(), 4);
+        assert_eq!(env.truncated_buffer.len(), 4);
+        assert_eq!(env.captured_buffer.len(), 4);
+        assert_eq!(env.term_reason_buffer.len(), 4);
+        assert_eq!(env.ply_buffer.len(), 4);
+        assert_eq!(env.terminal_obs_buffer.len(), 4 * BUFFER_LEN);
+        assert_eq!(env.games.len(), 4);
+    }
+
+    #[test]
+    fn test_write_obs_and_mask_startpos() {
+        let mut env = VecEnv::new(2, 500);
+        env.write_obs_and_mask(0);
+
+        // At startpos, Black moves first. There should be legal moves.
+        let mask_start = 0;
+        let mask_end = ACTION_SPACE_SIZE;
+        let legal_count: usize = env.legal_mask_buffer[mask_start..mask_end]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+        assert!(
+            legal_count > 0,
+            "startpos should have legal moves, got {}",
+            legal_count
+        );
+
+        // Standard Shogi startpos has 30 legal moves
+        assert_eq!(legal_count, 30, "startpos should have exactly 30 legal moves");
+    }
+
+    #[test]
+    fn test_default_metadata_buffers() {
+        let env = VecEnv::new(3, 500);
+        for i in 0..3 {
+            assert_eq!(env.captured_buffer[i], 255);
+            assert_eq!(env.term_reason_buffer[i], 0);
+            assert_eq!(env.ply_buffer[i], 0);
+        }
+    }
+}
