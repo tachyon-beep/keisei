@@ -339,10 +339,13 @@ impl GameState {
         // Filter by nifu for pawn drops, then by king safety.
         let mut legal = Vec::with_capacity(candidates.len());
         for mv in candidates {
-            // Nifu check for pawn drops.
+            // Nifu and uchi-fu-zume checks for pawn drops.
             if let Move::Drop { to, piece_type: HandPieceType::Pawn } = mv {
                 if self.pawn_columns[color as usize][to.col() as usize] {
                     continue; // Already have an unpromoted pawn on this column.
+                }
+                if crate::rules::is_uchi_fu_zume(self, to, color) {
+                    continue; // Pawn drop would deliver checkmate (illegal).
                 }
             }
 
@@ -380,8 +383,8 @@ impl GameState {
     ///
     /// Checks in order:
     /// 1. Max ply reached
-    /// 2. (Sennichite / perpetual check — deferred to Task 11)
-    /// 3. (Impasse — deferred to Task 11)
+    /// 2. Sennichite / perpetual check
+    /// 3. Impasse (CSA 24-point rule)
     /// 4. Checkmate / stalemate (no legal moves)
     pub fn check_termination(&mut self) {
         if self.result.is_terminal() {
@@ -391,6 +394,18 @@ impl GameState {
         // 1. Max ply.
         if self.ply >= self.max_ply {
             self.result = GameResult::MaxMoves;
+            return;
+        }
+
+        // 2. Sennichite / perpetual check.
+        if let Some(result) = crate::rules::check_sennichite(self) {
+            self.result = result;
+            return;
+        }
+
+        // 3. Impasse.
+        if let Some(result) = crate::rules::check_impasse(self) {
+            self.result = result;
             return;
         }
 
