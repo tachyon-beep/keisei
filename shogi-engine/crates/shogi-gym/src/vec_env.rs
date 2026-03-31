@@ -16,7 +16,7 @@ use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReaso
 
 use numpy::{PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
-use shogi_core::{Color, GameResult, GameState, HandPieceType, Move};
+use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 
 // ---------------------------------------------------------------------------
 // Reward computation
@@ -92,8 +92,9 @@ impl VecEnv {
         let mask_start = i * ACTION_SPACE_SIZE;
         let mask_slice = &mut self.legal_mask_buffer[mask_start..mask_start + ACTION_SPACE_SIZE];
         mask_slice.fill(false);
-        let moves = self.games[i].legal_moves();
-        for mv in &moves {
+        let mut move_list = MoveList::new();
+        self.games[i].generate_legal_moves_into(&mut move_list);
+        for mv in move_list.iter() {
             let idx = self.mapper.encode(*mv, perspective);
             mask_slice[idx] = true;
         }
