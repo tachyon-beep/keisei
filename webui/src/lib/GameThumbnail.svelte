@@ -1,0 +1,93 @@
+<script>
+  import { selectedGameId } from '../stores/games.js'
+  import { pieceKanji } from './pieces.js'
+
+  export let game
+
+  $: selected = $selectedGameId === game.game_id
+  $: board = typeof game.board_json === 'string' ? JSON.parse(game.board_json) : (game.board || [])
+  $: statusText = game.is_over
+    ? game.result.replace('_', ' ')
+    : `Ply ${game.ply}`
+
+  function handleClick() {
+    selectedGameId.set(game.game_id)
+  }
+</script>
+
+<button class="thumbnail" class:selected on:click={handleClick}>
+  <div class="mini-board">
+    {#each Array(81) as _, idx}
+      {@const piece = board[idx]}
+      <div class="cell">
+        {#if piece}
+          <span class:white={piece.color === 'white'} class:promoted={piece.promoted}>
+            {pieceKanji(piece.type, piece.promoted, piece.color)}
+          </span>
+        {/if}
+      </div>
+    {/each}
+  </div>
+  <div class="label">
+    G{game.game_id + 1} — {statusText}
+  </div>
+</button>
+
+<style>
+  .thumbnail {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color 0.15s;
+    width: 100%;
+  }
+
+  .thumbnail:hover {
+    border-color: var(--text-secondary);
+  }
+
+  .thumbnail.selected {
+    border: 2px solid var(--accent-green);
+    background: #1a3a2a;
+  }
+
+  .mini-board {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    grid-template-rows: repeat(9, 1fr);
+    width: 72px;
+    height: 72px;
+    margin: 0 auto;
+    background: var(--bg-board);
+    border-radius: 2px;
+  }
+
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 6px;
+    line-height: 1;
+  }
+
+  .cell span.white {
+    transform: rotate(180deg);
+  }
+
+  .cell span.promoted {
+    color: #c00;
+  }
+
+  .label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .thumbnail.selected .label {
+    color: var(--accent-green);
+  }
+</style>
