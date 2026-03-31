@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-from keisei.training.models.base import BaseModel
 from keisei.training.algorithm_registry import PPOParams
+from keisei.training.models.base import BaseModel
 
 
 def compute_gae(

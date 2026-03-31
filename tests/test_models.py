@@ -1,5 +1,6 @@
 import pytest
 import torch
+
 from keisei.training.models.base import BaseModel
 from keisei.training.models.mlp import MLPModel, MLPParams
 from keisei.training.models.resnet import ResNetModel, ResNetParams

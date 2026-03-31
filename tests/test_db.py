@@ -1,18 +1,20 @@
 import json
 import sqlite3
-import pytest
 from pathlib import Path
+
+import pytest
+
 from keisei.db import (
+    SCHEMA_VERSION,
     init_db,
-    write_metrics,
-    read_metrics_since,
-    write_game_snapshots,
     read_game_snapshots,
-    write_training_state,
+    read_metrics_since,
     read_training_state,
     update_heartbeat,
     update_training_progress,
-    SCHEMA_VERSION,
+    write_game_snapshots,
+    write_metrics,
+    write_training_state,
 )
 
 

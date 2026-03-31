@@ -88,7 +88,8 @@ def write_metrics(db_path: str, metrics: dict[str, Any]) -> None:
             "epoch": metrics.get("epoch", 0), "step": metrics.get("step", 0),
             "policy_loss": metrics.get("policy_loss"), "value_loss": metrics.get("value_loss"),
             "entropy": metrics.get("entropy"), "win_rate": metrics.get("win_rate"),
-            "draw_rate": metrics.get("draw_rate"), "truncation_rate": metrics.get("truncation_rate"),
+            "draw_rate": metrics.get("draw_rate"),
+            "truncation_rate": metrics.get("truncation_rate"),
             "avg_episode_length": metrics.get("avg_episode_length"),
             "gradient_norm": metrics.get("gradient_norm"),
             "episodes_completed": metrics.get("episodes_completed"),
@@ -162,7 +163,8 @@ def read_training_state(db_path: str) -> dict[str, Any] | None:
 def update_heartbeat(db_path: str) -> None:
     conn = _connect(db_path)
     conn.execute(
-        "UPDATE training_state SET heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1"
+        "UPDATE training_state SET heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+        "WHERE id = 1"
     )
     conn.commit()
     conn.close()
@@ -174,12 +176,15 @@ def update_training_progress(
     conn = _connect(db_path)
     if checkpoint_path is not None:
         conn.execute(
-            "UPDATE training_state SET current_epoch = ?, current_step = ?, checkpoint_path = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1",
+            "UPDATE training_state SET current_epoch = ?, current_step = ?, "
+            "checkpoint_path = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE id = 1",
             (epoch, step, checkpoint_path),
         )
     else:
         conn.execute(
-            "UPDATE training_state SET current_epoch = ?, current_step = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1",
+            "UPDATE training_state SET current_epoch = ?, current_step = ?, "
+            "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1",
             (epoch, step),
         )
     conn.commit()

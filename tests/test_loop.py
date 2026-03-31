@@ -1,13 +1,13 @@
 """Integration tests for the training loop. Uses mock VecEnv."""
-import pytest
-import torch
-import numpy as np
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from keisei.training.loop import TrainingLoop
+import numpy as np
+import pytest
+
 from keisei.config import load_config
-from keisei.db import init_db, read_metrics_since, read_training_state
+from keisei.db import read_metrics_since, read_training_state
+from keisei.training.loop import TrainingLoop
 
 
 def _make_mock_vecenv(num_envs: int = 4) -> MagicMock:

@@ -1,8 +1,7 @@
-import pytest
 import torch
-import numpy as np
-from keisei.training.ppo import compute_gae, RolloutBuffer, PPOAlgorithm
+
 from keisei.training.algorithm_registry import PPOParams
+from keisei.training.ppo import PPOAlgorithm, RolloutBuffer, compute_gae
 
 
 class TestGAE:
@@ -52,7 +51,11 @@ class TestRolloutBuffer:
     def test_clear(self) -> None:
         buf = RolloutBuffer(num_envs=2, obs_shape=(46, 9, 9), action_space=13527)
         obs = torch.randn(2, 46, 9, 9)
-        buf.add(obs, torch.zeros(2, dtype=torch.long), torch.zeros(2), torch.zeros(2), torch.zeros(2), torch.zeros(2, dtype=torch.bool), torch.ones(2, 13527, dtype=torch.bool))
+        buf.add(
+            obs, torch.zeros(2, dtype=torch.long), torch.zeros(2),
+            torch.zeros(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.ones(2, 13527, dtype=torch.bool),
+        )
         buf.clear()
         assert buf.size == 0
 
@@ -84,7 +87,10 @@ class TestPPOAlgorithm:
             obs = torch.randn(2, 46, 9, 9)
             legal_masks = torch.ones(2, 13527, dtype=torch.bool)
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
-            buf.add(obs, actions, log_probs, values, torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+            )
 
         next_values = torch.zeros(2)
         losses = ppo.update(buf, next_values)

@@ -43,7 +43,9 @@ class ResNetModel(BaseModel):
         policy_channels = 2
         self.policy_conv = nn.Conv2d(ch, policy_channels, 1, bias=False)
         self.policy_bn = nn.BatchNorm2d(policy_channels)
-        self.policy_fc = nn.Linear(policy_channels * self.BOARD_SIZE * self.BOARD_SIZE, self.ACTION_SPACE)
+        self.policy_fc = nn.Linear(
+            policy_channels * self.BOARD_SIZE * self.BOARD_SIZE, self.ACTION_SPACE
+        )
 
         value_channels = 1
         self.value_conv = nn.Conv2d(ch, value_channels, 1, bias=False)
