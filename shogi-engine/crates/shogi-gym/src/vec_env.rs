@@ -16,7 +16,28 @@ use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReaso
 
 use numpy::{PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
+use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
+
+/// Minimum number of environments to use rayon parallel iteration.
+const PARALLEL_THRESHOLD: usize = 64;
+
+/// Wrapper that asserts a raw pointer may be sent across threads.
+///
+/// # Safety
+/// The caller must guarantee that accesses through this pointer are
+/// non-overlapping across threads (e.g. each thread uses a disjoint index).
+#[derive(Copy, Clone)]
+struct SendPtr<T>(*mut T);
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+
+impl<T> SendPtr<T> {
+    #[inline]
+    unsafe fn offset(&self, count: usize) -> *mut T {
+        unsafe { self.0.add(count) }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Reward computation
@@ -218,59 +239,114 @@ impl VecEnv {
         // --- Phase 2: Apply (GIL released) ---
 
         py.allow_threads(|| {
-            for i in 0..self.num_envs {
-                let mv = decoded_moves[i];
+            let num_envs = self.num_envs;
+            let max_ply = self.max_ply;
 
-                // Apply move
-                let undo_info = self.games[i].make_move(mv);
+            // Extract raw pointers for non-overlapping parallel access.
+            // SAFETY: each index `i` in 0..num_envs accesses only its own
+            // non-overlapping slice of each buffer and its own games[i].
+            let games_ptr = SendPtr(self.games.as_mut_ptr());
+            let obs_ptr = SendPtr(self.obs_buffer.as_mut_ptr());
+            let mask_ptr = SendPtr(self.legal_mask_buffer.as_mut_ptr());
+            let terminal_obs_ptr = SendPtr(self.terminal_obs_buffer.as_mut_ptr());
+            let reward_ptr = SendPtr(self.reward_buffer.as_mut_ptr());
+            let terminated_ptr = SendPtr(self.terminated_buffer.as_mut_ptr());
+            let truncated_ptr = SendPtr(self.truncated_buffer.as_mut_ptr());
+            let captured_ptr = SendPtr(self.captured_buffer.as_mut_ptr());
+            let term_reason_ptr = SendPtr(self.term_reason_buffer.as_mut_ptr());
+            let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
+            let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
 
-                // last_mover is the player who just moved (current_player has flipped)
-                let last_mover = self.games[i].position.current_player.opponent();
+            // Local copies — both are stateless. Shared refs used in closure.
+            let mapper = DefaultActionMapper;
+            let obs_gen = DefaultObservationGenerator::new();
+            let mapper_ref = &mapper;
+            let obs_gen_ref = &obs_gen;
+            let decoded = &decoded_moves;
 
-                // Check termination
-                self.games[i].check_termination();
+            let process_env = move |i: usize| {
+                // SAFETY: each `i` accesses non-overlapping memory regions.
+                unsafe {
+                    let game = &mut *games_ptr.offset(i);
+                    let mv = decoded[i];
 
-                let result = self.games[i].result;
-                let terminated = result.is_terminal() && !result.is_truncation();
-                let truncated = result.is_truncation();
+                    // Apply move
+                    let undo_info = game.make_move(mv);
 
-                // Set metadata buffers
-                self.terminated_buffer[i] = terminated;
-                self.truncated_buffer[i] = truncated;
-                self.reward_buffer[i] = compute_reward(&result, last_mover);
-                self.term_reason_buffer[i] = TerminationReason::from_game_result(result) as u8;
-                self.ply_buffer[i] = self.games[i].ply as u16;
+                    // last_mover is the player who just moved (current_player has flipped)
+                    let last_mover = game.position.current_player.opponent();
 
-                // Captured piece metadata
-                if let Some(captured_piece) = undo_info.captured {
-                    let pt = captured_piece.piece_type();
-                    match HandPieceType::from_piece_type(pt) {
-                        Some(hpt) => self.captured_buffer[i] = hpt.index() as u8,
-                        None => self.captured_buffer[i] = 255,
+                    // Check termination
+                    game.check_termination();
+
+                    let result = game.result;
+                    let terminated = result.is_terminal() && !result.is_truncation();
+                    let truncated = result.is_truncation();
+
+                    // Set scalar metadata buffers
+                    *terminated_ptr.offset(i) = terminated;
+                    *truncated_ptr.offset(i) = truncated;
+                    *reward_ptr.offset(i) = compute_reward(&result, last_mover);
+                    *term_reason_ptr.offset(i) = TerminationReason::from_game_result(result) as u8;
+                    *ply_ptr.offset(i) = game.ply as u16;
+
+                    // Captured piece metadata
+                    if let Some(captured_piece) = undo_info.captured {
+                        let pt = captured_piece.piece_type();
+                        match HandPieceType::from_piece_type(pt) {
+                            Some(hpt) => *captured_ptr.offset(i) = hpt.index() as u8,
+                            None => *captured_ptr.offset(i) = 255,
+                        }
+                    } else {
+                        *captured_ptr.offset(i) = 255;
                     }
-                } else {
-                    self.captured_buffer[i] = 255;
+
+                    if terminated || truncated {
+                        // Save terminal observation
+                        let term_obs_slice = std::slice::from_raw_parts_mut(
+                            terminal_obs_ptr.offset(i * BUFFER_LEN),
+                            BUFFER_LEN,
+                        );
+                        let perspective = game.position.current_player;
+                        obs_gen_ref.generate(game, perspective, term_obs_slice);
+
+                        // Auto-reset
+                        *game = GameState::with_max_ply(max_ply);
+                    }
+
+                    // Write obs+mask for current game state (reset or continuing)
+                    let perspective = game.position.current_player;
+
+                    let obs_slice = std::slice::from_raw_parts_mut(
+                        obs_ptr.offset(i * BUFFER_LEN),
+                        BUFFER_LEN,
+                    );
+                    obs_gen_ref.generate(game, perspective, obs_slice);
+
+                    let mask_slice = std::slice::from_raw_parts_mut(
+                        mask_ptr.offset(i * ACTION_SPACE_SIZE),
+                        ACTION_SPACE_SIZE,
+                    );
+                    mask_slice.fill(false);
+                    let mut move_list = MoveList::new();
+                    game.generate_legal_moves_into(&mut move_list);
+                    for legal_mv in move_list.iter() {
+                        let idx = mapper_ref.encode(*legal_mv, perspective);
+                        mask_slice[idx] = true;
+                    }
+
+                    // Record current player (after potential reset)
+                    *current_players_ptr.offset(i) = match game.position.current_player {
+                        Color::Black => 0,
+                        Color::White => 1,
+                    };
                 }
+            };
 
-                if terminated || truncated {
-                    // Save terminal observation
-                    self.write_terminal_obs(i);
-
-                    // Auto-reset
-                    self.games[i] = GameState::with_max_ply(self.max_ply);
-
-                    // Write initial obs+mask for the reset game
-                    self.write_obs_and_mask(i);
-                } else {
-                    // Write obs+mask for continuing game
-                    self.write_obs_and_mask(i);
-                }
-
-                // Record current player (after potential reset)
-                self.current_players_buffer[i] = match self.games[i].position.current_player {
-                    Color::Black => 0,
-                    Color::White => 1,
-                };
+            if num_envs >= PARALLEL_THRESHOLD {
+                (0..num_envs).into_par_iter().for_each(process_env);
+            } else {
+                (0..num_envs).for_each(process_env);
             }
         });
 
