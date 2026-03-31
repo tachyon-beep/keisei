@@ -1,9 +1,10 @@
+use numpy::{PyArray3, PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, PieceType, Square};
 
 use crate::action_mapper::{ActionMapper, DefaultActionMapper};
-use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN};
+use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS};
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -231,14 +232,19 @@ impl SpectatorEnv {
         self.game.position.to_sfen()
     }
 
-    /// Return a flat observation buffer (length = NUM_CHANNELS * 81 = 3726).
+    /// Return the observation as a shaped (46, 9, 9) numpy array.
     ///
-    /// The observation is generated from the current player's perspective.
-    pub fn get_observation(&self) -> Vec<f32> {
+    /// The observation is generated from the current player's perspective,
+    /// consistent with VecEnv observation format.
+    pub fn get_observation<'py>(&self, py: Python<'py>) -> PyResult<Py<PyArray3<f32>>> {
         let mut buffer = vec![0.0_f32; BUFFER_LEN];
         let perspective = self.game.position.current_player;
         self.obs_gen.generate(&self.game, perspective, &mut buffer);
-        buffer
+        let array = buffer.to_pyarray(py);
+        let shaped = array
+            .reshape([NUM_CHANNELS, 9, 9])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(shaped.unbind())
     }
 
     /// Return a list of legal action indices for the current position.
