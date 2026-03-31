@@ -13,12 +13,18 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from keisei.db import read_game_snapshots, read_metrics_since, read_training_state
+from keisei.db import (
+    read_game_snapshots,
+    read_game_snapshots_since,
+    read_metrics_since,
+    read_training_state,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_METRICS_IN_INIT = 500
 POLL_INTERVAL_S = 0.2
+POLL_BATCH_SIZE = 100
 HEARTBEAT_STALE_S = 30
 WS_SEND_TIMEOUT_S = 5.0
 WS_PING_INTERVAL_S = 15.0
@@ -27,9 +33,11 @@ WS_PING_INTERVAL_S = 15.0
 def _db_accessible(db_path: str) -> bool:
     try:
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.execute("SELECT 1 FROM schema_version")
-        conn.close()
-        return True
+        try:
+            conn.execute("SELECT 1 FROM schema_version")
+            return True
+        finally:
+            conn.close()
     except Exception:
         return False
 
@@ -98,6 +106,11 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     state = await asyncio.to_thread(read_training_state, db_path)
 
     last_metrics_id = metrics[-1]["id"] if metrics else 0
+    # Track the latest game snapshot timestamp for change detection.
+    # Use the max updated_at from the initial fetch, or epoch zero if no games yet.
+    last_game_ts = ""
+    if games:
+        last_game_ts = max(g["updated_at"] for g in games)
 
     await asyncio.wait_for(
         ws.send_json({
@@ -114,7 +127,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         await asyncio.sleep(POLL_INTERVAL_S)
 
         new_metrics = await asyncio.to_thread(
-            read_metrics_since, db_path, last_metrics_id, 100
+            read_metrics_since, db_path, last_metrics_id, POLL_BATCH_SIZE
         )
         if new_metrics:
             last_metrics_id = new_metrics[-1]["id"]
@@ -123,16 +136,20 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 timeout=WS_SEND_TIMEOUT_S,
             )
 
-        new_games = await asyncio.to_thread(read_game_snapshots, db_path)
-        if new_games:
+        changed_games, new_game_ts = await asyncio.to_thread(
+            read_game_snapshots_since, db_path, last_game_ts
+        )
+        if changed_games:
+            last_game_ts = new_game_ts
             await asyncio.wait_for(
-                ws.send_json({"type": "game_update", "snapshots": new_games}),
+                ws.send_json({"type": "game_update", "snapshots": changed_games}),
                 timeout=WS_SEND_TIMEOUT_S,
             )
 
         new_state = await asyncio.to_thread(read_training_state, db_path)
-        if new_state and state and (
-            new_state.get("current_epoch") != state.get("current_epoch")
+        if new_state and (
+            state is None
+            or new_state.get("current_epoch") != state.get("current_epoch")
             or new_state.get("status") != state.get("status")
         ):
             state = new_state
@@ -153,8 +170,8 @@ async def _keepalive(ws: WebSocket) -> None:
         await asyncio.sleep(WS_PING_INTERVAL_S)
         try:
             await asyncio.wait_for(ws.send_json({"type": "ping"}), timeout=WS_SEND_TIMEOUT_S)
-        except Exception:
-            return
+        except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
+            raise WebSocketDisconnect()
 
 
 def main() -> None:
