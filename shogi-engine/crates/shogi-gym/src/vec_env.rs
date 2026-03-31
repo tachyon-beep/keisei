@@ -12,10 +12,12 @@ use crate::action_mapper::{ActionMapper, DefaultActionMapper, ACTION_SPACE_SIZE}
 use crate::observation::{
     DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS,
 };
+use crate::spectator_data::build_spectator_dict;
 use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReason};
 
 use numpy::{PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -477,6 +479,15 @@ impl VecEnv {
         self.episodes_completed.store(0, Ordering::Relaxed);
         self.episodes_drawn.store(0, Ordering::Relaxed);
         self.episodes_truncated.store(0, Ordering::Relaxed);
+    }
+
+    /// Return spectator-format dicts for all games.
+    pub fn get_spectator_data(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
+        let mut result = Vec::with_capacity(self.num_envs);
+        for game in &self.games {
+            result.push(build_spectator_dict(py, game)?);
+        }
+        Ok(result)
     }
 }
 

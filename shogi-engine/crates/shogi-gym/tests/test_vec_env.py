@@ -4,6 +4,72 @@ import pytest
 from shogi_gym import VecEnv
 
 
+class TestVecEnvSpectatorData:
+    def test_get_spectator_data_returns_list(self):
+        """get_spectator_data() returns a list of dicts, one per env."""
+        env = VecEnv(num_envs=3, max_ply=100)
+        env.reset()
+        data = env.get_spectator_data()
+        assert isinstance(data, list)
+        assert len(data) == 3
+
+    def test_get_spectator_data_dict_keys(self):
+        """Each dict has the expected keys (no move_history)."""
+        env = VecEnv(num_envs=1, max_ply=100)
+        env.reset()
+        data = env.get_spectator_data()
+        d = data[0]
+        expected_keys = {"board", "hands", "current_player", "ply", "is_over", "result", "sfen", "in_check"}
+        assert set(d.keys()) == expected_keys
+        assert "move_history" not in d
+
+    def test_get_spectator_data_startpos_values(self):
+        """Verify startpos dict values are correct."""
+        env = VecEnv(num_envs=1, max_ply=100)
+        env.reset()
+        d = env.get_spectator_data()[0]
+        assert d["current_player"] == "black"
+        assert d["ply"] == 0
+        assert d["is_over"] is False
+        assert d["result"] == "in_progress"
+        assert d["in_check"] is False
+        assert len(d["board"]) == 81
+        assert "lnsgkgsnl" in d["sfen"].lower()
+
+    def test_get_spectator_data_hands_structure(self):
+        """Verify hands dict has correct structure."""
+        env = VecEnv(num_envs=1, max_ply=100)
+        env.reset()
+        d = env.get_spectator_data()[0]
+        assert "black" in d["hands"]
+        assert "white" in d["hands"]
+        assert "pawn" in d["hands"]["black"]
+        assert d["hands"]["black"]["pawn"] == 0
+
+    def test_get_spectator_data_after_step(self):
+        """Verify dict updates after stepping."""
+        env = VecEnv(num_envs=1, max_ply=100)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        action = [int(np.where(masks[0])[0][0])]
+        env.step(action)
+        d = env.get_spectator_data()[0]
+        assert d["ply"] == 1
+        assert d["current_player"] == "white"
+
+    def test_get_spectator_data_matches_spectator_env(self):
+        """VecEnv and SpectatorEnv dicts should match (minus move_history)."""
+        from shogi_gym import SpectatorEnv
+        vec_env = VecEnv(num_envs=1, max_ply=100)
+        spec_env = SpectatorEnv(max_ply=100)
+        vec_env.reset()
+        spec_env.reset()
+        vec_d = vec_env.get_spectator_data()[0]
+        spec_d = spec_env.to_dict()
+        for key in ("board", "hands", "current_player", "ply", "is_over", "result", "sfen", "in_check"):
+            assert vec_d[key] == spec_d[key], f"mismatch on key '{key}': {vec_d[key]} != {spec_d[key]}"
+
+
 class TestVecEnvConstruction:
     def test_create(self):
         env = VecEnv(num_envs=4, max_ply=100)
