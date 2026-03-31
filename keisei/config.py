@@ -1,0 +1,106 @@
+"""TOML config loading with dataclass validation."""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+VALID_ARCHITECTURES = {"resnet", "mlp", "transformer"}
+VALID_ALGORITHMS = {"ppo"}
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    num_games: int
+    max_ply: int
+    algorithm: str
+    checkpoint_interval: int
+    checkpoint_dir: str
+    algorithm_params: dict[str, object]
+
+
+@dataclass(frozen=True)
+class DisplayConfig:
+    moves_per_minute: int
+    db_path: str
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    display_name: str
+    architecture: str
+    params: dict[str, object]
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    training: TrainingConfig
+    display: DisplayConfig
+    model: ModelConfig
+
+
+def load_config(path: Path) -> AppConfig:
+    """Load and validate a TOML config file."""
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+
+    config_dir = path.parent.resolve()
+
+    t = raw.get("training", {})
+    num_games = t.get("num_games", 8)
+    if not (1 <= num_games <= 10):
+        raise ValueError(f"num_games must be 1-10, got {num_games}")
+
+    max_ply = t.get("max_ply", 500)
+    if max_ply <= 0:
+        raise ValueError(f"max_ply must be positive, got {max_ply}")
+
+    algorithm = t.get("algorithm", "ppo")
+    if algorithm not in VALID_ALGORITHMS:
+        raise ValueError(
+            f"Unknown algorithm '{algorithm}'. Valid: {sorted(VALID_ALGORITHMS)}"
+        )
+
+    checkpoint_interval = t.get("checkpoint_interval", 50)
+    if checkpoint_interval <= 0:
+        raise ValueError(
+            f"checkpoint_interval must be positive, got {checkpoint_interval}"
+        )
+
+    checkpoint_dir = str(
+        (config_dir / t.get("checkpoint_dir", "checkpoints/")).resolve()
+    )
+    algorithm_params = t.get("algorithm_params", {})
+
+    training = TrainingConfig(
+        num_games=num_games,
+        max_ply=max_ply,
+        algorithm=algorithm,
+        checkpoint_interval=checkpoint_interval,
+        checkpoint_dir=checkpoint_dir,
+        algorithm_params=algorithm_params,
+    )
+
+    d = raw.get("display", {})
+    moves_per_minute = d.get("moves_per_minute", 30)
+    if moves_per_minute < 0:
+        raise ValueError(f"moves_per_minute must be >= 0, got {moves_per_minute}")
+    db_path = str((config_dir / d.get("db_path", "keisei.db")).resolve())
+
+    display = DisplayConfig(moves_per_minute=moves_per_minute, db_path=db_path)
+
+    m = raw.get("model", {})
+    display_name = m.get("display_name", "Player")
+    architecture = m.get("architecture", "resnet")
+    if architecture not in VALID_ARCHITECTURES:
+        raise ValueError(
+            f"Unknown architecture '{architecture}'. Valid: {sorted(VALID_ARCHITECTURES)}"
+        )
+    model_params = m.get("params", {})
+
+    model = ModelConfig(
+        display_name=display_name, architecture=architecture, params=model_params
+    )
+
+    return AppConfig(training=training, display=display, model=model)
