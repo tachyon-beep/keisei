@@ -19,8 +19,8 @@
   <span class="label">{label}</span>
   <div class="pieces">
     {#each pieces as p}
-      <div class="hand-piece">
-        <span class="kanji">{p.kanji}</span>
+      <div class="hand-piece" title="{p.type} ×{p.count}">
+        <span class="kanji" lang="ja">{p.kanji}</span>
         {#if p.count > 1}
           <span class="count">{p.count}</span>
         {/if}
@@ -43,19 +43,19 @@
   }
 
   .tray.black {
-    background: #1a2a1a;
+    background: var(--bg-selected-black);
     border-radius: 0 0 6px 6px;
     border-top: none;
   }
 
   .tray.white {
-    background: #1a1a2e;
+    background: var(--bg-selected-white);
     border-radius: 6px 6px 0 0;
     border-bottom: none;
   }
 
   .label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     min-width: 55px;
   }
@@ -95,7 +95,7 @@
   }
 
   .tray.white .hand-piece {
-    border-color: #555;
+    border-color: var(--border-white-piece);
   }
 
   .tray.black .hand-piece {

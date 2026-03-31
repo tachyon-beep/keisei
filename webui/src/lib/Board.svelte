@@ -11,19 +11,23 @@
   const rowLabels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
 </script>
 
-<div class="board-container">
-  <div class="col-labels">
+<div class="board-container" aria-label="9×9 shogi board, {currentPlayer} to move{inCheck ? ', in check' : ''}">
+  <div class="col-labels" aria-hidden="true">
     {#each colLabels as label}
       <span>{label}</span>
     {/each}
   </div>
 
   <div class="board-with-rows">
-    <div class="board">
+    <div class="board" role="grid" aria-label="Board squares">
       {#each Array(81) as _, idx}
         {@const piece = board[idx]}
+        {@const col = colLabels[idx % 9]}
+        {@const row = rowLabels[Math.floor(idx / 9)]}
         <div
           class="square"
+          role="gridcell"
+          aria-label="{col}{row}{piece ? ': ' + (piece.color === 'white' ? 'White ' : 'Black ') + piece.type + (piece.promoted ? ' (promoted)' : '') : ''}"
           class:has-piece={piece != null}
           class:last-move={idx === lastMoveIdx}
         >
@@ -32,6 +36,8 @@
               class="piece"
               class:white={piece.color === 'white'}
               class:promoted={piece.promoted}
+              lang="ja"
+              title="{piece.color} {piece.type}{piece.promoted ? ' (promoted)' : ''}"
             >
               {pieceKanji(piece.type, piece.promoted, piece.color)}
             </span>
@@ -40,7 +46,7 @@
       {/each}
     </div>
 
-    <div class="row-labels">
+    <div class="row-labels" aria-hidden="true">
       {#each rowLabels as label}
         <span>{label}</span>
       {/each}
@@ -74,12 +80,12 @@
     display: grid;
     grid-template-columns: repeat(9, 36px);
     grid-template-rows: repeat(9, 36px);
-    border: 2px solid #8B7355;
+    border: 2px solid var(--border-board);
     background: var(--bg-board);
   }
 
   .square {
-    border: 1px solid #b8956a;
+    border: 1px solid var(--border-board-inner);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -103,7 +109,7 @@
   }
 
   .piece.promoted {
-    color: #c00;
+    color: var(--promoted);
   }
 
   .row-labels {

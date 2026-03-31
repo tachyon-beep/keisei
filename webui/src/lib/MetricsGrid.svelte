@@ -18,9 +18,9 @@
 </script>
 
 <div class="metrics-grid">
-  <div class="grid-header">
+  <h2 class="grid-header">
     Training Metrics {#if $metrics.length > 0}— Epoch {$metrics[$metrics.length - 1]?.epoch ?? '?'}{/if}
-  </div>
+  </h2>
   <div class="grid">
     <MetricsChart
       title="Policy & Value Loss"
@@ -63,8 +63,9 @@
     padding: 12px;
   }
 
-  .grid-header {
-    font-size: 10px;
+  h2.grid-header {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -75,5 +76,11 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+  }
+
+  @media (max-width: 768px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

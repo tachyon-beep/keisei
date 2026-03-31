@@ -18,13 +18,19 @@
   }
 </script>
 
-<button class="thumbnail" class:selected on:click={handleClick}>
-  <div class="mini-board">
+<button
+  class="thumbnail"
+  class:selected
+  on:click={handleClick}
+  aria-label="Game {game.game_id + 1}, {statusText}"
+  aria-pressed={selected}
+>
+  <div class="mini-board" aria-hidden="true">
     {#each Array(81) as _, idx}
       {@const piece = board[idx]}
       <div class="cell">
         {#if piece}
-          <span class:white={piece.color === 'white'} class:promoted={piece.promoted}>
+          <span class:white={piece.color === 'white'} class:promoted={piece.promoted} lang="ja">
             {pieceKanji(piece.type, piece.promoted, piece.color)}
           </span>
         {/if}
@@ -52,9 +58,14 @@
     border-color: var(--text-secondary);
   }
 
+  .thumbnail:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
+  }
+
   .thumbnail.selected {
     border: 2px solid var(--accent-green);
-    background: #1a3a2a;
+    background: var(--bg-selected);
   }
 
   .mini-board {
@@ -81,7 +92,7 @@
   }
 
   .cell span.promoted {
-    color: #c00;
+    color: var(--promoted);
   }
 
   .label {

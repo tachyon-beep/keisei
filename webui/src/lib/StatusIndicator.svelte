@@ -15,21 +15,21 @@
         : { dot: 'yellow', text: 'Training stale' }
 </script>
 
-<div class="status-bar">
+<header class="status-bar" role="banner">
   <div class="left">
     <h1>Keisei Training Dashboard</h1>
     <div class="indicator">
-      <span class="dot" style="background: {indicator.dot === 'green' ? 'var(--accent-green)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
+      <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-green)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
       <span class="text">{indicator.text}</span>
     </div>
   </div>
   <div class="right">
     <span class="player-name">☗ {displayName}</span>
   </div>
-</div>
+</header>
 
 <style>
-  .status-bar {
+  header.status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -59,8 +59,8 @@
   }
 
   .dot {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     display: inline-block;
   }

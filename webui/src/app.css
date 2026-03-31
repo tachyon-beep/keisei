@@ -3,10 +3,17 @@
   --bg-secondary: #111;
   --bg-card: #1a1a2e;
   --bg-board: #d4a76a;
+  --bg-selected: #1a3a2a;
+  --bg-selected-black: #1a2a1a;
+  --bg-selected-white: #1a1a2e;
   --border: #333;
+  --border-board: #8B7355;
+  --border-board-inner: #b8956a;
+  --border-subtle: #222;
+  --border-white-piece: #555;
   --text-primary: #e0e0e0;
-  --text-secondary: #888;
-  --text-muted: #555;
+  --text-secondary: #999;
+  --text-muted: #8a8a8a;
   --accent-green: #4ade80;
   --accent-blue: #60a5fa;
   --accent-amber: #f59e0b;
@@ -14,6 +21,7 @@
   --accent-pink: #f472b6;
   --danger: #ef4444;
   --warning: #f59e0b;
+  --promoted: #c00;
 
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--text-primary);

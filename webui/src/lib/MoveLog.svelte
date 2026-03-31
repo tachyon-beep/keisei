@@ -32,8 +32,8 @@
 </script>
 
 <div class="move-log">
-  <div class="header">Move Log</div>
-  <div class="table-container" bind:this={scrollContainer}>
+  <h2 class="header">Move Log</h2>
+  <div class="table-container" role="log" aria-label="Move history" tabindex="0" bind:this={scrollContainer}>
     <table>
       <thead>
         <tr>
@@ -60,7 +60,7 @@
 
 <style>
   .move-log {
-    background: #0d1117;
+    background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: 6px;
     display: flex;
@@ -68,16 +68,17 @@
     overflow: hidden;
   }
 
-  .header {
-    font-size: 10px;
+  h2.header {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
     padding: 8px 10px;
-    border-bottom: 1px solid #222;
+    border-bottom: 1px solid var(--border-subtle);
     position: sticky;
     top: 0;
-    background: #0d1117;
+    background: var(--bg-primary);
   }
 
   .table-container {
@@ -117,7 +118,7 @@
   }
 
   tr.latest {
-    background: #1a3a2a !important;
+    background: var(--bg-selected) !important;
     border-left: 2px solid var(--accent-green);
   }
 

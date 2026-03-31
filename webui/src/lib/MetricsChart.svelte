@@ -15,10 +15,10 @@
   let resizeObserver = null
 
   const darkTheme = {
-    background: '#0d1117',
-    gridColor: '#222',
-    textColor: '#888',
-    axisColor: '#555',
+    background: 'var(--bg-primary)',
+    gridColor: 'var(--border-subtle)',
+    textColor: 'var(--text-secondary)',
+    axisColor: 'var(--text-muted)',
   }
 
   function buildOpts() {
@@ -111,14 +111,14 @@
 
 <style>
   .chart-wrapper {
-    background: #0d1117;
+    background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px;
   }
 
   .chart-title {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;

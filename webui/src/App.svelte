@@ -40,8 +40,8 @@
   <StatusIndicator />
 
   <div class="main-content">
-    <aside class="thumbnail-panel">
-      <div class="thumb-label">Games ({$games.length})</div>
+    <aside class="thumbnail-panel" aria-label="Game list">
+      <h2 class="thumb-label">Games ({$games.length})</h2>
       <div class="thumb-grid">
         {#each $games as g (g.game_id)}
           <GameThumbnail game={g} />
@@ -49,7 +49,7 @@
       </div>
     </aside>
 
-    <section class="game-panel">
+    <section class="game-panel" aria-label="Game viewer">
       {#if game}
         <div class="game-view">
           <div class="board-area">
@@ -98,7 +98,7 @@
     </section>
   </div>
 
-  <section class="metrics-panel">
+  <section class="metrics-panel" aria-label="Training metrics">
     <MetricsGrid />
   </section>
 </div>
@@ -124,11 +124,11 @@
     border-right: 1px solid var(--border);
     padding: 8px;
     overflow-y: auto;
-    max-height: calc(100vh - 200px);
   }
 
-  .thumb-label {
-    font-size: 10px;
+  h2.thumb-label {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -167,7 +167,7 @@
   }
 
   .game-info {
-    background: #0d1117;
+    background: var(--bg-primary);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px;
@@ -201,5 +201,44 @@
 
   .metrics-panel {
     padding: 12px 16px;
+  }
+
+  @media (max-width: 768px) {
+    .main-content {
+      flex-direction: column;
+    }
+
+    .thumbnail-panel {
+      width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      max-height: 160px;
+    }
+
+    .thumb-grid {
+      grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    }
+
+    .game-view {
+      flex-direction: column;
+    }
+
+    .board-area {
+      align-self: center;
+    }
+
+    .info-area {
+      min-width: unset;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .game-panel {
+      padding: 8px;
+    }
+
+    .metrics-panel {
+      padding: 8px;
+    }
   }
 </style>
