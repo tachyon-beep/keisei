@@ -50,7 +50,7 @@ function scheduleReconnect() {
   setTimeout(connect, delay)
 }
 
-function handleMessage(msg) {
+export function handleMessage(msg) {
   switch (msg.type) {
     case 'init':
       games.set(msg.games || [])
