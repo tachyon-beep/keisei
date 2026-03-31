@@ -484,4 +484,253 @@ mod tests {
         let reserialized = pos.to_sfen();
         assert_eq!(reserialized, sfen, "multi-digit hand roundtrip failed");
     }
+
+    // -----------------------------------------------------------------------
+    // SFEN: promoted pieces on board survive roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_all_promoted_types() {
+        // Position with every promotable piece type promoted on the board
+        let sfen = "4k4/9/9/9/+P+L+N+S+B+R3/9/9/9/4K4 b - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        let reserialized = pos.to_sfen();
+        assert_eq!(
+            reserialized, sfen,
+            "roundtrip with all promoted piece types failed"
+        );
+    }
+
+    #[test]
+    fn test_sfen_roundtrip_white_only_in_hand() {
+        // White has pieces in hand, Black has none
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 2r3b 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Rook), 2);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Bishop), 3);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 0);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "roundtrip with White-only hand failed");
+    }
+
+    /// Simulate capturing a promoted piece: the hand should have the base type.
+    /// We verify this through SFEN by creating a position with a capture result.
+    #[test]
+    fn test_sfen_captured_promoted_piece_in_hand_as_base() {
+        use crate::game::GameState;
+        use crate::types::Move;
+
+        // White promoted rook (Dragon) at (4,4). Black rook at (4,0) captures it.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, true), // promoted
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Capture the promoted rook
+        let capture = Move::Board {
+            from: Square::from_row_col(4, 0).unwrap(),
+            to: Square::from_row_col(4, 4).unwrap(),
+            promote: false,
+        };
+        gs.make_move(capture);
+
+        // Black should have 1 Rook (base type) in hand
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Rook), 1);
+
+        // Serialize to SFEN and verify hand shows 'R' (not '+R')
+        let sfen = gs.position.to_sfen();
+        assert!(
+            sfen.contains(" R ") || sfen.contains(" R") || sfen.split_whitespace().nth(2).unwrap().contains('R'),
+            "SFEN hand should show 'R' (base type), got hand part: {}",
+            sfen.split_whitespace().nth(2).unwrap()
+        );
+
+        // Verify roundtrip
+        let reparsed = Position::from_sfen(&sfen).expect("re-parse failed");
+        assert_eq!(
+            reparsed.hand_count(Color::Black, HandPieceType::Rook),
+            1,
+            "Roundtrip after capture: Black should still have 1 Rook in hand"
+        );
+        assert_eq!(reparsed.board, gs.position.board, "Board mismatch after SFEN roundtrip");
+    }
+
+    // -----------------------------------------------------------------------
+    // SFEN edge cases: promoted king, empty board, king in hand, col overflow
+    // -----------------------------------------------------------------------
+
+    /// Promoted king (+K) on the board should be rejected (King cannot promote).
+    #[test]
+    fn test_sfen_invalid_promoted_king() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSG+KGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "promoted King (+K) should be invalid");
+    }
+
+    /// Empty board SFEN: all squares empty, only kings needed for a valid
+    /// position isn't required by the parser — test pure empty parsing.
+    #[test]
+    fn test_sfen_empty_board() {
+        let sfen = "9/9/9/9/9/9/9/9/9 b - 1";
+        let pos = Position::from_sfen(sfen).expect("empty board should parse");
+        // Every square should be empty
+        for idx in 0..81 {
+            let sq = Square::new_unchecked(idx as u8);
+            assert!(
+                pos.piece_at(sq).is_none(),
+                "square {} should be empty on empty board",
+                idx
+            );
+        }
+        // Hands should be empty
+        for &hpt in &HandPieceType::ALL {
+            assert_eq!(pos.hand_count(Color::Black, hpt), 0);
+            assert_eq!(pos.hand_count(Color::White, hpt), 0);
+        }
+        // Roundtrip
+        assert_eq!(pos.to_sfen(), sfen);
+    }
+
+    /// King character in hand string should be rejected (Kings can't be captured).
+    #[test]
+    fn test_sfen_invalid_king_in_hand() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b K 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "King in hand should be invalid");
+    }
+
+    /// Column overflow: a rank with more than 9 columns should be rejected.
+    #[test]
+    fn test_sfen_invalid_column_overflow() {
+        // "55" = 5 empty + 5 empty = 10 columns
+        let sfen = "55sgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with >9 columns should be rejected");
+    }
+
+    /// Lowercase promoted piece in SFEN (White's promoted pawn).
+    #[test]
+    fn test_sfen_roundtrip_white_promoted_piece() {
+        let sfen = "4k4/9/9/9/+p8/9/9/9/4K4 b - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        let piece = pos.piece_at(Square::from_row_col(4, 0).unwrap()).unwrap();
+        assert_eq!(piece.piece_type(), PieceType::Pawn);
+        assert_eq!(piece.color(), Color::White);
+        assert!(piece.is_promoted());
+        assert_eq!(pos.to_sfen(), sfen);
+    }
+
+    // -----------------------------------------------------------------------
+    // White-to-move roundtrip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_white_to_move() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.current_player, Color::White);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "White-to-move roundtrip failed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Roundtrip with both colors having pieces in hand
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_roundtrip_mixed_hands_both_colors() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 2G3Prbp 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Gold), 2);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Pawn), 3);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Rook), 1);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Bishop), 1);
+        assert_eq!(pos.hand_count(Color::White, HandPieceType::Pawn), 1);
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "Mixed hands roundtrip failed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_rank_too_short() {
+        // First rank has only 7 columns (missing 2)
+        let sfen = "lnsgkgs/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with 7 columns should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_rank_too_long() {
+        // First rank has 10 columns
+        let sfen = "lnsgkgsnll/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with 10 columns should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_plus_at_end_of_rank() {
+        // '+' at end of rank with no following piece character
+        let sfen = "lnsgkgsn+/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "'+' at end of rank should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_hand_ends_after_count() {
+        // Hand string "3" — count with no following piece
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 3 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "hand string ending after count should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_invalid_hand_piece_char() {
+        // 'X' is not a valid hand piece
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b X 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "invalid hand piece character should be rejected");
+    }
+
+    #[test]
+    fn test_sfen_unexpected_char_in_board() {
+        // '!' is not valid in board string
+        let sfen = "!nsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "unexpected character in board should be rejected");
+    }
+
+    // -----------------------------------------------------------------------
+    // Hash consistency: parsed SFEN hash == computed hash (White to move)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_hash_correct_white_to_move() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 w 2Pp 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(
+            pos.hash,
+            pos.compute_hash(),
+            "parsed hash must equal recomputed hash (White to move with hands)"
+        );
+    }
 }

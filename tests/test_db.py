@@ -163,3 +163,36 @@ def test_update_training_progress(db: Path) -> None:
     assert state["current_epoch"] == 5
     assert state["current_step"] == 500
     assert state["checkpoint_path"] == "/tmp/ckpt.pt"
+
+
+# ---------------------------------------------------------------------------
+# High gap: update_training_progress without checkpoint_path
+# ---------------------------------------------------------------------------
+
+
+def test_update_training_progress_no_checkpoint(db: Path) -> None:
+    """Calling update_training_progress without checkpoint_path should update
+    epoch/step but leave checkpoint_path unchanged."""
+    write_training_state(str(db), {
+        "config_json": "{}", "display_name": "X", "model_arch": "resnet",
+        "algorithm_name": "ppo", "started_at": "2026-04-01T00:00:00Z",
+    })
+    # First set a checkpoint
+    update_training_progress(str(db), epoch=5, step=500, checkpoint_path="/tmp/ckpt.pt")
+    # Then update without checkpoint_path
+    update_training_progress(str(db), epoch=10, step=1000)
+    state = read_training_state(str(db))
+    assert state["current_epoch"] == 10
+    assert state["current_step"] == 1000
+    # checkpoint_path should remain from the previous update
+    assert state["checkpoint_path"] == "/tmp/ckpt.pt"
+
+
+def test_read_metrics_since_with_limit(db: Path) -> None:
+    """read_metrics_since should respect the limit parameter."""
+    for i in range(10):
+        write_metrics(str(db), {"epoch": i, "step": i * 10})
+    rows = read_metrics_since(str(db), since_id=0, limit=3)
+    assert len(rows) == 3
+    assert rows[0]["epoch"] == 0
+    assert rows[2]["epoch"] == 2

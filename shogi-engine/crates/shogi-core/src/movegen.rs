@@ -583,4 +583,253 @@ mod tests {
             "Lone lance at (4,4) should have 6 moves (including promotion variants)"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Sliding piece blocked by own piece — no self-capture
+    // -----------------------------------------------------------------------
+
+    /// Rook blocked by own pawn: ray stops before the friendly piece.
+    #[test]
+    fn test_rook_blocked_by_own_piece() {
+        let mut pos = Position::empty();
+        // Black rook at (4,4)
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        // Black pawn at (4,6) — blocks rook's rightward ray
+        pos.set_piece(
+            Square::from_row_col(4, 6).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        // Rook should NOT have any move to (4,6) or beyond (4,7), (4,8)
+        let rook_moves: Vec<_> = moves
+            .iter()
+            .filter(|m| {
+                if let Move::Board { from, .. } = m {
+                    *from == Square::from_row_col(4, 4).unwrap()
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        for m in &rook_moves {
+            if let Move::Board { to, .. } = m {
+                assert_ne!(
+                    *to,
+                    Square::from_row_col(4, 6).unwrap(),
+                    "Rook should not capture own pawn at (4,6)"
+                );
+                assert_ne!(
+                    *to,
+                    Square::from_row_col(4, 7).unwrap(),
+                    "Rook ray should not pass through own pawn to (4,7)"
+                );
+                assert_ne!(
+                    *to,
+                    Square::from_row_col(4, 8).unwrap(),
+                    "Rook ray should not pass through own pawn to (4,8)"
+                );
+            }
+        }
+
+        // Rook should still reach (4,5) — one square before own pawn
+        let reaches_45 = rook_moves.iter().any(|m| {
+            matches!(m, Move::Board { to, .. } if *to == Square::from_row_col(4, 5).unwrap())
+        });
+        assert!(reaches_45, "Rook should be able to reach (4,5)");
+    }
+
+    /// Bishop blocked by own piece: diagonal ray stops.
+    #[test]
+    fn test_bishop_blocked_by_own_piece() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, false),
+        );
+        // Own piece at (2,2) blocks the UP_LEFT diagonal
+        pos.set_piece(
+            Square::from_row_col(2, 2).unwrap(),
+            Piece::new(PieceType::Gold, Color::Black, false),
+        );
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let bishop_moves: Vec<_> = moves
+            .iter()
+            .filter(|m| {
+                if let Move::Board { from, .. } = m {
+                    *from == Square::from_row_col(4, 4).unwrap()
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        // Bishop should reach (3,3) but NOT (2,2), (1,1), or (0,0)
+        let reaches_33 = bishop_moves.iter().any(|m| {
+            matches!(m, Move::Board { to, .. } if *to == Square::from_row_col(3, 3).unwrap())
+        });
+        assert!(reaches_33, "Bishop should reach (3,3) before blocker");
+
+        let reaches_22 = bishop_moves.iter().any(|m| {
+            matches!(m, Move::Board { to, .. } if *to == Square::from_row_col(2, 2).unwrap())
+        });
+        assert!(!reaches_22, "Bishop should NOT capture own piece at (2,2)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge-square movegen: Silver, Gold, Horse, Dragon
+    // -----------------------------------------------------------------------
+
+    /// Silver at corner (0,0) for Black. Silver steps:
+    /// forward(UP), fwd_left(UP_LEFT), fwd_right(UP_RIGHT),
+    /// bwd_left(DOWN_LEFT), bwd_right(DOWN_RIGHT).
+    /// From (0,0): UP=OOB, UP_LEFT=OOB/wrap, UP_RIGHT=OOB/wrap,
+    /// DOWN_LEFT=wraps(col -1), DOWN_RIGHT=(1,1).
+    /// Only (1,1) should be reachable.
+    #[test]
+    fn test_silver_at_corner_0_0() {
+        let pos = lone_piece_pos(0, 0, PieceType::Silver, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let targets: Vec<Square> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(*to) } else { None })
+            .collect();
+
+        // (1,1) is the only reachable square
+        assert!(
+            targets.contains(&Square::from_row_col(1, 1).unwrap()),
+            "Silver at (0,0) should reach (1,1) via DOWN_RIGHT"
+        );
+
+        // Should NOT wrap to any square on col 8
+        for t in &targets {
+            assert_ne!(t.col(), 8, "Silver at (0,0) should not wrap to col 8");
+        }
+
+        // Unique target squares: only (1,1)
+        let unique: std::collections::HashSet<usize> = targets.iter().map(|s| s.index()).collect();
+        assert_eq!(unique.len(), 1, "Silver at (0,0) should have exactly 1 target square, got {:?}", targets);
+    }
+
+    /// Silver at corner (0,8) for Black.
+    /// From (0,8): DOWN_RIGHT wraps to col 0 — should be blocked.
+    /// DOWN_LEFT=(1,7) is the only valid target.
+    #[test]
+    fn test_silver_at_corner_0_8() {
+        let pos = lone_piece_pos(0, 8, PieceType::Silver, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let targets: Vec<Square> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(*to) } else { None })
+            .collect();
+
+        let unique: std::collections::HashSet<usize> = targets.iter().map(|s| s.index()).collect();
+        assert_eq!(unique.len(), 1, "Silver at (0,8) should have exactly 1 target, got {:?}", targets);
+        assert!(targets.contains(&Square::from_row_col(1, 7).unwrap()));
+    }
+
+    /// Gold at corner (0,0) for Black.
+    /// Gold steps: forward(UP), fwd_left(UP_LEFT), fwd_right(UP_RIGHT),
+    /// LEFT, RIGHT, backward(DOWN).
+    /// From (0,0): UP=OOB, UP_LEFT=OOB, UP_RIGHT=OOB, LEFT=wrap, RIGHT=(0,1), DOWN=(1,0).
+    /// Reachable: (0,1), (1,0).
+    #[test]
+    fn test_gold_at_corner_0_0() {
+        let pos = lone_piece_pos(0, 0, PieceType::Gold, Color::Black, false);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let targets: Vec<Square> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(*to) } else { None })
+            .collect();
+
+        let unique: std::collections::HashSet<usize> = targets.iter().map(|s| s.index()).collect();
+        assert_eq!(unique.len(), 2, "Gold at (0,0) should have 2 targets, got {:?}", targets);
+        assert!(targets.contains(&Square::from_row_col(0, 1).unwrap()));
+        assert!(targets.contains(&Square::from_row_col(1, 0).unwrap()));
+    }
+
+    /// Horse (promoted Bishop) at corner (0,0).
+    /// Slides: all 4 diagonals (only DOWN_RIGHT = (1,1)..(8,8) works from (0,0)).
+    /// Steps: UP, DOWN, LEFT, RIGHT → only DOWN=(1,0) and RIGHT=(0,1).
+    /// Targets: (0,1), (1,0) from steps + (1,1),(2,2),...,(8,8) from slide.
+    #[test]
+    fn test_horse_at_corner_0_0() {
+        let pos = lone_piece_pos(0, 0, PieceType::Bishop, Color::Black, true);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let targets: std::collections::HashSet<usize> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(to.index()) } else { None })
+            .collect();
+
+        // Steps: (0,1) and (1,0)
+        assert!(targets.contains(&Square::from_row_col(0, 1).unwrap().index()), "Horse step to (0,1)");
+        assert!(targets.contains(&Square::from_row_col(1, 0).unwrap().index()), "Horse step to (1,0)");
+        // Diagonal slide: (1,1) through (8,8)
+        for i in 1..=8 {
+            assert!(
+                targets.contains(&Square::from_row_col(i, i).unwrap().index()),
+                "Horse diagonal slide to ({},{})", i, i
+            );
+        }
+        // Total unique targets: 2 steps + 8 diagonal = 10
+        assert_eq!(targets.len(), 10, "Horse at (0,0) should have 10 unique targets");
+    }
+
+    /// Dragon (promoted Rook) at corner (8,8).
+    /// Slides: UP=(7,8)..(0,8), LEFT=(8,7)..(8,0). DOWN and RIGHT = OOB.
+    /// Steps: UP_LEFT=(7,7), UP_RIGHT=wrap, DOWN_LEFT=wrap, DOWN_RIGHT=OOB.
+    /// Just UP_LEFT from (8,8) → (7,7).
+    #[test]
+    fn test_dragon_at_corner_8_8() {
+        let pos = lone_piece_pos(8, 8, PieceType::Rook, Color::Black, true);
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        let targets: std::collections::HashSet<usize> = moves
+            .iter()
+            .filter_map(|m| if let Move::Board { to, .. } = m { Some(to.index()) } else { None })
+            .collect();
+
+        // Diagonal step: only (7,7)
+        assert!(targets.contains(&Square::from_row_col(7, 7).unwrap().index()), "Dragon step to (7,7)");
+        // Orthogonal slides: UP col 8 (rows 0-7) + LEFT row 8 (cols 0-7)
+        for r in 0..8 {
+            assert!(
+                targets.contains(&Square::from_row_col(r, 8).unwrap().index()),
+                "Dragon UP slide to ({},8)", r
+            );
+        }
+        for c in 0..8 {
+            assert!(
+                targets.contains(&Square::from_row_col(8, c).unwrap().index()),
+                "Dragon LEFT slide to (8,{})", c
+            );
+        }
+        // Total: 1 step + 8 up + 8 left = 17
+        assert_eq!(targets.len(), 17, "Dragon at (8,8) should have 17 unique targets");
+    }
+
+    /// Drop generation with zero hand pieces should produce no drops.
+    #[test]
+    fn test_no_drops_with_empty_hand() {
+        let pos = Position::startpos(); // All pieces on board, nothing in hand
+        let mut moves = Vec::new();
+        generate_pseudo_legal_drops(&pos, Color::Black, &mut moves);
+        assert!(moves.is_empty(), "No drops should be generated with empty hand");
+    }
 }

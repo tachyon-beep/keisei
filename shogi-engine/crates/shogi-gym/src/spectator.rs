@@ -229,3 +229,165 @@ impl SpectatorEnv {
         self.mapper.action_space_size()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shogi_core::{GameState, Color, HandPieceType, Move, Square};
+    use crate::action_mapper::ActionMapper;
+
+    // -----------------------------------------------------------------------
+    // move_notation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_move_notation_board_move() {
+        // Board move: from (6,4) to (5,4), no promotion
+        // from: col=4 → 9-4=5, row=6 → 'g'. So "5g"
+        // to: col=4 → 9-4=5, row=5 → 'f'. So "5f"
+        let mv = Move::Board {
+            from: Square::from_row_col(6, 4).unwrap(),
+            to: Square::from_row_col(5, 4).unwrap(),
+            promote: false,
+        };
+        let notation = move_notation(mv);
+        assert_eq!(notation, "5g→5f", "Board move notation mismatch");
+    }
+
+    #[test]
+    fn test_move_notation_board_move_with_promotion() {
+        let mv = Move::Board {
+            from: Square::from_row_col(1, 2).unwrap(),
+            to: Square::from_row_col(0, 2).unwrap(),
+            promote: true,
+        };
+        let notation = move_notation(mv);
+        assert_eq!(notation, "7b→7a+", "Promoting move should end with '+'");
+    }
+
+    #[test]
+    fn test_move_notation_drop() {
+        // Drop pawn at (4,4): piece='P', col=4 → 9-4=5, row=4 → 'e'
+        let mv = Move::Drop {
+            to: Square::from_row_col(4, 4).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let notation = move_notation(mv);
+        assert_eq!(notation, "P*5e", "Drop notation mismatch");
+    }
+
+    #[test]
+    fn test_move_notation_drop_all_piece_types() {
+        let to = Square::from_row_col(4, 4).unwrap();
+        let expected = [
+            (HandPieceType::Pawn, "P*5e"),
+            (HandPieceType::Lance, "L*5e"),
+            (HandPieceType::Knight, "N*5e"),
+            (HandPieceType::Silver, "S*5e"),
+            (HandPieceType::Gold, "G*5e"),
+            (HandPieceType::Bishop, "B*5e"),
+            (HandPieceType::Rook, "R*5e"),
+        ];
+        for (hpt, exp) in &expected {
+            let mv = Move::Drop { to, piece_type: *hpt };
+            assert_eq!(move_notation(mv), *exp, "Drop notation for {:?}", hpt);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SpectatorEnv internal logic tests (no Python needed)
+    // -----------------------------------------------------------------------
+
+    /// Test that a new SpectatorEnv starts at ply 0 and is not over.
+    #[test]
+    fn test_spectator_env_initial_state() {
+        // We can't call #[new] directly without Python, but we can test
+        // the GameState that backs it.
+        let game = GameState::with_max_ply(500);
+        assert_eq!(game.ply, 0);
+        assert!(!game.result.is_terminal());
+        assert_eq!(game.position.current_player, Color::Black);
+    }
+
+    /// Test from_sfen with valid startpos.
+    #[test]
+    fn test_spectator_env_from_sfen_valid() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let game = GameState::from_sfen(sfen, 500).expect("valid SFEN should parse");
+        assert_eq!(game.ply, 0);
+        assert_eq!(game.position.current_player, Color::Black);
+    }
+
+    /// Test from_sfen with invalid string.
+    #[test]
+    fn test_spectator_env_from_sfen_invalid() {
+        let result = GameState::from_sfen("garbage sfen string", 500);
+        assert!(result.is_err(), "Invalid SFEN should return error");
+    }
+
+    /// Test that stepping increments ply and flips player.
+    #[test]
+    fn test_spectator_env_step_increments_ply() {
+        let mut game = GameState::with_max_ply(500);
+        let mapper = DefaultActionMapper;
+
+        let legal = game.legal_moves();
+        assert!(!legal.is_empty());
+        let mv = legal[0];
+        let action = mapper.encode(mv, game.position.current_player);
+
+        // Decode and apply
+        let perspective = game.position.current_player;
+        let decoded = <DefaultActionMapper as ActionMapper>::decode(&mapper, action, perspective)
+            .expect("decode should succeed");
+        game.make_move(decoded);
+
+        assert_eq!(game.ply, 1);
+        assert_eq!(game.position.current_player, Color::White);
+    }
+
+    /// Test that legal_actions at startpos returns 30 entries.
+    #[test]
+    fn test_spectator_env_legal_actions_count() {
+        let mut game = GameState::with_max_ply(500);
+        let mapper = DefaultActionMapper;
+        let perspective = game.position.current_player;
+
+        let legal = game.legal_moves();
+        let actions: Vec<usize> = legal
+            .iter()
+            .map(|mv| mapper.encode(*mv, perspective))
+            .collect();
+
+        assert_eq!(actions.len(), 30, "Startpos should have 30 legal actions");
+
+        // All action indices should be unique
+        let unique: std::collections::HashSet<usize> = actions.iter().copied().collect();
+        assert_eq!(unique.len(), 30, "All 30 action indices should be unique");
+    }
+
+    /// After a game reaches terminal state, verify is_terminal() returns true.
+    #[test]
+    fn test_spectator_env_game_over_detection() {
+        // Use max_ply=0 to immediately end the game
+        let mut game = GameState::with_max_ply(0);
+        game.check_termination();
+        assert!(game.result.is_terminal(), "Game with max_ply=0 should be over");
+    }
+
+    /// Test hand_piece_char covers all types correctly.
+    #[test]
+    fn test_hand_piece_char_all_types() {
+        assert_eq!(hand_piece_char(HandPieceType::Pawn), 'P');
+        assert_eq!(hand_piece_char(HandPieceType::Lance), 'L');
+        assert_eq!(hand_piece_char(HandPieceType::Knight), 'N');
+        assert_eq!(hand_piece_char(HandPieceType::Silver), 'S');
+        assert_eq!(hand_piece_char(HandPieceType::Gold), 'G');
+        assert_eq!(hand_piece_char(HandPieceType::Bishop), 'B');
+        assert_eq!(hand_piece_char(HandPieceType::Rook), 'R');
+    }
+}

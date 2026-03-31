@@ -1195,4 +1195,688 @@ mod tests {
             assert!(mask[idx], "Legal move {:?} not set in mask at index {}", mv, idx);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Perft tests — move generation ground truth
+    // -----------------------------------------------------------------------
+
+    /// Recursive perft: count leaf nodes at `depth` from the current position.
+    fn perft(gs: &mut GameState, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+        let moves = gs.legal_moves();
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        let mut nodes = 0u64;
+        for mv in moves {
+            let undo = gs.make_move(mv);
+            nodes += perft(gs, depth - 1);
+            gs.unmake_move(mv, undo);
+        }
+        nodes
+    }
+
+    #[test]
+    fn test_perft_depth_1_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(perft(&mut gs, 1), 30, "perft(1) from startpos must be 30");
+    }
+
+    #[test]
+    fn test_perft_depth_2_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(perft(&mut gs, 2), 900, "perft(2) from startpos must be 900");
+    }
+
+    #[test]
+    fn test_perft_depth_3_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(
+            perft(&mut gs, 3),
+            25470,
+            "perft(3) from startpos must be 25470"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Nifu edge case: promoted pawn does NOT block pawn drop
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nifu_promoted_pawn_does_not_block_drop() {
+        // A promoted pawn (Tokin) on col 4 should NOT prevent dropping
+        // an unpromoted pawn on col 4. Only unpromoted pawns trigger nifu.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Promoted pawn (Tokin) on col 4 — should NOT trigger nifu
+        pos.set_piece(
+            Square::from_row_col(5, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true), // promoted!
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Pawn drops on col 4 should be ALLOWED (Tokin doesn't count as unpromoted pawn)
+        let moves = gs.legal_moves();
+        let col4_pawn_drops: Vec<_> = moves
+            .iter()
+            .filter(|m| matches!(m, Move::Drop { to, piece_type: HandPieceType::Pawn } if to.col() == 4))
+            .collect();
+
+        assert!(
+            !col4_pawn_drops.is_empty(),
+            "Promoted pawn (Tokin) on col 4 should NOT block pawn drops on col 4"
+        );
+    }
+
+    #[test]
+    fn test_nifu_white_pawn_drop_blocked() {
+        // White has an unpromoted pawn on col 3 and a pawn in hand.
+        // Dropping on col 3 should be blocked; other columns allowed.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(3, 3).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 1);
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let moves = gs.legal_moves();
+
+        let col3_drops: Vec<_> = moves
+            .iter()
+            .filter(|m| matches!(m, Move::Drop { to, piece_type: HandPieceType::Pawn } if to.col() == 3))
+            .collect();
+
+        assert!(
+            col3_drops.is_empty(),
+            "White nifu: pawn drops on col 3 should be blocked, found {:?}",
+            col3_drops
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Deep make/unmake roundtrip with captures and drops
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deep_make_unmake_roundtrip_with_captures() {
+        // Set up a position where captures and drops are possible.
+        let mut pos = Position::empty();
+        // Kings
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black rook at (4,0) and White pawn at (4,4) — capturable
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        // Black pawn to move forward
+        pos.set_piece(
+            Square::from_row_col(6, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // White rook
+        pos.set_piece(
+            Square::from_row_col(2, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+
+        // Play several moves, collecting undo info
+        let mut history: Vec<(Move, UndoInfo)> = Vec::new();
+
+        // Move 1: Black pawn (6,0) -> (5,0)
+        let mv1 = Move::Board {
+            from: Square::from_row_col(6, 0).unwrap(),
+            to: Square::from_row_col(5, 0).unwrap(),
+            promote: false,
+        };
+        history.push((mv1, gs.make_move(mv1)));
+
+        // Move 2: White rook (2,8) -> (2,0)
+        let mv2 = Move::Board {
+            from: Square::from_row_col(2, 8).unwrap(),
+            to: Square::from_row_col(2, 0).unwrap(),
+            promote: false,
+        };
+        history.push((mv2, gs.make_move(mv2)));
+
+        // Move 3: Black rook captures White pawn at (4,4)
+        let mv3 = Move::Board {
+            from: Square::from_row_col(4, 0).unwrap(),
+            to: Square::from_row_col(4, 4).unwrap(),
+            promote: false,
+        };
+        history.push((mv3, gs.make_move(mv3)));
+
+        // Move 4: White king moves (0,4) -> (0,3)
+        let mv4 = Move::Board {
+            from: Square::from_row_col(0, 4).unwrap(),
+            to: Square::from_row_col(0, 3).unwrap(),
+            promote: false,
+        };
+        history.push((mv4, gs.make_move(mv4)));
+
+        // Move 5: Black drops the captured pawn
+        let mv5 = Move::Drop {
+            to: Square::from_row_col(3, 3).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        history.push((mv5, gs.make_move(mv5)));
+
+        // Now unmake all moves in reverse order
+        while let Some((mv, undo)) = history.pop() {
+            gs.unmake_move(mv, undo);
+        }
+
+        assert_eq!(
+            gs.position.hash, original_hash,
+            "Hash not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(
+            gs.position.board, original_board,
+            "Board not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(
+            gs.position.hands, original_hands,
+            "Hands not restored after deep make/unmake with captures and drops"
+        );
+        assert_eq!(gs.ply, 0, "Ply not restored after deep make/unmake");
+    }
+
+    // -----------------------------------------------------------------------
+    // Hot-path equivalence with drops and nifu
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // King-safety filter: legal_moves() must exclude self-check
+    // -----------------------------------------------------------------------
+
+    /// Fabricate a position where Black's king is attacked along a line, and
+    /// a Black piece blocks the attack. Moving that blocker should be illegal
+    /// (it exposes the king). Verify legal_moves() excludes such moves.
+    #[test]
+    fn test_king_safety_filter_pinned_piece() {
+        // Black king at (4,4). White rook at (4,8) attacks along row 4.
+        // Black pawn at (4,6) blocks the rook's ray — it is pinned.
+        // Moving the pawn forward (3,6) would expose the king. The pawn
+        // should NOT appear in legal_moves() as a board move.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        // Black pawn at (4,6) — pinned along row 4
+        pos.set_piece(
+            Square::from_row_col(4, 6).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let moves = gs.legal_moves();
+
+        // The pinned pawn should NOT be able to move forward
+        let pawn_moves: Vec<_> = moves
+            .iter()
+            .filter(|m| {
+                if let Move::Board { from, .. } = m {
+                    *from == Square::from_row_col(4, 6).unwrap()
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        assert!(
+            pawn_moves.is_empty(),
+            "Pinned pawn at (4,6) should have no legal moves, but found {:?}",
+            pawn_moves
+        );
+    }
+
+    /// When the king is in check, all moves must either block, capture the
+    /// attacker, or move the king to safety. No other moves are legal.
+    #[test]
+    fn test_king_safety_filter_must_escape_check() {
+        // Black king at (4,4). White rook at (4,8) gives check along row 4.
+        // Black has a bishop at (6,6). The bishop can block at (4,6) or
+        // the king can move to a safe square.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(6, 6).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Verify Black is in check
+        assert!(gs.is_in_check(), "Black king should be in check from rook");
+
+        let moves = gs.legal_moves();
+
+        // Every legal move must result in king NOT being in check
+        for mv in &moves {
+            let undo = gs.make_move(*mv);
+            let mover = gs.position.current_player.opponent(); // Black
+            let king_sq = gs.position.find_king(mover).expect("king must exist");
+            let king_attacked = gs.attack_map[gs.position.current_player as usize][king_sq.index()];
+            gs.unmake_move(*mv, undo);
+            assert_eq!(
+                king_attacked, 0,
+                "Legal move {:?} leaves king in check — king-safety filter broken",
+                mv
+            );
+        }
+
+        // Should have at least one move (king can move, bishop can block)
+        assert!(!moves.is_empty(), "Should have escape moves from check");
+    }
+
+    // -----------------------------------------------------------------------
+    // unmake_move: explicit hand count + board state assertions after capture
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unmake_capture_explicit_hand_and_board() {
+        // Black rook captures White pawn. After unmake, verify:
+        // 1. Captured pawn is back on the board
+        // 2. Black's hand count for Pawn is back to 0
+        // 3. Rook is back at its original square
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        let rook_sq = Square::from_row_col(4, 0).unwrap();
+        let pawn_sq = Square::from_row_col(4, 4).unwrap();
+        pos.set_piece(rook_sq, Piece::new(PieceType::Rook, Color::Black, false));
+        pos.set_piece(pawn_sq, Piece::new(PieceType::Pawn, Color::White, false));
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Snapshot before capture
+        let orig_rook = gs.position.piece_at(rook_sq);
+        let orig_pawn = gs.position.piece_at(pawn_sq);
+        let orig_hand = gs.position.hand_count(Color::Black, HandPieceType::Pawn);
+        assert_eq!(orig_hand, 0);
+
+        // Capture
+        let capture = Move::Board { from: rook_sq, to: pawn_sq, promote: false };
+        let undo = gs.make_move(capture);
+
+        // After capture: pawn gone, rook at pawn_sq, pawn in hand
+        assert!(gs.position.piece_at(rook_sq).is_none(), "rook should have left from-square");
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Pawn), 1,
+            "Black should have 1 pawn in hand after capture"
+        );
+
+        // Unmake
+        gs.unmake_move(capture, undo);
+
+        // After unmake: everything restored
+        assert_eq!(
+            gs.position.piece_at(rook_sq), orig_rook,
+            "Rook should be back at original square"
+        );
+        assert_eq!(
+            gs.position.piece_at(pawn_sq), orig_pawn,
+            "Captured pawn should be restored"
+        );
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Pawn), 0,
+            "Hand count should be restored to 0 after unmake"
+        );
+        assert_eq!(
+            gs.position.current_player,
+            Color::Black,
+            "Side to move should be restored"
+        );
+    }
+
+    /// Unmake a promoting capture: verify piece type reverts and hand is correct.
+    #[test]
+    fn test_unmake_promoting_capture_explicit() {
+        // Black pawn at (1,3) captures White silver at (0,4) with promotion.
+        // After unmake: pawn should be unpromoted at (1,3), silver should be at (0,4).
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        let pawn_sq = Square::from_row_col(1, 3).unwrap();
+        let silver_sq = Square::from_row_col(0, 4).unwrap();
+        pos.set_piece(pawn_sq, Piece::new(PieceType::Pawn, Color::Black, false));
+        pos.set_piece(silver_sq, Piece::new(PieceType::Silver, Color::White, false));
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let orig_hash = gs.position.hash;
+
+        let capture = Move::Board { from: pawn_sq, to: silver_sq, promote: true };
+        let undo = gs.make_move(capture);
+
+        // After: promoted pawn (Tokin) at silver_sq, silver in hand
+        let placed = gs.position.piece_at(silver_sq).unwrap();
+        assert!(placed.is_promoted(), "Pawn should be promoted after move");
+        assert_eq!(placed.piece_type(), PieceType::Pawn);
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Silver), 1);
+
+        // Unmake
+        gs.unmake_move(capture, undo);
+
+        // After unmake: unpromoted pawn at pawn_sq, silver at silver_sq, hand empty
+        let restored_pawn = gs.position.piece_at(pawn_sq).unwrap();
+        assert!(!restored_pawn.is_promoted(), "Pawn should be unpromoted after unmake");
+        assert_eq!(restored_pawn.piece_type(), PieceType::Pawn);
+
+        let restored_silver = gs.position.piece_at(silver_sq).unwrap();
+        assert_eq!(restored_silver.piece_type(), PieceType::Silver);
+        assert_eq!(restored_silver.color(), Color::White);
+
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Silver), 0);
+        assert_eq!(gs.position.hash, orig_hash, "Hash should be restored");
+    }
+
+    #[test]
+    fn test_hot_path_matches_ergonomic_with_drops() {
+        // Position with pieces in hand so drops are generated
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Unpromoted pawn on col 4 to trigger nifu filtering
+        pos.set_piece(
+            Square::from_row_col(6, 4).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 2);
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        let mut ergonomic = gs.legal_moves();
+        ergonomic.sort_by_key(|m| format!("{:?}", m));
+
+        let mut ml = MoveList::new();
+        gs.generate_legal_moves_into(&mut ml);
+        let mut hot_path: Vec<Move> = ml.iter().copied().collect();
+        hot_path.sort_by_key(|m| format!("{:?}", m));
+
+        assert_eq!(
+            ergonomic.len(),
+            hot_path.len(),
+            "hot-path produced {} moves but ergonomic produced {} (with drops + nifu)",
+            hot_path.len(),
+            ergonomic.len(),
+        );
+        assert_eq!(
+            ergonomic, hot_path,
+            "hot-path move set differs from ergonomic move set (with drops + nifu)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Drop + unmake roundtrip: hash, board, hands, pawn_columns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_make_unmake_drop_roundtrip_hash_and_hands() {
+        // Position with a pawn in hand, drop it, then unmake.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+        let original_pawn_cols = gs.pawn_columns;
+
+        // Drop a gold on an empty square
+        let drop_mv = Move::Drop {
+            to: Square::from_row_col(4, 4).unwrap(),
+            piece_type: HandPieceType::Gold,
+        };
+        let undo = gs.make_move(drop_mv);
+
+        // Verify the drop took effect
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Gold), 1,
+            "Hand count should decrease after drop"
+        );
+        assert!(
+            gs.position.piece_at(Square::from_row_col(4, 4).unwrap()).is_some(),
+            "Dropped piece should be on the board"
+        );
+
+        // Unmake
+        gs.unmake_move(drop_mv, undo);
+
+        assert_eq!(gs.position.hash, original_hash, "Hash not restored after drop+unmake");
+        assert_eq!(gs.position.board, original_board, "Board not restored after drop+unmake");
+        assert_eq!(gs.position.hands, original_hands, "Hands not restored after drop+unmake");
+        assert_eq!(gs.pawn_columns, original_pawn_cols, "pawn_columns not restored after drop+unmake");
+    }
+
+    // -----------------------------------------------------------------------
+    // Pawn drop + unmake: pawn_columns consistency
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pawn_columns_after_pawn_drop_unmake() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Column 2 should have no pawn before drop
+        assert!(!gs.pawn_columns[Color::Black as usize][2]);
+
+        let drop_mv = Move::Drop {
+            to: Square::from_row_col(5, 2).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let undo = gs.make_move(drop_mv);
+
+        // After drop, column 2 should have a pawn
+        // Note: pawn_columns is recomputed from perspective of the new position
+        // but the dropped pawn's column was set in make_move.
+        // After make_move, current_player flipped, so check the original color's columns.
+        assert!(
+            gs.pawn_columns[Color::Black as usize][2],
+            "pawn_columns should mark col 2 after pawn drop"
+        );
+
+        gs.unmake_move(drop_mv, undo);
+
+        // After unmake, column 2 should be clear again
+        assert!(
+            !gs.pawn_columns[Color::Black as usize][2],
+            "pawn_columns should clear col 2 after pawn drop unmake"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // check_termination idempotence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_termination_idempotent() {
+        // A position that IS terminal (max_ply = 0)
+        let mut gs = GameState::with_max_ply(0);
+        gs.check_termination();
+        let first_result = gs.result;
+        assert_eq!(first_result, GameResult::MaxMoves);
+
+        // Calling again should return the same result
+        gs.check_termination();
+        assert_eq!(gs.result, first_result, "check_termination should be idempotent");
+    }
+
+    #[test]
+    fn test_check_termination_idempotent_checkmate() {
+        // Reuse the checkmate position from earlier
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Gold, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 1).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        gs.check_termination();
+        let first = gs.result;
+        assert!(first.is_terminal());
+
+        gs.check_termination();
+        assert_eq!(gs.result, first, "check_termination should be idempotent for checkmate");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_pawn_columns: direct verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_pawn_columns_correctness() {
+        let mut pos = Position::empty();
+        // Black unpromoted pawn on col 3
+        pos.set_piece(
+            Square::from_row_col(6, 3).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // Black PROMOTED pawn on col 5 — should NOT count
+        pos.set_piece(
+            Square::from_row_col(4, 5).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, true),
+        );
+        // White unpromoted pawn on col 7
+        pos.set_piece(
+            Square::from_row_col(2, 7).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+
+        let cols = compute_pawn_columns(&pos);
+        assert!(cols[Color::Black as usize][3], "Black should have pawn on col 3");
+        assert!(!cols[Color::Black as usize][5], "Promoted pawn should NOT count for nifu");
+        assert!(cols[Color::White as usize][7], "White should have pawn on col 7");
+        assert!(!cols[Color::White as usize][0], "No pawn on col 0");
+    }
 }

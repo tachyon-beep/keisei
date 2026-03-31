@@ -83,6 +83,7 @@ class PPOAlgorithm:
     @torch.no_grad()
     def select_actions(self, obs: torch.Tensor, legal_masks: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self.model.eval()
         policy_logits, values = self.model(obs)
         masked_logits = policy_logits.masked_fill(~legal_masks, float("-inf"))
         probs = F.softmax(masked_logits, dim=-1)
@@ -92,6 +93,7 @@ class PPOAlgorithm:
         return actions, log_probs, values.squeeze(-1)
 
     def update(self, buffer: RolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
+        self.model.train()
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
