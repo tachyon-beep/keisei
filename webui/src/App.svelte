@@ -1,6 +1,6 @@
 <script>
-  import { onMount } from 'svelte'
-  import { connect } from './lib/ws.js'
+  import { onMount, onDestroy } from 'svelte'
+  import { connect, disconnect } from './lib/ws.js'
   import { games, selectedGame } from './stores/games.js'
   import StatusIndicator from './lib/StatusIndicator.svelte'
   import GameThumbnail from './lib/GameThumbnail.svelte'
@@ -11,16 +11,29 @@
 
   onMount(() => {
     connect()
+    return disconnect
   })
 
+  function safeParse(json, fallback) {
+    try { return typeof json === 'string' ? JSON.parse(json) : json }
+    catch { return fallback }
+  }
+
   $: game = $selectedGame
-  $: board = game
-    ? (typeof game.board_json === 'string' ? JSON.parse(game.board_json) : (game.board || []))
-    : []
-  $: hands = game
-    ? (typeof game.hands_json === 'string' ? JSON.parse(game.hands_json) : (game.hands || {}))
-    : {}
+  $: board = game ? safeParse(game.board_json, game.board || []) : []
+  $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
+
+  $: lastMoveIdx = (() => {
+    try {
+      const history = safeParse(moveHistory, [])
+      if (history.length === 0) return -1
+      const lastAction = history[history.length - 1]
+      // We don't have direct square mapping from action index,
+      // so use -1 for now (can be enhanced when action mapper is available)
+      return -1
+    } catch { return -1 }
+  })()
 </script>
 
 <div class="app">
@@ -45,6 +58,7 @@
               board={board}
               inCheck={!!game.in_check}
               currentPlayer={game.current_player || 'black'}
+              lastMoveIdx={lastMoveIdx}
             />
             <PieceTray color="black" hand={hands.black || {}} />
           </div>
@@ -65,7 +79,7 @@
                   class:in-progress={game.result === 'in_progress'}
                   class:terminal={game.result !== 'in_progress'}
                 >
-                  {(game.result || 'in_progress').replace('_', ' ')}
+                  {(game.result || 'in_progress').replaceAll('_', ' ')}
                 </span>
               </div>
             </div>

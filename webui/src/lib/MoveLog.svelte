@@ -6,9 +6,10 @@
 
   let scrollContainer
 
-  $: moves = typeof moveHistoryJson === 'string'
-    ? JSON.parse(moveHistoryJson)
-    : moveHistoryJson
+  $: moves = (() => {
+    try { return typeof moveHistoryJson === 'string' ? JSON.parse(moveHistoryJson) : (moveHistoryJson || []) }
+    catch { return [] }
+  })()
 
   $: rows = (() => {
     const result = []

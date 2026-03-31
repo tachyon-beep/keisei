@@ -5,7 +5,7 @@
  */
 
 import { games, selectedGameId } from '../stores/games.js'
-import { metrics } from '../stores/metrics.js'
+import { metrics, appendMetrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
@@ -14,6 +14,7 @@ const RECONNECT_MAX_MS = 30000
 
 let ws = null
 let reconnectAttempt = 0
+let reconnectTimer = null
 
 export function connect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return
@@ -26,8 +27,12 @@ export function connect() {
   }
 
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data)
-    handleMessage(msg)
+    try {
+      const msg = JSON.parse(event.data)
+      handleMessage(msg)
+    } catch (e) {
+      console.warn('[ws] failed to parse message:', e)
+    }
   }
 
   ws.onclose = () => {
@@ -42,12 +47,14 @@ export function connect() {
 }
 
 function scheduleReconnect() {
-  const delay = Math.min(
+  const base = Math.min(
     RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt),
     RECONNECT_MAX_MS
   )
+  // Add jitter: 50-150% of base delay
+  const delay = base * (0.5 + Math.random())
   reconnectAttempt++
-  setTimeout(connect, delay)
+  reconnectTimer = setTimeout(connect, delay)
 }
 
 export function handleMessage(msg) {
@@ -66,7 +73,7 @@ export function handleMessage(msg) {
       break
 
     case 'metrics_update':
-      metrics.update(current => [...current, ...(msg.rows || [])])
+      appendMetrics(msg.rows || [])
       break
 
     case 'training_status':
@@ -84,6 +91,10 @@ export function handleMessage(msg) {
 }
 
 export function disconnect() {
+  if (reconnectTimer != null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   if (ws) {
     ws.close()
     ws = null

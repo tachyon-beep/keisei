@@ -4,6 +4,8 @@
   export let board = []
   export let inCheck = false
   export let currentPlayer = 'black'
+  /** Index (0-80) of the last move's destination square, or -1. */
+  export let lastMoveIdx = -1
 
   const colLabels = [9, 8, 7, 6, 5, 4, 3, 2, 1]
   const rowLabels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
@@ -20,11 +22,10 @@
     <div class="board">
       {#each Array(81) as _, idx}
         {@const piece = board[idx]}
-        {@const row = Math.floor(idx / 9)}
-        {@const col = idx % 9}
         <div
           class="square"
           class:has-piece={piece != null}
+          class:last-move={idx === lastMoveIdx}
         >
           {#if piece}
             <span
@@ -84,6 +85,11 @@
     justify-content: center;
     font-size: 18px;
     position: relative;
+  }
+
+  .square.last-move {
+    background: rgba(74, 222, 128, 0.25);
+    border-color: var(--accent-green);
   }
 
   .piece {

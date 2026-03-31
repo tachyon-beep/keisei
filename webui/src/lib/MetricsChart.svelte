@@ -12,6 +12,7 @@
 
   let container
   let chart = null
+  let resizeObserver = null
 
   const darkTheme = {
     background: '#0d1117',
@@ -21,8 +22,9 @@
   }
 
   function buildOpts() {
+    const w = container ? container.clientWidth : width
     return {
-      width,
+      width: w,
       height,
       padding: [8, 8, 0, 0],
       cursor: { show: true },
@@ -64,6 +66,16 @@
     if (container && xData.length > 0) {
       chart = new uPlot(buildOpts(), buildData(), container)
     }
+
+    resizeObserver = new ResizeObserver(entries => {
+      if (chart && entries[0]) {
+        const { width: w } = entries[0].contentRect
+        if (w > 0) {
+          chart.setSize({ width: Math.floor(w), height })
+        }
+      }
+    })
+    if (container) resizeObserver.observe(container)
   })
 
   afterUpdate(() => {
@@ -78,6 +90,10 @@
   })
 
   onDestroy(() => {
+    if (resizeObserver) {
+      resizeObserver.disconnect()
+      resizeObserver = null
+    }
     if (chart) {
       chart.destroy()
       chart = null

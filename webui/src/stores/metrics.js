@@ -4,10 +4,12 @@ const MAX_POINTS = 10000
 
 export const metrics = writable([])
 
-metrics.subscribe(rows => {
-  if (rows.length > MAX_POINTS) {
-    metrics.set(rows.slice(-MAX_POINTS))
-  }
-})
+/** Append new metrics rows and trim to MAX_POINTS. Called from ws.js. */
+export function appendMetrics(newRows) {
+  metrics.update(current => {
+    const combined = [...current, ...newRows]
+    return combined.length > MAX_POINTS ? combined.slice(-MAX_POINTS) : combined
+  })
+}
 
 export const latestMetrics = derived(metrics, $m => $m[$m.length - 1] || null)

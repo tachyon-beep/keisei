@@ -5,9 +5,12 @@
   export let game
 
   $: selected = $selectedGameId === game.game_id
-  $: board = typeof game.board_json === 'string' ? JSON.parse(game.board_json) : (game.board || [])
+  $: board = (() => {
+    try { return typeof game.board_json === 'string' ? JSON.parse(game.board_json) : (game.board || []) }
+    catch { return [] }
+  })()
   $: statusText = game.is_over
-    ? game.result.replace('_', ' ')
+    ? (game.result || '').replaceAll('_', ' ')
     : `Ply ${game.ply}`
 
   function handleClick() {
