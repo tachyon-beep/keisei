@@ -18,6 +18,7 @@ use numpy::{PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Minimum number of environments to use rayon parallel iteration.
 const PARALLEL_THRESHOLD: usize = 64;
@@ -97,6 +98,11 @@ pub struct VecEnv {
 
     mapper: DefaultActionMapper,
     obs_gen: DefaultObservationGenerator,
+
+    // Episode tracking counters (atomic for rayon safety)
+    episodes_completed: AtomicU64,
+    episodes_drawn: AtomicU64,     // Repetition or Impasse(None)
+    episodes_truncated: AtomicU64, // MaxMoves
 }
 
 impl VecEnv {
@@ -156,6 +162,9 @@ impl VecEnv {
             current_players_buffer: vec![0; num_envs],
             mapper: DefaultActionMapper,
             obs_gen: DefaultObservationGenerator::new(),
+            episodes_completed: AtomicU64::new(0),
+            episodes_drawn: AtomicU64::new(0),
+            episodes_truncated: AtomicU64::new(0),
         }
     }
 
@@ -257,6 +266,11 @@ impl VecEnv {
             let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
             let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
 
+            // Episode counters (atomic — safe for parallel access)
+            let ep_completed = &self.episodes_completed;
+            let ep_drawn = &self.episodes_drawn;
+            let ep_truncated = &self.episodes_truncated;
+
             // Local copies — both are stateless. Shared refs used in closure.
             let mapper = DefaultActionMapper;
             let obs_gen = DefaultObservationGenerator::new();
@@ -302,6 +316,19 @@ impl VecEnv {
                     }
 
                     if terminated || truncated {
+                        // Update episode counters
+                        ep_completed.fetch_add(1, Ordering::Relaxed);
+                        match result {
+                            GameResult::Repetition
+                            | GameResult::Impasse { winner: None } => {
+                                ep_drawn.fetch_add(1, Ordering::Relaxed);
+                            }
+                            GameResult::MaxMoves => {
+                                ep_truncated.fetch_add(1, Ordering::Relaxed);
+                            }
+                            _ => {}
+                        }
+
                         // Save terminal observation
                         let term_obs_slice = std::slice::from_raw_parts_mut(
                             terminal_obs_ptr.offset(i * BUFFER_LEN),
@@ -414,6 +441,42 @@ impl VecEnv {
     #[getter]
     pub fn num_envs(&self) -> usize {
         self.num_envs
+    }
+
+    /// Total episodes completed since construction (or last reset_stats).
+    #[getter]
+    pub fn episodes_completed(&self) -> u64 {
+        self.episodes_completed.load(Ordering::Relaxed)
+    }
+
+    /// Episodes ending in a draw (Repetition or Impasse with no winner).
+    #[getter]
+    pub fn episodes_drawn(&self) -> u64 {
+        self.episodes_drawn.load(Ordering::Relaxed)
+    }
+
+    /// Episodes truncated by max_ply limit.
+    #[getter]
+    pub fn episodes_truncated(&self) -> u64 {
+        self.episodes_truncated.load(Ordering::Relaxed)
+    }
+
+    /// Draw rate: episodes_drawn / episodes_completed (0.0 if none completed).
+    #[getter]
+    pub fn draw_rate(&self) -> f64 {
+        let completed = self.episodes_completed.load(Ordering::Relaxed);
+        if completed == 0 {
+            0.0
+        } else {
+            self.episodes_drawn.load(Ordering::Relaxed) as f64 / completed as f64
+        }
+    }
+
+    /// Reset episode counters to zero.
+    pub fn reset_stats(&self) {
+        self.episodes_completed.store(0, Ordering::Relaxed);
+        self.episodes_drawn.store(0, Ordering::Relaxed);
+        self.episodes_truncated.store(0, Ordering::Relaxed);
     }
 }
 
