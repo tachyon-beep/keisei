@@ -419,4 +419,101 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Non-empty hand observation — Gap #15
+    // -----------------------------------------------------------------------
+
+    /// After a capture, the capturing side should have non-zero hand channels.
+    #[test]
+    fn test_hand_normalization_with_pieces_in_hand() {
+        use shogi_core::{HandPieceType, Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+
+        // Build a position where Black has pawns in hand.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 9);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 28 = current player's Pawn hand count.
+        // HandPieceType::Pawn.index() = 0, so channel = 28 + 0 = 28.
+        // Normalized: 9 / 18.0 = 0.5
+        let ch28_start = 28 * NUM_SQUARES;
+        let expected = 9.0_f32 / 18.0_f32;
+        for i in 0..NUM_SQUARES {
+            assert!(
+                (buf[ch28_start + i] - expected).abs() < 1e-6,
+                "ch28[{}] should be {} with 9 pawns in hand, got {}",
+                i,
+                expected,
+                buf[ch28_start + i]
+            );
+        }
+
+        // Other hand channels should still be 0.0 for current player
+        for hpt_idx in 1..HandPieceType::COUNT {
+            let ch = 28 + hpt_idx;
+            let start = ch * NUM_SQUARES;
+            assert_eq!(
+                buf[start], 0.0,
+                "ch{}[0] should be 0.0 (no pieces of this type in hand)",
+                ch
+            );
+        }
+    }
+
+    /// Opponent's hand pieces should appear in channels 35-41.
+    #[test]
+    fn test_opponent_hand_channels() {
+        use shogi_core::{HandPieceType, Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Give White (opponent from Black's perspective) 2 rooks in hand
+        pos.set_hand_count(Color::White, HandPieceType::Rook, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 35 + HandPieceType::Rook.index() = 35 + 6 = 41
+        // (Rook as u8 = 7, index = 7 - 1 = 6)
+        // Normalized: 2 / 2.0 = 1.0
+        let ch = 35 + HandPieceType::Rook.index(); // 41
+        let ch_start = ch * NUM_SQUARES;
+        for i in 0..NUM_SQUARES {
+            assert!(
+                (buf[ch_start + i] - 1.0).abs() < 1e-6,
+                "ch{}[{}] should be 1.0 with 2 rooks in opponent's hand, got {}",
+                ch,
+                i,
+                buf[ch_start + i]
+            );
+        }
+    }
 }

@@ -156,4 +156,64 @@ mod tests {
             assert_eq!(*mv, dummy_move(i as u8 * 2));
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Capacity boundary — Gap #14
+    // -----------------------------------------------------------------------
+
+    /// Push exactly MOVELIST_CAPACITY moves and verify all are readable.
+    #[test]
+    fn test_movelist_full_capacity() {
+        let mut ml = MoveList::new();
+        // Push 1024 moves (using wrapping indices within valid square range)
+        for i in 0..MOVELIST_CAPACITY {
+            let from_idx = (i % 80) as u8;
+            let to_idx = ((i % 80) + 1) as u8;
+            ml.push(Move::Board {
+                from: Square::new_unchecked(from_idx),
+                to: Square::new_unchecked(to_idx),
+                promote: i % 2 == 0,
+            });
+        }
+        assert_eq!(ml.len(), MOVELIST_CAPACITY);
+        assert!(!ml.is_empty());
+
+        // Verify first and last elements
+        let first = ml.get(0);
+        assert_eq!(first, Move::Board {
+            from: Square::new_unchecked(0),
+            to: Square::new_unchecked(1),
+            promote: true,
+        });
+
+        let last = ml.get(MOVELIST_CAPACITY - 1);
+        let last_i = MOVELIST_CAPACITY - 1;
+        assert_eq!(last, Move::Board {
+            from: Square::new_unchecked((last_i % 80) as u8),
+            to: Square::new_unchecked(((last_i % 80) + 1) as u8),
+            promote: last_i % 2 == 0,
+        });
+    }
+
+    /// Verify that iter() returns all pushed elements.
+    #[test]
+    fn test_movelist_iter_count() {
+        let mut ml = MoveList::new();
+        for i in 0u8..50 {
+            ml.push(dummy_move(i % 40 * 2));
+        }
+        assert_eq!(ml.iter().count(), 50);
+    }
+
+    /// Verify that clear + push works correctly (reuse after clear).
+    #[test]
+    fn test_movelist_reuse_after_clear() {
+        let mut ml = MoveList::new();
+        ml.push(dummy_move(0));
+        ml.push(dummy_move(2));
+        ml.clear();
+        ml.push(dummy_move(10));
+        assert_eq!(ml.len(), 1);
+        assert_eq!(ml.get(0), dummy_move(10));
+    }
 }

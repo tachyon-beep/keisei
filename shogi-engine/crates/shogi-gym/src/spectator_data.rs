@@ -79,3 +79,53 @@ pub fn build_spectator_dict(py: Python<'_>, game: &GameState) -> PyResult<Py<PyD
 
     Ok(d.into())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_piece_type_name_all() {
+        assert_eq!(piece_type_name(PieceType::Pawn), "pawn");
+        assert_eq!(piece_type_name(PieceType::Lance), "lance");
+        assert_eq!(piece_type_name(PieceType::Knight), "knight");
+        assert_eq!(piece_type_name(PieceType::Silver), "silver");
+        assert_eq!(piece_type_name(PieceType::Gold), "gold");
+        assert_eq!(piece_type_name(PieceType::Bishop), "bishop");
+        assert_eq!(piece_type_name(PieceType::Rook), "rook");
+        assert_eq!(piece_type_name(PieceType::King), "king");
+    }
+
+    #[test]
+    fn test_color_name_all() {
+        assert_eq!(color_name(Color::Black), "black");
+        assert_eq!(color_name(Color::White), "white");
+    }
+
+    #[test]
+    fn test_game_result_str_all() {
+        assert_eq!(game_result_str(&GameResult::InProgress), "in_progress");
+        assert_eq!(
+            game_result_str(&GameResult::Checkmate { winner: Color::Black }),
+            "checkmate"
+        );
+        assert_eq!(game_result_str(&GameResult::Repetition), "repetition");
+        assert_eq!(
+            game_result_str(&GameResult::PerpetualCheck { winner: Color::White }),
+            "perpetual_check"
+        );
+        assert_eq!(
+            game_result_str(&GameResult::Impasse { winner: None }),
+            "impasse"
+        );
+        assert_eq!(
+            game_result_str(&GameResult::Impasse { winner: Some(Color::Black) }),
+            "impasse"
+        );
+        assert_eq!(game_result_str(&GameResult::MaxMoves), "max_moves");
+    }
+}

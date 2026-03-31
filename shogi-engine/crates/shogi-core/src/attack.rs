@@ -796,4 +796,61 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // would_wrap_file edge cases — Gap #9
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_would_wrap_file_left_boundary() {
+        // Square at col 0 + LEFT (-1) should wrap
+        let sq = Square::from_row_col(4, 0).unwrap();
+        assert!(would_wrap_file(sq, LEFT), "col 0 + LEFT should wrap");
+        assert!(would_wrap_file(sq, UP_LEFT), "col 0 + UP_LEFT should wrap");
+        assert!(would_wrap_file(sq, DOWN_LEFT), "col 0 + DOWN_LEFT should wrap");
+    }
+
+    #[test]
+    fn test_would_wrap_file_right_boundary() {
+        // Square at col 8 + RIGHT (+1) should wrap
+        let sq = Square::from_row_col(4, 8).unwrap();
+        assert!(would_wrap_file(sq, RIGHT), "col 8 + RIGHT should wrap");
+        assert!(would_wrap_file(sq, UP_RIGHT), "col 8 + UP_RIGHT should wrap");
+        assert!(would_wrap_file(sq, DOWN_RIGHT), "col 8 + DOWN_RIGHT should wrap");
+    }
+
+    #[test]
+    fn test_would_wrap_file_center_no_wrap() {
+        let sq = Square::from_row_col(4, 4).unwrap();
+        // All 8 directions from center should NOT wrap
+        for delta in [UP, DOWN, LEFT, RIGHT, UP_LEFT, UP_RIGHT, DOWN_LEFT, DOWN_RIGHT] {
+            assert!(!would_wrap_file(sq, delta), "center + delta {} should not wrap", delta);
+        }
+    }
+
+    #[test]
+    fn test_would_wrap_file_out_of_bounds() {
+        // Top-left corner + UP should be out of bounds (row -1)
+        let sq = Square::from_row_col(0, 0).unwrap();
+        assert!(would_wrap_file(sq, UP), "row 0 + UP should be out of bounds");
+        assert!(would_wrap_file(sq, UP_LEFT), "row 0 col 0 + UP_LEFT should be out of bounds");
+
+        // Bottom-right corner + DOWN should be out of bounds
+        let sq = Square::from_row_col(8, 8).unwrap();
+        assert!(would_wrap_file(sq, DOWN), "row 8 + DOWN should be out of bounds");
+        assert!(would_wrap_file(sq, DOWN_RIGHT), "row 8 col 8 + DOWN_RIGHT should be out of bounds");
+    }
+
+    #[test]
+    fn test_would_wrap_file_vertical_no_wrap() {
+        // UP/DOWN from center column should never wrap (no column change)
+        let sq = Square::from_row_col(4, 4).unwrap();
+        assert!(!would_wrap_file(sq, UP), "UP from (4,4) should not wrap");
+        assert!(!would_wrap_file(sq, DOWN), "DOWN from (4,4) should not wrap");
+
+        // Even from column edges, UP/DOWN should not wrap
+        let sq_left = Square::from_row_col(4, 0).unwrap();
+        assert!(!would_wrap_file(sq_left, UP), "UP from col 0 should not wrap");
+        assert!(!would_wrap_file(sq_left, DOWN), "DOWN from col 0 should not wrap");
+    }
 }

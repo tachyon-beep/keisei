@@ -408,4 +408,80 @@ mod tests {
             "different positions must have different hashes"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // SFEN edge cases — Gap #10
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sfen_multi_digit_hand_count() {
+        // 18 pawns in hand (maximum possible)
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 18P 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(
+            pos.hand_count(Color::Black, HandPieceType::Pawn),
+            18,
+            "Black should have 18 pawns in hand"
+        );
+    }
+
+    #[test]
+    fn test_sfen_multiple_hand_pieces() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 2);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Bishop), 2);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Gold), 4);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Silver), 4);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Knight), 4);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Lance), 4);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Pawn), 18);
+    }
+
+    #[test]
+    fn test_sfen_invalid_wrong_rank_count() {
+        // Only 8 ranks instead of 9
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1 b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "expected error for 8 ranks");
+    }
+
+    #[test]
+    fn test_sfen_invalid_wrong_column_count() {
+        // First rank has only 8 columns
+        let sfen = "lnsgkgsn/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "expected error for rank with 8 columns");
+    }
+
+    #[test]
+    fn test_sfen_invalid_zero_empty() {
+        // '0' is not a valid empty count
+        let sfen = "lnsgkgsnl/0r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "expected error for empty count '0'");
+    }
+
+    #[test]
+    fn test_sfen_invalid_promoted_gold() {
+        // Gold cannot be promoted
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSG+KGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "expected error for promoted King");
+    }
+
+    #[test]
+    fn test_sfen_invalid_side_to_move() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL x - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "expected error for invalid side 'x'");
+    }
+
+    #[test]
+    fn test_sfen_roundtrip_multi_digit_hands() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b 18P2r 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        let reserialized = pos.to_sfen();
+        assert_eq!(reserialized, sfen, "multi-digit hand roundtrip failed");
+    }
 }

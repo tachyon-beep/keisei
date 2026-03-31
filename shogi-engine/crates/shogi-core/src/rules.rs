@@ -486,4 +486,557 @@ mod tests {
         let white_in_zone = count_pieces_in_promotion_zone(&pos, Color::White);
         assert_eq!(white_in_zone, 0, "White has no pieces in promotion zone at start");
     }
+
+    // -----------------------------------------------------------------------
+    // Uchi-fu-zume (pawn-drop checkmate) — Gap #1
+    // -----------------------------------------------------------------------
+
+    /// Test that dropping a pawn to deliver inescapable checkmate is detected.
+    ///
+    /// Position (Black to move):
+    ///   - White king at (0,0), cornered
+    ///   - Black gold at (2,1) — far enough to not attack the White king directly
+    ///     but after a pawn drop at (1,0), the gold at (2,1) covers (1,0), (1,1)
+    ///   - Black lance at (8,0) — covers column 0, preventing White king from
+    ///     going to (1,0) after the pawn is dropped (lance attacks up through col 0)
+    ///   - Black rook at (0,8) — covers row 0, attacking (0,1) so king can't go right
+    ///   - Black king at (8,8)
+    ///   - Black has a pawn in hand
+    ///
+    /// Dropping pawn at (1,0): pawn attacks (0,0) = check.
+    /// King escapes? (0,1) attacked by rook. (1,0) occupied by pawn.
+    /// (1,1) attacked by gold at (2,1) (gold moves: forward, fwd-left, fwd-right,
+    ///   left, right, backward — for White's opponent (Black) gold at (2,1),
+    ///   forward=UP so (1,1) is fwd-right).
+    /// Can White capture pawn at (1,0)? Only the king could, but (1,0) is the
+    ///   pawn itself and also covered by lance.
+    /// → Checkmate via pawn drop → uchi-fu-zume.
+    #[test]
+    fn test_uchi_fu_zume_positive() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        // White king cornered at (0,0)
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black king far away
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Black rook at (0,8) — attacks all of row 0 including (0,1)
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        // Black gold at (2,1) — after pawn drop, covers (1,1) via step attack
+        pos.set_piece(
+            Square::from_row_col(2, 1).unwrap(),
+            Piece::new(PieceType::Gold, Color::Black, false),
+        );
+        // Black lance at (8,0) — slides up column 0, covers (1,0) after pawn drop
+        // (ray blocked by pawn at (1,0), but the pawn itself is "protected")
+        pos.set_piece(
+            Square::from_row_col(8, 0).unwrap(),
+            Piece::new(PieceType::Lance, Color::Black, false),
+        );
+        // Black pawn in hand
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Drop pawn at (1, 0): Black pawn attacks UP → (0, 0) = White king.
+        let drop_sq = Square::from_row_col(1, 0).unwrap();
+        assert!(
+            is_uchi_fu_zume(&mut gs, drop_sq, Color::Black),
+            "Pawn drop at (1,0) should be uchi-fu-zume"
+        );
+    }
+
+    /// Test that a pawn drop giving check is NOT uchi-fu-zume when the king can escape.
+    #[test]
+    fn test_uchi_fu_zume_negative_king_escapes() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        // White king at (0,4) — center of back rank, has escape squares
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black king far away
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Black has a pawn in hand
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Dropping pawn at (1,4) gives check on White king at (0,4),
+        // but king can escape to (0,3), (0,5), (1,3), (1,5), etc.
+        let drop_sq = Square::from_row_col(1, 4).unwrap();
+        assert!(
+            !is_uchi_fu_zume(&mut gs, drop_sq, Color::Black),
+            "Pawn drop at (1,4) should NOT be uchi-fu-zume — king can escape"
+        );
+    }
+
+    /// Test that a pawn drop NOT giving check is NOT uchi-fu-zume.
+    #[test]
+    fn test_uchi_fu_zume_negative_no_check() {
+        use crate::types::HandPieceType;
+
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Drop pawn at (4,4) — nowhere near the White king → not check → not uchi-fu-zume.
+        let drop_sq = Square::from_row_col(4, 4).unwrap();
+        assert!(
+            !is_uchi_fu_zume(&mut gs, drop_sq, Color::Black),
+            "Pawn drop far from king should not be uchi-fu-zume"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sennichite (fourfold repetition) — Gap #2
+    // -----------------------------------------------------------------------
+
+    /// Test 4-fold repetition detection via shuttling kings back and forth.
+    ///
+    /// Minimal position: Black king at (8,4), White king at (0,4).
+    /// Black moves king (8,4)→(7,4), White moves king (0,4)→(1,4),
+    /// Black moves king (7,4)→(8,4), White moves king (1,4)→(0,4).
+    /// Repeat this cycle — after 3 full cycles (12 half-moves) the starting
+    /// position will have appeared 4 times.
+    #[test]
+    fn test_sennichite_fourfold_repetition() {
+        use crate::types::Move;
+
+        // Minimal two-king position.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        let bk_down = Move::Board {
+            from: Square::from_row_col(8, 4).unwrap(),
+            to: Square::from_row_col(7, 4).unwrap(),
+            promote: false,
+        };
+        let bk_up = Move::Board {
+            from: Square::from_row_col(7, 4).unwrap(),
+            to: Square::from_row_col(8, 4).unwrap(),
+            promote: false,
+        };
+        let wk_down = Move::Board {
+            from: Square::from_row_col(0, 4).unwrap(),
+            to: Square::from_row_col(1, 4).unwrap(),
+            promote: false,
+        };
+        let wk_up = Move::Board {
+            from: Square::from_row_col(1, 4).unwrap(),
+            to: Square::from_row_col(0, 4).unwrap(),
+            promote: false,
+        };
+
+        // Cycle: Black down, White down, Black up, White up → back to start
+        // Need 3 full cycles for the start position to appear 4 times
+        // (1 initial + 3 returns = 4)
+        for _ in 0..3 {
+            gs.make_move(bk_down); // Black king to (7,4)
+            gs.make_move(wk_down); // White king to (1,4)
+            gs.make_move(bk_up);   // Black king to (8,4)
+            gs.make_move(wk_up);   // White king to (0,4) → start position repeated
+        }
+
+        // Now the start position hash should have count >= 4
+        let result = check_sennichite(&gs);
+        assert!(
+            result.is_some(),
+            "Should detect fourfold repetition after 3 cycles"
+        );
+        assert_eq!(
+            result.unwrap(),
+            GameResult::Repetition,
+            "Simple king shuttle should be Repetition, not PerpetualCheck"
+        );
+    }
+
+    /// Test that 3-fold repetition does NOT trigger sennichite.
+    #[test]
+    fn test_sennichite_not_triggered_at_threefold() {
+        use crate::types::Move;
+
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        let bk_down = Move::Board {
+            from: Square::from_row_col(8, 4).unwrap(),
+            to: Square::from_row_col(7, 4).unwrap(),
+            promote: false,
+        };
+        let bk_up = Move::Board {
+            from: Square::from_row_col(7, 4).unwrap(),
+            to: Square::from_row_col(8, 4).unwrap(),
+            promote: false,
+        };
+        let wk_down = Move::Board {
+            from: Square::from_row_col(0, 4).unwrap(),
+            to: Square::from_row_col(1, 4).unwrap(),
+            promote: false,
+        };
+        let wk_up = Move::Board {
+            from: Square::from_row_col(1, 4).unwrap(),
+            to: Square::from_row_col(0, 4).unwrap(),
+            promote: false,
+        };
+
+        // Only 2 full cycles → position appears 3 times (1 initial + 2 returns)
+        for _ in 0..2 {
+            gs.make_move(bk_down);
+            gs.make_move(wk_down);
+            gs.make_move(bk_up);
+            gs.make_move(wk_up);
+        }
+
+        assert_eq!(
+            check_sennichite(&gs),
+            None,
+            "3-fold repetition should NOT trigger sennichite (need 4)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Perpetual check — Gap #3
+    // -----------------------------------------------------------------------
+
+    /// Test perpetual check detection.
+    ///
+    /// White king at (0,0). Black rook shuttles between (0,8) and (1,8),
+    /// giving check from row 0 and not-check from row 1. But we need the
+    /// check to happen at the SAME position hash for it to count as
+    /// perpetual check. Instead, we use a setup where Black continuously
+    /// gives check at matching positions.
+    ///
+    /// Simpler approach: Black rook at (0,8) checks White king at (0,0).
+    /// White king has to move to (1,0). Then Black rook goes to (1,8) to
+    /// check again. White king goes back to (0,0). Black rook goes to (0,8).
+    /// This creates a cycle where Black is always giving check when it's
+    /// White's turn (the side-to-move is always in check at matching positions).
+    #[test]
+    fn test_perpetual_check_detection() {
+        use crate::types::Move;
+
+        let mut pos = Position::empty();
+        // White king at (0,0)
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black king far away at (8,8)
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Black rook at (0,8) — gives check along row 0 to White king
+        pos.set_piece(
+            Square::from_row_col(0, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // White is in check from the rook. White must escape.
+        assert!(gs.is_in_check(), "White king should be in check initially");
+
+        // Cycle:
+        // 1. White king (0,0)→(1,0) — escapes check
+        // 2. Black rook (0,8)→(1,8) — gives check along row 1
+        // 3. White king (1,0)→(0,0) — escapes check
+        // 4. Black rook (1,8)→(0,8) — gives check along row 0 → back to start
+        let wk_escape = Move::Board {
+            from: Square::from_row_col(0, 0).unwrap(),
+            to: Square::from_row_col(1, 0).unwrap(),
+            promote: false,
+        };
+        let br_chase_1 = Move::Board {
+            from: Square::from_row_col(0, 8).unwrap(),
+            to: Square::from_row_col(1, 8).unwrap(),
+            promote: false,
+        };
+        let wk_return = Move::Board {
+            from: Square::from_row_col(1, 0).unwrap(),
+            to: Square::from_row_col(0, 0).unwrap(),
+            promote: false,
+        };
+        let br_chase_2 = Move::Board {
+            from: Square::from_row_col(1, 8).unwrap(),
+            to: Square::from_row_col(0, 8).unwrap(),
+            promote: false,
+        };
+
+        // 3 full cycles → the start position (White to move, in check) appears 4 times
+        for _ in 0..3 {
+            gs.make_move(wk_escape);
+            gs.make_move(br_chase_1);
+            gs.make_move(wk_return);
+            gs.make_move(br_chase_2);
+        }
+
+        let result = check_sennichite(&gs);
+        assert!(result.is_some(), "Should detect repetition with perpetual check");
+        match result.unwrap() {
+            GameResult::PerpetualCheck { winner } => {
+                // The side giving check (Black) loses; the victim (White) wins.
+                assert_eq!(
+                    winner,
+                    Color::White,
+                    "White (the victim of perpetual check) should win"
+                );
+            }
+            other => panic!(
+                "Expected PerpetualCheck, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Impasse (CSA 24-point rule) — Gap #4
+    // -----------------------------------------------------------------------
+
+    /// Test impasse scoring with pieces in hand.
+    #[test]
+    fn test_impasse_score_with_hand_pieces() {
+        let mut pos = Position::startpos();
+        // Give Black 2 pawns in hand (each worth 1 point)
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 2);
+        let score = compute_impasse_score(&pos, Color::Black);
+        // Starting: 27. +2 pawns in hand = 29.
+        assert_eq!(score, 29, "Black should have 29 points with 2 extra pawns in hand");
+    }
+
+    /// Test impasse scoring counts promoted pieces at their base value.
+    #[test]
+    fn test_impasse_score_promoted_piece_value() {
+        let mut pos = Position::empty();
+        // Promoted rook (Dragon) on board — still worth 5 points
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, true),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        let score = compute_impasse_score(&pos, Color::Black);
+        assert_eq!(score, 5, "Promoted rook should still be worth 5 points");
+    }
+
+    /// Test that check_impasse triggers when both kings have entered and
+    /// both players have 10+ pieces in the opponent's promotion zone.
+    #[test]
+    fn test_impasse_triggers_correctly() {
+        // We need:
+        //   - Black king in rows 0-2 (White's camp)
+        //   - White king in rows 6-8 (Black's camp)
+        //   - Both have 10+ pieces in their promotion zone
+        //   - Score determines winner
+        let mut pos = Position::empty();
+
+        // Black king at (0,4) — in White's camp
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king at (8,4) — in Black's camp
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+
+        // Place 10 Black pieces in rows 0-2 (Black's promotion zone)
+        // King already counts as 1. Need 9 more.
+        let black_squares: [(u8, u8); 9] = [
+            (0, 0), (0, 1), (0, 2), (0, 3), (0, 5),
+            (0, 6), (0, 7), (0, 8), (1, 0),
+        ];
+        for &(r, c) in &black_squares {
+            pos.set_piece(
+                Square::from_row_col(r, c).unwrap(),
+                Piece::new(PieceType::Pawn, Color::Black, false),
+            );
+        }
+        // Black score: King(0) + 9 Pawns(1 each) = 9 from board.
+        // Give Black rook+bishop in hand: 5+5=10 → total 19 < 24.
+        // Actually, let's give enough: 9 pawns + rook(5) + bishop(5) board pieces
+        // Replace two pawns with rook and bishop.
+        pos.set_piece(
+            Square::from_row_col(1, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, false),
+        );
+        // Now Black in zone: King + Bishop(5) + Rook(5) + 7 Pawns(1 each) = 17
+        // Plus give hand pieces: 2 Gold + 2 Silver + 2 Knight + 2 Lance = 8 → total 25 >= 24
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 2);
+        pos.set_hand_count(Color::Black, HandPieceType::Silver, 2);
+        pos.set_hand_count(Color::Black, HandPieceType::Knight, 2);
+        pos.set_hand_count(Color::Black, HandPieceType::Lance, 2);
+        // Black board score: 5+5+7 = 17, hand: 8 = total 25
+
+        // Place 10 White pieces in rows 6-8 (White's promotion zone)
+        let white_squares: [(u8, u8); 9] = [
+            (8, 0), (8, 1), (8, 2), (8, 3), (8, 5),
+            (8, 6), (8, 7), (8, 8), (7, 0),
+        ];
+        for &(r, c) in &white_squares {
+            pos.set_piece(
+                Square::from_row_col(r, c).unwrap(),
+                Piece::new(PieceType::Pawn, Color::White, false),
+            );
+        }
+        // White score: 9 pawns = 9, need more
+        pos.set_hand_count(Color::White, HandPieceType::Rook, 1);
+        pos.set_hand_count(Color::White, HandPieceType::Bishop, 1);
+        pos.set_hand_count(Color::White, HandPieceType::Gold, 2);
+        pos.set_hand_count(Color::White, HandPieceType::Silver, 2);
+        pos.set_hand_count(Color::White, HandPieceType::Knight, 2);
+        pos.set_hand_count(Color::White, HandPieceType::Lance, 2);
+        // White board: 9, hand: 5+5+2+2+2+2 = 18, total = 27
+
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let gs = GameState::from_position(pos, 500);
+
+        // Verify piece counts in zone
+        let black_in_zone = count_pieces_in_promotion_zone(&gs.position, Color::Black);
+        assert!(black_in_zone >= 10, "Black needs 10+ pieces in zone, got {}", black_in_zone);
+        let white_in_zone = count_pieces_in_promotion_zone(&gs.position, Color::White);
+        assert!(white_in_zone >= 10, "White needs 10+ pieces in zone, got {}", white_in_zone);
+
+        let result = check_impasse(&gs);
+        assert!(result.is_some(), "Impasse should be triggered");
+        // Both have >= 24, so it's a draw
+        match result.unwrap() {
+            GameResult::Impasse { winner } => {
+                // Both >= 24 → draw
+                assert_eq!(winner, None, "Both sides >= 24 should be a draw");
+            }
+            other => panic!("Expected Impasse, got {:?}", other),
+        }
+    }
+
+    /// Test impasse where only one side reaches 24 points.
+    #[test]
+    fn test_impasse_one_sided_winner() {
+        let mut pos = Position::empty();
+
+        // Black king at (0,4) — in White's camp
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // White king at (8,4) — in Black's camp
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+
+        // 10 Black pieces in rows 0-2 with high value
+        for c in 0u8..9 {
+            if c == 4 { continue; } // King is already there
+            pos.set_piece(
+                Square::from_row_col(0, c).unwrap(),
+                Piece::new(PieceType::Gold, Color::Black, false),
+            );
+        }
+        // Row 1: rook and bishop
+        pos.set_piece(
+            Square::from_row_col(1, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, false),
+        );
+        // Black in zone: King + 8 Gold(1 each) + Rook(5) + Bishop(5) = 18
+        // Plus hand: give 7 more → total 25
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 7);
+        // Black total: 18 + 7 = 25 >= 24 ✓
+
+        // 10 White pieces in rows 6-8 with LOW value (< 24)
+        for c in 0u8..9 {
+            if c == 4 { continue; }
+            pos.set_piece(
+                Square::from_row_col(8, c).unwrap(),
+                Piece::new(PieceType::Pawn, Color::White, false),
+            );
+        }
+        pos.set_piece(
+            Square::from_row_col(7, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(7, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        // White in zone: 10 pawns = 10 < 24
+
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+        let gs = GameState::from_position(pos, 500);
+
+        let result = check_impasse(&gs);
+        assert!(result.is_some(), "Impasse should trigger");
+        match result.unwrap() {
+            GameResult::Impasse { winner: Some(Color::Black) } => {}
+            other => panic!("Expected Impasse with Black winner, got {:?}", other),
+        }
+    }
 }
