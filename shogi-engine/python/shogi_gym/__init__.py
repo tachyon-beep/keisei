@@ -6,6 +6,8 @@ from shogi_gym._native import (
     VecEnv,
     SpectatorEnv,
     StepResult,
+    ResetResult,
+    StepMetadata,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "VecEnv",
     "SpectatorEnv",
     "StepResult",
+    "ResetResult",
+    "StepMetadata",
 ]
