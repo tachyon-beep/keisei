@@ -160,6 +160,7 @@ class TrainingLoop:
                 self._maybe_write_snapshots()
                 self._maybe_update_heartbeat()
 
+            self.model.eval()
             with torch.no_grad():
                 _, next_values = self.model(obs)
                 next_values = next_values.squeeze(-1)
