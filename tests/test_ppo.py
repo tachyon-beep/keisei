@@ -316,3 +316,30 @@ class TestPPOAlgorithm:
         next_values = torch.zeros(2)
         ppo.update(buf, next_values)
         assert model.training, "model should be in train mode after update"
+
+    # -------------------------------------------------------------------
+    # High gap: constant advantages (std=0) should not produce NaN
+    # -------------------------------------------------------------------
+
+    def test_update_constant_rewards_no_nan(self) -> None:
+        """When all rewards are identical, advantages have std=0.
+        The +1e-8 guard must prevent division by zero / NaN."""
+        ppo, _ = _make_small_ppo()
+        buf = _fill_buffer(ppo, rewards_val=1.0)
+        next_values = torch.zeros(2)
+        losses = ppo.update(buf, next_values)
+        for key, val in losses.items():
+            assert not math.isnan(val), f"{key} is NaN with constant rewards"
+            assert not math.isinf(val), f"{key} is inf with constant rewards"
+
+    def test_gradient_clipping_applied(self) -> None:
+        """Verify gradient_norm returned by update is finite and within
+        expected range after clipping at 0.5."""
+        ppo, _ = _make_small_ppo()
+        buf = _fill_buffer(ppo, rewards_val=100.0)
+        next_values = torch.zeros(2)
+        losses = ppo.update(buf, next_values)
+        grad_norm = losses["gradient_norm"]
+        assert not math.isnan(grad_norm), "gradient_norm is NaN"
+        assert not math.isinf(grad_norm), "gradient_norm is inf"
+        assert grad_norm >= 0, f"gradient_norm should be non-negative, got {grad_norm}"

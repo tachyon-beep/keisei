@@ -50,3 +50,33 @@ def test_load_nonexistent_raises(tmp_path: Path, model: ResNetModel) -> None:
     optimizer = torch.optim.Adam(model.parameters())
     with pytest.raises(FileNotFoundError):
         load_checkpoint(tmp_path / "missing.pt", model, optimizer)
+
+
+# ---------------------------------------------------------------------------
+# High gap: cross-architecture checkpoint loading
+# ---------------------------------------------------------------------------
+
+
+def test_load_checkpoint_wrong_architecture_raises(tmp_path: Path) -> None:
+    """Loading a checkpoint saved from one architecture into another should fail."""
+    from keisei.training.models.mlp import MLPModel, MLPParams
+
+    resnet = ResNetModel(ResNetParams(hidden_size=16, num_layers=1))
+    optimizer_resnet = torch.optim.Adam(resnet.parameters(), lr=1e-3)
+    path = tmp_path / "resnet.pt"
+    save_checkpoint(path, resnet, optimizer_resnet, epoch=1, step=100)
+
+    mlp = MLPModel(MLPParams(hidden_sizes=[16]))
+    optimizer_mlp = torch.optim.Adam(mlp.parameters(), lr=1e-3)
+    with pytest.raises(RuntimeError):
+        load_checkpoint(path, mlp, optimizer_mlp)
+
+
+def test_load_corrupted_checkpoint_raises(tmp_path: Path, model: ResNetModel) -> None:
+    """A truncated/corrupted checkpoint file should raise an error."""
+    path = tmp_path / "corrupted.pt"
+    path.write_bytes(b"not a valid checkpoint file")
+
+    optimizer = torch.optim.Adam(model.parameters())
+    with pytest.raises(Exception):
+        load_checkpoint(path, model, optimizer)
