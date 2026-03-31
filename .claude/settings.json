@@ -15,6 +15,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__filigree__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/john/.local/bin/filigree ensure-dashboard",
+            "timeout": 5000
+          }
+        ]
+      }
     ]
   }
 }
