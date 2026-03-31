@@ -341,7 +341,7 @@ class ContinuousMatchScheduler:
     ) -> MatchResult:
         """Play a game to completion. Pace and publish if spectated."""
         import torch
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         move_count = 0
         agents = {Color.BLACK: agent_a, Color.WHITE: agent_b}
@@ -459,7 +459,7 @@ class ContinuousMatchScheduler:
     ) -> None:
         """Run a single match: load models, play game, update Elo."""
         import torch
-        from keisei.shogi.shogi_game import ShogiGame
+        from keisei.shogi_python_reference.shogi_game import ShogiGame
 
         cfg = self._config
         spectated = slot < cfg.num_spectated

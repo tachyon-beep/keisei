@@ -11,8 +11,8 @@ This package contains:
 from .evaluation.core_manager import EvaluationManager
 
 # Re-export the main components for easy access
-from .shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
-from .shogi.shogi_game import ShogiGame
+from .shogi_python_reference.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
+from .shogi_python_reference.shogi_game import ShogiGame
 
 __all__ = [
     # Shogi core types

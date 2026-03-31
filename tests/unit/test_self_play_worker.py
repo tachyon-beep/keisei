@@ -110,7 +110,7 @@ class TestSetupWorker:
         mock_factory.return_value = MagicMock()
         w = _make_worker()
         w._setup_worker()
-        from keisei.shogi.shogi_game import ShogiGame
+        from keisei.shogi_python_reference.shogi_game import ShogiGame
 
         assert isinstance(w.game, ShogiGame)
 

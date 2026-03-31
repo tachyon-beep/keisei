@@ -52,7 +52,7 @@ class TestSetupEnvironment:
         config = _make_config()
         em = EnvManager(config)
         game, _ = em.setup_environment()
-        from keisei.shogi.shogi_game import ShogiGame
+        from keisei.shogi_python_reference.shogi_game import ShogiGame
 
         assert isinstance(game, ShogiGame)
 

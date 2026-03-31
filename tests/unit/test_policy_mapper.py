@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from keisei.utils.utils import PolicyOutputMapper
-from keisei.shogi.shogi_core_definitions import PieceType, get_unpromoted_types
+from keisei.shogi_python_reference.shogi_core_definitions import PieceType, get_unpromoted_types
 
 pytestmark = pytest.mark.unit
 

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from keisei.shogi import Color, ShogiGame
+from keisei.shogi_python_reference import Color, ShogiGame
 from keisei.utils.utils import PolicyOutputMapper
 
 pytestmark = pytest.mark.unit

@@ -9,8 +9,8 @@ import random
 
 import pytest
 
-from keisei.shogi.shogi_game import ShogiGame
-from keisei.shogi.shogi_core_definitions import Color, PieceType, Piece
+from keisei.shogi_python_reference.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import Color, PieceType, Piece
 
 pytestmark = pytest.mark.unit
 

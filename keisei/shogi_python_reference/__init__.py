@@ -1,5 +1,8 @@
 """
-Shogi Module - Japanese Chess game engine and related components.
+Shogi Python Reference Engine (archived).
+
+Original Python Shogi game engine preserved as a reference and test oracle
+during migration to the Rust engine (shogi-engine/).
 
 This package contains all the components related to the Shogi game:
 - Core definitions: piece types, colors, move tuples

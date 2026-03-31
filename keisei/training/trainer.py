@@ -290,7 +290,7 @@ class Trainer:
             last_value_pred_for_gae = self.agent.get_value(current_obs_np)
 
         # The last_value is from the perspective of whoever is about to move
-        from keisei.shogi import Color
+        from keisei.shogi_python_reference import Color
 
         last_value_is_white = (
             self.game is not None and self.game.current_player == Color.WHITE

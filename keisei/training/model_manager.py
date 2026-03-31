@@ -26,7 +26,7 @@ from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.ppo_agent import PPOAgent
 from keisei.lineage.event_schema import make_event, make_model_id
 from keisei.lineage.registry import LineageRegistry
-from keisei.shogi import features
+from keisei.shogi_python_reference import features
 from keisei.training.models import model_factory
 from keisei.utils.performance_benchmarker import (
     PerformanceBenchmarker,

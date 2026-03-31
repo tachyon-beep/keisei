@@ -8,7 +8,7 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
-from keisei.shogi.shogi_core_definitions import Color
+from keisei.shogi_python_reference.shogi_core_definitions import Color
 from keisei.utils import (
     PolicyOutputMapper,
     _coords_to_square_name,

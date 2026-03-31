@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from keisei.config_schema import AppConfig, EnvConfig
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.training.env_manager import EnvManager
 from keisei.training.setup_manager import SetupManager
 from keisei.utils.utils import PolicyOutputMapper

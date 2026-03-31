@@ -1,4 +1,4 @@
-"""Tests for keisei.shogi.shogi_move_execution module.
+"""Tests for keisei.shogi_python_reference.shogi_move_execution module.
 
 Covers the three main functions:
   - apply_move_to_board_state: board moves, drops, captures, promotions
@@ -10,7 +10,7 @@ import copy
 
 import pytest
 
-from keisei.shogi.shogi_core_definitions import (
+from keisei.shogi_python_reference.shogi_core_definitions import (
     Color,
     MoveApplicationResult,
     MoveTuple,
@@ -18,8 +18,8 @@ from keisei.shogi.shogi_core_definitions import (
     PieceType,
     get_unpromoted_types,
 )
-from keisei.shogi.shogi_game import ShogiGame
-from keisei.shogi.shogi_move_execution import (
+from keisei.shogi_python_reference.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_move_execution import (
     apply_move_to_board_state,
     apply_move_to_game,
     revert_last_applied_move,

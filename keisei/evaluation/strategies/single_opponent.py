@@ -22,8 +22,8 @@ import torch  # Import torch at the module level
 if TYPE_CHECKING:
     pass  # No need for torch here if imported above
 
-from keisei.shogi.shogi_core_definitions import Color
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import Color
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.utils import PolicyOutputMapper
 from keisei.utils.agent_loading import initialize_opponent, load_evaluation_agent
 

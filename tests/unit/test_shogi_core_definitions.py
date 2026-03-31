@@ -10,7 +10,7 @@ import copy
 
 import pytest
 
-from keisei.shogi.shogi_core_definitions import (
+from keisei.shogi_python_reference.shogi_core_definitions import (
     BASE_TO_PROMOTED_TYPE,
     Color,
     KIF_PIECE_SYMBOLS,

@@ -5,8 +5,8 @@ opponents.py: Contains simple opponent classes for evaluation and testing.
 import random
 from typing import List
 
-from keisei.shogi.shogi_core_definitions import MoveTuple, PieceType
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import MoveTuple, PieceType
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.utils.utils import BaseOpponent
 
 

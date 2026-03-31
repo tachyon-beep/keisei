@@ -11,8 +11,8 @@ Covers five categories:
 import numpy as np
 import pytest
 
-from keisei.shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 
 pytestmark = pytest.mark.unit
 

@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from keisei.core.experience_buffer import ExperienceBuffer
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.training.step_manager import EpisodeState, StepManager
 
 pytestmark = pytest.mark.integration

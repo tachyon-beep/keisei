@@ -1,6 +1,6 @@
-"""Unit tests for keisei.shogi.features: FeatureSpec and FEATURE_SPECS registry."""
+"""Unit tests for keisei.shogi_python_reference.features: FeatureSpec and FEATURE_SPECS registry."""
 
-from keisei.shogi.features import FEATURE_SPECS, FeatureSpec
+from keisei.shogi_python_reference.features import FEATURE_SPECS, FeatureSpec
 
 import pytest
 

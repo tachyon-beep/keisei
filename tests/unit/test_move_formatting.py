@@ -12,8 +12,8 @@ Tests cover:
 
 import pytest
 
-from keisei.shogi.shogi_core_definitions import PieceType
-from keisei.shogi.shogi_game_io import encode_move_to_sfen_string, sfen_to_move_tuple
+from keisei.shogi_python_reference.shogi_core_definitions import PieceType
+from keisei.shogi_python_reference.shogi_game_io import encode_move_to_sfen_string, sfen_to_move_tuple
 from keisei.utils.utils import PolicyOutputMapper
 
 pytestmark = pytest.mark.unit

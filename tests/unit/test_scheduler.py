@@ -89,7 +89,7 @@ class TestGameExecution:
     async def test_run_game_loop_returns_result(self):
         """Game loop runs until done and returns winner info."""
         from keisei.evaluation.scheduler import ContinuousMatchScheduler
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
         mock_config = MagicMock()
@@ -130,7 +130,7 @@ class TestGameExecution:
     async def test_run_game_loop_draw_on_max_moves(self):
         """Game returns draw when max_moves reached without winner."""
         from keisei.evaluation.scheduler import ContinuousMatchScheduler
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
         mock_config = MagicMock()
@@ -197,7 +197,7 @@ class TestEloUpdate:
     async def test_elo_updated_after_win(self):
         """Winner gains Elo, loser loses Elo after a completed match."""
         from keisei.evaluation.scheduler import ContinuousMatchScheduler, SchedulerConfig
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         with tempfile.TemporaryDirectory() as tmpdir:
             elo_path = Path(tmpdir) / "elo.json"
@@ -231,7 +231,7 @@ class TestEloUpdate:
                 "keisei.evaluation.scheduler.load_evaluation_agent",
                 return_value=agent_mock,
             ) as mock_load, patch(
-                "keisei.shogi.shogi_game.ShogiGame"
+                "keisei.shogi_python_reference.shogi_game.ShogiGame"
             ) as game_cls:
                 game_cls.return_value.to_sfen.return_value = "startpos"
 
@@ -456,7 +456,7 @@ class TestCircuitBreakerAndBlacklist:
             with patch(
                 "keisei.evaluation.scheduler.load_evaluation_agent",
                 return_value=agent_mock,
-            ), patch("keisei.shogi.shogi_game.ShogiGame") as game_cls:
+            ), patch("keisei.shogi_python_reference.shogi_game.ShogiGame") as game_cls:
                 game_cls.return_value.to_sfen.return_value = "startpos"
                 scheduler._elo_registry.get_rating("a.pth")
                 scheduler._elo_registry.get_rating("b.pth")
@@ -513,7 +513,7 @@ class TestGameLoopEdgePaths:
     @pytest.mark.asyncio
     async def test_no_legal_moves_returns_opponent_win(self):
         """No legal moves (checkmate) awards win to opponent."""
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = self._make_scheduler_for_game_loop()
 
@@ -535,7 +535,7 @@ class TestGameLoopEdgePaths:
     @pytest.mark.asyncio
     async def test_no_legal_moves_white_turn_returns_black_win(self):
         """No legal moves on White's turn awards win to Black."""
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = self._make_scheduler_for_game_loop()
 
@@ -552,7 +552,7 @@ class TestGameLoopEdgePaths:
     @pytest.mark.asyncio
     async def test_inference_timeout_returns_opponent_win(self):
         """Agent inference timeout awards win to opponent."""
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = self._make_scheduler_for_game_loop()
 
@@ -576,7 +576,7 @@ class TestGameLoopEdgePaths:
     @pytest.mark.asyncio
     async def test_none_action_returns_opponent_win(self):
         """Agent returning None action awards win to opponent."""
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = self._make_scheduler_for_game_loop()
 
@@ -605,7 +605,7 @@ class TestSpectatedGameLoop:
         from keisei.evaluation.scheduler import (
             ContinuousMatchScheduler, ActiveMatchState,
         )
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
         mock_config = MagicMock()
@@ -664,7 +664,7 @@ class TestSpectatedGameLoop:
         from keisei.evaluation.scheduler import (
             ContinuousMatchScheduler, ActiveMatchState,
         )
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         scheduler = ContinuousMatchScheduler.__new__(ContinuousMatchScheduler)
         mock_config = MagicMock()

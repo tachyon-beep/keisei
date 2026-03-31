@@ -23,7 +23,7 @@ import torch
 import yaml  # type: ignore[import]
 from pydantic import ValidationError
 from keisei.config_schema import AppConfig
-from keisei.shogi.shogi_core_definitions import (
+from keisei.shogi_python_reference.shogi_core_definitions import (
     BoardMoveTuple,
     DropMoveTuple,
     PieceType,
@@ -160,8 +160,8 @@ def load_config(
 
 
 if TYPE_CHECKING:
-    from keisei.shogi.shogi_core_definitions import MoveTuple
-    from keisei.shogi.shogi_game import ShogiGame  # Added for type hinting
+    from keisei.shogi_python_reference.shogi_core_definitions import MoveTuple
+    from keisei.shogi_python_reference.shogi_game import ShogiGame  # Added for type hinting
 
 
 class BaseOpponent(ABC):

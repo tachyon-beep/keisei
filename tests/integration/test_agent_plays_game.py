@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 
 pytestmark = pytest.mark.integration
 

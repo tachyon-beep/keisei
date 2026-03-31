@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import torch.nn as nn
 
-from keisei.shogi.shogi_core_definitions import Color
+from keisei.shogi_python_reference.shogi_core_definitions import Color
 from keisei.utils.unified_logger import log_info_to_stderr
 
 # Constants

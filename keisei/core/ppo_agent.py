@@ -18,7 +18,7 @@ from keisei.utils import PolicyOutputMapper
 from keisei.utils.unified_logger import log_error_to_stderr, log_info_to_stderr
 
 if TYPE_CHECKING:
-    from keisei.shogi.shogi_core_definitions import MoveTuple
+    from keisei.shogi_python_reference.shogi_core_definitions import MoveTuple
 
 
 class PPOAgent:

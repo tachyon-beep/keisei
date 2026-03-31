@@ -14,9 +14,9 @@ Tests cover:
 import numpy as np
 import pytest
 
-from keisei.shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
-from keisei.shogi.shogi_game import ShogiGame
-from keisei.shogi.shogi_game_io import (
+from keisei.shogi_python_reference.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
+from keisei.shogi_python_reference.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_game_io import (
     SFEN_HAND_PIECE_CANONICAL_ORDER,
     _get_sfen_board_char,
     _parse_sfen_square,
@@ -220,7 +220,7 @@ class TestSfenParsing:
 
     def test_populate_hands_empty_dash(self):
         """The '-' hand segment produces zero pieces."""
-        from keisei.shogi.shogi_core_definitions import get_unpromoted_types
+        from keisei.shogi_python_reference.shogi_core_definitions import get_unpromoted_types
 
         hands = {
             Color.BLACK.value: {pt: 0 for pt in get_unpromoted_types()},
@@ -233,7 +233,7 @@ class TestSfenParsing:
 
     def test_populate_hands_with_count(self):
         """The '2P' hand segment gives Black 2 pawns."""
-        from keisei.shogi.shogi_core_definitions import get_unpromoted_types
+        from keisei.shogi_python_reference.shogi_core_definitions import get_unpromoted_types
 
         hands = {
             Color.BLACK.value: {pt: 0 for pt in get_unpromoted_types()},
@@ -244,7 +244,7 @@ class TestSfenParsing:
 
     def test_populate_hands_mixed_colors(self):
         """'RBp' gives Black 1 rook + 1 bishop, White 1 pawn."""
-        from keisei.shogi.shogi_core_definitions import get_unpromoted_types
+        from keisei.shogi_python_reference.shogi_core_definitions import get_unpromoted_types
 
         hands = {
             Color.BLACK.value: {pt: 0 for pt in get_unpromoted_types()},

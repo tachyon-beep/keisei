@@ -10,8 +10,8 @@ from keisei.config_schema import (
 from keisei.core.experience_buffer import ExperienceBuffer
 from keisei.core.neural_network import ActorCritic
 from keisei.core.ppo_agent import PPOAgent
-from keisei.shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.training.models.resnet_tower import ActorCriticResTower
 from keisei.utils.utils import PolicyOutputMapper
 

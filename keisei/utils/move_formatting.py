@@ -2,7 +2,7 @@
 move_formatting.py: Contains utilities for formatting Shogi moves.
 """
 
-from keisei.shogi.shogi_core_definitions import PieceType
+from keisei.shogi_python_reference.shogi_core_definitions import PieceType
 
 
 def format_move_with_description(selected_shogi_move, policy_output_mapper, game=None):

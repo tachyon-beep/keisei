@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from keisei.shogi import Color
+from keisei.shogi_python_reference import Color
 from keisei.training.step_manager import EpisodeState, StepManager, StepResult
 
 pytestmark = pytest.mark.unit
@@ -346,7 +346,7 @@ class TestCapturePromotionTracking:
             0.8,
         )
         # Simulate a capture by returning captured_piece_type in info
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm.game.current_player = Color.BLACK
         sm.game.make_move.return_value = (
@@ -505,7 +505,7 @@ class TestTrackMoveStats:
     """Tests for StepManager._track_move_stats."""
 
     def test_sente_capture_increments_count(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         move = (0, 0, 1, 0, False)  # Board move, no promotion
@@ -515,7 +515,7 @@ class TestTrackMoveStats:
         assert sm.gote_capture_count == 0
 
     def test_gote_capture_increments_count(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         move = (0, 0, 1, 0, False)
@@ -525,7 +525,7 @@ class TestTrackMoveStats:
         assert sm.sente_capture_count == 0
 
     def test_best_capture_tracking(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         # First capture: PAWN (value 1)
@@ -548,7 +548,7 @@ class TestTrackMoveStats:
         assert sm.sente_best_capture_value == 10
 
     def test_promoted_piece_capture_uses_base_name(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         sm._track_move_stats(
@@ -560,7 +560,7 @@ class TestTrackMoveStats:
         assert sm.sente_best_capture_value == 5
 
     def test_drop_tracking(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         drop_move = (None, None, 3, 4, False)  # Drop move
@@ -570,7 +570,7 @@ class TestTrackMoveStats:
         assert sm.gote_drop_count == 1
 
     def test_promotion_tracking(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         promo_move = (0, 0, 1, 0, True)  # Promotion move
@@ -580,7 +580,7 @@ class TestTrackMoveStats:
         assert sm.gote_promo_count == 1
 
     def test_no_stats_on_normal_move(self):
-        from keisei.shogi.shogi_core_definitions import Color
+        from keisei.shogi_python_reference.shogi_core_definitions import Color
 
         sm = _make_step_manager()
         normal_move = (0, 0, 1, 0, False)  # No capture, no drop, no promo

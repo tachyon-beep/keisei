@@ -2,7 +2,7 @@
 
 import pytest
 
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.utils.opponents import SimpleHeuristicOpponent, SimpleRandomOpponent
 
 pytestmark = pytest.mark.unit

@@ -16,8 +16,8 @@ import torch
 
 from keisei.core.actor_critic_protocol import ActorCriticProtocol
 from keisei.core.experience_buffer import Experience
-from keisei.shogi.shogi_core_definitions import Color
-from keisei.shogi.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_core_definitions import Color
+from keisei.shogi_python_reference.shogi_game import ShogiGame
 from keisei.utils.utils import PolicyOutputMapper
 
 from .utils import decompress_array

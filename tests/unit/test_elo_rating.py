@@ -2,7 +2,7 @@
 
 import pytest
 
-from keisei.shogi.shogi_core_definitions import Color
+from keisei.shogi_python_reference.shogi_core_definitions import Color
 from keisei.training.elo_rating import EloRatingSystem
 
 pytestmark = pytest.mark.unit

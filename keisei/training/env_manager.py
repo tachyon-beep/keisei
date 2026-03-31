@@ -15,7 +15,7 @@ import numpy as np
 
 from keisei.config_schema import AppConfig
 from keisei.constants import SHOGI_BOARD_SIZE
-from keisei.shogi import ShogiGame
+from keisei.shogi_python_reference import ShogiGame
 from keisei.utils import PolicyOutputMapper
 
 

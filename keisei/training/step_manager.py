@@ -16,7 +16,7 @@ import torch  # Added import
 from keisei.config_schema import AppConfig
 from keisei.core.experience_buffer import ExperienceBuffer
 from keisei.core.ppo_agent import PPOAgent
-from keisei.shogi import Color, ShogiGame  # Added Color import
+from keisei.shogi_python_reference import Color, ShogiGame  # Added Color import
 from keisei.utils import PolicyOutputMapper, format_move_with_description_enhanced
 
 

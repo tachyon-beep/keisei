@@ -1,5 +1,5 @@
 """
-Comprehensive tests for keisei.shogi.shogi_rules_logic module.
+Comprehensive tests for keisei.shogi_python_reference.shogi_rules_logic module.
 
 Covers: find_king, is_in_check, is_piece_type_sliding, generate_piece_potential_moves,
 check_for_nifu, check_if_square_is_attacked, can_promote_specific_piece,
@@ -9,9 +9,9 @@ check_for_sennichite.
 
 import pytest
 
-from keisei.shogi.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
-from keisei.shogi.shogi_game import ShogiGame
-from keisei.shogi.shogi_rules_logic import (
+from keisei.shogi_python_reference.shogi_core_definitions import Color, MoveTuple, Piece, PieceType
+from keisei.shogi_python_reference.shogi_game import ShogiGame
+from keisei.shogi_python_reference.shogi_rules_logic import (
     can_drop_specific_piece,
     can_promote_specific_piece,
     check_for_nifu,
