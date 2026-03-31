@@ -1,12 +1,32 @@
+# Python
 __pycache__/
 *.pyc
 *.egg-info/
-.venv/
-.mypy_cache/
-.pytest_cache/
 dist/
 build/
+
+# Rust
 target/
 *.so
 *.dylib
+
+# Environments
+.venv/
 .env
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+.uv-cache/
+
+# Tooling state
+.filigree/
+.claude/
+.superpowers/
+.agents/
+.worktrees/
+.mcp.json
+
+# IDE
+.vscode/
+.idea/
