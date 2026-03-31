@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "shogi-gym"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+python-source = "../../python"
+module-name = "shogi_gym._native"
+features = ["pyo3/extension-module"]
