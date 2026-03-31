@@ -72,3 +72,51 @@ class TestSpectatorEnv:
         assert len(d["move_history"]) == 1
         assert "action" in d["move_history"][0]
         assert "notation" in d["move_history"][0]
+
+
+class TestSpectatorFromSfen:
+    STARTPOS_SFEN = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
+
+    def test_from_sfen_creates_env(self):
+        env = SpectatorEnv.from_sfen(self.STARTPOS_SFEN)
+        assert env.current_player == "black"
+        assert env.ply == 0
+        assert not env.is_over
+        assert env.action_space_size == 13_527
+
+    def test_from_sfen_roundtrip(self):
+        env1 = SpectatorEnv()
+        env1.reset()
+        legal = env1.legal_actions()
+        env1.step(legal[0])
+        sfen = env1.to_sfen()
+        env2 = SpectatorEnv.from_sfen(sfen)
+        assert env2.to_sfen() == sfen
+
+    def test_from_sfen_empty_move_history(self):
+        env = SpectatorEnv.from_sfen(self.STARTPOS_SFEN)
+        d = env.to_dict()
+        assert len(d["move_history"]) == 0
+
+    def test_from_sfen_playable(self):
+        env = SpectatorEnv.from_sfen(self.STARTPOS_SFEN)
+        legal = env.legal_actions()
+        assert len(legal) == 30
+        state = env.step(legal[0])
+        assert state["ply"] == 1
+
+    def test_from_sfen_custom_max_ply(self):
+        env = SpectatorEnv.from_sfen(self.STARTPOS_SFEN, max_ply=1)
+        legal = env.legal_actions()
+        env.step(legal[0])
+        assert env.is_over
+
+    def test_from_sfen_invalid_raises(self):
+        with pytest.raises(ValueError):
+            SpectatorEnv.from_sfen("not a valid sfen")
+
+    def test_from_sfen_with_hands(self):
+        sfen_with_hands = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b 2P 1"
+        env = SpectatorEnv.from_sfen(sfen_with_hands)
+        d = env.to_dict()
+        assert d["hands"]["black"]["pawn"] == 2

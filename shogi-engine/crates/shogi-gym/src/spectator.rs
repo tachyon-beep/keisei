@@ -89,6 +89,28 @@ impl SpectatorEnv {
         }
     }
 
+    /// Create a SpectatorEnv from a SFEN string.
+    ///
+    /// Args:
+    ///     sfen: SFEN position string.
+    ///     max_ply: Maximum plies before truncation (default 500).
+    ///
+    /// Raises ValueError if the SFEN is invalid.
+    #[staticmethod]
+    #[pyo3(signature = (sfen, max_ply = None))]
+    pub fn from_sfen(sfen: &str, max_ply: Option<u32>) -> PyResult<Self> {
+        let max_ply = max_ply.unwrap_or(500);
+        let game = GameState::from_sfen(sfen, max_ply)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid SFEN: {e}")))?;
+        Ok(SpectatorEnv {
+            game,
+            max_ply,
+            mapper: DefaultActionMapper,
+            obs_gen: DefaultObservationGenerator::new(),
+            move_history: Vec::new(),
+        })
+    }
+
     /// Reset game to startpos, clear move history, return state dict.
     pub fn reset(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         self.game = GameState::with_max_ply(self.max_ply);
