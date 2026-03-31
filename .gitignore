@@ -1,106 +1,12 @@
-# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
+*.pyc
 *.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-debug.log
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# mypy
-.mypy_cache/
-.dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# VS Code
-.vscode/
-
-# Model and log directories
-/models/
-/logs/
-/tmp/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Environment variables
-.env
-
-# Weights & Biases
-wandb/
-
-# Codacy / VS Code AI rules
-.github/copilot-instructions.md
-.github/instructions/codacy.instructions.md
-
-# Test models and checkpoints
-/test_models/
-
-# Tournament results
-tournament_results/
-
-# uv cache
-.uv-cache/
-
-# Temp/scratch files in root
-/*.png
-/*.jpg
-
-# Virtual environments
 .venv/
-env/
-venv/
-
-# Issue trackers
-.filigree/
-.superpowers/brainstorm/
-
-# Worktrees
-.worktrees/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+target/
+*.so
+*.dylib
+.env

@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 44" width="40" height="44">
-  <g transform="rotate(180, 20.0, 22.0)">
-    <path d="M20 2 L36 14 L32 42 L8 42 L4 14 Z" fill="#b5ab99" stroke="#000000" stroke-width="1.5"/>
-    <text x="20.0" y="30" text-anchor="middle" dominant-baseline="central"
-          font-size="18" font-family="serif" fill="#1a1a1a">飛</text>
-  </g>
-</svg>
