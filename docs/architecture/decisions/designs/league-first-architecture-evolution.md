@@ -1,7 +1,6 @@
 # League-First Architecture Evolution Plan
 
 **Date:** 2026-02-08  
-**Inputs:** `README.md`, `docs/DESIGN.md`, `docs/architecture-assessment.md`, `docs/architecture-consensus-dissenting-viewpoint-paper.md`  
 **Decision Anchor:** `docs/architecture/decisions/ADR-001-intent-hierarchy-and-league-first-architecture.md`
 
 ## Objective
@@ -61,9 +60,11 @@ Add explicit DTOs:
 - `ModelProfileSnapshot` (opening tendencies, style indicators, heatmaps, lineage drift)
 
 Suggested location:
+
 - `keisei/evaluation/league/contracts.py`
 
 Why:
+
 - Replaces implicit full-object coupling.
 - Makes callback behavior testable and auditable.
 
@@ -78,11 +79,13 @@ Create a callback context object containing only needed fields:
 - run metadata
 
 Suggested updates:
+
 - `keisei/training/callbacks.py`
 - `keisei/training/callback_manager.py`
 - `keisei/training/training_loop_manager.py`
 
 Why:
+
 - Keeps training manager boundaries intact.
 - Prevents callback accretion into architecture bypasses.
 
@@ -91,14 +94,17 @@ Why:
 Add a runtime manager that coordinates two lanes and reuses existing evaluators/background tournament support.
 
 Suggested location:
+
 - `keisei/evaluation/league/runtime.py`
 
 Integration points:
+
 - Invoked from callback manager (for scheduled triggers).
 - Reads from `EvaluationConfig`.
 - Writes league snapshot for WebUI.
 
 Why:
+
 - Makes exhibition “always running” a first-class operational behavior.
 
 ### 4) Extend Config for League and Exhibition Controls
@@ -120,6 +126,7 @@ Add cross-field validation in `AppConfig`:
 - exhibition enabled implies league runtime enabled
 
 Why:
+
 - Avoids hidden behavior and runtime misconfiguration.
 
 ### 5) Upgrade WebUI Data Contract for League View
@@ -132,11 +139,13 @@ Add league fields to snapshot generation:
 - league runtime health
 
 Suggested files:
+
 - `keisei/webui/state_snapshot.py`
 - `keisei/webui/streamlit_app.py`
 - `keisei/webui/streamlit_manager.py`
 
 Why:
+
 - Supports the “watchable Shogi + DRL in motion” objective directly.
 
 ### 5b) Add Skill Differential View Contract
@@ -150,11 +159,13 @@ Add fields that explicitly represent cross-skill dynamics:
 - promotion/demotion pressure score
 
 Suggested files:
+
 - `keisei/webui/state_snapshot.py`
 - `keisei/webui/streamlit_app.py`
 - `keisei/evaluation/analytics/` (reuse/extend existing analytics modules)
 
 Why:
+
 - Directly demonstrates that models improve against stronger competition and that ranking gaps translate into visible match differentials.
 
 ### 5c) Add Model Profile and Heatmap Contract
@@ -168,12 +179,14 @@ Add fields that describe model play preference:
 - lineage style-drift metrics (child vs parent profile divergence)
 
 Suggested files:
+
 - `keisei/evaluation/analytics/` (extend existing analytics pipeline)
 - `keisei/webui/state_snapshot.py`
 - `keisei/webui/streamlit_app.py`
 - `keisei/evaluation/lineage/registry.py` (for parent-child linkage)
 
 Why:
+
 - Supports the narrative that models at different skill levels exhibit distinct styles and that style evolves as models learn against stronger opponents.
 
 ### 6) Keep LLM Goal Subordinate and Measurable
@@ -185,9 +198,11 @@ Add process telemetry and reporting, not runtime coupling:
 - Publish findings in docs or CI reports.
 
 Suggested location:
+
 - `docs/experiments/llm-coding-effectiveness.md`
 
 Why:
+
 - Evaluates the third leg without distorting product architecture.
 
 ## Migration Phases
