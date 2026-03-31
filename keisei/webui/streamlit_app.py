@@ -816,8 +816,8 @@ def render_overview_tab(env: EnvelopeParser) -> None:
 
     overview_selected = st.session_state.get("overview_selected_square")
 
-    # Row 1: square detail | board | 6 training charts
-    col_detail, col_board, col_charts = st.columns([2, 3, 5])
+    # Row 1: square detail / move log | board | 6 training charts
+    col_detail, col_board, col_charts = st.columns([3, 3, 5])
 
     with col_detail:
         if overview_selected and board_state:
@@ -835,6 +835,10 @@ def render_overview_tab(env: EnvelopeParser) -> None:
                     "Black +" if v > 0.05 else ("Even" if abs(v) <= 0.05 else "White +")
                 )
                 st.caption(f"V(s): {v:+.3f}  ({label})")
+        # Move log fills the space when no square detail is shown
+        step_info = env.step_info
+        if step_info:
+            render_move_log(step_info)
 
     with col_board:
         if board_state:

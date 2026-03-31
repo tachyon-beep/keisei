@@ -28,7 +28,7 @@ This project uses `filigree` for issue tracking. Use the Filigree section below 
 - If push fails, resolve and retry until it succeeds
 
 
-<!-- filigree:instructions:v1.5.1:63b4188e -->
+<!-- filigree:instructions:v1.6.0:84820288 -->
 ## Filigree Issue Tracker
 
 Use `filigree` for all task tracking in this project. Data lives in `.filigree/`.
@@ -73,7 +73,7 @@ filigree ready                              # Show issues ready to work (no bloc
 filigree list --status=open                 # All open issues
 filigree list --status=in_progress          # Active work
 filigree list --label=bug --label=P1        # Filter by multiple labels (AND)
-filigree list --label-prefix=cluster/       # Filter by label namespace prefix
+filigree list --label-prefix=cluster:       # Filter by label namespace prefix
 filigree list --not-label=wontfix           # Exclude issues with label
 filigree show <id>                          # Detailed issue view
 

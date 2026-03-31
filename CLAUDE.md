@@ -184,7 +184,7 @@ keisei/
 - **Markers**: Defined in `pyproject.toml` (unit, integration, e2e, slow, performance) but not yet applied to test functions — use directory-based test selection instead
 - **CI/CD**: Local CI via `./scripts/run_local_ci.sh` (GitHub Actions CI is currently disabled)
 
-<!-- filigree:instructions:v1.5.1:63b4188e -->
+<!-- filigree:instructions:v1.6.0:84820288 -->
 ## Filigree Issue Tracker
 
 Use `filigree` for all task tracking in this project. Data lives in `.filigree/`.
@@ -229,7 +229,7 @@ filigree ready                              # Show issues ready to work (no bloc
 filigree list --status=open                 # All open issues
 filigree list --status=in_progress          # Active work
 filigree list --label=bug --label=P1        # Filter by multiple labels (AND)
-filigree list --label-prefix=cluster/       # Filter by label namespace prefix
+filigree list --label-prefix=cluster:       # Filter by label namespace prefix
 filigree list --not-label=wontfix           # Exclude issues with label
 filigree show <id>                          # Detailed issue view
 
