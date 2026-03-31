@@ -1,0 +1,109 @@
+<script>
+  import { PIECE_KANJI, HAND_PIECE_ORDER } from './pieces.js'
+
+  export let color = 'black'
+  export let hand = {}
+
+  const label = color === 'black' ? '☗ Black' : '☖ White'
+
+  $: pieces = HAND_PIECE_ORDER
+    .filter(type => (hand[type] || 0) > 0)
+    .map(type => ({
+      type,
+      kanji: PIECE_KANJI[type].base,
+      count: hand[type],
+    }))
+</script>
+
+<div class="tray" class:black={color === 'black'} class:white={color === 'white'}>
+  <span class="label">{label}</span>
+  <div class="pieces">
+    {#each pieces as p}
+      <div class="hand-piece">
+        <span class="kanji">{p.kanji}</span>
+        {#if p.count > 1}
+          <span class="count">{p.count}</span>
+        {/if}
+      </div>
+    {/each}
+    {#if pieces.length === 0}
+      <span class="empty">—</span>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .tray {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .tray.black {
+    background: #1a2a1a;
+    border-radius: 0 0 6px 6px;
+    border-top: none;
+  }
+
+  .tray.white {
+    background: #1a1a2e;
+    border-radius: 6px 6px 0 0;
+    border-bottom: none;
+  }
+
+  .label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 55px;
+  }
+
+  .pieces {
+    display: flex;
+    gap: 4px;
+  }
+
+  .hand-piece {
+    width: 28px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    position: relative;
+    background: var(--bg-card);
+  }
+
+  .count {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: var(--accent-green);
+    color: #000;
+    font-size: 9px;
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+  }
+
+  .tray.white .hand-piece {
+    border-color: #555;
+  }
+
+  .tray.black .hand-piece {
+    border-color: var(--accent-green);
+  }
+
+  .empty {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+</style>
