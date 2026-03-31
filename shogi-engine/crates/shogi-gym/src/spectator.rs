@@ -1,45 +1,15 @@
 use numpy::{PyArray3, PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, PieceType, Square};
+use shogi_core::{GameState, HandPieceType, Move};
 
 use crate::action_mapper::{ActionMapper, DefaultActionMapper};
 use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS};
+use crate::spectator_data::{build_spectator_dict, color_name};
 
 // ---------------------------------------------------------------------------
-// Helper functions
+// Helper functions (spectator-only)
 // ---------------------------------------------------------------------------
-
-fn piece_type_name(pt: PieceType) -> &'static str {
-    match pt {
-        PieceType::Pawn   => "pawn",
-        PieceType::Lance  => "lance",
-        PieceType::Knight => "knight",
-        PieceType::Silver => "silver",
-        PieceType::Gold   => "gold",
-        PieceType::Bishop => "bishop",
-        PieceType::Rook   => "rook",
-        PieceType::King   => "king",
-    }
-}
-
-fn color_name(c: Color) -> &'static str {
-    match c {
-        Color::Black => "black",
-        Color::White => "white",
-    }
-}
-
-fn game_result_str(r: &GameResult) -> &'static str {
-    match r {
-        GameResult::InProgress        => "in_progress",
-        GameResult::Checkmate { .. }  => "checkmate",
-        GameResult::Repetition        => "repetition",
-        GameResult::PerpetualCheck { .. } => "perpetual_check",
-        GameResult::Impasse { .. }    => "impasse",
-        GameResult::MaxMoves          => "max_moves",
-    }
-}
 
 /// Encode a drop piece char: P, L, N, S, G, B, R
 fn hand_piece_char(hpt: HandPieceType) -> char {
@@ -163,58 +133,10 @@ impl SpectatorEnv {
     /// - `in_check`: bool
     /// - `move_history`: list of `{"action": int, "notation": str}`
     pub fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        let d = PyDict::new(py);
+        let d_bound = build_spectator_dict(py, &self.game)?;
+        let d = d_bound.bind(py);
 
-        // -- board: list of 81 elements (None or piece dict) --
-        let board_list = PyList::empty(py);
-        for idx in 0..81usize {
-            let sq = Square::new_unchecked(idx as u8);
-            match self.game.position.piece_at(sq) {
-                None => board_list.append(py.None())?,
-                Some(piece) => {
-                    let pd = PyDict::new(py);
-                    pd.set_item("type", piece_type_name(piece.piece_type()))?;
-                    pd.set_item("color", color_name(piece.color()))?;
-                    pd.set_item("promoted", piece.is_promoted())?;
-                    pd.set_item("row", sq.row() as i64)?;
-                    pd.set_item("col", sq.col() as i64)?;
-                    board_list.append(pd)?;
-                }
-            }
-        }
-        d.set_item("board", board_list)?;
-
-        // -- hands --
-        let hands_dict = PyDict::new(py);
-        for &color in &[Color::Black, Color::White] {
-            let hand_dict = PyDict::new(py);
-            for &hpt in &HandPieceType::ALL {
-                let count = self.game.position.hand_count(color, hpt) as i64;
-                hand_dict.set_item(piece_type_name(hpt.to_piece_type()), count)?;
-            }
-            hands_dict.set_item(color_name(color), hand_dict)?;
-        }
-        d.set_item("hands", hands_dict)?;
-
-        // -- current_player --
-        d.set_item("current_player", color_name(self.game.position.current_player))?;
-
-        // -- ply --
-        d.set_item("ply", self.game.ply as i64)?;
-
-        // -- is_over --
-        d.set_item("is_over", self.game.result.is_terminal())?;
-
-        // -- result --
-        d.set_item("result", game_result_str(&self.game.result))?;
-
-        // -- sfen --
-        d.set_item("sfen", self.game.position.to_sfen())?;
-
-        // -- in_check --
-        d.set_item("in_check", self.game.is_in_check())?;
-
-        // -- move_history --
+        // Append move_history (SpectatorEnv-only)
         let history_list = PyList::empty(py);
         for (action_idx, notation) in &self.move_history {
             let hd = PyDict::new(py);
@@ -224,7 +146,7 @@ impl SpectatorEnv {
         }
         d.set_item("move_history", history_list)?;
 
-        Ok(d.into())
+        Ok(d_bound)
     }
 
     /// Serialize current position to SFEN string.

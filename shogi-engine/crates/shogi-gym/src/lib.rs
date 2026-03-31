@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod action_mapper;
 mod observation;
+mod spectator_data;
 mod step_result;
 mod vec_env;
 mod spectator;
