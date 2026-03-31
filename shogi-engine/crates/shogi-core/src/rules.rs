@@ -94,17 +94,16 @@ fn opponent_can_escape(
             }
             let nr = king_row + dr;
             let nc = king_col + dc;
-            if nr < 0 || nr >= 9 || nc < 0 || nc >= 9 {
+            if !(0..9).contains(&nr) || !(0..9).contains(&nc) {
                 continue;
             }
             let adj_sq = Square::from_row_col(nr as u8, nc as u8).unwrap();
 
             // Can't move to a square occupied by own piece.
-            if let Some(p) = game.position.piece_at(adj_sq) {
-                if p.color() == opponent {
+            if let Some(p) = game.position.piece_at(adj_sq)
+                && p.color() == opponent {
                     continue;
                 }
-            }
 
             // Can't move to a square attacked by the dropper.
             if game.attack_map[dropper as usize][adj_sq.index()] > 0 {
@@ -181,13 +180,11 @@ fn piece_attacks_square(pos: &Position, from: Square, piece: Piece, target: Squa
 
     // Step attacks.
     for delta in &steps {
-        if !would_wrap_file(from, *delta) {
-            if let Some(sq) = from.offset(*delta) {
-                if sq == target {
+        if !would_wrap_file(from, *delta)
+            && let Some(sq) = from.offset(*delta)
+                && sq == target {
                     return true;
                 }
-            }
-        }
     }
 
     // Slide attacks.

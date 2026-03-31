@@ -7,6 +7,7 @@ use shogi_core::{Color, HandPieceType, Move, Square};
 // ---------------------------------------------------------------------------
 
 /// Encode/decode moves to/from action indices with perspective support.
+#[allow(dead_code)]
 pub trait ActionMapper: Send + Sync {
     fn encode(&self, mv: Move, perspective: Color) -> usize;
     fn decode(&self, idx: usize, perspective: Color) -> Result<Move, String>;
@@ -187,7 +188,7 @@ impl DefaultActionMapper {
     pub fn decode(&self, py: Python<'_>, idx: usize, is_white: bool) -> PyResult<Py<PyDict>> {
         let perspective = if is_white { Color::White } else { Color::Black };
         let mv = <Self as ActionMapper>::decode(self, idx, perspective)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
         let dict = PyDict::new(py);
         match mv {

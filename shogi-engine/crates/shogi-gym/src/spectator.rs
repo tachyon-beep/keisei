@@ -131,7 +131,7 @@ impl SpectatorEnv {
 
         let perspective = self.game.position.current_player;
         let mv = <DefaultActionMapper as ActionMapper>::decode(&self.mapper, action, perspective)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
         let notation = move_notation(mv);
         self.move_history.push((action, notation));

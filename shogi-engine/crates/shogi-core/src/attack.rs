@@ -41,7 +41,7 @@ pub type AttackMap = [[u8; Square::NUM_SQUARES]; 2];
 #[inline]
 pub fn would_wrap_file(from_sq: Square, delta: i8) -> bool {
     let new_idx = from_sq.index() as i16 + delta as i16;
-    if new_idx < 0 || new_idx >= 81 {
+    if !(0..81).contains(&new_idx) {
         return true;
     }
     let new_col = new_idx as usize % 9;
@@ -139,7 +139,7 @@ pub fn compute_knight_attacks(sq: Square, color: Color) -> Vec<Square> {
     let mut targets = Vec::with_capacity(2);
     for &dc in &[-1i16, 1i16] {
         let tc = col + dc;
-        if target_row >= 0 && target_row < 9 && tc >= 0 && tc < 9 {
+        if (0..9).contains(&target_row) && (0..9).contains(&tc) {
             targets.push(
                 Square::from_row_col(target_row as u8, tc as u8)
                     .expect("knight target must be valid"),
@@ -191,12 +191,11 @@ pub fn compute_attack_map(pos: &Position) -> AttackMap {
 
         // Step attacks
         for delta in steps {
-            if !would_wrap_file(sq, delta) {
-                if let Some(target) = sq.offset(delta) {
+            if !would_wrap_file(sq, delta)
+                && let Some(target) = sq.offset(delta) {
                     attack_map[color_idx][target.index()] =
                         attack_map[color_idx][target.index()].saturating_add(1);
                 }
-            }
         }
 
         // Slide attacks (ray-cast)
@@ -251,11 +250,10 @@ pub fn remove_piece_attacks(map: &mut AttackMap, pos: &Position, sq: Square, pie
 
     // Step attacks
     for delta in steps {
-        if !would_wrap_file(sq, delta) {
-            if let Some(target) = sq.offset(delta) {
+        if !would_wrap_file(sq, delta)
+            && let Some(target) = sq.offset(delta) {
                 map[color_idx][target.index()] = map[color_idx][target.index()].saturating_sub(1);
             }
-        }
     }
 
     // Slide attacks (ray-cast, stopping at the first blocker — same logic as compute_attack_map)
@@ -301,11 +299,10 @@ pub fn add_piece_attacks(map: &mut AttackMap, pos: &Position, sq: Square, piece:
 
     // Step attacks
     for delta in steps {
-        if !would_wrap_file(sq, delta) {
-            if let Some(target) = sq.offset(delta) {
+        if !would_wrap_file(sq, delta)
+            && let Some(target) = sq.offset(delta) {
                 map[color_idx][target.index()] = map[color_idx][target.index()].saturating_add(1);
             }
-        }
     }
 
     // Slide attacks (ray-cast, stopping at the first blocker)
@@ -381,7 +378,7 @@ pub fn update_rays_through_square(
                             let pt = p.piece_type();
                             let promoted = p.is_promoted();
                             // Knights are never sliders.
-                            if !(pt == PieceType::Knight && !promoted) {
+                            if pt != PieceType::Knight || promoted {
                                 let (_, slides) = piece_attack_dirs(pt, p.color(), promoted);
                                 if slides.contains(&extend_dir) {
                                     found = Some(p.color() as usize);

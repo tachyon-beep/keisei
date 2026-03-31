@@ -128,11 +128,10 @@ pub fn generate_pseudo_legal_board_moves(pos: &Position, color: Color, moves: &m
         if pt == PieceType::Knight && !promoted {
             for to in compute_knight_attacks(from, color) {
                 // Skip squares occupied by own pieces.
-                if let Some(target_piece) = pos.piece_at(to) {
-                    if target_piece.color() == color {
+                if let Some(target_piece) = pos.piece_at(to)
+                    && target_piece.color() == color {
                         continue;
                     }
-                }
                 add_board_move_with_promotion(from, to, pt, promoted, color, moves);
             }
             continue;
@@ -150,11 +149,10 @@ pub fn generate_pseudo_legal_board_moves(pos: &Position, color: Color, moves: &m
                 None => continue,
             };
             // Skip squares occupied by own pieces.
-            if let Some(target_piece) = pos.piece_at(to) {
-                if target_piece.color() == color {
+            if let Some(target_piece) = pos.piece_at(to)
+                && target_piece.color() == color {
                     continue;
                 }
-            }
             add_board_move_with_promotion(from, to, pt, promoted, color, moves);
         }
 

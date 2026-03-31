@@ -211,7 +211,7 @@ impl Square {
     /// Apply a signed delta to the raw index, returning `None` if out of range.
     pub fn offset(self, delta: i8) -> Option<Square> {
         let new_idx = self.0 as i16 + delta as i16;
-        if new_idx >= 0 && new_idx < 81 {
+        if (0..81).contains(&new_idx) {
             Some(Square(new_idx as u8))
         } else {
             None

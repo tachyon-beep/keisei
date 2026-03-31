@@ -32,11 +32,10 @@ pub fn compute_pawn_columns(pos: &Position) -> [[bool; 9]; 2] {
     let mut cols = [[false; 9]; 2];
     for idx in 0..Square::NUM_SQUARES {
         let sq = Square::new_unchecked(idx as u8);
-        if let Some(piece) = pos.piece_at(sq) {
-            if piece.piece_type() == PieceType::Pawn && !piece.is_promoted() {
+        if let Some(piece) = pos.piece_at(sq)
+            && piece.piece_type() == PieceType::Pawn && !piece.is_promoted() {
                 cols[piece.color() as usize][sq.col() as usize] = true;
             }
-        }
     }
     cols
 }
@@ -57,6 +56,12 @@ pub struct GameState {
     pub result: GameResult,
 }
 
+impl Default for GameState {
+    fn default() -> Self {
+        Self::with_max_ply(500)
+    }
+}
+
 impl GameState {
     // -----------------------------------------------------------------------
     // Constructors
@@ -64,7 +69,7 @@ impl GameState {
 
     /// Standard starting position with max_ply = 500.
     pub fn new() -> GameState {
-        Self::with_max_ply(500)
+        Self::default()
     }
 
     /// Standard starting position with a custom max_ply.
@@ -184,12 +189,11 @@ impl GameState {
                     // the same color on that column.
                     self.update_pawn_column_for(mover_color, from.col());
                 }
-                if let Some(cap) = captured {
-                    if cap.piece_type() == PieceType::Pawn && !cap.is_promoted() {
+                if let Some(cap) = captured
+                    && cap.piece_type() == PieceType::Pawn && !cap.is_promoted() {
                         let opp = mover_color.opponent();
                         self.update_pawn_column_for(opp, to.col());
                     }
-                }
                 // If a pawn was placed (not promoted), mark the destination column.
                 if pt == PieceType::Pawn && !promote && !moving_piece.is_promoted() {
                     self.pawn_columns[mover_color as usize][to.col() as usize] = true;
@@ -502,15 +506,14 @@ impl GameState {
         self.pawn_columns[color_idx][col_idx] = false;
         for row in 0u8..9 {
             let sq = Square::from_row_col(row, col).unwrap();
-            if let Some(piece) = self.position.piece_at(sq) {
-                if piece.color() == color
+            if let Some(piece) = self.position.piece_at(sq)
+                && piece.color() == color
                     && piece.piece_type() == PieceType::Pawn
                     && !piece.is_promoted()
                 {
                     self.pawn_columns[color_idx][col_idx] = true;
                     return;
                 }
-            }
         }
     }
 }

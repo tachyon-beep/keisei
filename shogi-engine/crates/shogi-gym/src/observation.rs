@@ -75,6 +75,7 @@ fn promoted_channel(pt: PieceType) -> usize {
 // ObservationGenerator trait
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub trait ObservationGenerator: Send + Sync {
     /// Fill `buffer` with the observation for `state` from `perspective`'s point of view.
     ///

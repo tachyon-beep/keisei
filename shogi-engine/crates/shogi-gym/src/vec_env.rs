@@ -130,13 +130,6 @@ impl VecEnv {
         }
     }
 
-    /// Write observation for environment `i` into the terminal obs buffer.
-    fn write_terminal_obs(&mut self, i: usize) {
-        let perspective = self.games[i].position.current_player;
-        let obs_start = i * BUFFER_LEN;
-        let obs_slice = &mut self.terminal_obs_buffer[obs_start..obs_start + BUFFER_LEN];
-        self.obs_gen.generate(&self.games[i], perspective, obs_slice);
-    }
 }
 
 #[pymethods]
@@ -221,8 +214,8 @@ impl VecEnv {
 
         // Decode all actions and validate against legal masks
         let mut decoded_moves: Vec<Move> = Vec::with_capacity(self.num_envs);
-        for i in 0..self.num_envs {
-            let action_idx = actions[i] as usize;
+        for (i, action) in actions.iter().enumerate() {
+            let action_idx = *action as usize;
             let perspective = self.games[i].position.current_player;
 
             let mv = <DefaultActionMapper as ActionMapper>::decode(
