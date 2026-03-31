@@ -571,4 +571,69 @@ mod tests {
         );
         assert_eq!(reparsed.board, gs.position.board, "Board mismatch after SFEN roundtrip");
     }
+
+    // -----------------------------------------------------------------------
+    // SFEN edge cases: promoted king, empty board, king in hand, col overflow
+    // -----------------------------------------------------------------------
+
+    /// Promoted king (+K) on the board should be rejected (King cannot promote).
+    #[test]
+    fn test_sfen_invalid_promoted_king() {
+        let sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSG+KGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "promoted King (+K) should be invalid");
+    }
+
+    /// Empty board SFEN: all squares empty, only kings needed for a valid
+    /// position isn't required by the parser — test pure empty parsing.
+    #[test]
+    fn test_sfen_empty_board() {
+        let sfen = "9/9/9/9/9/9/9/9/9 b - 1";
+        let pos = Position::from_sfen(sfen).expect("empty board should parse");
+        // Every square should be empty
+        for idx in 0..81 {
+            let sq = Square::new_unchecked(idx as u8);
+            assert!(
+                pos.piece_at(sq).is_none(),
+                "square {} should be empty on empty board",
+                idx
+            );
+        }
+        // Hands should be empty
+        for &hpt in &HandPieceType::ALL {
+            assert_eq!(pos.hand_count(Color::Black, hpt), 0);
+            assert_eq!(pos.hand_count(Color::White, hpt), 0);
+        }
+        // Roundtrip
+        assert_eq!(pos.to_sfen(), sfen);
+    }
+
+    /// King character in hand string should be rejected (Kings can't be captured).
+    #[test]
+    fn test_sfen_invalid_king_in_hand() {
+        let sfen = "4k4/9/9/9/9/9/9/9/4K4 b K 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "King in hand should be invalid");
+    }
+
+    /// Column overflow: a rank with more than 9 columns should be rejected.
+    #[test]
+    fn test_sfen_invalid_column_overflow() {
+        // "55" = 5 empty + 5 empty = 10 columns
+        let sfen = "55sgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
+        let result = Position::from_sfen(sfen);
+        assert!(result.is_err(), "rank with >9 columns should be rejected");
+    }
+
+    /// Lowercase promoted piece in SFEN (White's promoted pawn).
+    #[test]
+    fn test_sfen_roundtrip_white_promoted_piece() {
+        let sfen = "4k4/9/9/9/+p8/9/9/9/4K4 b - 1";
+        let pos = Position::from_sfen(sfen).expect("parse failed");
+        let piece = pos.piece_at(Square::from_row_col(4, 0).unwrap()).unwrap();
+        assert_eq!(piece.piece_type(), PieceType::Pawn);
+        assert_eq!(piece.color(), Color::White);
+        assert!(piece.is_promoted());
+        assert_eq!(pos.to_sfen(), sfen);
+    }
 }

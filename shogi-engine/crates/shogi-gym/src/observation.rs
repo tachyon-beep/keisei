@@ -676,4 +676,85 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // One channel per occupied square invariant
+    // -----------------------------------------------------------------------
+
+    /// At startpos, each occupied square should have exactly one channel
+    /// (across piece channels 0-27) set to 1.0. A channel-offset bug would
+    /// set two channels for the same square.
+    #[test]
+    fn test_one_channel_per_occupied_square() {
+        let obs_gen = make_gen();
+        let state = GameState::new();
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        let pos = &state.position;
+
+        for idx in 0..NUM_SQUARES {
+            let sq = shogi_core::Square::new_unchecked(idx as u8);
+            let mut channels_set = Vec::new();
+
+            // Check all 28 piece channels (0-27)
+            for ch in 0..28 {
+                if buf[ch * NUM_SQUARES + idx] == 1.0 {
+                    channels_set.push(ch);
+                }
+            }
+
+            if pos.piece_at(sq).is_some() {
+                assert_eq!(
+                    channels_set.len(), 1,
+                    "Occupied square {} should have exactly 1 channel set, got {:?}",
+                    idx, channels_set
+                );
+            } else {
+                assert!(
+                    channels_set.is_empty(),
+                    "Empty square {} should have no channels set, got {:?}",
+                    idx, channels_set
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // max_ply = 0 guard: no NaN in observation
+    // -----------------------------------------------------------------------
+
+    /// When max_ply is 0, the move count channel should be 0.0, not NaN.
+    #[test]
+    fn test_max_ply_zero_no_nan() {
+        let obs_gen = make_gen();
+        let state = GameState::with_max_ply(0);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 43 = move count normalization
+        let start = 43 * NUM_SQUARES;
+        for i in 0..NUM_SQUARES {
+            let val = buf[start + i];
+            assert!(
+                !val.is_nan(),
+                "ch43[{}] should not be NaN when max_ply=0, got {}",
+                i, val
+            );
+            assert_eq!(
+                val, 0.0,
+                "ch43[{}] should be 0.0 when max_ply=0, got {}",
+                i, val
+            );
+        }
+
+        // Also verify no NaN anywhere in the buffer
+        for (i, val) in buf.iter().enumerate() {
+            assert!(
+                !val.is_nan(),
+                "Buffer position {} should not be NaN, got {}",
+                i, val
+            );
+        }
+    }
 }

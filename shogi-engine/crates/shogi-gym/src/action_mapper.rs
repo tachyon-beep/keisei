@@ -440,4 +440,37 @@ mod tests {
         }
         assert!(seen.iter().all(|&v| v), "not all board indices covered (white)");
     }
+
+    /// Exhaustive drop move roundtrip under White perspective with collision check.
+    #[test]
+    fn test_exhaustive_drop_move_roundtrip_white() {
+        let m = mapper();
+        let perspective = Color::White;
+        let mut seen = HashSet::new();
+
+        for to_idx in 0u8..81 {
+            for &piece_type in &HandPieceType::ALL {
+                let to = Square::new_unchecked(to_idx);
+                let mv = Move::Drop { to, piece_type };
+                let idx = m.encode(mv, perspective);
+
+                assert!(
+                    idx >= BOARD_MOVE_COUNT && idx < ACTION_SPACE_SIZE,
+                    "idx={idx} out of drop range (white perspective)"
+                );
+                assert!(
+                    seen.insert(idx),
+                    "duplicate index {idx} for to={to_idx} piece={piece_type:?} (white perspective)"
+                );
+
+                let decoded = trait_decode(&m, idx, perspective).expect("decode failed (white)");
+                assert_eq!(
+                    decoded, mv,
+                    "roundtrip failed for to={to_idx} piece={piece_type:?} (white perspective)"
+                );
+            }
+        }
+
+        assert_eq!(seen.len(), DROP_MOVE_COUNT, "not all drop indices covered (white)");
+    }
 }

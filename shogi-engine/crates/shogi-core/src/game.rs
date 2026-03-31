@@ -1427,6 +1427,231 @@ mod tests {
     // Hot-path equivalence with drops and nifu
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // King-safety filter: legal_moves() must exclude self-check
+    // -----------------------------------------------------------------------
+
+    /// Fabricate a position where Black's king is attacked along a line, and
+    /// a Black piece blocks the attack. Moving that blocker should be illegal
+    /// (it exposes the king). Verify legal_moves() excludes such moves.
+    #[test]
+    fn test_king_safety_filter_pinned_piece() {
+        // Black king at (4,4). White rook at (4,8) attacks along row 4.
+        // Black pawn at (4,6) blocks the rook's ray — it is pinned.
+        // Moving the pawn forward (3,6) would expose the king. The pawn
+        // should NOT appear in legal_moves() as a board move.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        // Black pawn at (4,6) — pinned along row 4
+        pos.set_piece(
+            Square::from_row_col(4, 6).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let moves = gs.legal_moves();
+
+        // The pinned pawn should NOT be able to move forward
+        let pawn_moves: Vec<_> = moves
+            .iter()
+            .filter(|m| {
+                if let Move::Board { from, .. } = m {
+                    *from == Square::from_row_col(4, 6).unwrap()
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        assert!(
+            pawn_moves.is_empty(),
+            "Pinned pawn at (4,6) should have no legal moves, but found {:?}",
+            pawn_moves
+        );
+    }
+
+    /// When the king is in check, all moves must either block, capture the
+    /// attacker, or move the king to safety. No other moves are legal.
+    #[test]
+    fn test_king_safety_filter_must_escape_check() {
+        // Black king at (4,4). White rook at (4,8) gives check along row 4.
+        // Black has a bishop at (6,6). The bishop can block at (4,6) or
+        // the king can move to a safe square.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 8).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(6, 6).unwrap(),
+            Piece::new(PieceType::Bishop, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Verify Black is in check
+        assert!(gs.is_in_check(), "Black king should be in check from rook");
+
+        let moves = gs.legal_moves();
+
+        // Every legal move must result in king NOT being in check
+        for mv in &moves {
+            let undo = gs.make_move(*mv);
+            let mover = gs.position.current_player.opponent(); // Black
+            let king_sq = gs.position.find_king(mover).expect("king must exist");
+            let king_attacked = gs.attack_map[gs.position.current_player as usize][king_sq.index()];
+            gs.unmake_move(*mv, undo);
+            assert_eq!(
+                king_attacked, 0,
+                "Legal move {:?} leaves king in check — king-safety filter broken",
+                mv
+            );
+        }
+
+        // Should have at least one move (king can move, bishop can block)
+        assert!(!moves.is_empty(), "Should have escape moves from check");
+    }
+
+    // -----------------------------------------------------------------------
+    // unmake_move: explicit hand count + board state assertions after capture
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unmake_capture_explicit_hand_and_board() {
+        // Black rook captures White pawn. After unmake, verify:
+        // 1. Captured pawn is back on the board
+        // 2. Black's hand count for Pawn is back to 0
+        // 3. Rook is back at its original square
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        let rook_sq = Square::from_row_col(4, 0).unwrap();
+        let pawn_sq = Square::from_row_col(4, 4).unwrap();
+        pos.set_piece(rook_sq, Piece::new(PieceType::Rook, Color::Black, false));
+        pos.set_piece(pawn_sq, Piece::new(PieceType::Pawn, Color::White, false));
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        // Snapshot before capture
+        let orig_rook = gs.position.piece_at(rook_sq);
+        let orig_pawn = gs.position.piece_at(pawn_sq);
+        let orig_hand = gs.position.hand_count(Color::Black, HandPieceType::Pawn);
+        assert_eq!(orig_hand, 0);
+
+        // Capture
+        let capture = Move::Board { from: rook_sq, to: pawn_sq, promote: false };
+        let undo = gs.make_move(capture);
+
+        // After capture: pawn gone, rook at pawn_sq, pawn in hand
+        assert!(gs.position.piece_at(rook_sq).is_none(), "rook should have left from-square");
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Pawn), 1,
+            "Black should have 1 pawn in hand after capture"
+        );
+
+        // Unmake
+        gs.unmake_move(capture, undo);
+
+        // After unmake: everything restored
+        assert_eq!(
+            gs.position.piece_at(rook_sq), orig_rook,
+            "Rook should be back at original square"
+        );
+        assert_eq!(
+            gs.position.piece_at(pawn_sq), orig_pawn,
+            "Captured pawn should be restored"
+        );
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Pawn), 0,
+            "Hand count should be restored to 0 after unmake"
+        );
+        assert_eq!(
+            gs.position.current_player,
+            Color::Black,
+            "Side to move should be restored"
+        );
+    }
+
+    /// Unmake a promoting capture: verify piece type reverts and hand is correct.
+    #[test]
+    fn test_unmake_promoting_capture_explicit() {
+        // Black pawn at (1,3) captures White silver at (0,4) with promotion.
+        // After unmake: pawn should be unpromoted at (1,3), silver should be at (0,4).
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        let pawn_sq = Square::from_row_col(1, 3).unwrap();
+        let silver_sq = Square::from_row_col(0, 4).unwrap();
+        pos.set_piece(pawn_sq, Piece::new(PieceType::Pawn, Color::Black, false));
+        pos.set_piece(silver_sq, Piece::new(PieceType::Silver, Color::White, false));
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let orig_hash = gs.position.hash;
+
+        let capture = Move::Board { from: pawn_sq, to: silver_sq, promote: true };
+        let undo = gs.make_move(capture);
+
+        // After: promoted pawn (Tokin) at silver_sq, silver in hand
+        let placed = gs.position.piece_at(silver_sq).unwrap();
+        assert!(placed.is_promoted(), "Pawn should be promoted after move");
+        assert_eq!(placed.piece_type(), PieceType::Pawn);
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Silver), 1);
+
+        // Unmake
+        gs.unmake_move(capture, undo);
+
+        // After unmake: unpromoted pawn at pawn_sq, silver at silver_sq, hand empty
+        let restored_pawn = gs.position.piece_at(pawn_sq).unwrap();
+        assert!(!restored_pawn.is_promoted(), "Pawn should be unpromoted after unmake");
+        assert_eq!(restored_pawn.piece_type(), PieceType::Pawn);
+
+        let restored_silver = gs.position.piece_at(silver_sq).unwrap();
+        assert_eq!(restored_silver.piece_type(), PieceType::Silver);
+        assert_eq!(restored_silver.color(), Color::White);
+
+        assert_eq!(gs.position.hand_count(Color::Black, HandPieceType::Silver), 0);
+        assert_eq!(gs.position.hash, orig_hash, "Hash should be restored");
+    }
+
     #[test]
     fn test_hot_path_matches_ergonomic_with_drops() {
         // Position with pieces in hand so drops are generated
