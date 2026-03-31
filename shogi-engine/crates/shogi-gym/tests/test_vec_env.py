@@ -70,6 +70,57 @@ class TestVecEnvSpectatorData:
             assert vec_d[key] == spec_d[key], f"mismatch on key '{key}': {vec_d[key]} != {spec_d[key]}"
 
 
+class TestVecEnvSfen:
+    def test_get_sfens_returns_list(self):
+        env = VecEnv(num_envs=3, max_ply=100)
+        env.reset()
+        sfens = env.get_sfens()
+        assert isinstance(sfens, list)
+        assert len(sfens) == 3
+        for s in sfens:
+            assert isinstance(s, str)
+
+    def test_get_sfens_startpos(self):
+        env = VecEnv(num_envs=2, max_ply=100)
+        env.reset()
+        sfens = env.get_sfens()
+        assert sfens[0] == sfens[1]
+        assert "lnsgkgsnl" in sfens[0].lower()
+
+    def test_get_sfen_single(self):
+        env = VecEnv(num_envs=2, max_ply=100)
+        env.reset()
+        sfens = env.get_sfens()
+        for i in range(2):
+            assert env.get_sfen(i) == sfens[i]
+
+    def test_get_sfen_out_of_bounds(self):
+        env = VecEnv(num_envs=2, max_ply=100)
+        env.reset()
+        with pytest.raises(IndexError):
+            env.get_sfen(2)
+        with pytest.raises(IndexError):
+            env.get_sfen(100)
+
+    def test_get_sfen_changes_after_step(self):
+        env = VecEnv(num_envs=1, max_ply=100)
+        result = env.reset()
+        sfen_before = env.get_sfen(0)
+        masks = np.asarray(result.legal_masks)
+        action = [int(np.where(masks[0])[0][0])]
+        env.step(action)
+        sfen_after = env.get_sfen(0)
+        assert sfen_before != sfen_after
+
+    def test_get_sfen_matches_spectator_data(self):
+        env = VecEnv(num_envs=2, max_ply=100)
+        env.reset()
+        sfens = env.get_sfens()
+        data = env.get_spectator_data()
+        for i in range(2):
+            assert sfens[i] == data[i]["sfen"]
+
+
 class TestVecEnvConstruction:
     def test_create(self):
         env = VecEnv(num_envs=4, max_ply=100)

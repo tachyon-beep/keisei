@@ -481,6 +481,24 @@ impl VecEnv {
         self.episodes_truncated.store(0, Ordering::Relaxed);
     }
 
+    /// Get the SFEN string for a single game by index.
+    ///
+    /// Raises IndexError if game_id >= num_envs.
+    pub fn get_sfen(&self, game_id: usize) -> PyResult<String> {
+        if game_id >= self.num_envs {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "game_id {} out of range for {} environments",
+                game_id, self.num_envs
+            )));
+        }
+        Ok(self.games[game_id].position.to_sfen())
+    }
+
+    /// Get SFEN strings for all games.
+    pub fn get_sfens(&self) -> Vec<String> {
+        self.games.iter().map(|g| g.position.to_sfen()).collect()
+    }
+
     /// Return spectator-format dicts for all games.
     pub fn get_spectator_data(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
         let mut result = Vec::with_capacity(self.num_envs);
