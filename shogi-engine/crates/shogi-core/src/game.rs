@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::attack::{compute_attack_map, AttackMap};
 use crate::movegen::{generate_pseudo_legal_board_moves, generate_pseudo_legal_drops};
+use crate::movelist::MoveList;
 use crate::piece::Piece;
 use crate::position::Position;
 use crate::types::{Color, GameResult, HandPieceType, Move, PieceType, ShogiError, Square};
@@ -375,6 +376,69 @@ impl GameState {
     }
 
     // -----------------------------------------------------------------------
+    // Hot-path move generation API
+    // -----------------------------------------------------------------------
+
+    /// Hot-path API: generate legal moves into a caller-owned `MoveList`.
+    ///
+    /// Clears `move_list` before filling it. Avoids all heap allocation.
+    pub fn generate_legal_moves_into(&mut self, move_list: &mut MoveList) {
+        move_list.clear();
+        let color = self.position.current_player;
+
+        // Generate pseudo-legal moves into a temporary Vec.
+        // We reuse the same filtering logic as legal_moves().
+        let mut candidates = Vec::with_capacity(128);
+        generate_pseudo_legal_board_moves(&self.position, color, &mut candidates);
+        generate_pseudo_legal_drops(&self.position, color, &mut candidates);
+
+        for mv in candidates {
+            // Nifu and uchi-fu-zume checks for pawn drops.
+            if let Move::Drop { to, piece_type: HandPieceType::Pawn } = mv {
+                if self.pawn_columns[color as usize][to.col() as usize] {
+                    continue;
+                }
+                if crate::rules::is_uchi_fu_zume(self, to, color) {
+                    continue;
+                }
+            }
+
+            // King safety check via make/unmake.
+            let undo = self.make_move(mv);
+            let mover = self.position.current_player.opponent();
+            let king_safe = if let Some(king_sq) = self.position.find_king(mover) {
+                self.attack_map[self.position.current_player as usize][king_sq.index()] == 0
+            } else {
+                false
+            };
+            self.unmake_move(mv, undo);
+
+            if king_safe {
+                move_list.push(mv);
+            }
+        }
+    }
+
+    /// Hot-path API: write a legal action mask into a caller-owned buffer.
+    ///
+    /// Sets `mask[encode_fn(mv)] = true` for every legal move `mv`.
+    /// Fills the rest of the mask with `false` first.
+    pub fn write_legal_mask_into(
+        &mut self,
+        mask: &mut [bool],
+        encode_fn: &dyn Fn(Move) -> usize,
+    ) {
+        mask.fill(false);
+        let mut move_list = MoveList::new();
+        self.generate_legal_moves_into(&mut move_list);
+        for mv in move_list.iter() {
+            let idx = encode_fn(*mv);
+            debug_assert!(idx < mask.len(), "encoded action index out of mask bounds");
+            mask[idx] = true;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // check_termination
     // -----------------------------------------------------------------------
 
@@ -459,6 +523,7 @@ impl GameState {
 mod tests {
     use super::*;
     use crate::attack::compute_attack_map;
+    use crate::movelist::MoveList;
     use crate::piece::Piece;
     use crate::types::{Color, GameResult, HandPieceType, Move, PieceType, Square};
 
@@ -789,5 +854,36 @@ mod tests {
         assert_eq!(gs.ply, 0);
         assert_eq!(gs.max_ply, 500);
         assert_eq!(gs.result, GameResult::InProgress);
+    }
+
+    // -----------------------------------------------------------------------
+    // test_hot_path_matches_ergonomic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hot_path_matches_ergonomic() {
+        let mut gs = GameState::new();
+
+        // Collect moves from the ergonomic Vec-based API.
+        let mut ergonomic = gs.legal_moves();
+        ergonomic.sort_by_key(|m| format!("{:?}", m));
+
+        // Collect moves from the hot-path MoveList API.
+        let mut ml = MoveList::new();
+        gs.generate_legal_moves_into(&mut ml);
+        let mut hot_path: Vec<Move> = ml.iter().copied().collect();
+        hot_path.sort_by_key(|m| format!("{:?}", m));
+
+        assert_eq!(
+            ergonomic.len(),
+            hot_path.len(),
+            "hot-path produced {} moves but ergonomic produced {}",
+            hot_path.len(),
+            ergonomic.len(),
+        );
+        assert_eq!(
+            ergonomic, hot_path,
+            "hot-path move set differs from ergonomic move set"
+        );
     }
 }
