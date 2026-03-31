@@ -1,0 +1,284 @@
+"""Gap-analysis tests for keisei.server.app: WebSocket polling, heartbeat
+staleness, keepalive pings, and training-state diff logic."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from starlette.testclient import TestClient
+
+from keisei.db import (
+    init_db,
+    update_heartbeat,
+    update_training_progress,
+    write_game_snapshots,
+    write_metrics,
+    write_training_state,
+)
+from keisei.server.app import (
+    HEARTBEAT_STALE_S,
+    _training_alive,
+    create_app,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def server_db(tmp_path: Path) -> str:
+    """Initialised DB with a training_state row and fresh heartbeat."""
+    path = str(tmp_path / "server_test.db")
+    init_db(path)
+    write_training_state(path, {
+        "config_json": "{}",
+        "display_name": "TestBot",
+        "model_arch": "resnet",
+        "algorithm_name": "ppo",
+        "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    # Ensure heartbeat is fresh
+    update_heartbeat(path)
+    return path
+
+
+# ===================================================================
+# _training_alive — unit tests
+# ===================================================================
+
+
+class TestTrainingAlive:
+    """Direct tests for the heartbeat staleness check."""
+
+    def test_alive_with_fresh_heartbeat(self, server_db: str) -> None:
+        assert _training_alive(server_db) is True
+
+    def test_stale_with_old_heartbeat(self, server_db: str) -> None:
+        """If heartbeat_at is older than HEARTBEAT_STALE_S, training is stale."""
+        # Write a very old heartbeat by manipulating the DB directly
+        import sqlite3
+        conn = sqlite3.connect(server_db)
+        conn.execute(
+            "UPDATE training_state SET heartbeat_at = '2020-01-01T00:00:00Z' WHERE id = 1"
+        )
+        conn.commit()
+        conn.close()
+        assert _training_alive(server_db) is False
+
+    def test_missing_training_state(self, tmp_path: Path) -> None:
+        """No training_state row → not alive."""
+        path = str(tmp_path / "empty.db")
+        init_db(path)
+        assert _training_alive(path) is False
+
+    def test_empty_heartbeat_string(self, server_db: str) -> None:
+        """heartbeat_at = '' → not alive."""
+        import sqlite3
+        conn = sqlite3.connect(server_db)
+        conn.execute(
+            "UPDATE training_state SET heartbeat_at = '' WHERE id = 1"
+        )
+        conn.commit()
+        conn.close()
+        assert _training_alive(server_db) is False
+
+    def test_malformed_heartbeat(self, server_db: str) -> None:
+        """Unparseable heartbeat_at → not alive (exception caught)."""
+        import sqlite3
+        conn = sqlite3.connect(server_db)
+        conn.execute(
+            "UPDATE training_state SET heartbeat_at = 'not-a-date' WHERE id = 1"
+        )
+        conn.commit()
+        conn.close()
+        assert _training_alive(server_db) is False
+
+    def test_nonexistent_db(self) -> None:
+        """DB file doesn't exist → not alive."""
+        assert _training_alive("/tmp/nonexistent_keisei_test_xyz.db") is False
+
+
+# ===================================================================
+# WebSocket polling — metrics_update push
+# ===================================================================
+
+
+class TestWSMetricsUpdate:
+    """After init, new metrics written to DB should be pushed as metrics_update."""
+
+    def test_metrics_update_pushed(self, server_db: str) -> None:
+        app = create_app(server_db)
+
+        # Patch poll interval to be very short
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                # Consume init message
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Write new metrics
+                write_metrics(server_db, {
+                    "epoch": 1, "step": 200,
+                    "policy_loss": 0.5, "value_loss": 0.3,
+                })
+
+                # Wait for the poll to pick it up
+                msg = ws.receive_json(mode="text")
+                # Could be game_update or metrics_update — drain until we find metrics
+                attempts = 0
+                while msg["type"] != "metrics_update" and attempts < 10:
+                    msg = ws.receive_json(mode="text")
+                    attempts += 1
+
+                assert msg["type"] == "metrics_update"
+                assert len(msg["rows"]) >= 1
+                assert msg["rows"][0]["epoch"] == 1
+
+
+# ===================================================================
+# WebSocket polling — game_update push
+# ===================================================================
+
+
+class TestWSGameUpdate:
+    """Game snapshots written after init should be pushed as game_update."""
+
+    def test_game_update_pushed(self, server_db: str) -> None:
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Write a game snapshot
+                write_game_snapshots(server_db, [{
+                    "game_id": 0, "board_json": "[]", "hands_json": "{}",
+                    "current_player": "black", "ply": 42, "is_over": 0,
+                    "result": "in_progress", "sfen": "startpos",
+                    "in_check": 0, "move_history_json": "[]",
+                }])
+
+                # Drain until game_update
+                msg = ws.receive_json(mode="text")
+                attempts = 0
+                while msg["type"] != "game_update" and attempts < 10:
+                    msg = ws.receive_json(mode="text")
+                    attempts += 1
+
+                assert msg["type"] == "game_update"
+                assert len(msg["snapshots"]) >= 1
+                assert msg["snapshots"][0]["ply"] == 42
+
+
+# ===================================================================
+# WebSocket polling — training_status push (diff logic)
+# ===================================================================
+
+
+class TestWSTrainingStatusDiff:
+    """training_status is only pushed when epoch or status changes."""
+
+    def test_status_pushed_on_epoch_change(self, server_db: str) -> None:
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Update epoch in training_state
+                update_training_progress(server_db, epoch=5, step=500)
+
+                # Drain until training_status
+                found = False
+                for _ in range(20):
+                    msg = ws.receive_json(mode="text")
+                    if msg["type"] == "training_status":
+                        assert msg["epoch"] == 5
+                        found = True
+                        break
+
+                assert found, "Expected training_status message after epoch change"
+
+    def test_no_status_push_when_epoch_unchanged(self, server_db: str) -> None:
+        """When epoch and status don't change, no training_status is pushed.
+        We force a metrics_update (observable) and check no training_status
+        arrives before it."""
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Just update heartbeat (no epoch/status change)
+                update_heartbeat(server_db)
+
+                # Write a metric so the poll loop produces a metrics_update
+                write_metrics(server_db, {"epoch": 0, "step": 1})
+
+                # Drain until we see metrics_update — collect everything on the way
+                messages = []
+                for _ in range(20):
+                    msg = ws.receive_json(mode="text")
+                    messages.append(msg)
+                    if msg["type"] == "metrics_update":
+                        break
+
+                status_msgs = [m for m in messages if m["type"] == "training_status"]
+                assert len(status_msgs) == 0, (
+                    f"No training_status expected when epoch unchanged, got {status_msgs}"
+                )
+
+
+# ===================================================================
+# WebSocket — keepalive ping
+# ===================================================================
+
+
+class TestWSKeepalive:
+    """The server sends periodic ping messages."""
+
+    def test_ping_received(self, server_db: str) -> None:
+        app = create_app(server_db)
+
+        # Set ping interval very short so we get one quickly
+        with patch("keisei.server.app.WS_PING_INTERVAL_S", 0.05), \
+             patch("keisei.server.app.POLL_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                # First message is init (from _poll_and_push)
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Next should be a ping from _keepalive
+                msg = ws.receive_json(mode="text")
+                assert msg["type"] == "ping"
+
+
+# ===================================================================
+# WebSocket — DB error during poll (graceful handling)
+# ===================================================================
+
+
+    # NOTE: DB-error-during-poll test omitted.  The async TaskGroup +
+    # except* error-handling path cannot be exercised reliably with
+    # Starlette's synchronous TestClient because the sync adapter
+    # blocks waiting for the WS tasks, and the exception propagation
+    # doesn't translate cleanly.  The error path is exercised
+    # indirectly by the _training_alive tests (which cover DB failures)
+    # and by test_healthz_db_missing (which exercises _db_accessible).
