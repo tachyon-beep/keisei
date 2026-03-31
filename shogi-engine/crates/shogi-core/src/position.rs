@@ -84,9 +84,10 @@ impl Position {
             place(0, col as u8, pt, Color::White);
         }
 
-        // --- Row 1: White Bishop (col 1) and Rook (col 7) ---
-        place(1, 1, PieceType::Bishop, Color::White);
-        place(1, 7, PieceType::Rook,   Color::White);
+        // --- Row 1: White Rook (col 1) and Bishop (col 7) ---
+        // SFEN row 1: "1r5b1" => Rook at col 1, Bishop at col 7
+        place(1, 1, PieceType::Rook,   Color::White);
+        place(1, 7, PieceType::Bishop, Color::White);
 
         // --- Row 2: White Pawns ---
         for col in 0u8..9 {
@@ -98,9 +99,10 @@ impl Position {
             place(6, col, PieceType::Pawn, Color::Black);
         }
 
-        // --- Row 7: Black Rook (col 1) and Bishop (col 7) ---
-        place(7, 1, PieceType::Rook,   Color::Black);
-        place(7, 7, PieceType::Bishop, Color::Black);
+        // --- Row 7: Black Bishop (col 1) and Rook (col 7) ---
+        // SFEN row 7: "1B5R1" => Bishop at col 1, Rook at col 7
+        place(7, 1, PieceType::Bishop, Color::Black);
+        place(7, 7, PieceType::Rook,   Color::Black);
 
         // --- Row 8: Black back rank ---
         for (col, &pt) in back_rank.iter().enumerate() {
