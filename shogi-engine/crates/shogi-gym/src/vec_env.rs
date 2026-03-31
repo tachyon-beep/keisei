@@ -71,7 +71,8 @@ pub struct VecEnv {
     captured_buffer: Vec<u8>,      // N (metadata)
     term_reason_buffer: Vec<u8>,   // N (metadata)
     ply_buffer: Vec<u16>,          // N (metadata)
-    terminal_obs_buffer: Vec<f32>, // N * BUFFER_LEN
+    terminal_obs_buffer: Vec<f32>,   // N * BUFFER_LEN
+    current_players_buffer: Vec<u8>, // N (0=Black, 1=White)
 
     mapper: DefaultActionMapper,
     obs_gen: DefaultObservationGenerator,
@@ -130,6 +131,7 @@ impl VecEnv {
             term_reason_buffer: vec![0; num_envs],
             ply_buffer: vec![0; num_envs],
             terminal_obs_buffer: vec![0.0; num_envs * BUFFER_LEN],
+            current_players_buffer: vec![0; num_envs],
             mapper: DefaultActionMapper,
             obs_gen: DefaultObservationGenerator::new(),
         }
@@ -175,7 +177,7 @@ impl VecEnv {
         // --- Phase 1: Validate (read-only) ---
 
         if actions.len() != self.num_envs {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "expected {} actions, got {}",
                 self.num_envs,
                 actions.len()
@@ -262,6 +264,12 @@ impl VecEnv {
                     // Write obs+mask for continuing game
                     self.write_obs_and_mask(i);
                 }
+
+                // Record current player (after potential reset)
+                self.current_players_buffer[i] = match self.games[i].position.current_player {
+                    Color::Black => 0,
+                    Color::White => 1,
+                };
             }
         });
 
@@ -280,6 +288,13 @@ impl VecEnv {
         let rewards = self.reward_buffer.to_pyarray(py);
         let terminated = self.terminated_buffer.to_pyarray(py);
         let truncated = self.truncated_buffer.to_pyarray(py);
+
+        let terminal_obs_array = self.terminal_obs_buffer.to_pyarray(py);
+        let terminal_obs_4d = terminal_obs_array
+            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        let current_players = self.current_players_buffer.to_pyarray(py);
 
         let captured_arr = self.captured_buffer.to_pyarray(py);
         let term_reason_arr = self.term_reason_buffer.to_pyarray(py);
@@ -300,6 +315,8 @@ impl VecEnv {
             rewards: rewards.unbind(),
             terminated: terminated.unbind(),
             truncated: truncated.unbind(),
+            terminal_observations: terminal_obs_4d.unbind(),
+            current_players: current_players.unbind(),
             step_metadata: metadata,
         })
     }

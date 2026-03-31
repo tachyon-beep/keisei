@@ -47,6 +47,7 @@ pub struct StepMetadata {
 #[pyclass]
 pub struct StepResult {
     /// Board observations — shape `(N, C, 9, 9)`.
+    /// After auto-reset, contains the NEW game's initial observation.
     #[pyo3(get)]
     pub observations: Py<PyArray4<f32>>,
     /// Legal-move mask — shape `(N, A)`.
@@ -61,6 +62,15 @@ pub struct StepResult {
     /// Whether each environment was truncated this step — shape `(N,)`.
     #[pyo3(get)]
     pub truncated: Py<PyArray1<bool>>,
+    /// Terminal observations — shape `(N, C, 9, 9)`.
+    /// Only valid for envs where `terminated[i] or truncated[i]` is true.
+    /// Contains the game state BEFORE auto-reset, needed for GAE bootstrapping.
+    #[pyo3(get)]
+    pub terminal_observations: Py<PyArray4<f32>>,
+    /// Current player for each env — shape `(N,)`, dtype u8.
+    /// 0 = Black, 1 = White. Needed for perspective-aware GAE sign correction.
+    #[pyo3(get)]
+    pub current_players: Py<PyArray1<u8>>,
     /// Structured per-step metadata.
     #[pyo3(get)]
     pub step_metadata: Py<StepMetadata>,
