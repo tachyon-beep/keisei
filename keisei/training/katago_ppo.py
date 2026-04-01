@@ -100,11 +100,13 @@ class KataGoRolloutBuffer:
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
         """
-        # Guard against unnormalized score targets (catches Plan C integration bugs)
-        if score_targets.abs().max() > 2.0:
+        # Guard against unnormalized score targets (catches integration bugs).
+        # NaN is used as sentinel for non-terminal positions — exclude from check.
+        finite_scores = score_targets[~score_targets.isnan()]
+        if finite_scores.numel() > 0 and finite_scores.abs().max() > 2.0:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{score_targets.abs().max().item():.1f}, expected <= 1.0. "
+                f"{finite_scores.abs().max().item():.1f}, expected <= 1.0. "
                 f"Divide by score_normalization before storing."
             )
         self.observations.append(obs)
@@ -264,8 +266,16 @@ class KataGoPPOAlgorithm:
                     output.value_logits, batch_value_cats, ignore_index=-1
                 )
 
-                # Score loss (MSE on normalized score)
-                score_loss = F.mse_loss(output.score_lead.squeeze(-1), batch_score_targets)
+                # Score loss (MSE on normalized score, terminal positions only).
+                # Non-terminal positions use NaN sentinel — exclude from loss.
+                score_valid = ~batch_score_targets.isnan()
+                if score_valid.any():
+                    score_loss = F.mse_loss(
+                        output.score_lead.squeeze(-1)[score_valid],
+                        batch_score_targets[score_valid],
+                    )
+                else:
+                    score_loss = output.score_lead.sum() * 0.0  # zero loss, preserve graph
 
                 # Combined loss
                 loss = (

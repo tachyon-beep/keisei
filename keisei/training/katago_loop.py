@@ -206,22 +206,19 @@ class KataGoTrainingLoop:
                 # Value categories: -1 (ignore) for non-terminal steps.
                 # Only terminal steps get a real label (0=W, 1=D, 2=L).
                 # F.cross_entropy(ignore_index=-1) skips these in the loss.
+                # Score targets: NaN for non-terminal (masked in PPO update).
+                terminal_mask = dones.bool()
                 value_cats = torch.full(
                     (self.num_envs,), -1, dtype=torch.long, device=self.device
                 )
-                score_targets = torch.zeros(self.num_envs, device=self.device)
+                value_cats[terminal_mask & (rewards > 0)] = 0  # Win
+                value_cats[terminal_mask & (rewards == 0)] = 1  # Draw
+                value_cats[terminal_mask & (rewards < 0)] = 2  # Loss
 
-                for env_i in range(self.num_envs):
-                    r = rewards[env_i].item()
-                    if dones[env_i]:
-                        if r > 0:
-                            value_cats[env_i] = 0  # Win
-                        elif r < 0:
-                            value_cats[env_i] = 2  # Loss
-                        else:
-                            value_cats[env_i] = 1  # Draw
-                        # Score: use reward as simplified score signal, normalized.
-                        score_targets[env_i] = r / self.score_norm
+                score_targets = torch.full(
+                    (self.num_envs,), float("nan"), device=self.device
+                )
+                score_targets[terminal_mask] = rewards[terminal_mask] / self.score_norm
 
                 self.buffer.add(
                     obs,
