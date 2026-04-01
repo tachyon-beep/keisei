@@ -19,12 +19,16 @@ from keisei.sl.parsers import (
 
 logger = logging.getLogger(__name__)
 
-# Parser registry by file extension
-_PARSERS: dict[str, GameParser] = {}
-for _parser_cls in [SFENParser, CSAParser]:
-    _p = _parser_cls()
-    for ext in _p.supported_extensions():
-        _PARSERS[ext] = _p
+def _build_parser_registry() -> dict[str, GameParser]:
+    """Build a parser registry mapping file extensions to parser instances."""
+    registry: dict[str, GameParser] = {}
+    for parser_cls in [SFENParser, CSAParser]:
+        parser = parser_cls()
+        for ext in parser.supported_extensions():
+            if ext in registry:
+                raise ValueError(f"Duplicate parser for extension '{ext}'")
+            registry[ext] = parser
+    return registry
 
 
 def prepare_sl_data(
@@ -45,6 +49,7 @@ def prepare_sl_data(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    parsers = _build_parser_registry()
     game_filter = GameFilter(min_ply=min_ply, min_rating=min_rating)
 
     # Collect all game files
@@ -54,7 +59,7 @@ def prepare_sl_data(
         if source_path.is_file():
             game_files.append(source_path)
         elif source_path.is_dir():
-            for ext in _PARSERS:
+            for ext in parsers:
                 game_files.extend(source_path.glob(f"*{ext}"))
 
     logger.info("Found %d game files across %d sources", len(game_files), len(game_sources))
@@ -79,7 +84,7 @@ def prepare_sl_data(
     parse_errors = 0
     for game_file in game_files:
         ext = game_file.suffix.lower()
-        parser = _PARSERS.get(ext)
+        parser = parsers.get(ext)
         if parser is None:
             logger.warning("No parser for extension '%s', skipping %s", ext, game_file)
             continue

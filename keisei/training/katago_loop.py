@@ -114,7 +114,13 @@ class KataGoTrainingLoop:
                 f"Expected KataGoPPOParams, got {type(ppo_params).__name__}"
             )
 
-        self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
+        rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
+        rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
+
+        self.ppo = KataGoPPOAlgorithm(
+            ppo_params, base_model, forward_model=self.model,
+            warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
+        )
 
         # LR scheduler (optional — only if lr_schedule config is present)
         if lr_config:
@@ -129,10 +135,6 @@ class KataGoTrainingLoop:
             )
         else:
             self.lr_scheduler = None
-
-        # Store warmup config for use in run()
-        self._rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
-        self._rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
 
         if vecenv is not None:
             self.vecenv = vecenv
@@ -304,13 +306,11 @@ class KataGoTrainingLoop:
             self.model.train()
 
             # Set epoch-dependent entropy coefficient
-            self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(
-                epoch_i, self._rl_warmup_epochs, self._rl_warmup_entropy,
-            )
-            if epoch_i == 0 or (epoch_i == self._rl_warmup_epochs):
+            self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
+            if epoch_i == 0 or epoch_i == self.ppo.warmup_epochs:
                 logger.info(
                     "Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
-                    self.ppo.current_entropy_coeff, self._rl_warmup_epochs, epoch_i,
+                    self.ppo.current_entropy_coeff, self.ppo.warmup_epochs, epoch_i,
                 )
 
             losses = self.ppo.update(self.buffer, next_values)
@@ -318,7 +318,7 @@ class KataGoTrainingLoop:
             # Reset LR scheduler fully at warmup boundary BEFORE the step,
             # so the boundary epoch's anomalous loss doesn't leak into the
             # post-warmup patience window.
-            if epoch_i == self._rl_warmup_epochs and self.lr_scheduler is not None:
+            if epoch_i == self.ppo.warmup_epochs and self.lr_scheduler is not None:
                 self.lr_scheduler.best = self.lr_scheduler.mode_worse  # +inf for mode='min'
                 self.lr_scheduler.num_bad_epochs = 0
                 logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)

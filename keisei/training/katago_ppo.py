@@ -154,6 +154,8 @@ class KataGoPPOAlgorithm:
         params: KataGoPPOParams,
         model: KataGoBaseModel,
         forward_model: torch.nn.Module | None = None,
+        warmup_epochs: int = 0,
+        warmup_entropy: float = 0.05,
     ) -> None:
         """Create a KataGo PPO algorithm.
 
@@ -164,23 +166,25 @@ class KataGoPPOAlgorithm:
                 wrapper here if using multi-GPU. If None, defaults to `model`.
                 Convention: ``base_model = model.module if hasattr(...) else model``,
                 then ``KataGoPPOAlgorithm(params, base_model, forward_model=model)``.
+            warmup_epochs: Number of RL epochs with elevated entropy after SL.
+            warmup_entropy: Entropy coefficient during warmup period.
         """
         self.params = params
         self.model = model
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
-        self.current_entropy_coeff = params.lambda_entropy  # mutable; Plan D warmup updates this
+        self.warmup_epochs = warmup_epochs
+        self.warmup_entropy = warmup_entropy
+        self.current_entropy_coeff = params.lambda_entropy
 
-    def get_entropy_coeff(
-        self, epoch: int, warmup_epochs: int = 0, warmup_entropy: float = 0.05,
-    ) -> float:
+    def get_entropy_coeff(self, epoch: int) -> float:
         """Return the entropy coefficient for the current epoch.
 
         During the first `warmup_epochs` epochs of RL (after SL warmup),
         uses elevated entropy to soften the overconfident SL policy.
         """
-        if epoch < warmup_epochs:
-            return warmup_entropy
+        if epoch < self.warmup_epochs:
+            return self.warmup_entropy
         return self.params.lambda_entropy
 
     @staticmethod

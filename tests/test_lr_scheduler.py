@@ -67,12 +67,12 @@ class TestRLWarmup:
     def test_warmup_epochs_use_elevated_entropy(self, small_model):
         """During warmup, lambda_entropy should be elevated."""
         params = KataGoPPOParams(lambda_entropy=0.01)
-        ppo = KataGoPPOAlgorithm(params, small_model)
+        ppo = KataGoPPOAlgorithm(params, small_model, warmup_epochs=5, warmup_entropy=0.05)
 
-        assert ppo.get_entropy_coeff(epoch=0, warmup_epochs=5, warmup_entropy=0.05) == 0.05
-        assert ppo.get_entropy_coeff(epoch=4, warmup_epochs=5, warmup_entropy=0.05) == 0.05
-        assert ppo.get_entropy_coeff(epoch=5, warmup_epochs=5, warmup_entropy=0.05) == 0.01
-        assert ppo.get_entropy_coeff(epoch=100, warmup_epochs=5, warmup_entropy=0.05) == 0.01
+        assert ppo.get_entropy_coeff(epoch=0) == 0.05
+        assert ppo.get_entropy_coeff(epoch=4) == 0.05
+        assert ppo.get_entropy_coeff(epoch=5) == 0.01
+        assert ppo.get_entropy_coeff(epoch=100) == 0.01
 
     def test_current_entropy_coeff_initialized(self, small_model):
         """current_entropy_coeff should default to params.lambda_entropy."""

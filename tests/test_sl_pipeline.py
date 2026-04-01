@@ -182,6 +182,13 @@ class TestCSAParserHardening:
         parser = CSAParser()
         games = list(parser.parse(csa_file))
         assert len(games) == 2
+        # Validate per-game content — no board state leakage across separator
+        assert len(games[0].moves) == 2
+        assert games[0].moves[0].move_usi == "7g7f"
+        assert games[0].metadata.get("player_black") == "Player1"
+        assert len(games[1].moves) == 2
+        assert games[1].moves[0].move_usi == "2g2f"
+        assert games[1].metadata.get("player_black") == "A"
 
     def test_empty_game_between_separators(self, tmp_path):
         """Empty blocks between '/' separators should be skipped."""
