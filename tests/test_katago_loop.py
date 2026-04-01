@@ -12,7 +12,8 @@ from keisei.training.katago_loop import KataGoTrainingLoop
 
 
 def _make_mock_katago_vecenv(
-    num_envs: int = 2, *, terminate_at_step: int | None = None
+    num_envs: int = 2, *, terminate_at_step: int | None = None,
+    alternate_players: bool = False,
 ) -> MagicMock:
     """Create a mock VecEnv that returns correct shapes for KataGo mode.
 
@@ -48,7 +49,13 @@ def _make_mock_katago_vecenv(
         result.rewards = np.zeros(num_envs, dtype=np.float32)
         result.terminated = np.zeros(num_envs, dtype=bool)
         result.truncated = np.zeros(num_envs, dtype=bool)
-        result.current_players = np.zeros(num_envs, dtype=np.uint8)
+        if alternate_players:
+            # Alternate: even steps = all Black, odd steps = all White
+            result.current_players = np.full(
+                num_envs, step_count[0] % 2, dtype=np.uint8,
+            )
+        else:
+            result.current_players = np.zeros(num_envs, dtype=np.uint8)
 
         if terminate_at_step is not None and step_count[0] == terminate_at_step:
             result.terminated[0] = True
@@ -205,6 +212,37 @@ class TestSplitMergeIntegration:
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
         assert loop.global_step == 4
+
+    def test_run_with_alternating_players(self, katago_config, tmp_path):
+        """W2: exercise the split path with alternating current_players."""
+        mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=5)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+    def test_buffer_stores_learner_only(self, katago_config, tmp_path):
+        """W3: with split-merge, buffer should contain fewer samples than total steps * envs."""
+        mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=50)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        # Don't run — manually step to inspect buffer
+        # With alternating players, ~half the envs are learner each step
+        from keisei.training.katago_loop import split_merge_step
+        reset_result = loop.vecenv.reset()
+        obs = __import__("torch").from_numpy(np.asarray(reset_result.observations)).to(loop.device)
+        legal_masks = __import__("torch").from_numpy(np.asarray(reset_result.legal_masks)).to(loop.device)
+        current_players = np.array([0, 1, 0, 1], dtype=np.uint8)
+        sm = split_merge_step(
+            obs=obs, legal_masks=legal_masks,
+            current_players=current_players,
+            learner_model=loop.model,
+            opponent_model=loop.model,  # self-play for test
+            learner_side=0,
+        )
+        # Only 2 of 4 envs are learner
+        assert sm.learner_indices.numel() == 2
+        assert sm.learner_log_probs.shape == (2,)
 
     def test_run_without_league_still_works(self, katago_config):
         """Without league config, run() should work as before."""

@@ -82,24 +82,26 @@ def split_merge_step(
         l_masks = legal_masks[learner_indices]
 
         learner_model.eval()
-        with torch.no_grad():
-            l_output = learner_model(l_obs)
+        try:
+            with torch.no_grad():
+                l_output = learner_model(l_obs)
 
-        l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
-        l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
-        l_probs = F.softmax(l_masked, dim=-1)
-        l_dist = torch.distributions.Categorical(l_probs)
-        l_actions = l_dist.sample()
-        learner_log_probs = l_dist.log_prob(l_actions)
+            l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
+            l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
+            l_probs = F.softmax(l_masked, dim=-1)
+            l_dist = torch.distributions.Categorical(l_probs)
+            l_actions = l_dist.sample()
+            learner_log_probs = l_dist.log_prob(l_actions)
 
-        if value_adapter is not None:
-            learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
-        else:
-            vp = F.softmax(l_output.value_logits, dim=-1)
-            learner_values = vp[:, 0] - vp[:, 2]
+            if value_adapter is not None:
+                learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
+            else:
+                vp = F.softmax(l_output.value_logits, dim=-1)
+                learner_values = vp[:, 0] - vp[:, 2]
 
-        actions[learner_indices] = l_actions
-        learner_model.train()
+            actions[learner_indices] = l_actions
+        finally:
+            learner_model.train()
 
     # Opponent forward pass (always no_grad, eval mode)
     if opponent_indices.numel() > 0:
@@ -531,19 +533,23 @@ class KataGoTrainingLoop:
                         win_count, loss_count, draw_count,
                     )
 
-            # Periodic pool snapshot
+            # Seat rotation (takes priority — includes its own snapshot)
+            rotating_this_epoch = (
+                self.config.league is not None and self.pool is not None
+                and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
+            )
+            if rotating_this_epoch:
+                self._rotate_seat(epoch_i)
+
+            # Periodic pool snapshot (skip if rotation already snapshotted)
             if (self.pool is not None and self.config.league is not None
-                    and (epoch_i + 1) % self.config.league.snapshot_interval == 0):
+                    and (epoch_i + 1) % self.config.league.snapshot_interval == 0
+                    and not rotating_this_epoch):
                 base_model = self.model.module if hasattr(self.model, "module") else self.model
                 self.pool.add_snapshot(
                     base_model, self.config.model.architecture,
                     dict(self.config.model.params), epoch=epoch_i + 1,
                 )
-
-            # Seat rotation
-            if (self.config.league is not None and self.pool is not None
-                    and (epoch_i + 1) % self.config.league.epochs_per_seat == 0):
-                self._rotate_seat(epoch_i)
 
             # Metrics and logging
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
@@ -597,25 +603,42 @@ class KataGoTrainingLoop:
         """Save current learner weights and reset optimizer for the next seat."""
         base_model = self.model.module if hasattr(self.model, "module") else self.model
 
-        self.pool.add_snapshot(
+        new_entry = self.pool.add_snapshot(
             base_model, self.config.model.architecture,
             dict(self.config.model.params), epoch=epoch + 1,
         )
+
+        # B5 fix: update learner entry ID so Elo tracks the current snapshot
+        self._learner_entry_id = new_entry.id
 
         # Reset optimizer (fresh Adam — old momentum fights new gradient signal)
         self.ppo.optimizer = torch.optim.Adam(
             self.ppo.model.parameters(), lr=self.ppo.params.learning_rate,
         )
 
-        # Reset LR scheduler patience if present
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.best = self.lr_scheduler.mode_worse
-            self.lr_scheduler.num_bad_epochs = 0
+        # B1 fix: recreate LR scheduler pointing at the NEW optimizer
+        if self.lr_scheduler is not None and self.config.league is not None:
+            algo_params = dict(self.config.training.algorithm_params)
+            lr_config = algo_params.get("lr_schedule", {})
+            self.lr_scheduler = create_lr_scheduler(
+                self.ppo.optimizer,
+                schedule_type=lr_config.get("type", "plateau"),
+                factor=lr_config.get("factor", 0.5),
+                patience=lr_config.get("patience", 50),
+                min_lr=lr_config.get("min_lr", 1e-5),
+            )
 
-        # Reset warmup entropy
-        self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch=0)
+        # B2 fix: reset warmup counter on the PPO algorithm itself so
+        # get_entropy_coeff(real_epoch) still returns warmup_entropy.
+        # The main loop calls get_entropy_coeff(epoch_i) — we need
+        # warmup_epochs to be relative to the rotation point.
+        self.ppo.warmup_epochs = epoch + 1 + self.ppo.warmup_epochs
 
-        logger.info("Seat rotation at epoch %d: optimizer reset, warmup restarted", epoch)
+        logger.info(
+            "Seat rotation at epoch %d: optimizer reset, warmup extended to epoch %d, "
+            "learner_entry=%d",
+            epoch, self.ppo.warmup_epochs, self._learner_entry_id,
+        )
 
     def _maybe_update_heartbeat(self) -> None:
         now = time.monotonic()

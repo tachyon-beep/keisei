@@ -199,6 +199,7 @@ class OpponentPool:
         model = build_model(entry.architecture, entry.model_params)
         state_dict = torch.load(ckpt, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
+        model = model.to(device)
         model.eval()
         return model
 
