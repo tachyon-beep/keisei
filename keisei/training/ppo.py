@@ -75,16 +75,17 @@ class RolloutBuffer:
 
 
 class PPOAlgorithm:
-    def __init__(self, params: PPOParams, model: BaseModel) -> None:
+    def __init__(self, params: PPOParams, model: BaseModel, forward_model: torch.nn.Module | None = None) -> None:
         self.params = params
         self.model = model
+        self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
 
     @torch.no_grad()
     def select_actions(self, obs: torch.Tensor, legal_masks: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        self.model.eval()
-        policy_logits, values = self.model(obs)
+        self.forward_model.eval()
+        policy_logits, values = self.forward_model(obs)
         masked_logits = policy_logits.masked_fill(~legal_masks, float("-inf"))
         probs = F.softmax(masked_logits, dim=-1)
         dist = torch.distributions.Categorical(probs)
@@ -93,7 +94,7 @@ class PPOAlgorithm:
         return actions, log_probs, values.squeeze(-1)
 
     def update(self, buffer: RolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
-        self.model.train()
+        self.forward_model.train()
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
@@ -136,7 +137,7 @@ class PPOAlgorithm:
                 batch_returns = returns[idx]
                 batch_legal_masks = data["legal_masks"][idx]
 
-                policy_logits, values = self.model(batch_obs)
+                policy_logits, values = self.forward_model(batch_obs)
                 masked_logits = policy_logits.masked_fill(~batch_legal_masks, float("-inf"))
                 log_probs_all = F.log_softmax(masked_logits, dim=-1)
                 new_log_probs = log_probs_all.gather(1, batch_actions.unsqueeze(1)).squeeze(1)

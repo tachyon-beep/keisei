@@ -70,19 +70,29 @@ class TrainingLoop:
 
         self.model = build_model(config.model.architecture, config.model.params)
         self.model = self.model.to(self.device)
+
+        gpu_count = torch.cuda.device_count()
+        if gpu_count > 1:
+            logger.info("Using %d GPUs via DataParallel", gpu_count)
+            self.model = torch.nn.DataParallel(self.model)
+
         logger.info(
-            "Model: %s (%s), params: %d, device: %s",
+            "Model: %s (%s), params: %d, device: %s, gpus: %d",
             config.model.display_name,
             config.model.architecture,
             sum(p.numel() for p in self.model.parameters()),
             self.device,
+            gpu_count,
         )
 
         ppo_params = validate_algorithm_params(
             config.training.algorithm, config.training.algorithm_params
         )
         assert isinstance(ppo_params, PPOParams)
-        self.ppo = PPOAlgorithm(ppo_params, self.model)
+        # PPO needs the underlying model for optimizer param groups,
+        # but uses the DataParallel wrapper for forward passes
+        base_model = self.model.module if hasattr(self.model, 'module') else self.model
+        self.ppo = PPOAlgorithm(ppo_params, base_model, forward_model=self.model)
 
         if vecenv is not None:
             self.vecenv = vecenv
@@ -124,8 +134,9 @@ class TrainingLoop:
                     checkpoint_path,
                     state["current_epoch"],
                 )
+                base_model = self.model.module if hasattr(self.model, 'module') else self.model
                 meta = load_checkpoint(
-                    checkpoint_path, self.model, self.ppo.optimizer
+                    checkpoint_path, base_model, self.ppo.optimizer
                 )
                 self.epoch = meta["epoch"]
                 self.global_step = meta["step"]
@@ -285,9 +296,10 @@ class TrainingLoop:
                     Path(self.config.training.checkpoint_dir)
                     / f"epoch_{epoch_i:05d}.pt"
                 )
+                base_model = self.model.module if hasattr(self.model, 'module') else self.model
                 save_checkpoint(
                     ckpt_path,
-                    self.model,
+                    base_model,
                     self.ppo.optimizer,
                     epoch_i + 1,
                     self.global_step,

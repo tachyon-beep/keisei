@@ -1,5 +1,5 @@
 [training]
-num_games = 16
+num_games = 64
 max_ply = 500
 algorithm = "ppo"
 checkpoint_interval = 50
@@ -10,7 +10,7 @@ learning_rate = 3e-4
 gamma = 0.99
 clip_epsilon = 0.2
 epochs_per_batch = 4
-batch_size = 256
+batch_size = 1024
 
 [display]
 moves_per_minute = 30
