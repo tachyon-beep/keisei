@@ -7,6 +7,7 @@ import pytest
 
 from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
 from keisei.training.models.se_resnet import SEResNetParams, GlobalPoolBiasBlock, SEResNetModel
+from keisei.training.model_registry import build_model, validate_model_params, VALID_ARCHITECTURES
 
 
 def test_katago_output_fields():
@@ -113,3 +114,26 @@ class TestSEResNetModel:
         assert output.policy_logits.shape == (1, 9, 9, 139)
         assert output.value_logits.shape == (1, 3)
         assert output.score_lead.shape == (1, 1)
+
+
+class TestModelRegistry:
+    def test_se_resnet_in_valid_architectures(self):
+        assert "se_resnet" in VALID_ARCHITECTURES
+
+    def test_build_se_resnet(self):
+        params = {
+            "num_blocks": 2, "channels": 32, "se_reduction": 8,
+            "global_pool_channels": 16, "policy_channels": 8,
+            "value_fc_size": 32, "score_fc_size": 16, "obs_channels": 50,
+        }
+        model = build_model("se_resnet", params)
+        assert isinstance(model, SEResNetModel)
+
+    def test_validate_se_resnet_params(self):
+        params = {"num_blocks": 2, "channels": 32}
+        validated = validate_model_params("se_resnet", params)
+        assert isinstance(validated, SEResNetParams)
+        assert validated.num_blocks == 2
+        assert validated.channels == 32
+        # Defaults should apply
+        assert validated.obs_channels == 50
