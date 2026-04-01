@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -56,6 +56,8 @@ def init_db(db_path: str) -> None:
                 in_check          INTEGER NOT NULL,
                 move_history_json TEXT NOT NULL,
                 value_estimate    REAL NOT NULL DEFAULT 0.0,
+                game_type         TEXT NOT NULL DEFAULT 'live',
+                demo_slot         INTEGER,
                 updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS training_state (
@@ -71,6 +73,28 @@ def init_db(db_path: str) -> None:
                 status           TEXT NOT NULL DEFAULT 'running',
                 heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS league_entries (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                architecture    TEXT NOT NULL,
+                model_params    TEXT NOT NULL,
+                checkpoint_path TEXT NOT NULL,
+                elo_rating      REAL NOT NULL DEFAULT 1000.0,
+                created_epoch   INTEGER NOT NULL,
+                games_played    INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS league_results (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                epoch           INTEGER NOT NULL,
+                learner_id      INTEGER NOT NULL REFERENCES league_entries(id),
+                opponent_id     INTEGER NOT NULL REFERENCES league_entries(id),
+                wins            INTEGER NOT NULL,
+                losses          INTEGER NOT NULL,
+                draws           INTEGER NOT NULL,
+                recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
+            CREATE INDEX IF NOT EXISTS idx_league_entries_elo ON league_entries(elo_rating);
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
