@@ -1476,15 +1476,21 @@ let act_tag = match &self.mapper {
     ActionMode::Spatial(_) => ActionModeTag::Spatial,
 };
 
-// Inside the parallel closure (per-thread, zero-cost — all generators are zero-size structs):
-let obs_gen: Box<dyn ObservationGenerator> = match obs_tag {
-    ObsModeTag::Default => Box::new(DefaultObservationGenerator::new()),
-    ObsModeTag::KataGo => Box::new(KataGoObservationGenerator::new()),
-};
-// Or avoid the Box entirely by duplicating the match at call sites.
+// Inside the parallel closure — no Box, no allocation, pure static dispatch:
+match obs_tag {
+    ObsModeTag::Default => DefaultObservationGenerator::new()
+        .generate(state, perspective, obs_slice),
+    ObsModeTag::KataGo  => KataGoObservationGenerator::new()
+        .generate(state, perspective, obs_slice),
+}
+
+match act_tag {
+    ActionModeTag::Default  => DefaultActionMapper.encode(mv, perspective),
+    ActionModeTag::Spatial  => SpatialActionMapper.encode(mv, perspective),
+}
 ```
 
-This sidesteps `Send` bound issues entirely. Since `DefaultObservationGenerator`, `KataGoObservationGenerator`, `DefaultActionMapper`, and `SpatialActionMapper` are all zero-size structs with no fields, constructing them per-thread is genuinely free.
+This sidesteps `Send` bound issues entirely. Since all four generators/mappers are zero-size structs, `DefaultObservationGenerator::new()` compiles to nothing — the match arm is just a static dispatch to the concrete impl. No allocation, no vtable, the compiler inlines it. Do NOT use `Box<dyn Trait>` here — it would add heap allocation and vtable indirection on every call for no reason.
 
 - [ ] **Step 4: Update property getters**
 
