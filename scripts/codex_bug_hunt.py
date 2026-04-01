@@ -27,6 +27,11 @@ def _is_python_file(path: Path) -> bool:
     return path.suffix == ".py" and not path.name.startswith("test_")
 
 
+def _is_rust_file(path: Path) -> bool:
+    """Check if path is a Rust source file (not in target/ or .worktrees/)."""
+    return path.suffix == ".rs" and "target" not in path.parts and ".worktrees" not in path.parts
+
+
 _BUG_TEMPLATE = """\
 ## Summary
 
@@ -51,14 +56,113 @@ _BUG_TEMPLATE = """\
 """
 
 
+_PYTHON_BUG_CATEGORIES = (
+    "Bug Categories to Check:\n"
+    "1. **PyTorch / Tensor Issues**:\n"
+    "   - Device mismatches (CPU vs CUDA tensors in same operation)\n"
+    "   - Gradient leaks through missing .detach() calls\n"
+    "   - In-place operations breaking autograd graph\n"
+    "   - dtype mismatches (float32 vs float64, int vs float)\n"
+    "   - Missing torch.no_grad() in inference/evaluation paths\n"
+    "   - Incorrect tensor shapes passed to operations\n"
+    "\n"
+    "2. **Checkpoint / State Management**:\n"
+    "   - Incomplete save/restore (model, optimizer, scheduler, epoch, step)\n"
+    "   - Optimizer state not matching model parameters after load\n"
+    "   - Missing model.eval()/model.train() mode switches\n"
+    "   - LR scheduler state not persisted or restored\n"
+    "   - Random state not saved for reproducibility\n"
+    "\n"
+    "3. **RL Training Loop**:\n"
+    "   - Reward shaping or scaling errors\n"
+    "   - Advantage/GAE computation bugs (wrong discount, lambda)\n"
+    "   - PPO clipping applied incorrectly\n"
+    "   - Episode boundary handling (terminal vs truncated)\n"
+    "   - Action masking errors (illegal moves not masked)\n"
+    "   - Value function target computation errors\n"
+    "\n"
+    "4. **Resource Management**:\n"
+    "   - GPU memory not freed (tensors accumulating without release)\n"
+    "   - Unclosed files or database connections\n"
+    "   - Missing cleanup in error/exception paths\n"
+    "   - Context managers not used where needed\n"
+    "\n"
+    "5. **Error Handling Gaps**:\n"
+    "   - Silent failures (empty except blocks, catch-all handlers)\n"
+    "   - Missing validation at config boundaries\n"
+    "   - Unchecked tensor shapes or dimensions\n"
+    "   - Missing bounds checking on hyperparameters\n"
+    "\n"
+    "6. **Concurrency / Async Issues**:\n"
+    "   - Race conditions in training loop state\n"
+    "   - Shared mutable state across async boundaries\n"
+    "   - Missing synchronization on concurrent access\n"
+    "\n"
+    "7. **Data Pipeline Issues**:\n"
+    "   - Shape mismatches between observation/action spaces\n"
+    "   - Incorrect normalization or denormalization\n"
+    "   - Off-by-one errors in batch slicing or indexing\n"
+    "   - Shogi-specific: illegal move encoding, board state representation\n"
+)
+
+_RUST_BUG_CATEGORIES = (
+    "Bug Categories to Check:\n"
+    "1. **Memory Safety / Ownership**:\n"
+    "   - Unsafe blocks without sufficient justification or invariant docs\n"
+    "   - Potential UB in unsafe code (aliased mutable refs, invalid values)\n"
+    "   - Missing bounds checks before unchecked indexing\n"
+    "   - Incorrect Send/Sync implementations\n"
+    "\n"
+    "2. **Shogi Game Logic**:\n"
+    "   - Move generation correctness (drops, promotions, king-in-check)\n"
+    "   - Board state consistency after apply/undo moves\n"
+    "   - SFEN parsing/serialization edge cases\n"
+    "   - Zobrist hash collisions or update errors\n"
+    "   - Piece movement rules violations\n"
+    "\n"
+    "3. **FFI / PyO3 Boundary**:\n"
+    "   - Python GIL handling errors\n"
+    "   - Panic across FFI boundaries (should be caught)\n"
+    "   - Incorrect type conversions between Rust and Python\n"
+    "   - Memory leaks at the boundary (Python objects held too long)\n"
+    "\n"
+    "4. **Error Handling**:\n"
+    "   - Unwrap/expect on fallible operations without justification\n"
+    "   - Missing error propagation (? vs unwrap)\n"
+    "   - Panics in library code that should return Result\n"
+    "   - Silent error swallowing\n"
+    "\n"
+    "5. **Performance Issues**:\n"
+    "   - Unnecessary allocations in hot paths (move generation)\n"
+    "   - Missing #[inline] on small frequently-called functions\n"
+    "   - Excessive cloning where borrowing suffices\n"
+    "   - O(n) lookups where O(1) is possible\n"
+    "\n"
+    "6. **Observation / Action Encoding**:\n"
+    "   - Spatial plane encoding errors (wrong channel index)\n"
+    "   - Action space mapping inconsistencies\n"
+    "   - Observation tensor shape mismatches with Python side\n"
+    "   - Missing or incorrect legal move masking\n"
+    "\n"
+    "7. **Concurrency / VecEnv**:\n"
+    "   - Race conditions in parallel environment stepping\n"
+    "   - Shared state mutations across threads\n"
+    "   - Deadlock potential in synchronization primitives\n"
+)
+
+
 def _build_prompt(
     file_path: Path,
     context: str,
     extra_message: str | None = None,
 ) -> str:
+    is_rust = file_path.suffix == ".rs"
+    lang_desc = "Rust Shogi engine" if is_rust else "Python + PyTorch training harness"
+    categories = _RUST_BUG_CATEGORIES if is_rust else _PYTHON_BUG_CATEGORIES
+
     return (
         "You are a static analysis agent doing a deep bug audit of a Deep RL\n"
-        "Shogi training system (Python + PyTorch).\n"
+        f"Shogi training system ({lang_desc}).\n"
         f"Target file: {file_path}\n\n"
         "Instructions:\n"
         "- Use the bug report template below verbatim.\n"
@@ -74,53 +178,8 @@ def _build_prompt(
         "- Evidence should cite file paths and line numbers when possible.\n"
         + (f"\n⚠️  IMPORTANT CONTEXT:\n{extra_message}\n" if extra_message else "")
         + "\n"
-        "Bug Categories to Check:\n"
-        "1. **PyTorch / Tensor Issues**:\n"
-        "   - Device mismatches (CPU vs CUDA tensors in same operation)\n"
-        "   - Gradient leaks through missing .detach() calls\n"
-        "   - In-place operations breaking autograd graph\n"
-        "   - dtype mismatches (float32 vs float64, int vs float)\n"
-        "   - Missing torch.no_grad() in inference/evaluation paths\n"
-        "   - Incorrect tensor shapes passed to operations\n"
-        "\n"
-        "2. **Checkpoint / State Management**:\n"
-        "   - Incomplete save/restore (model, optimizer, scheduler, epoch, step)\n"
-        "   - Optimizer state not matching model parameters after load\n"
-        "   - Missing model.eval()/model.train() mode switches\n"
-        "   - LR scheduler state not persisted or restored\n"
-        "   - Random state not saved for reproducibility\n"
-        "\n"
-        "3. **RL Training Loop**:\n"
-        "   - Reward shaping or scaling errors\n"
-        "   - Advantage/GAE computation bugs (wrong discount, lambda)\n"
-        "   - PPO clipping applied incorrectly\n"
-        "   - Episode boundary handling (terminal vs truncated)\n"
-        "   - Action masking errors (illegal moves not masked)\n"
-        "   - Value function target computation errors\n"
-        "\n"
-        "4. **Resource Management**:\n"
-        "   - GPU memory not freed (tensors accumulating without release)\n"
-        "   - Unclosed files or database connections\n"
-        "   - Missing cleanup in error/exception paths\n"
-        "   - Context managers not used where needed\n"
-        "\n"
-        "5. **Error Handling Gaps**:\n"
-        "   - Silent failures (empty except blocks, catch-all handlers)\n"
-        "   - Missing validation at config boundaries\n"
-        "   - Unchecked tensor shapes or dimensions\n"
-        "   - Missing bounds checking on hyperparameters\n"
-        "\n"
-        "6. **Concurrency / Async Issues**:\n"
-        "   - Race conditions in training loop state\n"
-        "   - Shared mutable state across async boundaries\n"
-        "   - Missing synchronization on concurrent access\n"
-        "\n"
-        "7. **Data Pipeline Issues**:\n"
-        "   - Shape mismatches between observation/action spaces\n"
-        "   - Incorrect normalization or denormalization\n"
-        "   - Off-by-one errors in batch slicing or indexing\n"
-        "   - Shogi-specific: illegal move encoding, board state representation\n"
-        "\n"
+        + categories
+        + "\n"
         "Repository context (read-only):\n"
         f"{context}\n\n"
         "Bug report template:\n"
@@ -359,6 +418,8 @@ def _list_files(
     # Apply file type filter
     if file_type == "python":
         selected = {p for p in selected if _is_python_file(p)}
+    elif file_type == "rust":
+        selected = {p for p in selected if _is_rust_file(p)}
 
     return sorted(selected)
 
@@ -440,8 +501,8 @@ Examples:
     parser.add_argument(
         "--file-type",
         default="python",
-        choices=["python", "all"],
-        help="Filter by file type (default: python, excludes tests).",
+        choices=["python", "rust", "all"],
+        help="Filter by file type (default: python, excludes tests). Use 'rust' for shogi-engine.",
     )
     parser.add_argument(
         "--context-files",
