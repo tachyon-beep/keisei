@@ -11,6 +11,10 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    hmr: {
+      protocol: 'ws',
+      host: 'localhost',
+    },
     proxy: {
       '/ws': {
         target: 'ws://localhost:8001',
