@@ -5,15 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from keisei.config import AppConfig
+
+if TYPE_CHECKING:
+    from keisei.training.value_adapter import ValueHeadAdapter
 from keisei.db import (
     init_db,
     read_training_state,
@@ -31,6 +35,96 @@ from keisei.training.katago_ppo import (
 from keisei.training.model_registry import build_model
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SplitMergeResult:
+    """Result of a split-merge step."""
+
+    actions: torch.Tensor  # (num_envs,) merged actions for all envs
+    learner_mask: torch.Tensor  # (num_envs,) bool
+    opponent_mask: torch.Tensor  # (num_envs,) bool
+    learner_log_probs: torch.Tensor  # (n_learner,)
+    learner_values: torch.Tensor  # (n_learner,) scalar values for GAE
+    learner_indices: torch.Tensor  # (n_learner,) indices into full env array
+
+
+def split_merge_step(
+    obs: torch.Tensor,
+    legal_masks: torch.Tensor,
+    current_players: np.ndarray,
+    learner_model: torch.nn.Module,
+    opponent_model: torch.nn.Module,
+    learner_side: int = 0,
+    value_adapter: ValueHeadAdapter | None = None,
+) -> SplitMergeResult:
+    """Execute one step with split learner/opponent forward passes.
+
+    Returns only learner-side data (log_probs, values, indices). The caller
+    stores ONLY learner transitions in the rollout buffer.
+    """
+    num_envs = obs.shape[0]
+    device = obs.device
+
+    learner_mask = torch.tensor(current_players == learner_side, device=device)
+    opponent_mask = ~learner_mask
+    learner_indices = learner_mask.nonzero(as_tuple=True)[0]
+    opponent_indices = opponent_mask.nonzero(as_tuple=True)[0]
+
+    actions = torch.zeros(num_envs, dtype=torch.long, device=device)
+    learner_log_probs = torch.zeros(0, device=device)
+    learner_values = torch.zeros(0, device=device)
+
+    # Learner forward pass (eval mode, no_grad for rollout collection)
+    if learner_indices.numel() > 0:
+        l_obs = obs[learner_indices]
+        l_masks = legal_masks[learner_indices]
+
+        learner_model.eval()
+        with torch.no_grad():
+            l_output = learner_model(l_obs)
+
+        l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
+        l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
+        l_probs = F.softmax(l_masked, dim=-1)
+        l_dist = torch.distributions.Categorical(l_probs)
+        l_actions = l_dist.sample()
+        learner_log_probs = l_dist.log_prob(l_actions)
+
+        if value_adapter is not None:
+            learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
+        else:
+            vp = F.softmax(l_output.value_logits, dim=-1)
+            learner_values = vp[:, 0] - vp[:, 2]
+
+        actions[learner_indices] = l_actions
+        learner_model.train()
+
+    # Opponent forward pass (always no_grad, eval mode)
+    if opponent_indices.numel() > 0:
+        o_obs = obs[opponent_indices]
+        o_masks = legal_masks[opponent_indices]
+
+        opponent_model.eval()
+        with torch.no_grad():
+            o_output = opponent_model(o_obs)
+
+        o_flat = o_output.policy_logits.reshape(o_obs.shape[0], -1)
+        o_masked = o_flat.masked_fill(~o_masks, float("-inf"))
+        o_probs = F.softmax(o_masked, dim=-1)
+        o_dist = torch.distributions.Categorical(o_probs)
+        o_actions = o_dist.sample()
+
+        actions[opponent_indices] = o_actions
+
+    return SplitMergeResult(
+        actions=actions,
+        learner_mask=learner_mask,
+        opponent_mask=opponent_mask,
+        learner_log_probs=learner_log_probs,
+        learner_values=learner_values,
+        learner_indices=learner_indices,
+    )
 
 
 def create_lr_scheduler(
