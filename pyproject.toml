@@ -14,10 +14,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
+sl = ["chardet>=5.0"]
 
 [project.scripts]
 keisei-train = "keisei.training.loop:main"
 keisei-serve = "keisei.server.app:main"
+keisei-prepare-sl = "keisei.sl.prepare:main"
 
 [build-system]
 requires = ["setuptools>=75.0"]

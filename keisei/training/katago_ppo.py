@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
@@ -44,7 +45,7 @@ class KataGoPPOParams:
     lambda_value: float = 1.5
     lambda_score: float = 0.02
     lambda_entropy: float = 0.01
-    score_normalization: float = 76.0  # used by KataGoTrainingLoop to normalize targets at buffer level
+    score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
 
 
@@ -153,6 +154,8 @@ class KataGoPPOAlgorithm:
         params: KataGoPPOParams,
         model: KataGoBaseModel,
         forward_model: torch.nn.Module | None = None,
+        warmup_epochs: int = 0,
+        warmup_entropy: float = 0.05,
     ) -> None:
         """Create a KataGo PPO algorithm.
 
@@ -163,12 +166,26 @@ class KataGoPPOAlgorithm:
                 wrapper here if using multi-GPU. If None, defaults to `model`.
                 Convention: ``base_model = model.module if hasattr(...) else model``,
                 then ``KataGoPPOAlgorithm(params, base_model, forward_model=model)``.
+            warmup_epochs: Number of RL epochs with elevated entropy after SL.
+            warmup_entropy: Entropy coefficient during warmup period.
         """
         self.params = params
         self.model = model
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
-        self.current_entropy_coeff = params.lambda_entropy  # mutable; Plan D warmup updates this
+        self.warmup_epochs = warmup_epochs
+        self.warmup_entropy = warmup_entropy
+        self.current_entropy_coeff = params.lambda_entropy
+
+    def get_entropy_coeff(self, epoch: int) -> float:
+        """Return the entropy coefficient for the current epoch.
+
+        During the first `warmup_epochs` epochs of RL (after SL warmup),
+        uses elevated entropy to soften the overconfident SL policy.
+        """
+        if epoch < self.warmup_epochs:
+            return self.warmup_entropy
+        return self.params.lambda_entropy
 
     @staticmethod
     def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
@@ -375,4 +392,5 @@ class KataGoPPOAlgorithm:
                 metrics.update(value_metrics)
                 self.forward_model.train()
 
+        self.forward_model.train()
         return metrics

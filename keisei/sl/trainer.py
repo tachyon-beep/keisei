@@ -35,6 +35,11 @@ class SLTrainer:
 
     Checkpoint management is the caller's responsibility — call
     save_checkpoint() between epochs and load_checkpoint() to resume.
+
+    NOTE: For production-scale SL training on GPU, torch.autocast can be
+    added around the forward/loss computation for AMP/mixed precision.
+    Not implemented yet — adds complexity for minimal gain during pipeline
+    validation.
     """
 
     def __init__(self, model: KataGoBaseModel, config: SLConfig) -> None:

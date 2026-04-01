@@ -20,6 +20,22 @@ OBS_SIZE = 50 * 81
 OBS_BYTES = OBS_SIZE * 4  # float32
 RECORD_SIZE = OBS_BYTES + 8 + 8 + 4  # 16220 bytes
 
+# Score normalization divisor — shared between SL shard writer and RL buffer.
+# Raw material difference in Shogi can range roughly -200 to +200. Dividing by
+# this constant maps to ~[-1, 1] to prevent MSE score loss from dominating.
+SCORE_NORMALIZATION = 76.0
+
+
+# Structured dtype matching the shard binary layout exactly.
+# Field order and sizes must match RECORD_SIZE and the SLDataset reader.
+_SHARD_DTYPE = np.dtype([
+    ("obs", np.float32, (OBS_SIZE,)),
+    ("policy", np.int64),
+    ("value", np.int64),
+    ("score", np.float32),
+])
+assert _SHARD_DTYPE.itemsize == RECORD_SIZE  # verify layout matches
+
 
 def write_shard(
     path: Path,
@@ -28,19 +44,23 @@ def write_shard(
     value_targets: np.ndarray,
     score_targets: np.ndarray,
 ) -> None:
-    """Write positions to a binary shard file."""
+    """Write positions to a binary shard file in a single I/O operation.
+
+    Uses a numpy structured array to eliminate the per-record Python loop.
+    The resulting binary layout is identical to the original per-record writes.
+    """
     n = observations.shape[0]
     assert observations.shape == (n, OBS_SIZE)
     assert policy_targets.shape == (n,)
     assert value_targets.shape == (n,)
     assert score_targets.shape == (n,)
 
-    with open(path, "wb") as f:
-        for i in range(n):
-            f.write(observations[i].astype(np.float32).tobytes())
-            f.write(policy_targets[i].astype(np.int64).tobytes())
-            f.write(value_targets[i].astype(np.int64).tobytes())
-            f.write(score_targets[i].astype(np.float32).tobytes())
+    buf = np.empty(n, dtype=_SHARD_DTYPE)
+    buf["obs"] = observations.astype(np.float32)
+    buf["policy"] = policy_targets.astype(np.int64)
+    buf["value"] = value_targets.astype(np.int64)
+    buf["score"] = score_targets.astype(np.float32)
+    buf.tofile(path)
 
 
 class SLDataset(Dataset):

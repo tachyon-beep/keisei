@@ -33,6 +33,26 @@ from keisei.training.model_registry import build_model
 logger = logging.getLogger(__name__)
 
 
+def create_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    schedule_type: str = "plateau",
+    factor: float = 0.5,
+    patience: int = 50,
+    min_lr: float = 1e-5,
+) -> torch.optim.lr_scheduler.ReduceLROnPlateau:
+    """Create an LR scheduler from config parameters.
+
+    Returns the PyTorch scheduler directly — the training loop is responsible
+    for extracting the monitored metric and calling scheduler.step(value).
+    """
+    if schedule_type == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=factor, patience=patience, min_lr=min_lr,
+        )
+    else:
+        raise ValueError(f"Unknown schedule type '{schedule_type}'")
+
+
 class KataGoTrainingLoop:
     def __init__(self, config: AppConfig, vecenv: Any = None) -> None:
         self.config = config
@@ -76,16 +96,42 @@ class KataGoTrainingLoop:
             gpu_count,
         )
 
+        # Extract nested config sections BEFORE validate_algorithm_params,
+        # which constructs KataGoPPOParams(**params) and rejects unknown keys.
+        algo_params = dict(config.training.algorithm_params)
+        lr_config = algo_params.pop("lr_schedule", {})
+        rl_warmup_config = algo_params.pop("rl_warmup", {})
+
         ppo_params = validate_algorithm_params(
-            config.training.algorithm, config.training.algorithm_params
+            config.training.algorithm, algo_params
         )
         if not isinstance(ppo_params, KataGoPPOParams):
             raise TypeError(
                 f"Expected KataGoPPOParams, got {type(ppo_params).__name__}"
             )
 
+        rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
+        rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
+
         base_model = self.model.module if hasattr(self.model, "module") else self.model
-        self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
+        self.ppo = KataGoPPOAlgorithm(
+            ppo_params, base_model, forward_model=self.model,
+            warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
+        )
+
+        # LR scheduler (optional — only if lr_schedule config is present)
+        if lr_config:
+            self.lr_scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau | None = (
+                create_lr_scheduler(
+                    self.ppo.optimizer,
+                    schedule_type=lr_config.get("type", "plateau"),
+                    factor=lr_config.get("factor", 0.5),
+                    patience=lr_config.get("patience", 50),
+                    min_lr=lr_config.get("min_lr", 1e-5),
+                )
+            )
+        else:
+            self.lr_scheduler = None
 
         if vecenv is not None:
             self.vecenv = vecenv
@@ -131,6 +177,12 @@ class KataGoTrainingLoop:
         self._check_resume()
 
     def _check_resume(self) -> None:
+        # NOTE: When resuming from an SL checkpoint into RL training, the SL
+        # optimizer state is intentionally discarded. KataGoTrainingLoop creates
+        # a fresh Adam optimizer. The SL optimizer has momentum from supervised
+        # gradients that would fight the RL gradient signal. The RL warmup
+        # elevated entropy (Plan D Task 3) compensates for the overconfident
+        # SL policy by encouraging exploration in early RL epochs.
         state = read_training_state(self.db_path)
         if state is not None and state.get("checkpoint_path"):
             checkpoint_path = Path(state["checkpoint_path"])
@@ -250,6 +302,14 @@ class KataGoTrainingLoop:
                 next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
             self.model.train()
 
+            # Set epoch-dependent entropy coefficient
+            self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
+            if epoch_i == 0 or epoch_i == self.ppo.warmup_epochs:
+                logger.info(
+                    "Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
+                    self.ppo.current_entropy_coeff, self.ppo.warmup_epochs, epoch_i,
+                )
+
             losses = self.ppo.update(self.buffer, next_values)
 
             # Log zero-gradient situations so operators can distinguish
@@ -259,6 +319,27 @@ class KataGoTrainingLoop:
                     "Epoch %d: value_loss=0.0 (likely no terminal steps — "
                     "value head received no gradient this epoch)", epoch_i
                 )
+
+            # Reset LR scheduler fully at warmup boundary BEFORE the step,
+            # so the boundary epoch's anomalous loss doesn't leak into the
+            # post-warmup patience window.
+            if epoch_i == self.ppo.warmup_epochs and self.lr_scheduler is not None:
+                self.lr_scheduler.best = self.lr_scheduler.mode_worse  # +inf for mode='min'
+                self.lr_scheduler.num_bad_epochs = 0
+                logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
+
+            # LR scheduler step (monitors value_loss)
+            if self.lr_scheduler is not None:
+                monitor_value = losses.get("value_loss")
+                if monitor_value is not None:
+                    old_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                    self.lr_scheduler.step(monitor_value)
+                    new_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                    if new_lr != old_lr:
+                        logger.info(
+                            "LR reduced: %.6f -> %.6f (value_loss=%.4f)",
+                            old_lr, new_lr, monitor_value,
+                        )
 
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
             metrics = {

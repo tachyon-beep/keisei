@@ -159,6 +159,47 @@ class TestCSAParser:
         assert games[0].moves[0].move_usi == "P*5e"
 
 
+class TestCSAParserHardening:
+    def test_multi_game_csa_file(self, tmp_path):
+        """Games separated by '/' should parse as individual records."""
+        multi_game = (
+            "V2.2\nN+Player1\nN-Player2\n"
+            "P1-KY-KE-GI-KI-OU-KI-GI-KE-KY\n"
+            "P2 * -HI *  *  *  *  * -KA * \n"
+            "P3-FU-FU-FU-FU-FU-FU-FU-FU-FU\n"
+            "P4 *  *  *  *  *  *  *  *  * \n"
+            "P5 *  *  *  *  *  *  *  *  * \n"
+            "P6 *  *  *  *  *  *  *  *  * \n"
+            "P7+FU+FU+FU+FU+FU+FU+FU+FU+FU\n"
+            "P8 * +KA *  *  *  *  * +HI * \n"
+            "P9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n"
+            "+\n+7776FU\n-3334FU\n%TORYO\n"
+            "/\n"
+            "V2.2\nN+A\nN-B\n+\n+2726FU\n-8384FU\n%TORYO\n"
+        )
+        csa_file = tmp_path / "multi.csa"
+        csa_file.write_text(multi_game)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+        # Validate per-game content — no board state leakage across separator
+        assert len(games[0].moves) == 2
+        assert games[0].moves[0].move_usi == "7g7f"
+        assert games[0].metadata.get("player_black") == "Player1"
+        assert len(games[1].moves) == 2
+        assert games[1].moves[0].move_usi == "2g2f"
+        assert games[1].metadata.get("player_black") == "A"
+
+    def test_empty_game_between_separators(self, tmp_path):
+        """Empty blocks between '/' separators should be skipped."""
+        content = "+7776FU\n%TORYO\n/\n/\n+2726FU\n%TORYO\n"
+        csa_file = tmp_path / "gaps.csa"
+        csa_file.write_text(content)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+
+
 class TestSLDataset:
     def test_write_and_read_shard(self, tmp_path):
         """Write a shard with 10 positions and read them back."""
@@ -301,3 +342,22 @@ class TestSLTrainer:
         assert metrics["policy_loss"] == 0.0
         assert metrics["value_loss"] == 0.0
         assert metrics["score_loss"] == 0.0
+
+
+class TestWriteShardPerformance:
+    def test_write_large_shard(self, tmp_path):
+        """Write 10K positions -- should complete in < 5 seconds."""
+        import time
+
+        n = 10_000
+        rng = np.random.default_rng(42)
+        obs = rng.standard_normal((n, 50 * 81)).astype(np.float32)
+        policy = rng.integers(0, 11259, size=n).astype(np.int64)
+        value = rng.integers(0, 3, size=n).astype(np.int64)
+        score = rng.standard_normal(n).astype(np.float32)
+
+        start = time.monotonic()
+        write_shard(tmp_path / "perf_test.bin", obs, policy, value, score)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"write_shard took {elapsed:.1f}s for 10K positions"
