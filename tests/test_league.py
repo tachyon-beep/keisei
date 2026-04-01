@@ -179,8 +179,11 @@ class TestOpponentSampler:
             pool.add_snapshot(model, "resnet", {}, epoch=i)
 
         sampler = OpponentSampler(pool, historical_ratio=0.8, current_best_ratio=0.2)
-        entry = sampler.sample()
-        assert isinstance(entry, OpponentEntry)
+        pool_ids = {e.id for e in pool.list_entries()}
+        for _ in range(10):
+            entry = sampler.sample()
+            assert isinstance(entry, OpponentEntry)
+            assert entry.id in pool_ids
 
     def test_current_best_is_highest_elo(self, league_db, league_dir):
         pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)

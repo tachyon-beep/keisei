@@ -71,6 +71,55 @@ class TestMultiHeadValueAdapter:
         )
         assert loss.item() > 0
 
+    def test_all_ignored_value_cats_returns_zero_loss(self):
+        """When all value_cats are -1 (no terminal positions), value loss should be zero."""
+        adapter = MultiHeadValueAdapter()
+        value_logits = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], requires_grad=True)
+        value_cats = torch.tensor([-1, -1])  # all non-terminal
+        score_pred = torch.tensor([[0.5], [0.3]])
+        score_targets = torch.tensor([0.1, 0.2])
+        loss = adapter.compute_value_loss(
+            value_logits, returns=None,
+            value_cats=value_cats, score_targets=score_targets,
+            score_pred=score_pred,
+        )
+        # value_loss component should be zero; score_loss should still be positive
+        assert not loss.isnan(), "Loss should not be NaN with all-ignored value_cats"
+        loss.backward()
+        assert value_logits.grad is not None, "Gradient graph should be preserved"
+
+    def test_nan_score_targets_filtered(self):
+        """NaN sentinel in score_targets should not produce NaN loss."""
+        adapter = MultiHeadValueAdapter()
+        value_logits = torch.tensor([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], requires_grad=True)
+        value_cats = torch.tensor([0, 2])
+        score_pred = torch.tensor([[0.5], [0.3]], requires_grad=True)
+        score_targets = torch.tensor([0.1, float("nan")])  # second is non-terminal
+        loss = adapter.compute_value_loss(
+            value_logits, returns=None,
+            value_cats=value_cats, score_targets=score_targets,
+            score_pred=score_pred,
+        )
+        assert not loss.isnan(), "NaN sentinel should be filtered, not propagated"
+        loss.backward()
+        assert score_pred.grad is not None
+
+    def test_all_nan_score_targets_zero_score_loss(self):
+        """When all score_targets are NaN, score loss should be zero (graph-connected)."""
+        adapter = MultiHeadValueAdapter()
+        value_logits = torch.tensor([[1.0, 0.0, 0.0]], requires_grad=True)
+        value_cats = torch.tensor([0])
+        score_pred = torch.tensor([[0.5]], requires_grad=True)
+        score_targets = torch.tensor([float("nan")])
+        loss = adapter.compute_value_loss(
+            value_logits, returns=None,
+            value_cats=value_cats, score_targets=score_targets,
+            score_pred=score_pred,
+        )
+        assert not loss.isnan()
+        loss.backward()
+        assert score_pred.grad is not None
+
 
 class TestGetValueAdapter:
     def test_returns_scalar(self):
