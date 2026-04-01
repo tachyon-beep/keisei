@@ -162,3 +162,119 @@ class KataGoPPOAlgorithm:
         scalar_values = self.scalar_value(output.value_logits)
 
         return actions, log_probs, scalar_values
+
+    def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
+        # Deferred import to avoid circular: katago_ppo -> ppo -> algorithm_registry -> katago_ppo
+        from keisei.training.ppo import compute_gae
+
+        self.forward_model.train()
+        data = buffer.flatten()
+        T = buffer.size
+        N = buffer.num_envs
+
+        # GAE computation (uses scalar P(W)-P(L) values)
+        rewards_2d = data["rewards"].reshape(T, N)
+        values_2d = data["values"].reshape(T, N)
+        dones_2d = data["dones"].reshape(T, N)
+
+        all_advantages = torch.zeros(T, N, device=data["rewards"].device)
+        for env_i in range(N):
+            all_advantages[:, env_i] = compute_gae(
+                rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
+                next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
+            )
+
+        advantages = all_advantages.reshape(-1)
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        total_samples = T * N
+        batch_size = min(self.params.batch_size, total_samples)
+
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_score_loss = 0.0
+        total_entropy = 0.0
+        total_grad_norm = 0.0
+        num_updates = 0
+
+        for _ in range(self.params.epochs_per_batch):
+            indices = torch.randperm(total_samples, device=data["rewards"].device)
+            for start in range(0, total_samples, batch_size):
+                end = min(start + batch_size, total_samples)
+                idx = indices[start:end]
+
+                batch_obs = data["observations"][idx]
+                batch_actions = data["actions"][idx]
+                batch_old_log_probs = data["log_probs"][idx]
+                batch_advantages = advantages[idx]
+                batch_legal_masks = data["legal_masks"][idx]
+                batch_value_cats = data["value_categories"][idx]
+                batch_score_targets = data["score_targets"][idx]
+
+                output = self.forward_model(batch_obs)
+
+                # Policy loss (clipped surrogate)
+                flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
+
+                # NaN guard: check raw model output BEFORE masking.
+                if flat_logits.isnan().any():
+                    raise RuntimeError("NaN in raw policy logits from model forward pass")
+
+                masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
+                log_probs_all = F.log_softmax(masked_logits, dim=-1)
+                new_log_probs = log_probs_all.gather(
+                    1, batch_actions.unsqueeze(1)
+                ).squeeze(1)
+
+                ratio = (new_log_probs - batch_old_log_probs).exp()
+                clip = self.params.clip_epsilon
+                surr1 = ratio * batch_advantages
+                surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+
+                # Entropy over legal actions only.
+                probs = F.softmax(masked_logits, dim=-1)
+                safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
+                entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
+
+                # Value loss (cross-entropy on W/D/L)
+                value_loss = F.cross_entropy(
+                    output.value_logits, batch_value_cats, ignore_index=-1
+                )
+
+                # Score loss (MSE on normalized score)
+                score_loss = F.mse_loss(output.score_lead.squeeze(-1), batch_score_targets)
+
+                # Combined loss
+                loss = (
+                    self.params.lambda_policy * policy_loss
+                    + self.params.lambda_value * value_loss
+                    + self.params.lambda_score * score_loss
+                    - self.current_entropy_coeff * entropy
+                )
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.params.grad_clip
+                )
+                self.optimizer.step()
+
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_score_loss += score_loss.item()
+                total_entropy += entropy.item()
+                total_grad_norm += float(grad_norm)
+                num_updates += 1
+
+        buffer.clear()
+
+        denom = max(num_updates, 1)
+        return {
+            "policy_loss": total_policy_loss / denom,
+            "value_loss": total_value_loss / denom,
+            "score_loss": total_score_loss / denom,
+            "entropy": total_entropy / denom,
+            "gradient_norm": total_grad_norm / denom,
+        }

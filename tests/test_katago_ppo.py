@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
+from keisei.training.ppo import compute_gae
 from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
@@ -137,3 +138,55 @@ class TestKataGoPPOActionSelection:
             actions, _, _ = ppo.select_actions(obs, legal_masks)
             for a in actions.tolist():
                 assert a in (0, 1000), f"Action {a} should be 0 or 1000"
+
+
+class TestKataGoPPOUpdate:
+    def test_update_returns_metrics(self, ppo):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+            )
+        next_values = torch.zeros(2)
+        losses = ppo.update(buf, next_values)
+        assert "policy_loss" in losses
+        assert "value_loss" in losses
+        assert "score_loss" in losses
+        assert "entropy" in losses
+        assert "gradient_norm" in losses
+
+    def test_update_loss_values_are_finite(self, ppo):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.randn(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+            )
+        next_values = torch.zeros(2)
+        losses = ppo.update(buf, next_values)
+        for key, val in losses.items():
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+            assert not torch.tensor(val).isinf(), f"{key} is inf"
+
+    def test_update_clears_buffer(self, ppo):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2, dtype=torch.long), torch.zeros(2),
+            )
+        ppo.update(buf, torch.zeros(2))
+        assert buf.size == 0
