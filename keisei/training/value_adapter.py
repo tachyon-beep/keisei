@@ -101,11 +101,15 @@ class MultiHeadValueAdapter(ValueHeadAdapter):
         return self.lambda_value * value_loss + self.lambda_score * score_loss
 
 
-def get_value_adapter(model_contract: str) -> ValueHeadAdapter:
+def get_value_adapter(
+    model_contract: str,
+    lambda_value: float = 1.5,
+    lambda_score: float = 0.02,
+) -> ValueHeadAdapter:
     """Return the appropriate adapter for a model contract type."""
     if model_contract == "scalar":
         return ScalarValueAdapter()
     elif model_contract == "multi_head":
-        return MultiHeadValueAdapter()
+        return MultiHeadValueAdapter(lambda_value=lambda_value, lambda_score=lambda_score)
     else:
         raise ValueError(f"Unknown model contract: {model_contract}")

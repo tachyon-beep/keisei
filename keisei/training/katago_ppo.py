@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -236,7 +237,12 @@ class KataGoPPOAlgorithm:
         finally:
             self.forward_model.train()
 
-    def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
+    def update(
+        self,
+        buffer: KataGoRolloutBuffer,
+        next_values: torch.Tensor,
+        value_adapter: Any | None = None,
+    ) -> dict[str, float]:
         from keisei.training.gae import compute_gae
 
         self.forward_model.train()
@@ -319,34 +325,46 @@ class KataGoPPOAlgorithm:
                 safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
                 entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
-                # Value loss (cross-entropy on W/D/L).
-                # When all samples in the batch have value_cats=-1 (all non-terminal),
-                # cross_entropy returns NaN. Use 0.0 in that case — no value signal.
-                has_valid_value_targets = (batch_value_cats >= 0).any()
-                if has_valid_value_targets:
-                    value_loss = F.cross_entropy(
-                        output.value_logits, batch_value_cats, ignore_index=-1
+                # Value + score loss — dispatch through adapter if provided
+                if value_adapter is not None:
+                    value_score_loss = value_adapter.compute_value_loss(
+                        output.value_logits,
+                        returns=None,
+                        value_cats=batch_value_cats,
+                        score_targets=batch_score_targets,
+                        score_pred=output.score_lead,
                     )
+                    # For metrics tracking, decompose (adapter combines them)
+                    value_loss = value_score_loss  # combined
+                    score_loss = torch.tensor(0.0, device=batch_obs.device)
                 else:
-                    # Zero loss that preserves the autograd graph (not a detached leaf tensor)
-                    value_loss = output.value_logits.sum() * 0.0
+                    # Default: inline KataGo multi-head (backward compatible)
+                    has_valid_value_targets = (batch_value_cats >= 0).any()
+                    if has_valid_value_targets:
+                        value_loss = F.cross_entropy(
+                            output.value_logits, batch_value_cats, ignore_index=-1
+                        )
+                    else:
+                        value_loss = output.value_logits.sum() * 0.0
 
-                # Score loss (MSE on normalized score, terminal positions only).
-                # Non-terminal positions use NaN sentinel — exclude from loss.
-                score_valid = ~batch_score_targets.isnan()
-                if score_valid.any():
-                    score_loss = F.mse_loss(
-                        output.score_lead.squeeze(-1)[score_valid],
-                        batch_score_targets[score_valid],
+                    score_valid = ~batch_score_targets.isnan()
+                    if score_valid.any():
+                        score_loss = F.mse_loss(
+                            output.score_lead.squeeze(-1)[score_valid],
+                            batch_score_targets[score_valid],
+                        )
+                    else:
+                        score_loss = output.score_lead.sum() * 0.0
+
+                    value_score_loss = (
+                        self.params.lambda_value * value_loss
+                        + self.params.lambda_score * score_loss
                     )
-                else:
-                    score_loss = output.score_lead.sum() * 0.0  # zero loss, preserve graph
 
                 # Combined loss
                 loss = (
                     self.params.lambda_policy * policy_loss
-                    + self.params.lambda_value * value_loss
-                    + self.params.lambda_score * score_loss
+                    + value_score_loss
                     - self.current_entropy_coeff * entropy
                 )
 
