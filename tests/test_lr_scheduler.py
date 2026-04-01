@@ -98,7 +98,7 @@ class TestRLWarmup:
             buf.add(
                 obs, actions, log_probs, values,
                 torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
-                torch.randint(0, 3, (2,)), torch.randn(2),
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,  # scores in [-1, 1]
             )
 
         # Run update with default entropy coeff
@@ -112,7 +112,7 @@ class TestRLWarmup:
             buf.add(
                 obs, actions, log_probs, values,
                 torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
-                torch.randint(0, 3, (2,)), torch.randn(2),
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,  # scores in [-1, 1]
             )
 
         # Set a very different entropy coeff and run again
