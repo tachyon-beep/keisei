@@ -353,7 +353,7 @@ class TrainingLoop:
         now = time.monotonic()
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
-            update_heartbeat(self.db_path)
+            update_training_progress(self.db_path, self.epoch, self.global_step)
 
 
 def main() -> None:
