@@ -1,12 +1,13 @@
 # tests/test_katago_loop.py
 """Integration tests for KataGoTrainingLoop."""
 
+import dataclasses
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from keisei.config import AppConfig, DisplayConfig, ModelConfig, TrainingConfig
+from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
@@ -156,3 +157,71 @@ class TestKataGoTrainingLoopRun:
         loop.run(num_epochs=2, steps_per_epoch=4)
         metrics = read_metrics_since(katago_config.display.db_path, since_id=0)
         assert len(metrics) == 2  # one row per epoch
+
+
+def _with_league(config, tmp_path, snapshot_interval=10):
+    """Helper to add league config to an existing AppConfig."""
+    league = LeagueConfig(
+        max_pool_size=10,
+        snapshot_interval=snapshot_interval,
+        epochs_per_seat=50,
+        elo_floor=500,
+    )
+    return dataclasses.replace(config, league=league)
+
+
+class TestLeagueIntegration:
+    def test_bootstrap_snapshot_at_init(self, katago_config, tmp_path):
+        """Pool should have one entry after init (the bootstrap snapshot)."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=10)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        assert len(loop.pool.list_entries()) == 1
+
+    def test_periodic_snapshot(self, katago_config, tmp_path):
+        """Pool should gain a snapshot every snapshot_interval epochs."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=4, steps_per_epoch=2)
+        entries = loop.pool.list_entries()
+        assert len(entries) >= 3  # bootstrap + 2 periodic
+
+    def test_opponent_loaded_each_epoch(self, katago_config, tmp_path):
+        """A frozen opponent model should be loaded for each epoch."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=5)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=2, steps_per_epoch=2)
+        assert loop._current_opponent is not None
+        assert not loop._current_opponent.training
+
+
+class TestSplitMergeIntegration:
+    def test_run_with_league_completes(self, katago_config, tmp_path):
+        """With league enabled, run() should complete without error."""
+        mock_env = _make_mock_katago_vecenv(num_envs=4)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=5)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+    def test_run_without_league_still_works(self, katago_config):
+        """Without league config, run() should work as before."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+
+class TestSeatRotation:
+    def test_rotation_after_epochs_per_seat(self, katago_config, tmp_path):
+        """After epochs_per_seat, optimizer should be reset."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        katago_config = _with_league(katago_config, tmp_path, snapshot_interval=2)
+        league = dataclasses.replace(katago_config.league, epochs_per_seat=3)
+        katago_config = dataclasses.replace(katago_config, league=league)
+
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=4, steps_per_epoch=2)
+        assert loop.epoch == 3  # completed epochs 0,1,2,3

@@ -32,6 +32,7 @@ from keisei.training.katago_ppo import (
     KataGoPPOParams,
     KataGoRolloutBuffer,
 )
+from keisei.training.league import OpponentEntry, OpponentPool, OpponentSampler, compute_elo_update
 from keisei.training.model_registry import build_model
 
 logger = logging.getLogger(__name__)
@@ -268,6 +269,36 @@ class KataGoTrainingLoop:
         self.global_step = 0
         self._last_heartbeat = time.monotonic()
 
+        # League setup (optional — only if [league] config is present)
+        self.pool: OpponentPool | None = None
+        self.sampler: OpponentSampler | None = None
+        self._current_opponent: torch.nn.Module | None = None
+        self._current_opponent_entry: OpponentEntry | None = None
+        self._learner_entry_id: int | None = None
+
+        if config.league is not None:
+            league_dir = str(Path(config.training.checkpoint_dir) / "league")
+            self.pool = OpponentPool(
+                self.db_path, league_dir, max_pool_size=config.league.max_pool_size,
+            )
+            self.sampler = OpponentSampler(
+                self.pool,
+                historical_ratio=config.league.historical_ratio,
+                current_best_ratio=config.league.current_best_ratio,
+                elo_floor=config.league.elo_floor,
+            )
+            # Bootstrap snapshot so pool is never empty
+            base_model = self.model.module if hasattr(self.model, "module") else self.model
+            bootstrap_entry = self.pool.add_snapshot(
+                base_model, config.model.architecture,
+                dict(config.model.params), epoch=0,
+            )
+            self._learner_entry_id = bootstrap_entry.id
+            logger.info(
+                "League initialized: pool_size=%d, snapshot_interval=%d",
+                config.league.max_pool_size, config.league.snapshot_interval,
+            )
+
         self._check_resume()
 
     def _check_resume(self) -> None:
@@ -328,69 +359,112 @@ class KataGoTrainingLoop:
         legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(
             self.device
         )
+        current_players = np.zeros(self.num_envs, dtype=np.uint8)
 
         start_epoch = self.epoch
         for epoch_i in range(start_epoch, start_epoch + num_epochs):
             self.epoch = epoch_i
 
+            # Sample opponent for this epoch (if league enabled)
+            if self.sampler is not None:
+                self._current_opponent_entry = self.sampler.sample()
+                self._current_opponent = self.pool.load_opponent(
+                    self._current_opponent_entry, device=str(self.device),
+                )
+
+            # Per-epoch win/loss/draw counters for Elo tracking
+            win_count = 0
+            loss_count = 0
+            draw_count = 0
+
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
 
-                actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
-                action_list = actions.tolist()
-                step_result = self.vecenv.step(action_list)
+                if self._current_opponent is not None:
+                    # Split-merge: learner vs opponent
+                    sm_result = split_merge_step(
+                        obs=obs, legal_masks=legal_masks,
+                        current_players=current_players,
+                        learner_model=self.model,
+                        opponent_model=self._current_opponent,
+                        learner_side=0,
+                    )
+                    actions = sm_result.actions
+                    action_list = actions.tolist()
+                    step_result = self.vecenv.step(action_list)
 
-                rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(
-                    self.device
-                )
-                terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(
-                    self.device
-                )
-                truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(
-                    self.device
-                )
-                dones = terminated | truncated
+                    current_players = np.asarray(step_result.current_players)
 
-                # Value categories: -1 (ignore) for non-terminal steps.
-                # Only terminal steps get a real label (0=W, 1=D, 2=L).
-                # F.cross_entropy(ignore_index=-1) skips these in the loss.
-                # Score targets: NaN for non-terminal (masked in PPO update).
-                terminal_mask = dones.bool()
-                value_cats = torch.full(
-                    (self.num_envs,), -1, dtype=torch.long, device=self.device
-                )
-                value_cats[terminal_mask & (rewards > 0)] = 0  # Win
-                value_cats[terminal_mask & (rewards == 0)] = 1  # Draw
-                value_cats[terminal_mask & (rewards < 0)] = 2  # Loss
+                    rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
+                    terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
+                    truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
+                    dones = terminated | truncated
 
-                score_targets = torch.full(
-                    (self.num_envs,), float("nan"), device=self.device
-                )
-                score_targets[terminal_mask] = rewards[terminal_mask] / self.score_norm
+                    # Track wins/losses/draws for Elo
+                    terminal_mask = dones.bool()
+                    if terminal_mask.any():
+                        t_rewards = rewards[terminal_mask]
+                        win_count += (t_rewards > 0).sum().item()
+                        loss_count += (t_rewards < 0).sum().item()
+                        draw_count += (t_rewards == 0).sum().item()
 
-                self.buffer.add(
-                    obs,
-                    actions,
-                    log_probs,
-                    values,
-                    rewards,
-                    dones,
-                    legal_masks,
-                    value_cats,
-                    score_targets,
-                )
+                    # Store ONLY learner transitions in the buffer
+                    li = sm_result.learner_indices
+                    if li.numel() > 0:
+                        # Compute value_cats and score_targets for learner envs
+                        li_terminal = dones[li].bool()
+                        li_rewards = rewards[li]
+                        li_value_cats = torch.full(
+                            (li.numel(),), -1, dtype=torch.long, device=self.device,
+                        )
+                        li_value_cats[li_terminal & (li_rewards > 0)] = 0
+                        li_value_cats[li_terminal & (li_rewards == 0)] = 1
+                        li_value_cats[li_terminal & (li_rewards < 0)] = 2
 
-                obs = torch.from_numpy(np.asarray(step_result.observations)).to(
-                    self.device
-                )
-                legal_masks = torch.from_numpy(
-                    np.asarray(step_result.legal_masks)
-                ).to(self.device)
+                        li_score_targets = torch.full(
+                            (li.numel(),), float("nan"), device=self.device,
+                        )
+                        li_score_targets[li_terminal] = li_rewards[li_terminal] / self.score_norm
 
+                        self.buffer.add(
+                            obs[li], actions[li], sm_result.learner_log_probs,
+                            sm_result.learner_values, li_rewards, dones[li],
+                            legal_masks[li], li_value_cats, li_score_targets,
+                        )
+                else:
+                    # No opponent: all envs are learner (original behavior)
+                    actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
+                    action_list = actions.tolist()
+                    step_result = self.vecenv.step(action_list)
+
+                    rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
+                    terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
+                    truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
+                    dones = terminated | truncated
+
+                    terminal_mask = dones.bool()
+                    value_cats = torch.full(
+                        (self.num_envs,), -1, dtype=torch.long, device=self.device,
+                    )
+                    value_cats[terminal_mask & (rewards > 0)] = 0
+                    value_cats[terminal_mask & (rewards == 0)] = 1
+                    value_cats[terminal_mask & (rewards < 0)] = 2
+
+                    score_targets = torch.full(
+                        (self.num_envs,), float("nan"), device=self.device,
+                    )
+                    score_targets[terminal_mask] = rewards[terminal_mask] / self.score_norm
+
+                    self.buffer.add(
+                        obs, actions, log_probs, values, rewards, dones,
+                        legal_masks, value_cats, score_targets,
+                    )
+
+                obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
+                legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
                 self._maybe_update_heartbeat()
 
-            # Bootstrap value for GAE — use forward_model (not self.model) for
-            # consistency with select_actions and for DDP compatibility.
+            # Bootstrap value for GAE
             self.ppo.forward_model.eval()
             with torch.no_grad():
                 output = self.ppo.forward_model(obs)
@@ -407,23 +481,18 @@ class KataGoTrainingLoop:
 
             losses = self.ppo.update(self.buffer, next_values)
 
-            # Log zero-gradient situations so operators can distinguish
-            # "no terminals this epoch" from "perfectly calibrated head"
             if losses["value_loss"] == 0.0:
                 logger.info(
                     "Epoch %d: value_loss=0.0 (likely no terminal steps — "
-                    "value head received no gradient this epoch)", epoch_i
+                    "value head received no gradient this epoch)", epoch_i,
                 )
 
-            # Reset LR scheduler fully at warmup boundary BEFORE the step,
-            # so the boundary epoch's anomalous loss doesn't leak into the
-            # post-warmup patience window.
+            # LR scheduler logic
             if epoch_i == self.ppo.warmup_epochs and self.lr_scheduler is not None:
-                self.lr_scheduler.best = self.lr_scheduler.mode_worse  # +inf for mode='min'
+                self.lr_scheduler.best = self.lr_scheduler.mode_worse
                 self.lr_scheduler.num_bad_epochs = 0
                 logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
 
-            # LR scheduler step (monitors value_loss)
             if self.lr_scheduler is not None:
                 monitor_value = losses.get("value_loss")
                 if monitor_value is not None:
@@ -431,22 +500,60 @@ class KataGoTrainingLoop:
                     self.lr_scheduler.step(monitor_value)
                     new_lr = self.ppo.optimizer.param_groups[0]["lr"]
                     if new_lr != old_lr:
-                        logger.info(
-                            "LR reduced: %.6f -> %.6f (value_loss=%.4f)",
-                            old_lr, new_lr, monitor_value,
-                        )
+                        logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
+                                    old_lr, new_lr, monitor_value)
 
+            # Elo tracking (league mode)
+            total_games = win_count + loss_count + draw_count
+            if (self.pool is not None and self._current_opponent_entry is not None
+                    and total_games > 0):
+                learner_entry = self.pool._get_entry(self._learner_entry_id)
+                if learner_entry is not None:
+                    self.pool.record_result(
+                        epoch=epoch_i, learner_id=learner_entry.id,
+                        opponent_id=self._current_opponent_entry.id,
+                        wins=win_count, losses=loss_count, draws=draw_count,
+                    )
+                    result_score = (win_count + 0.5 * draw_count) / total_games
+                    k = self.config.league.elo_k_factor if self.config.league else 32.0
+                    new_learner_elo, new_opp_elo = compute_elo_update(
+                        learner_entry.elo_rating,
+                        self._current_opponent_entry.elo_rating,
+                        result=result_score, k=k,
+                    )
+                    self.pool.update_elo(learner_entry.id, new_learner_elo)
+                    self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo)
+                    logger.info(
+                        "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                        learner_entry.elo_rating, new_learner_elo,
+                        self._current_opponent_entry.id,
+                        self._current_opponent_entry.elo_rating, new_opp_elo,
+                        win_count, loss_count, draw_count,
+                    )
+
+            # Periodic pool snapshot
+            if (self.pool is not None and self.config.league is not None
+                    and (epoch_i + 1) % self.config.league.snapshot_interval == 0):
+                base_model = self.model.module if hasattr(self.model, "module") else self.model
+                self.pool.add_snapshot(
+                    base_model, self.config.model.architecture,
+                    dict(self.config.model.params), epoch=epoch_i + 1,
+                )
+
+            # Seat rotation
+            if (self.config.league is not None and self.pool is not None
+                    and (epoch_i + 1) % self.config.league.epochs_per_seat == 0):
+                self._rotate_seat(epoch_i)
+
+            # Metrics and logging
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
             metrics = {
-                "epoch": epoch_i,
-                "step": self.global_step,
+                "epoch": epoch_i, "step": self.global_step,
                 "policy_loss": losses["policy_loss"],
                 "value_loss": losses["value_loss"],
                 "entropy": losses["entropy"],
                 "gradient_norm": losses["gradient_norm"],
                 "episodes_completed": ep_completed,
-                # NOTE: score_loss is NOT included — the metrics DB table has no
-                # score_loss column. It is logged below but not persisted to DB.
             }
             try:
                 write_metrics(self.db_path, metrics)
@@ -463,43 +570,52 @@ class KataGoTrainingLoop:
 
             logger.info(
                 "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
-                epoch_i,
-                self.global_step,
-                losses["policy_loss"],
-                losses["value_loss"],
-                losses["score_loss"],
-                losses["entropy"],
+                epoch_i, self.global_step, losses["policy_loss"],
+                losses["value_loss"], losses["score_loss"], losses["entropy"],
             )
 
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
-                ckpt_path = (
-                    Path(self.config.training.checkpoint_dir)
-                    / f"epoch_{epoch_i:05d}.pt"
-                )
-                base_model = (
-                    self.model.module
-                    if hasattr(self.model, "module")
-                    else self.model
-                )
+                ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
+                base_model = self.model.module if hasattr(self.model, "module") else self.model
                 try:
                     save_checkpoint(
-                        ckpt_path,
-                        base_model,
-                        self.ppo.optimizer,
-                        epoch_i + 1,
-                        self.global_step,
+                        ckpt_path, base_model, self.ppo.optimizer,
+                        epoch_i + 1, self.global_step,
                         architecture=self.config.model.architecture,
                     )
                     logger.info("Checkpoint saved: %s", ckpt_path)
                 except Exception:
                     logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
-
                 try:
                     update_training_progress(
-                        self.db_path, epoch_i + 1, self.global_step, str(ckpt_path)
+                        self.db_path, epoch_i + 1, self.global_step, str(ckpt_path),
                     )
                 except Exception:
                     logger.exception("Failed to record checkpoint path in DB — continuing")
+
+    def _rotate_seat(self, epoch: int) -> None:
+        """Save current learner weights and reset optimizer for the next seat."""
+        base_model = self.model.module if hasattr(self.model, "module") else self.model
+
+        self.pool.add_snapshot(
+            base_model, self.config.model.architecture,
+            dict(self.config.model.params), epoch=epoch + 1,
+        )
+
+        # Reset optimizer (fresh Adam — old momentum fights new gradient signal)
+        self.ppo.optimizer = torch.optim.Adam(
+            self.ppo.model.parameters(), lr=self.ppo.params.learning_rate,
+        )
+
+        # Reset LR scheduler patience if present
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.best = self.lr_scheduler.mode_worse
+            self.lr_scheduler.num_bad_epochs = 0
+
+        # Reset warmup entropy
+        self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch=0)
+
+        logger.info("Seat rotation at epoch %d: optimizer reset, warmup restarted", epoch)
 
     def _maybe_update_heartbeat(self) -> None:
         now = time.monotonic()

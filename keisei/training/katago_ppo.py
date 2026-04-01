@@ -136,16 +136,18 @@ class KataGoRolloutBuffer:
             raise ValueError(
                 "Cannot flatten an empty buffer. Call add() at least once before flatten()."
             )
+        # Use cat instead of stack to support variable-sized timesteps
+        # (split-merge mode stores only learner envs per step, which varies).
         return {
-            "observations": torch.stack(self.observations).reshape(-1, *self.obs_shape),
-            "actions": torch.stack(self.actions).reshape(-1),
-            "log_probs": torch.stack(self.log_probs).reshape(-1),
-            "values": torch.stack(self.values).reshape(-1),
-            "rewards": torch.stack(self.rewards).reshape(-1),
-            "dones": torch.stack(self.dones).reshape(-1),
-            "legal_masks": torch.stack(self.legal_masks).reshape(-1, self.action_space),
-            "value_categories": torch.stack(self.value_categories).reshape(-1),
-            "score_targets": torch.stack(self.score_targets).reshape(-1),
+            "observations": torch.cat(self.observations, dim=0).reshape(-1, *self.obs_shape),
+            "actions": torch.cat(self.actions, dim=0).reshape(-1),
+            "log_probs": torch.cat(self.log_probs, dim=0).reshape(-1),
+            "values": torch.cat(self.values, dim=0).reshape(-1),
+            "rewards": torch.cat(self.rewards, dim=0).reshape(-1),
+            "dones": torch.cat(self.dones, dim=0).reshape(-1),
+            "legal_masks": torch.cat(self.legal_masks, dim=0).reshape(-1, self.action_space),
+            "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
+            "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
         }
 
 
@@ -249,24 +251,36 @@ class KataGoPPOAlgorithm:
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
+        total_samples = data["rewards"].numel()
 
-        # GAE computation (uses scalar P(W)-P(L) values)
-        rewards_2d = data["rewards"].reshape(T, N)
-        values_2d = data["values"].reshape(T, N)
-        dones_2d = data["dones"].reshape(T, N)
+        # GAE computation
+        # Check if buffer has uniform timesteps (T*N == total_samples).
+        # Split-merge mode stores variable learner counts per step.
+        if total_samples == T * N:
+            # Standard path: per-env GAE over (T, N) grid
+            rewards_2d = data["rewards"].reshape(T, N)
+            values_2d = data["values"].reshape(T, N)
+            dones_2d = data["dones"].reshape(T, N)
 
-        all_advantages = torch.zeros(T, N, device=data["rewards"].device)
-        for env_i in range(N):
-            all_advantages[:, env_i] = compute_gae(
-                rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
-                next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
+            all_advantages = torch.zeros(T, N, device=data["rewards"].device)
+            for env_i in range(N):
+                all_advantages[:, env_i] = compute_gae(
+                    rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
+                    next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
+                )
+            advantages = all_advantages.reshape(-1)
+        else:
+            # Split-merge path: flat GAE over concatenated learner transitions.
+            # next_values is for the full env array; use mean as bootstrap estimate.
+            bootstrap = next_values.mean()
+            advantages = compute_gae(
+                data["rewards"], data["values"], data["dones"],
+                bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
-        advantages = all_advantages.reshape(-1)
         if advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        total_samples = T * N
         batch_size = min(self.params.batch_size, total_samples)
 
         total_policy_loss = 0.0

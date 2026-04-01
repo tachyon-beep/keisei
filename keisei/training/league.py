@@ -78,6 +78,8 @@ class OpponentPool:
         self.league_dir = Path(league_dir)
         self.league_dir.mkdir(parents=True, exist_ok=True)
         self.max_pool_size = max_pool_size
+        # NOTE: Pins are in-memory only — lost on restart. This is a known
+        # limitation; persisting to DB is tracked as keisei-76cc7fdc85.
         self._pinned: set[int] = set()
 
     def _connect(self) -> sqlite3.Connection:
