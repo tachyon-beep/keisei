@@ -18,6 +18,7 @@ dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
 [project.scripts]
 keisei-train = "keisei.training.loop:main"
 keisei-serve = "keisei.server.app:main"
+keisei-prepare-sl = "keisei.sl.prepare:main"
 
 [build-system]
 requires = ["setuptools>=75.0"]

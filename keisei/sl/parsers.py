@@ -31,6 +31,24 @@ class GameRecord:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class GameFilter:
+    """Filter for game quality before SL encoding."""
+
+    min_ply: int = 40
+    min_rating: int | None = None
+
+    def accepts(self, record: GameRecord) -> bool:
+        if len(record.moves) < self.min_ply:
+            return False
+        if self.min_rating is not None:
+            for key in ("rating", "black_rating", "white_rating"):
+                rating_str = record.metadata.get(key, "")
+                if rating_str.isdigit() and int(rating_str) < self.min_rating:
+                    return False
+        return True
+
+
 class GameParser(ABC):
     @abstractmethod
     def parse(self, path: Path) -> Iterator[GameRecord]: ...
