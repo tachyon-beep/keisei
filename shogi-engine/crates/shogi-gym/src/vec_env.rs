@@ -9,9 +9,13 @@
 //! separate buffer before resetting.
 
 use crate::action_mapper::{ActionMapper, DefaultActionMapper, ACTION_SPACE_SIZE};
+use crate::katago_observation::{
+    KataGoObservationGenerator, KATAGO_BUFFER_LEN, KATAGO_NUM_CHANNELS,
+};
 use crate::observation::{
     DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS,
 };
+use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
 use crate::spectator_data::build_spectator_dict;
 use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReason};
 
@@ -21,6 +25,15 @@ use pyo3::types::PyDict;
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+// Compile-time assertion: observation generators and action mappers must be ZSTs.
+// The rayon closure reconstructs these per-thread via ::new(). If a future generator
+// acquires state, this assertion will fail, forcing explicit resolution of the
+// sharing design (e.g., Arc<dyn Trait>).
+const _: () = assert!(std::mem::size_of::<DefaultObservationGenerator>() == 0);
+const _: () = assert!(std::mem::size_of::<KataGoObservationGenerator>() == 0);
+const _: () = assert!(std::mem::size_of::<DefaultActionMapper>() == 0);
+const _: () = assert!(std::mem::size_of::<SpatialActionMapper>() == 0);
 
 /// Minimum number of environments to use rayon parallel iteration.
 const PARALLEL_THRESHOLD: usize = 64;
@@ -77,6 +90,75 @@ fn compute_reward(result: &GameResult, last_mover: Color) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Mode enums for dynamic dispatch
+// ---------------------------------------------------------------------------
+
+enum ObsMode {
+    Default(DefaultObservationGenerator),
+    KataGo(KataGoObservationGenerator),
+}
+
+impl ObsMode {
+    fn channels(&self) -> usize {
+        match self {
+            ObsMode::Default(_) => NUM_CHANNELS,
+            ObsMode::KataGo(_) => KATAGO_NUM_CHANNELS,
+        }
+    }
+
+    fn buffer_len(&self) -> usize {
+        match self {
+            ObsMode::Default(_) => BUFFER_LEN,
+            ObsMode::KataGo(_) => KATAGO_BUFFER_LEN,
+        }
+    }
+
+    fn generate(&self, state: &GameState, perspective: Color, buffer: &mut [f32]) {
+        match self {
+            ObsMode::Default(g) => g.generate(state, perspective, buffer),
+            ObsMode::KataGo(g) => g.generate(state, perspective, buffer),
+        }
+    }
+}
+
+enum ActionMode {
+    Default(DefaultActionMapper),
+    Spatial(SpatialActionMapper),
+}
+
+impl ActionMode {
+    fn action_space_size(&self) -> usize {
+        match self {
+            ActionMode::Default(_) => ACTION_SPACE_SIZE,
+            ActionMode::Spatial(_) => SPATIAL_ACTION_SPACE_SIZE,
+        }
+    }
+
+    fn encode(&self, mv: Move, perspective: Color) -> usize {
+        match self {
+            ActionMode::Default(m) => <DefaultActionMapper as ActionMapper>::encode(m, mv, perspective),
+            ActionMode::Spatial(m) => <SpatialActionMapper as ActionMapper>::encode(m, mv, perspective),
+        }
+    }
+
+    fn decode(&self, idx: usize, perspective: Color) -> Result<Move, String> {
+        match self {
+            ActionMode::Default(m) => <DefaultActionMapper as ActionMapper>::decode(m, idx, perspective),
+            ActionMode::Spatial(m) => <SpatialActionMapper as ActionMapper>::decode(m, idx, perspective),
+        }
+    }
+}
+
+/// Tag enums for rayon closure dispatch (Copy + Send safe).
+/// Used inside parallel closures where we can't borrow the enum wrappers.
+/// NOTE: Assumes all generators are stateless ZSTs. If a future generator
+/// acquires state, per-thread reconstruction would create independent copies.
+#[derive(Copy, Clone)]
+enum ObsModeTag { Default, KataGo }
+#[derive(Copy, Clone)]
+enum ActionModeTag { Default, Spatial }
+
+// ---------------------------------------------------------------------------
 // VecEnv
 // ---------------------------------------------------------------------------
 
@@ -98,8 +180,11 @@ pub struct VecEnv {
     terminal_obs_buffer: Vec<f32>,   // N * BUFFER_LEN
     current_players_buffer: Vec<u8>, // N (0=Black, 1=White)
 
-    mapper: DefaultActionMapper,
-    obs_gen: DefaultObservationGenerator,
+    mapper: ActionMode,
+    obs_gen: ObsMode,
+    obs_buffer_len: usize,    // cached: obs_mode.buffer_len()
+    action_space: usize,       // cached: action_mode.action_space_size()
+    num_channels: usize,       // cached: obs_mode.channels()
 
     // Episode tracking counters (atomic for rayon safety)
     episodes_completed: AtomicU64,
@@ -113,14 +198,12 @@ impl VecEnv {
     fn write_obs_and_mask(&mut self, i: usize) {
         let perspective = self.games[i].position.current_player;
 
-        // Write observation
-        let obs_start = i * BUFFER_LEN;
-        let obs_slice = &mut self.obs_buffer[obs_start..obs_start + BUFFER_LEN];
+        let obs_start = i * self.obs_buffer_len;
+        let obs_slice = &mut self.obs_buffer[obs_start..obs_start + self.obs_buffer_len];
         self.obs_gen.generate(&self.games[i], perspective, obs_slice);
 
-        // Write legal mask
-        let mask_start = i * ACTION_SPACE_SIZE;
-        let mask_slice = &mut self.legal_mask_buffer[mask_start..mask_start + ACTION_SPACE_SIZE];
+        let mask_start = i * self.action_space;
+        let mask_slice = &mut self.legal_mask_buffer[mask_start..mask_start + self.action_space];
         mask_slice.fill(false);
         let mut move_list = MoveList::new();
         self.games[i].generate_legal_moves_into(&mut move_list);
@@ -136,33 +219,56 @@ impl VecEnv {
 impl VecEnv {
     /// Create a new VecEnv with `num_envs` parallel games.
     #[new]
-    #[pyo3(signature = (num_envs = 512, max_ply = 500))]
-    pub fn new(num_envs: usize, max_ply: u32) -> Self {
+    #[pyo3(signature = (num_envs = 512, max_ply = 500, observation_mode = "default", action_mode = "default"))]
+    pub fn new(num_envs: usize, max_ply: u32, observation_mode: &str, action_mode: &str) -> PyResult<Self> {
+        let obs_mode = match observation_mode {
+            "default" => ObsMode::Default(DefaultObservationGenerator::new()),
+            "katago" => ObsMode::KataGo(KataGoObservationGenerator::new()),
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Unknown observation_mode '{}'. Valid: 'default', 'katago'", observation_mode)
+            )),
+        };
+
+        let action_mode_enum = match action_mode {
+            "default" => ActionMode::Default(DefaultActionMapper),
+            "spatial" => ActionMode::Spatial(SpatialActionMapper),
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Unknown action_mode '{}'. Valid: 'default', 'spatial'", action_mode)
+            )),
+        };
+
+        let obs_buf_len = obs_mode.buffer_len();
+        let act_space = action_mode_enum.action_space_size();
+        let channels = obs_mode.channels();
+
         let games: Vec<GameState> = (0..num_envs)
             .map(|_| GameState::with_max_ply(max_ply))
             .collect();
 
-        VecEnv {
+        Ok(VecEnv {
             games,
             num_envs,
             max_ply,
-            obs_buffer: vec![0.0; num_envs * BUFFER_LEN],
-            legal_mask_buffer: vec![false; num_envs * ACTION_SPACE_SIZE],
+            obs_buffer: vec![0.0; num_envs * obs_buf_len],
+            legal_mask_buffer: vec![false; num_envs * act_space],
             reward_buffer: vec![0.0; num_envs],
             terminated_buffer: vec![false; num_envs],
             truncated_buffer: vec![false; num_envs],
             captured_buffer: vec![255; num_envs],
             term_reason_buffer: vec![0; num_envs],
             ply_buffer: vec![0; num_envs],
-            terminal_obs_buffer: vec![0.0; num_envs * BUFFER_LEN],
+            terminal_obs_buffer: vec![0.0; num_envs * obs_buf_len],
             current_players_buffer: vec![0; num_envs],
-            mapper: DefaultActionMapper,
-            obs_gen: DefaultObservationGenerator::new(),
+            mapper: action_mode_enum,
+            obs_gen: obs_mode,
+            obs_buffer_len: obs_buf_len,
+            action_space: act_space,
+            num_channels: channels,
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
             episodes_truncated: AtomicU64::new(0),
             total_episode_ply: AtomicU64::new(0),
-        }
+        })
     }
 
     /// Reset all games to the starting position.
@@ -182,12 +288,12 @@ impl VecEnv {
         // Build numpy arrays
         let obs_array = self.obs_buffer.to_pyarray(py);
         let obs_4d = obs_array
-            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .reshape([self.num_envs, self.num_channels, 9, 9])
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let mask_array = self.legal_mask_buffer.to_pyarray(py);
         let mask_2d = mask_array
-            .reshape([self.num_envs, ACTION_SPACE_SIZE])
+            .reshape([self.num_envs, self.action_space])
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         Ok(ResetResult {
@@ -215,23 +321,24 @@ impl VecEnv {
         // Decode all actions and validate against legal masks
         let mut decoded_moves: Vec<Move> = Vec::with_capacity(self.num_envs);
         for (i, action) in actions.iter().enumerate() {
+            if *action < 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "env {}: negative action index {}", i, *action
+                )));
+            }
             let action_idx = *action as usize;
             let perspective = self.games[i].position.current_player;
 
-            let mv = <DefaultActionMapper as ActionMapper>::decode(
-                &self.mapper,
-                action_idx,
-                perspective,
-            )
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "env {}: invalid action index {}: {}",
-                    i, action_idx, e
-                ))
-            })?;
+            let mv = self.mapper.decode(action_idx, perspective)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "env {}: invalid action index {}: {}",
+                        i, action_idx, e
+                    ))
+                })?;
 
             // Check legal mask
-            let mask_start = i * ACTION_SPACE_SIZE;
+            let mask_start = i * self.action_space;
             if !self.legal_mask_buffer[mask_start + action_idx] {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "env {}: action index {} is not legal",
@@ -247,6 +354,18 @@ impl VecEnv {
         py.allow_threads(|| {
             let num_envs = self.num_envs;
             let max_ply = self.max_ply;
+            let obs_buf_len = self.obs_buffer_len;
+            let act_space = self.action_space;
+
+            // Tag enums for static dispatch inside the closure (Copy + Send safe)
+            let obs_tag = match &self.obs_gen {
+                ObsMode::Default(_) => ObsModeTag::Default,
+                ObsMode::KataGo(_) => ObsModeTag::KataGo,
+            };
+            let act_tag = match &self.mapper {
+                ActionMode::Default(_) => ActionModeTag::Default,
+                ActionMode::Spatial(_) => ActionModeTag::Spatial,
+            };
 
             // Extract raw pointers for non-overlapping parallel access.
             // SAFETY: each index `i` in 0..num_envs accesses only its own
@@ -269,11 +388,6 @@ impl VecEnv {
             let ep_truncated = &self.episodes_truncated;
             let ep_total_ply = &self.total_episode_ply;
 
-            // Local copies — both are stateless. Shared refs used in closure.
-            let mapper = DefaultActionMapper;
-            let obs_gen = DefaultObservationGenerator::new();
-            let mapper_ref = &mapper;
-            let obs_gen_ref = &obs_gen;
             let decoded = &decoded_moves;
 
             let process_env = move |i: usize| {
@@ -330,11 +444,16 @@ impl VecEnv {
 
                         // Save terminal observation
                         let term_obs_slice = std::slice::from_raw_parts_mut(
-                            terminal_obs_ptr.offset(i * BUFFER_LEN),
-                            BUFFER_LEN,
+                            terminal_obs_ptr.offset(i * obs_buf_len),
+                            obs_buf_len,
                         );
                         let perspective = game.position.current_player;
-                        obs_gen_ref.generate(game, perspective, term_obs_slice);
+                        match obs_tag {
+                            ObsModeTag::Default => DefaultObservationGenerator::new()
+                                .generate(game, perspective, term_obs_slice),
+                            ObsModeTag::KataGo => KataGoObservationGenerator::new()
+                                .generate(game, perspective, term_obs_slice),
+                        }
 
                         // Auto-reset
                         *game = GameState::with_max_ply(max_ply);
@@ -344,20 +463,28 @@ impl VecEnv {
                     let perspective = game.position.current_player;
 
                     let obs_slice = std::slice::from_raw_parts_mut(
-                        obs_ptr.offset(i * BUFFER_LEN),
-                        BUFFER_LEN,
+                        obs_ptr.offset(i * obs_buf_len),
+                        obs_buf_len,
                     );
-                    obs_gen_ref.generate(game, perspective, obs_slice);
+                    match obs_tag {
+                        ObsModeTag::Default => DefaultObservationGenerator::new()
+                            .generate(game, perspective, obs_slice),
+                        ObsModeTag::KataGo => KataGoObservationGenerator::new()
+                            .generate(game, perspective, obs_slice),
+                    }
 
                     let mask_slice = std::slice::from_raw_parts_mut(
-                        mask_ptr.offset(i * ACTION_SPACE_SIZE),
-                        ACTION_SPACE_SIZE,
+                        mask_ptr.offset(i * act_space),
+                        act_space,
                     );
                     mask_slice.fill(false);
                     let mut move_list = MoveList::new();
                     game.generate_legal_moves_into(&mut move_list);
                     for legal_mv in move_list.iter() {
-                        let idx = mapper_ref.encode(*legal_mv, perspective);
+                        let idx = match act_tag {
+                            ActionModeTag::Default => DefaultActionMapper.encode(*legal_mv, perspective),
+                            ActionModeTag::Spatial => SpatialActionMapper.encode(*legal_mv, perspective),
+                        };
                         mask_slice[idx] = true;
                     }
 
@@ -380,12 +507,12 @@ impl VecEnv {
 
         let obs_array = self.obs_buffer.to_pyarray(py);
         let obs_4d = obs_array
-            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .reshape([self.num_envs, self.num_channels, 9, 9])
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let mask_array = self.legal_mask_buffer.to_pyarray(py);
         let mask_2d = mask_array
-            .reshape([self.num_envs, ACTION_SPACE_SIZE])
+            .reshape([self.num_envs, self.action_space])
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let rewards = self.reward_buffer.to_pyarray(py);
@@ -394,7 +521,7 @@ impl VecEnv {
 
         let terminal_obs_array = self.terminal_obs_buffer.to_pyarray(py);
         let terminal_obs_4d = terminal_obs_array
-            .reshape([self.num_envs, NUM_CHANNELS, 9, 9])
+            .reshape([self.num_envs, self.num_channels, 9, 9])
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let current_players = self.current_players_buffer.to_pyarray(py);
@@ -427,13 +554,13 @@ impl VecEnv {
     /// Total number of actions in the action space.
     #[getter]
     pub fn action_space_size(&self) -> usize {
-        ACTION_SPACE_SIZE
+        self.action_space
     }
 
     /// Number of observation channels.
     #[getter]
     pub fn observation_channels(&self) -> usize {
-        NUM_CHANNELS
+        self.num_channels
     }
 
     /// Number of parallel environments.
@@ -538,6 +665,44 @@ mod tests {
     use super::*;
     use shogi_core::Color;
 
+    /// Test-only constructor that builds a default-mode VecEnv without PyO3.
+    fn make_env(num_envs: usize, max_ply: u32) -> VecEnv {
+        let obs_mode = ObsMode::Default(DefaultObservationGenerator::new());
+        let action_mode = ActionMode::Default(DefaultActionMapper);
+        let obs_buf_len = obs_mode.buffer_len();
+        let act_space = action_mode.action_space_size();
+        let channels = obs_mode.channels();
+
+        let games: Vec<GameState> = (0..num_envs)
+            .map(|_| GameState::with_max_ply(max_ply))
+            .collect();
+
+        VecEnv {
+            games,
+            num_envs,
+            max_ply,
+            obs_buffer: vec![0.0; num_envs * obs_buf_len],
+            legal_mask_buffer: vec![false; num_envs * act_space],
+            reward_buffer: vec![0.0; num_envs],
+            terminated_buffer: vec![false; num_envs],
+            truncated_buffer: vec![false; num_envs],
+            captured_buffer: vec![255; num_envs],
+            term_reason_buffer: vec![0; num_envs],
+            ply_buffer: vec![0; num_envs],
+            terminal_obs_buffer: vec![0.0; num_envs * obs_buf_len],
+            current_players_buffer: vec![0; num_envs],
+            mapper: action_mode,
+            obs_gen: obs_mode,
+            obs_buffer_len: obs_buf_len,
+            action_space: act_space,
+            num_channels: channels,
+            episodes_completed: AtomicU64::new(0),
+            episodes_drawn: AtomicU64::new(0),
+            episodes_truncated: AtomicU64::new(0),
+            total_episode_ply: AtomicU64::new(0),
+        }
+    }
+
     // -----------------------------------------------------------------------
     // compute_reward tests
     // -----------------------------------------------------------------------
@@ -623,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_buffer_sizes() {
-        let env = VecEnv::new(4, 100);
+        let env = make_env(4, 100);
         assert_eq!(env.num_envs, 4);
         assert_eq!(env.max_ply, 100);
         assert_eq!(env.obs_buffer.len(), 4 * BUFFER_LEN);
@@ -640,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_write_obs_and_mask_startpos() {
-        let mut env = VecEnv::new(2, 500);
+        let mut env = make_env(2, 500);
         env.write_obs_and_mask(0);
 
         // At startpos, Black moves first. There should be legal moves.
@@ -662,7 +827,7 @@ mod tests {
 
     #[test]
     fn test_default_metadata_buffers() {
-        let env = VecEnv::new(3, 500);
+        let env = make_env(3, 500);
         for i in 0..3 {
             assert_eq!(env.captured_buffer[i], 255);
             assert_eq!(env.term_reason_buffer[i], 0);
@@ -676,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_write_obs_and_mask_after_move() {
-        let mut env = VecEnv::new(1, 500);
+        let mut env = make_env(1, 500);
 
         // Get Black's first legal move and apply it
         let first_move = env.games[0].legal_moves()[0];
@@ -712,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_legal_mask_encodes_correct_action_indices() {
-        let mut env = VecEnv::new(1, 500);
+        let mut env = make_env(1, 500);
         env.write_obs_and_mask(0);
 
         let perspective = env.games[0].position.current_player;
@@ -745,7 +910,7 @@ mod tests {
 
     #[test]
     fn test_observation_buffer_nonzero_after_write() {
-        let mut env = VecEnv::new(1, 500);
+        let mut env = make_env(1, 500);
         env.write_obs_and_mask(0);
 
         // The observation buffer should have non-zero values (pieces on board)
@@ -772,7 +937,7 @@ mod tests {
 
     #[test]
     fn test_manual_step_simulation() {
-        let mut env = VecEnv::new(1, 500);
+        let mut env = make_env(1, 500);
         env.write_obs_and_mask(0);
 
         // Simulate 10 moves: pick first legal action each time
@@ -818,7 +983,7 @@ mod tests {
     #[test]
     fn test_max_ply_termination() {
         // Create env with max_ply=2 — game should end after 2 moves
-        let mut env = VecEnv::new(1, 2);
+        let mut env = make_env(1, 2);
         env.write_obs_and_mask(0);
 
         // Step 1
@@ -843,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_episode_counters_after_max_ply() {
-        let mut env = VecEnv::new(1, 2);
+        let mut env = make_env(1, 2);
         env.write_obs_and_mask(0);
 
         // Drive game to terminal via max_ply = 2
@@ -875,7 +1040,7 @@ mod tests {
 
     #[test]
     fn test_auto_reset_produces_startpos_obs() {
-        let mut env = VecEnv::new(1, 2);
+        let mut env = make_env(1, 2);
         env.write_obs_and_mask(0);
 
         // Snapshot startpos observation
@@ -936,7 +1101,7 @@ mod tests {
 
     #[test]
     fn test_reset_stats() {
-        let env = VecEnv::new(1, 500);
+        let env = make_env(1, 500);
         env.episodes_completed.fetch_add(10, Ordering::Relaxed);
         env.episodes_drawn.fetch_add(3, Ordering::Relaxed);
         env.episodes_truncated.fetch_add(2, Ordering::Relaxed);
@@ -956,7 +1121,7 @@ mod tests {
 
     #[test]
     fn test_current_players_buffer_after_move() {
-        let mut env = VecEnv::new(2, 500);
+        let mut env = make_env(2, 500);
 
         // At startpos, both should be Black (0)
         env.current_players_buffer[0] = match env.games[0].position.current_player {
@@ -1015,7 +1180,7 @@ mod tests {
 
     #[test]
     fn test_multi_env_obs_isolation() {
-        let mut env = VecEnv::new(3, 500);
+        let mut env = make_env(3, 500);
 
         // Write obs for all envs
         for i in 0..3 {
@@ -1047,7 +1212,7 @@ mod tests {
     #[test]
     fn test_large_vecenv_buffer_construction() {
         let n = 128; // above PARALLEL_THRESHOLD (64)
-        let env = VecEnv::new(n, 100);
+        let env = make_env(n, 100);
         assert_eq!(env.num_envs, n);
         assert_eq!(env.games.len(), n);
         assert_eq!(env.obs_buffer.len(), n * BUFFER_LEN);
@@ -1062,7 +1227,7 @@ mod tests {
     #[test]
     fn test_large_vecenv_obs_mask_consistency() {
         let n = 128;
-        let mut env = VecEnv::new(n, 500);
+        let mut env = make_env(n, 500);
 
         // Write obs and mask for all envs
         for i in 0..n {
@@ -1097,7 +1262,7 @@ mod tests {
     #[test]
     fn test_large_vecenv_obs_isolation_after_move() {
         let n = 128;
-        let mut env = VecEnv::new(n, 500);
+        let mut env = make_env(n, 500);
 
         // Write initial obs for all
         for i in 0..n {
@@ -1122,7 +1287,7 @@ mod tests {
     #[test]
     fn test_large_vecenv_episode_counters_after_max_ply() {
         let n = 128;
-        let env = VecEnv::new(n, 0); // max_ply=0 → immediate truncation
+        let env = make_env(n, 0); // max_ply=0 → immediate truncation
 
         // Verify the episode counters are at zero before any step
         assert_eq!(
