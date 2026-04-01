@@ -42,6 +42,17 @@ class KataGoTrainingLoop:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # Validate architecture-algorithm compatibility BEFORE building the model.
+        # build_model() allocates the full weight matrix (potentially ~1.5 GB VRAM
+        # for a 40-block model). Catching the mismatch here avoids wasting VRAM
+        # on a misconfigured run.
+        _KATAGO_ARCHITECTURES = {"se_resnet"}
+        if config.training.algorithm == "katago_ppo" and config.model.architecture not in _KATAGO_ARCHITECTURES:
+            raise ValueError(
+                f"algorithm='katago_ppo' requires a KataGoBaseModel architecture "
+                f"(one of {_KATAGO_ARCHITECTURES}), got '{config.model.architecture}'"
+            )
+
         self.model = build_model(config.model.architecture, config.model.params)
         self.model = self.model.to(self.device)
 
@@ -65,21 +76,6 @@ class KataGoTrainingLoop:
             gpu_count,
         )
 
-        # Validate architecture-algorithm compatibility.
-        # KataGoPPO requires a KataGoBaseModel (returns KataGoOutput).
-        # Passing a BaseModel (returns tuple) would crash deep in the update loop.
-        from keisei.training.models.katago_base import KataGoBaseModel
-
-        base_model = self.model.module if hasattr(self.model, "module") else self.model
-        if config.training.algorithm == "katago_ppo" and not isinstance(
-            base_model, KataGoBaseModel
-        ):
-            raise ValueError(
-                f"algorithm='katago_ppo' requires a KataGoBaseModel architecture "
-                f"(e.g. 'se_resnet'), got '{config.model.architecture}' "
-                f"which is a {type(base_model).__name__}"
-            )
-
         ppo_params = validate_algorithm_params(
             config.training.algorithm, config.training.algorithm_params
         )
@@ -88,6 +84,7 @@ class KataGoTrainingLoop:
                 f"Expected KataGoPPOParams, got {type(ppo_params).__name__}"
             )
 
+        base_model = self.model.module if hasattr(self.model, "module") else self.model
         self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
 
         if vecenv is not None:
@@ -255,6 +252,14 @@ class KataGoTrainingLoop:
 
             losses = self.ppo.update(self.buffer, next_values)
 
+            # Log zero-gradient situations so operators can distinguish
+            # "no terminals this epoch" from "perfectly calibrated head"
+            if losses["value_loss"] == 0.0:
+                logger.info(
+                    "Epoch %d: value_loss=0.0 (likely no terminal steps — "
+                    "value head received no gradient this epoch)", epoch_i
+                )
+
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
             metrics = {
                 "epoch": epoch_i,
@@ -264,14 +269,21 @@ class KataGoTrainingLoop:
                 "entropy": losses["entropy"],
                 "gradient_norm": losses["gradient_norm"],
                 "episodes_completed": ep_completed,
-                "score_loss": losses["score_loss"],
+                # NOTE: score_loss is NOT included — the metrics DB table has no
+                # score_loss column. It is logged below but not persisted to DB.
             }
-            write_metrics(self.db_path, metrics)
+            try:
+                write_metrics(self.db_path, metrics)
+            except Exception:
+                logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
 
             if hasattr(self.vecenv, "reset_stats"):
                 self.vecenv.reset_stats()
 
-            update_training_progress(self.db_path, epoch_i, self.global_step)
+            try:
+                update_training_progress(self.db_path, epoch_i, self.global_step)
+            except Exception:
+                logger.exception("Failed to update training progress — continuing")
 
             logger.info(
                 "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
@@ -301,9 +313,12 @@ class KataGoTrainingLoop:
                     self.global_step,
                     architecture=self.config.model.architecture,
                 )
-                update_training_progress(
-                    self.db_path, epoch_i + 1, self.global_step, str(ckpt_path)
-                )
+                try:
+                    update_training_progress(
+                        self.db_path, epoch_i + 1, self.global_step, str(ckpt_path)
+                    )
+                except Exception:
+                    logger.exception("Failed to record checkpoint path in DB — continuing")
                 logger.info("Checkpoint saved: %s", ckpt_path)
 
     def _maybe_update_heartbeat(self) -> None:

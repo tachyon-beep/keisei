@@ -6,8 +6,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-VALID_ARCHITECTURES = {"resnet", "mlp", "transformer", "se_resnet"}
-VALID_ALGORITHMS = {"ppo", "katago_ppo"}
+# Import valid sets from the registries — single source of truth.
+# This eliminates the "two truths" problem where config.py and the registries
+# could independently diverge. Adding a new architecture or algorithm to the
+# registry automatically makes it available in config validation.
+from keisei.training.model_registry import VALID_ARCHITECTURES  # noqa: E402
+from keisei.training.algorithm_registry import VALID_ALGORITHMS  # noqa: E402
 
 
 @dataclass(frozen=True)
