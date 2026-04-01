@@ -330,6 +330,7 @@ class KataGoPPOParams:
     lambda_score: float = 0.02
     lambda_entropy: float = 0.01
     score_normalization: float = 76.0
+    grad_clip: float = 1.0           # looser than SL (0.5) — policy needs room to move
 ```
 
 Note on `gamma = 0.99`: at this discount, a reward 100 steps away is worth ~37% of face value. Shogi games average 80-120 moves, so terminal rewards are significantly discounted at the halfway point. This favors shorter wins over sound positional play. Starting at 0.99 for training stability; raise toward 1.0 if the agent becomes overly aggressive.
@@ -371,6 +372,7 @@ lambda_value = 1.5
 lambda_score = 0.02
 lambda_entropy = 0.01
 score_normalization = 76.0
+grad_clip = 1.0              # looser than SL (0.5) — policy needs room to move
 
 [training.algorithm_params.lr_schedule]
 type = "plateau"
@@ -382,7 +384,10 @@ min_lr = 0.00001
 [training.algorithm_params.rl_warmup]
 epochs = 5                   # epochs with elevated entropy after SL->RL transition
 entropy_bonus = 0.05         # elevated from default 0.01
+reset_lr_schedule = true     # reset plateau patience after warmup ends
 ```
+
+Note: The plateau scheduler must be reset when RL warmup ends. During warmup, elevated entropy causes value loss to spike as the policy softens — these epochs would consume plateau patience and trigger premature LR reduction at the transition. `reset_lr_schedule = true` excludes warmup epochs from plateau tracking.
 
 ### Registry Additions
 
@@ -504,7 +509,7 @@ class GameParser(ABC):
     def supported_extensions(self) -> set[str]: ...
 ```
 
-Concrete implementations: `SFENParser` (baseline), `CSAParser`, `KIFParser` (added incrementally).
+Concrete implementations: `SFENParser` (baseline), `CSAParser` (**required for Slice 6 completion** — Floodgate data is CSA format and is the primary SL data source), `KIFParser` (added incrementally post-Slice 6).
 
 ### Game Filtering
 
@@ -620,6 +625,18 @@ grad_clip = 0.5
 3. First `rl_warmup.epochs` (default 5) of RL use elevated entropy bonus (`rl_warmup.entropy_bonus = 0.05`) to soften the overconfident SL policy before settling to default `lambda_entropy = 0.01`
 
 SL produces one-hot policy targets (confident about one move). RL uses exploration (soft distribution). The elevated entropy during transition encourages the policy to broaden before RL fine-tuning narrows it to the MCTS-refined distribution.
+
+### Smoke Test (Required Before Full SL Run)
+
+Before committing to 160GB of preprocessed data, run a small-scale validation:
+
+1. Prepare script on **1,000 games** (not 4M) — verify shards are well-formed
+2. Train for **1 epoch** — verify all loss terms are finite and decreasing
+3. Save checkpoint — verify `architecture` metadata is present
+4. Load checkpoint into `KataGoTrainingLoop` — verify `obs_channels` and `action_space_size` assertions pass
+5. Run **1 RL epoch** — verify the SL→RL handoff works end-to-end
+
+This catches interface mismatches (especially the checkpoint architecture assertion and obs_channels guard) before investing compute in full preprocessing.
 
 ---
 
