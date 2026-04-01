@@ -93,6 +93,12 @@ export function handleMessage(msg) {
         status: msg.status,
         heartbeat_at: msg.heartbeat_at,
         current_epoch: msg.epoch,
+        current_step: msg.step,
+        episodes: msg.episodes ?? state?.episodes,
+        config_json: msg.config_json || state?.config_json,
+        display_name: msg.display_name || state?.display_name,
+        model_arch: msg.model_arch || state?.model_arch,
+        system_stats: msg.system_stats || state?.system_stats,
       }))
       break
 

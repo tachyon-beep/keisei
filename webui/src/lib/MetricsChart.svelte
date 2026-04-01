@@ -8,7 +8,7 @@
   export let xData = []
   export let series = []
   export let width = 400
-  export let height = 150
+  export let height = 100
 
   let container
   let chart = null

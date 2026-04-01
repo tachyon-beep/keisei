@@ -47,7 +47,7 @@
     <aside class="thumbnail-panel" aria-label="Game list">
       <h2 class="thumb-label">Games ({$games.length})</h2>
       <div class="thumb-grid">
-        {#each $games as g (g.game_id)}
+        {#each $games.slice(0, 32) as g (g.game_id)}
           <GameThumbnail game={g} />
         {/each}
       </div>
@@ -143,17 +143,16 @@
 
   .main-content {
     display: flex;
-    flex: 1;
+    flex: 0 0 auto;
     gap: 0;
     border-bottom: 1px solid var(--border);
   }
 
   .thumbnail-panel {
-    width: 700px;
-    flex-shrink: 0;
+    flex: 1;
     border-right: 1px solid var(--border);
     padding: 8px;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   h2.thumb-label {
@@ -167,7 +166,7 @@
 
   .thumb-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-columns: repeat(8, 1fr);
     gap: 6px;
   }
 
@@ -201,7 +200,6 @@
     flex-direction: column;
     gap: 8px;
     width: 40ch;
-    margin-left: auto;
     /* height set dynamically via bind:clientHeight */
     overflow: hidden;
   }

@@ -49,8 +49,8 @@ def load_config(path: Path) -> AppConfig:
 
     t = raw.get("training", {})
     num_games = t.get("num_games", 8)
-    if not (1 <= num_games <= 64):
-        raise ValueError(f"num_games must be 1-64, got {num_games}")
+    if not (1 <= num_games <= 512):
+        raise ValueError(f"num_games must be 1-512, got {num_games}")
 
     max_ply = t.get("max_ply", 500)
     if max_ply <= 0:

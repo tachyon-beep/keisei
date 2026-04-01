@@ -1,5 +1,5 @@
 [training]
-num_games = 64
+num_games = 128
 max_ply = 500
 algorithm = "ppo"
 checkpoint_interval = 50

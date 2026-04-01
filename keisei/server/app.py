@@ -42,6 +42,45 @@ def _db_accessible(db_path: str) -> bool:
         return False
 
 
+def _get_system_stats() -> dict:
+    """Get CPU and GPU utilization stats."""
+    import shutil
+    stats = {}
+    try:
+        import psutil
+        stats["cpu_percent"] = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        stats["ram_used_gb"] = round(mem.used / (1024**3), 1)
+        stats["ram_total_gb"] = round(mem.total / (1024**3), 1)
+    except ImportError:
+        stats["cpu_percent"] = None
+        stats["ram_used_gb"] = None
+        stats["ram_total_gb"] = None
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            gpus = []
+            for line in result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) == 3:
+                    gpus.append({
+                        "util_percent": int(parts[0]),
+                        "mem_used_mb": int(parts[1]),
+                        "mem_total_mb": int(parts[2]),
+                    })
+            stats["gpus"] = gpus
+    except Exception:
+        stats["gpus"] = []
+
+    return stats
+
+
 def _training_alive(db_path: str) -> bool:
     try:
         state = read_training_state(db_path)
@@ -151,7 +190,13 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             state is None
             or new_state.get("current_epoch") != state.get("current_epoch")
             or new_state.get("status") != state.get("status")
+            or new_state.get("heartbeat_at") != (state or {}).get("heartbeat_at")
         ):
+            sys_stats = await asyncio.to_thread(_get_system_stats)
+            latest_metrics = await asyncio.to_thread(
+                read_metrics_since, db_path, max(0, last_metrics_id - 1), 1
+            )
+            episodes = latest_metrics[-1].get("episodes_completed", 0) if latest_metrics else 0
             state = new_state
             await asyncio.wait_for(
                 ws.send_json({
@@ -159,6 +204,12 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                     "status": new_state.get("status"),
                     "heartbeat_at": new_state.get("heartbeat_at"),
                     "epoch": new_state.get("current_epoch"),
+                    "step": new_state.get("current_step"),
+                    "episodes": episodes,
+                    "config_json": new_state.get("config_json"),
+                    "display_name": new_state.get("display_name"),
+                    "model_arch": new_state.get("model_arch"),
+                    "system_stats": sys_stats,
                 }),
                 timeout=WS_SEND_TIMEOUT_S,
             )

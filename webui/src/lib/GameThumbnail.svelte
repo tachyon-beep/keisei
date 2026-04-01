@@ -13,6 +13,14 @@
     ? (game.result || '').replaceAll('_', ' ')
     : `Ply ${game.ply}`
 
+  $: value = game.value_estimate || 0
+  $: currentPlayer = game.current_player || 'black'
+  // Normalise so positive = black advantage
+  $: blackAdv = currentPlayer === 'black' ? value : -value
+  // "Interesting" = model is confident someone is winning (|value| > 0.3)
+  $: confident = Math.abs(blackAdv) > 0.3
+  $: favours = blackAdv > 0 ? 'black' : 'white'
+
   function handleClick() {
     selectedGameId.set(game.game_id)
   }
@@ -38,6 +46,7 @@
     {/each}
   </div>
   <div class="label">
+    {#if confident}<span class="confidence-dot" class:black-dot={favours === 'black'} class:white-dot={favours === 'white'}></span>{/if}
     G{game.game_id + 1} — {statusText}
   </div>
 </button>
@@ -72,10 +81,11 @@
     display: grid;
     grid-template-columns: repeat(9, 1fr);
     grid-template-rows: repeat(9, 1fr);
-    width: 144px;
-    height: 144px;
+    width: 100%;
+    aspect-ratio: 1;
     margin: 0 auto;
     background: var(--bg-board);
+    border: 1px solid var(--border-board);
     border-radius: 2px;
   }
 
@@ -83,7 +93,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    border: 0.5px solid var(--border-board-inner);
+    font-size: 6px;
     line-height: 1;
   }
 
@@ -99,6 +110,27 @@
     font-size: 12px;
     color: var(--text-secondary);
     margin-top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .confidence-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .confidence-dot.black-dot {
+    background: #1a1a1a;
+    border: 1px solid var(--text-muted);
+  }
+
+  .confidence-dot.white-dot {
+    background: #e0e0e0;
+    border: 1px solid var(--text-muted);
   }
 
   .thumbnail.selected .label {

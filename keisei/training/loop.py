@@ -282,6 +282,10 @@ class TrainingLoop:
             if hasattr(self.vecenv, "reset_stats"):
                 self.vecenv.reset_stats()
 
+            update_training_progress(
+                self.db_path, epoch_i, self.global_step
+            )
+
             logger.info(
                 "Epoch %d | step %d | policy_loss=%.4f value_loss=%.4f entropy=%.4f",
                 epoch_i,
