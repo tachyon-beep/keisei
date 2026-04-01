@@ -237,8 +237,7 @@ class KataGoPPOAlgorithm:
             self.forward_model.train()
 
     def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
-        # Deferred import to avoid circular: katago_ppo -> ppo -> algorithm_registry -> katago_ppo
-        from keisei.training.ppo import compute_gae
+        from keisei.training.gae import compute_gae
 
         self.forward_model.train()
         data = buffer.flatten()
