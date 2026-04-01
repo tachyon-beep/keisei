@@ -111,12 +111,12 @@ class KataGoRolloutBuffer:
             )
 
         # Guard against unnormalized score targets (catches integration bugs).
-        # Threshold is 2.0 (not 1.0) to allow headroom for edge cases, but
-        # correctly-normalized targets from score_normalization=76.0 should be << 1.0.
-        if score_targets.abs().max() > 2.0:
+        # NaN is used as sentinel for non-terminal positions — exclude from check.
+        finite_scores = score_targets[~score_targets.isnan()]
+        if finite_scores.numel() > 0 and finite_scores.abs().max() > 2.0:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{score_targets.abs().max().item():.1f}, expected <= 2.0. "
+                f"{finite_scores.abs().max().item():.1f}, expected <= 1.0. "
                 f"Divide by score_normalization before storing."
             )
         self.observations.append(obs)
@@ -305,8 +305,16 @@ class KataGoPPOAlgorithm:
                 else:
                     value_loss = torch.tensor(0.0, device=batch_obs.device, requires_grad=True)
 
-                # Score loss (MSE on normalized score)
-                score_loss = F.mse_loss(output.score_lead.squeeze(-1), batch_score_targets)
+                # Score loss (MSE on normalized score, terminal positions only).
+                # Non-terminal positions use NaN sentinel — exclude from loss.
+                score_valid = ~batch_score_targets.isnan()
+                if score_valid.any():
+                    score_loss = F.mse_loss(
+                        output.score_lead.squeeze(-1)[score_valid],
+                        batch_score_targets[score_valid],
+                    )
+                else:
+                    score_loss = output.score_lead.sum() * 0.0  # zero loss, preserve graph
 
                 # Combined loss
                 loss = (
