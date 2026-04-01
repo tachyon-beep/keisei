@@ -12,6 +12,8 @@
 
 **Dependency:** Can be built in parallel with Plan A. Does NOT require Rust changes — uses synthetic tensors for testing.
 
+**Verified API:** `compute_gae(rewards, values, dones, next_value, gamma, lam)` at `keisei/training/ppo.py:12` — signature matches the plan's call in Task 8. Takes per-env 1D tensors, returns 1D advantages tensor.
+
 ---
 
 ## File Map
@@ -233,7 +235,7 @@ class GlobalPoolBiasBlock(nn.Module):
         # Global pool bias from block INPUT x (not post-conv1 out)
         g_mean = x.mean(dim=(-2, -1))                  # (B, C)
         g_max = x.amax(dim=(-2, -1))                    # (B, C)
-        g_std = x.std(dim=(-2, -1))                      # (B, C)
+        g_std = x.std(dim=(-2, -1), correction=0)          # (B, C) — correction=0 avoids NaN on 1-element inputs
         g = self.global_fc(torch.cat([g_mean, g_max, g_std], dim=-1))  # (B, C)
         out = out + g.unsqueeze(-1).unsqueeze(-1)        # broadcast over 9x9
 
@@ -329,7 +331,7 @@ class TestSEResNetModel:
 
     def test_wrong_input_channels_raises(self, model):
         obs = torch.randn(4, 46, 9, 9)  # wrong: 46 instead of 50
-        with pytest.raises(AssertionError, match="Expected 50 input channels"):
+        with pytest.raises(ValueError, match="Expected 50 input channels"):
             model(obs)
 
     def test_batch_size_1(self, model):
@@ -354,7 +356,7 @@ def _global_pool(x: torch.Tensor) -> torch.Tensor:
     """Global pool: mean + max + std concatenated. Input (B, C, H, W) -> (B, 3C)."""
     g_mean = x.mean(dim=(-2, -1))
     g_max = x.amax(dim=(-2, -1))
-    g_std = x.std(dim=(-2, -1))
+    g_std = x.std(dim=(-2, -1), correction=0)
     return torch.cat([g_mean, g_max, g_std], dim=-1)
 
 
@@ -389,15 +391,14 @@ class SEResNetModel(KataGoBaseModel):
         self.score_fc1 = nn.Linear(ch * 3, params.score_fc_size)
         self.score_fc2 = nn.Linear(params.score_fc_size, 1)
 
-        self._checked_channels = False
-
     def forward(self, obs: torch.Tensor) -> KataGoOutput:
-        if not self._checked_channels:
-            assert obs.shape[1] == self.params.obs_channels, (
+        # Always check — one integer comparison is negligible vs a forward pass.
+        # Use raise, not assert, so the check survives Python -O mode.
+        if obs.shape[1] != self.params.obs_channels:
+            raise ValueError(
                 f"Expected {self.params.obs_channels} input channels, "
                 f"got {obs.shape[1]}"
             )
-            self._checked_channels = True
 
         # Trunk
         x = F.relu(self.input_bn(self.input_conv(obs)))
@@ -491,9 +492,13 @@ And add to `_REGISTRY`:
 "se_resnet": (SEResNetModel, SEResNetParams),
 ```
 
-Note: `build_model` expects `BaseModel` as the return type, but `SEResNetModel` extends `KataGoBaseModel`, not `BaseModel`. The registry's type hint needs to accommodate both. The simplest fix: change the registry type to `dict[str, tuple[type[nn.Module], type]]` or use `Union`. Since `KataGoBaseModel` also extends `nn.Module`, this is type-safe:
+Note: `build_model` expects `BaseModel` as the return type, but `SEResNetModel` extends `KataGoBaseModel`, not `BaseModel`. The registry's type hint needs to accommodate both without breaking downstream type expectations.
+
+Use `Union[BaseModel, KataGoBaseModel]` for the return type. Both are `nn.Module` subclasses, so runtime behavior is identical. The explicit union preserves type information for downstream code:
 
 ```python
+from keisei.training.models.katago_base import KataGoBaseModel
+
 _REGISTRY: dict[str, tuple[type[nn.Module], type]] = {
     "resnet": (ResNetModel, ResNetParams),
     "mlp": (MLPModel, MLPParams),
@@ -502,13 +507,13 @@ _REGISTRY: dict[str, tuple[type[nn.Module], type]] = {
 }
 ```
 
-Update the `VALID_ARCHITECTURES` set (it's derived from `_REGISTRY.keys()` so it updates automatically).
-
-Also update the `build_model` return type to `nn.Module`:
+Update the `build_model` return type:
 
 ```python
-def build_model(architecture: str, params: dict[str, Any]) -> nn.Module:
+def build_model(architecture: str, params: dict[str, Any]) -> BaseModel | KataGoBaseModel:
 ```
+
+The `VALID_ARCHITECTURES` set updates automatically (derived from `_REGISTRY.keys()`).
 
 - [ ] **Step 4: Run tests**
 
@@ -556,6 +561,7 @@ class TestKataGoPPOParams:
         params = KataGoPPOParams()
         assert params.learning_rate == 2e-4
         assert params.gamma == 0.99
+        assert params.gae_lambda == 0.95
         assert params.lambda_value == 1.5
         assert params.lambda_score == 0.02
         assert params.lambda_entropy == 0.01
@@ -603,6 +609,7 @@ import torch.nn.functional as F
 class KataGoPPOParams:
     learning_rate: float = 2e-4
     gamma: float = 0.99
+    gae_lambda: float = 0.95        # GAE lambda — exposed as config, not hardcoded
     clip_epsilon: float = 0.2
     epochs_per_batch: int = 4
     batch_size: int = 256
@@ -610,7 +617,7 @@ class KataGoPPOParams:
     lambda_value: float = 1.5
     lambda_score: float = 0.02
     lambda_entropy: float = 0.01
-    score_normalization: float = 76.0
+    score_normalization: float = 76.0  # used by KataGoTrainingLoop to normalize targets at buffer level
     grad_clip: float = 1.0
 ```
 
@@ -714,6 +721,11 @@ Expected: FAIL
 Add to `keisei/training/katago_ppo.py`:
 
 ```python
+# NOTE: legal_masks stored as (num_envs, 11259) bool tensors per timestep.
+# For 128 steps × 512 envs, this is ~700MB. If memory becomes the binding
+# constraint at scale, consider sparse storage or regenerating masks from
+# game state during update. For now, keep it simple and dense.
+
 class KataGoRolloutBuffer:
     def __init__(self, num_envs: int, obs_shape: tuple[int, ...], action_space: int) -> None:
         self.num_envs = num_envs
@@ -887,7 +899,12 @@ class KataGoPPOAlgorithm:
         actions = dist.sample()
         log_probs = dist.log_prob(actions)
 
-        # Scalar value: P(W) - P(L)
+        # Scalar value projection: P(W) - P(L) for GAE.
+        # This discards draw probability for advantage estimation, but the value
+        # head is still trained on the full W/D/L distribution via cross-entropy.
+        # The scalar collapse is intentional: GAE needs a scalar "how good is this
+        # state" signal, and P(W)-P(L) is the natural [-1,1] projection.
+        # Draw probability is captured by the value loss but not the advantage signal.
         value_probs = F.softmax(output.value_logits, dim=-1)
         scalar_values = value_probs[:, 0] - value_probs[:, 2]
 
@@ -1001,7 +1018,7 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
         for env_i in range(N):
             all_advantages[:, env_i] = compute_gae(
                 rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
-                next_values[env_i], gamma=self.params.gamma, lam=0.95,
+                next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
         advantages = all_advantages.reshape(-1)
@@ -1049,10 +1066,16 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
                 surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Entropy (NaN guard)
+                # Entropy over legal actions only.
+                # softmax(-inf) = 0 for illegal actions, log_softmax(-inf) = -inf.
+                # Product 0 * -inf = NaN in IEEE 754, so we replace -inf with 0.0
+                # in log_probs BEFORE multiplication. Result: 0 * 0 = 0 for illegals.
+                # In float32, softmax may produce tiny non-zero values (~1e-38) for
+                # masked positions, but multiplied by 0.0 they contribute nothing.
                 probs = F.softmax(masked_logits, dim=-1)
                 safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
-                assert not masked_logits.isnan().any(), "NaN in policy logits"
+                if masked_logits.isnan().any():
+                    raise RuntimeError("NaN in policy logits during PPO update")
                 entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
                 # Value loss (cross-entropy on W/D/L)
