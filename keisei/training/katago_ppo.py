@@ -6,6 +6,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
+
+from keisei.training.models.katago_base import KataGoBaseModel
 
 
 @dataclass(frozen=True)
@@ -105,3 +108,57 @@ class KataGoRolloutBuffer:
             "value_categories": torch.stack(self.value_categories).reshape(-1),
             "score_targets": torch.stack(self.score_targets).reshape(-1),
         }
+
+
+class KataGoPPOAlgorithm:
+    def __init__(
+        self,
+        params: KataGoPPOParams,
+        model: KataGoBaseModel,
+        forward_model: torch.nn.Module | None = None,
+    ) -> None:
+        self.params = params
+        self.model = model
+        self.forward_model = forward_model or model
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
+        self.current_entropy_coeff = params.lambda_entropy  # mutable; Plan D warmup updates this
+
+    @staticmethod
+    def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
+        """Project W/D/L logits to scalar value: P(W) - P(L).
+
+        Used by both select_actions (rollout) and bootstrap (GAE).
+        Centralised here so the formula can't diverge between the two call sites.
+        """
+        value_probs = F.softmax(value_logits, dim=-1)
+        return value_probs[:, 0] - value_probs[:, 2]
+
+    @torch.no_grad()
+    def select_actions(
+        self, obs: torch.Tensor, legal_masks: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self.forward_model.eval()
+        output = self.forward_model(obs)
+
+        # Guard: no env should have zero legal actions
+        legal_counts = legal_masks.sum(dim=-1)
+        if (legal_counts == 0).any():
+            zero_envs = (legal_counts == 0).nonzero(as_tuple=True)[0].tolist()
+            raise RuntimeError(
+                f"Environments {zero_envs} have zero legal actions — "
+                f"all-False legal mask would produce NaN"
+            )
+
+        # Flatten spatial policy to (B, 11259), apply mask
+        flat_logits = output.policy_logits.reshape(obs.shape[0], -1)
+        masked_logits = flat_logits.masked_fill(~legal_masks, float("-inf"))
+
+        probs = F.softmax(masked_logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        actions = dist.sample()
+        log_probs = dist.log_prob(actions)
+
+        # Scalar value for GAE — uses shared projection method
+        scalar_values = self.scalar_value(output.value_logits)
+
+        return actions, log_probs, scalar_values

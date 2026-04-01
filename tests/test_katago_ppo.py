@@ -4,8 +4,9 @@
 import pytest
 import torch
 
-from keisei.training.katago_ppo import KataGoPPOParams, KataGoRolloutBuffer
+from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
 from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
+from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 
 class TestKataGoPPOParams:
@@ -84,3 +85,55 @@ class TestAlgorithmRegistry:
         validated = validate_algorithm_params("katago_ppo", {"learning_rate": 1e-3})
         assert isinstance(validated, KataGoPPOParams)
         assert validated.learning_rate == 1e-3
+
+
+@pytest.fixture
+def small_model():
+    params = SEResNetParams(
+        num_blocks=2, channels=32, se_reduction=8,
+        global_pool_channels=16, policy_channels=8,
+        value_fc_size=32, score_fc_size=16, obs_channels=50,
+    )
+    return SEResNetModel(params)
+
+
+@pytest.fixture
+def ppo(small_model):
+    params = KataGoPPOParams()
+    return KataGoPPOAlgorithm(params, small_model)
+
+
+class TestKataGoPPOActionSelection:
+    def test_select_actions_shapes(self, ppo):
+        obs = torch.randn(4, 50, 9, 9)
+        legal_masks = torch.ones(4, 11259, dtype=torch.bool)
+        actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+        assert actions.shape == (4,)
+        assert log_probs.shape == (4,)
+        assert values.shape == (4,)
+
+    def test_select_actions_values_bounded(self, ppo):
+        """Scalar value P(W) - P(L) should be in [-1, 1]."""
+        obs = torch.randn(8, 50, 9, 9)
+        legal_masks = torch.ones(8, 11259, dtype=torch.bool)
+        _, _, values = ppo.select_actions(obs, legal_masks)
+        assert values.min() >= -1.0
+        assert values.max() <= 1.0
+
+    def test_select_actions_all_illegal_raises(self, ppo):
+        """All-False legal mask should raise, not produce NaN."""
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.zeros(2, 11259, dtype=torch.bool)  # all illegal
+        with pytest.raises(RuntimeError, match="zero legal actions"):
+            ppo.select_actions(obs, legal_masks)
+
+    def test_select_actions_respects_mask(self, ppo):
+        """Actions should only be sampled from legal positions (20 trials)."""
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.zeros(2, 11259, dtype=torch.bool)
+        legal_masks[:, 0] = True
+        legal_masks[:, 1000] = True
+        for _ in range(20):
+            actions, _, _ = ppo.select_actions(obs, legal_masks)
+            for a in actions.tolist():
+                assert a in (0, 1000), f"Action {a} should be 0 or 1000"
