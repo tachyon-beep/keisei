@@ -184,7 +184,7 @@ def test_save_with_architecture_metadata(model):
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "test.pt"
         save_checkpoint(path, model, optimizer, 10, 100, architecture="se_resnet")
-        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)
         assert ckpt["architecture"] == "se_resnet"
 
 
@@ -266,7 +266,7 @@ def load_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
 
     if expected_architecture is not None:
         ckpt_arch = checkpoint.get("architecture")
@@ -307,9 +307,23 @@ git commit -m "feat: add architecture metadata to checkpoint save/load"
 - Create: `keisei/training/katago_loop.py`
 - Create: `tests/test_katago_loop.py`
 
+**Prerequisites:** Plan A (VecEnv mode params) and Plan B (SE-ResNet + KataGoPPO) must be complete. Verify before starting:
+
+```bash
+# Verify Plan B registries are in place
+uv run python -c "from keisei.training.model_registry import VALID_ARCHITECTURES; assert 'se_resnet' in VALID_ARCHITECTURES"
+uv run python -c "from keisei.training.algorithm_registry import VALID_ALGORITHMS; assert 'katago_ppo' in VALID_ALGORITHMS"
+# Verify Plan A VecEnv modes work
+uv run python -c "from shogi_gym import VecEnv; e = VecEnv(num_envs=1, max_ply=50, observation_mode='katago', action_mode='spatial'); print(f'obs_ch={e.observation_channels}, act={e.action_space_size}')"
+```
+
+If any of these fail, complete the prerequisite plan first.
+
 This is the most complex task — it wires VecEnv (spatial + katago modes), SE-ResNet model, and KataGoPPO together.
 
 - [ ] **Step 1: Write the failing test**
+
+Tests use a mock VecEnv to avoid requiring Plan A's Rust build for unit testing:
 
 ```python
 # tests/test_katago_loop.py
@@ -325,6 +339,37 @@ import numpy as np
 
 from keisei.config import AppConfig, TrainingConfig, DisplayConfig, ModelConfig
 from keisei.training.katago_loop import KataGoTrainingLoop
+
+
+def _make_mock_katago_vecenv(num_envs: int = 2) -> MagicMock:
+    """Create a mock VecEnv that returns correct shapes for KataGo mode."""
+    mock = MagicMock()
+    mock.observation_channels = 50
+    mock.action_space_size = 11259
+    mock.episodes_completed = 0
+    mock.mean_episode_length = 0.0
+    mock.truncation_rate = 0.0
+
+    def make_reset_result():
+        result = MagicMock()
+        result.observations = np.random.randn(num_envs, 50, 9, 9).astype(np.float32)
+        result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
+        return result
+
+    def make_step_result(actions):
+        result = MagicMock()
+        result.observations = np.random.randn(num_envs, 50, 9, 9).astype(np.float32)
+        result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
+        result.rewards = np.zeros(num_envs, dtype=np.float32)
+        result.terminated = np.zeros(num_envs, dtype=bool)
+        result.truncated = np.zeros(num_envs, dtype=bool)
+        result.current_players = np.zeros(num_envs, dtype=np.uint8)
+        return result
+
+    mock.reset.side_effect = lambda: make_reset_result()
+    mock.step.side_effect = make_step_result
+    mock.reset_stats = MagicMock()
+    return mock
 
 
 @pytest.fixture
@@ -370,12 +415,14 @@ def katago_config(tmp_path):
 
 class TestKataGoTrainingLoopInit:
     def test_initialization(self, katago_config):
-        loop = KataGoTrainingLoop(katago_config)
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         assert loop.num_envs == 2
 
     def test_model_is_se_resnet(self, katago_config):
         from keisei.training.models.se_resnet import SEResNetModel
-        loop = KataGoTrainingLoop(katago_config)
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         base = loop.model.module if hasattr(loop.model, "module") else loop.model
         assert isinstance(base, SEResNetModel)
 
@@ -383,7 +430,8 @@ class TestKataGoTrainingLoopInit:
 class TestKataGoTrainingLoopRun:
     def test_run_one_epoch(self, katago_config):
         """Run one epoch of 4 steps — should complete without error."""
-        loop = KataGoTrainingLoop(katago_config)
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
         assert loop.epoch == 0
         assert loop.global_step == 4
@@ -508,10 +556,6 @@ class KataGoTrainingLoop:
         self.global_step = 0
         self._last_heartbeat = time.monotonic()
 
-        # Per-episode tracking for value category backfilling.
-        # episode_start_step[env_i] = buffer index where current episode began
-        self._episode_start_step: list[int] = [0] * self.num_envs
-
         self._check_resume()
 
     def _check_resume(self) -> None:
@@ -581,11 +625,14 @@ class KataGoTrainingLoop:
                 truncated = torch.from_numpy(np.array(step_result.truncated)).to(self.device)
                 dones = terminated | truncated
 
-                # Value categories and score targets: use placeholder (1=Draw)
-                # for non-terminal steps. Terminal steps get the real outcome.
-                # After the rollout, _backfill_episodes() overwrites all steps
-                # in completed episodes with the actual outcome.
-                value_cats = torch.ones(self.num_envs, dtype=torch.long, device=self.device)  # 1=Draw placeholder
+                # Value categories: -1 (ignore) for non-terminal steps.
+                # Only terminal steps get a real label (0=W, 1=D, 2=L).
+                # F.cross_entropy(ignore_index=-1) skips these in the loss.
+                # This avoids the bias of labeling all non-terminal steps as
+                # any particular outcome.
+                value_cats = torch.full(
+                    (self.num_envs,), -1, dtype=torch.long, device=self.device
+                )
                 score_targets = torch.zeros(self.num_envs, device=self.device)
 
                 for env_i in range(self.num_envs):
@@ -603,25 +650,12 @@ class KataGoTrainingLoop:
                         # NOTE: This is outcome-conditioned (+1/-1/0), not material
                         # advantage. A real material score would require the engine
                         # to report piece counts at game end. Documented simplification.
-                        score_targets[env_i] = r / self.score_norm  # r is already in [-1,1]
+                        score_targets[env_i] = r / self.score_norm
 
                 self.buffer.add(
                     obs, actions, log_probs, values, rewards, dones, legal_masks,
                     value_cats, score_targets,
                 )
-
-                # Backfill completed episodes: overwrite all timesteps in the
-                # episode with the terminal outcome.
-                for env_i in range(self.num_envs):
-                    if dones[env_i]:
-                        ep_start = self._episode_start_step[env_i]
-                        ep_end = self.buffer.size  # current buffer position
-                        outcome = value_cats[env_i].item()
-                        score = score_targets[env_i].item()
-                        for t in range(ep_start, ep_end):
-                            self.buffer.value_categories[t][env_i] = outcome
-                            self.buffer.score_targets[t][env_i] = score
-                        self._episode_start_step[env_i] = ep_end
 
                 obs = torch.from_numpy(np.array(step_result.observations)).to(self.device)
                 legal_masks = torch.from_numpy(np.array(step_result.legal_masks)).to(self.device)

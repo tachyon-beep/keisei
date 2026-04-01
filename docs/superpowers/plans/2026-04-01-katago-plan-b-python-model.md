@@ -1134,7 +1134,12 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
                 entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
                 # Value loss (cross-entropy on W/D/L)
-                value_loss = F.cross_entropy(output.value_logits, batch_value_cats)
+                # ignore_index=-1: non-terminal steps have value_cats=-1 and are
+                # excluded from the loss. Only terminal steps with known outcomes
+                # (0=W, 1=D, 2=L) contribute to the value gradient.
+                value_loss = F.cross_entropy(
+                    output.value_logits, batch_value_cats, ignore_index=-1
+                )
 
                 # Score loss (MSE on normalized score)
                 score_loss = F.mse_loss(output.score_lead.squeeze(-1), batch_score_targets)
