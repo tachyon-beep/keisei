@@ -924,6 +924,16 @@ class KataGoPPOAlgorithm:
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
 
+    @staticmethod
+    def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
+        """Project W/D/L logits to scalar value: P(W) - P(L).
+
+        Used by both select_actions (rollout) and bootstrap (GAE).
+        Centralised here so the formula can't diverge between the two call sites.
+        """
+        value_probs = F.softmax(value_logits, dim=-1)
+        return value_probs[:, 0] - value_probs[:, 2]
+
     @torch.no_grad()
     def select_actions(
         self, obs: torch.Tensor, legal_masks: torch.Tensor,
@@ -949,14 +959,8 @@ class KataGoPPOAlgorithm:
         actions = dist.sample()
         log_probs = dist.log_prob(actions)
 
-        # Scalar value projection: P(W) - P(L) for GAE.
-        # This discards draw probability for advantage estimation, but the value
-        # head is still trained on the full W/D/L distribution via cross-entropy.
-        # The scalar collapse is intentional: GAE needs a scalar "how good is this
-        # state" signal, and P(W)-P(L) is the natural [-1,1] projection.
-        # Draw probability is captured by the value loss but not the advantage signal.
-        value_probs = F.softmax(output.value_logits, dim=-1)
-        scalar_values = value_probs[:, 0] - value_probs[:, 2]
+        # Scalar value for GAE — uses shared projection method
+        scalar_values = self.scalar_value(output.value_logits)
 
         return actions, log_probs, scalar_values
 ```

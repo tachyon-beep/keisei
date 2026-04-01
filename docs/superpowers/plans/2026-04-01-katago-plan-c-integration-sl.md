@@ -12,7 +12,9 @@
 
 **Spec reference:** `docs/superpowers/specs/2026-04-01-katago-se-resnet-design.md` — Slices 5 & 6.
 
-**Deferred to follow-up:** LR plateau scheduler (`ReduceLROnPlateau` monitoring `value_loss`) and RL warmup elevated entropy (`rl_warmup.epochs` / `rl_warmup.entropy_bonus`). Config fields are present but not wired into the training loop. These are non-critical for initial end-to-end validation — constant LR works for proving the pipeline. Add scheduler + warmup once the basic loop is confirmed working.
+**Deferred to follow-up:**
+- LR plateau scheduler (`ReduceLROnPlateau` monitoring `value_loss`) and RL warmup elevated entropy (`rl_warmup.epochs` / `rl_warmup.entropy_bonus`). Config fields are present but not wired into the training loop. Constant LR works for initial validation.
+- `keisei-prepare-sl` CLI entrypoint (`keisei/sl/prepare.py`). Listed in the File Map but not implemented in any task. The SL pipeline can be tested via `SLDataset` + `SLTrainer` directly with manually-prepared shards. The CLI script for batch data preparation is a follow-up once the pipeline is validated.
 
 ---
 
@@ -662,12 +664,11 @@ class KataGoTrainingLoop:
 
                 self._maybe_update_heartbeat()
 
-            # Bootstrap value for GAE: P(W) - P(L) scalar projection
+            # Bootstrap value for GAE — uses shared scalar_value() method
             self.model.eval()
             with torch.no_grad():
                 output = self.model(obs)
-                value_probs = F.softmax(output.value_logits, dim=-1)
-                next_values = value_probs[:, 0] - value_probs[:, 2]
+                next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
 
             losses = self.ppo.update(self.buffer, next_values)
 
@@ -871,11 +872,14 @@ Expected: FAIL
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Iterator
+
+logger = logging.getLogger(__name__)
 
 
 class GameOutcome(Enum):
@@ -1478,6 +1482,7 @@ Expected: FAIL
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1502,6 +1507,9 @@ class SLConfig:
     grad_clip: float = 0.5
 
 
+logger = logging.getLogger(__name__)
+
+
 class SLTrainer:
     """Supervised learning trainer. Trains one epoch at a time.
 
@@ -1517,7 +1525,7 @@ class SLTrainer:
         self.device = next(model.parameters()).device
         self.optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=config.total_epochs
+            self.optimizer, T_max=config.total_epochs, eta_min=1e-6
         )
         self.dataset = SLDataset(Path(config.data_dir))
         self.dataloader = DataLoader(
@@ -1567,11 +1575,17 @@ class SLTrainer:
         self.scheduler.step()
 
         denom = max(num_batches, 1)
-        return {
+        metrics = {
             "policy_loss": total_policy / denom,
             "value_loss": total_value / denom,
             "score_loss": total_score / denom,
         }
+        logger.info(
+            "SL epoch | policy=%.4f value=%.4f score=%.4f lr=%.6f",
+            metrics["policy_loss"], metrics["value_loss"],
+            metrics["score_loss"], self.optimizer.param_groups[0]["lr"],
+        )
+        return metrics
 ```
 
 - [ ] **Step 4: Run tests**
