@@ -35,6 +35,7 @@ def test_write_game_snapshots_empty_then_real(db: Path) -> None:
         "current_player": "black", "ply": 5, "is_over": 0,
         "result": "in_progress", "sfen": "startpos", "in_check": 0,
         "move_history_json": "[]",
+        "value_estimate": 0.0,
     }
     write_game_snapshots(str(db), [snap])
     result = read_game_snapshots(str(db))

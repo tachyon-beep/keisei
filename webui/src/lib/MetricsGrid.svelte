@@ -3,17 +3,20 @@
   import MetricsChart from './MetricsChart.svelte'
 
   $: columns = (() => {
-    const steps = [], policyLoss = [], valueLoss = [], winRate = [], avgEpLen = [], entropy = [], epochs = []
+    const steps = [], policyLoss = [], valueLoss = [], winRate = [], blackWinRate = [], whiteWinRate = [], drawRate = [], avgEpLen = [], entropy = [], epochs = []
     for (const r of $metrics) {
       steps.push(r.step || 0)
       policyLoss.push(r.policy_loss ?? null)
       valueLoss.push(r.value_loss ?? null)
       winRate.push(r.win_rate ?? null)
+      blackWinRate.push(r.black_win_rate ?? null)
+      whiteWinRate.push(r.white_win_rate ?? null)
+      drawRate.push(r.draw_rate ?? null)
       avgEpLen.push(r.avg_episode_length ?? null)
       entropy.push(r.entropy ?? null)
       epochs.push(r.epoch || 0)
     }
-    return { steps, policyLoss, valueLoss, winRate, avgEpLen, entropy, epochs }
+    return { steps, policyLoss, valueLoss, winRate, blackWinRate, whiteWinRate, drawRate, avgEpLen, entropy, epochs }
   })()
 </script>
 
@@ -34,7 +37,9 @@
       title="Win Rate"
       xData={columns.epochs}
       series={[
-        { label: 'Win Rate', data: columns.winRate, color: '#4ade80' },
+        { label: '☗ Black', data: columns.blackWinRate, color: '#e0e0e0' },
+        { label: '☖ White', data: columns.whiteWinRate, color: '#60a5fa' },
+        { label: 'Draw', data: columns.drawRate, color: '#f59e0b' },
       ]}
     />
     <MetricsChart

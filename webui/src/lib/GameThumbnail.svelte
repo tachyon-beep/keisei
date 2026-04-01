@@ -72,8 +72,8 @@
     display: grid;
     grid-template-columns: repeat(9, 1fr);
     grid-template-rows: repeat(9, 1fr);
-    width: 72px;
-    height: 72px;
+    width: 144px;
+    height: 144px;
     margin: 0 auto;
     background: var(--bg-board);
     border-radius: 2px;
@@ -83,7 +83,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 6px;
+    font-size: 12px;
     line-height: 1;
   }
 

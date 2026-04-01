@@ -8,7 +8,7 @@
   export let xData = []
   export let series = []
   export let width = 400
-  export let height = 120
+  export let height = 150
 
   let container
   let chart = null
@@ -29,12 +29,15 @@
       padding: [8, 8, 0, 0],
       cursor: { show: true },
       legend: { show: true },
+      scales: { x: { time: false } },
       axes: [
         {
           stroke: darkTheme.textColor,
           grid: { stroke: darkTheme.gridColor, width: 0.5 },
           ticks: { stroke: darkTheme.axisColor },
           font: '12px sans-serif',
+          values: (u, vals) => vals.map(v => Number.isInteger(v) ? v : ''),
+          incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
         },
         {
           stroke: darkTheme.textColor,

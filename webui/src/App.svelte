@@ -7,6 +7,7 @@
   import Board from './lib/Board.svelte'
   import PieceTray from './lib/PieceTray.svelte'
   import MoveLog from './lib/MoveLog.svelte'
+  import EvalBar from './lib/EvalBar.svelte'
   import MetricsGrid from './lib/MetricsGrid.svelte'
 
   onMount(() => {
@@ -23,6 +24,8 @@
   $: board = game ? safeParse(game.board_json, game.board || []) : []
   $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
+
+  let boardAreaHeight = 0
 
   $: lastMoveIdx = (() => {
     try {
@@ -53,7 +56,7 @@
     <main id="game-panel" class="game-panel" aria-label="Game viewer">
       {#if game}
         <div class="game-view">
-          <div class="board-area">
+          <div class="board-area" bind:clientHeight={boardAreaHeight}>
             <PieceTray color="white" hand={hands.white || {}} />
             <Board
               board={board}
@@ -64,7 +67,12 @@
             <PieceTray color="black" hand={hands.black || {}} />
           </div>
 
-          <div class="info-area">
+          <EvalBar
+            value={game.value_estimate || 0}
+            currentPlayer={game.current_player || 'black'}
+          />
+
+          <div class="info-area" style="height: {boardAreaHeight}px">
             <div class="game-info">
               <div class="info-row">
                 <span class="label">Game {(game.game_id || 0) + 1}</span>
@@ -139,7 +147,7 @@
   }
 
   .thumbnail-panel {
-    width: 200px;
+    width: 400px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
     padding: 8px;
@@ -162,13 +170,14 @@
   }
 
   .game-panel {
-    flex: 1;
+    flex: 0 0 auto;
     padding: 16px;
     overflow-y: auto;
   }
 
   .game-view {
     display: flex;
+    align-items: stretch;
     gap: 16px;
   }
 
@@ -176,14 +185,18 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    justify-content: center;
   }
 
   .info-area {
-    flex: 1;
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    min-width: 220px;
+    width: 40ch;
+    margin-left: auto;
+    /* height set dynamically via bind:clientHeight */
+    overflow: hidden;
   }
 
   .game-info {

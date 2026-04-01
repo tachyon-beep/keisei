@@ -166,6 +166,7 @@ class TestWSGameUpdate:
                     "current_player": "black", "ply": 42, "is_over": 0,
                     "result": "in_progress", "sfen": "startpos",
                     "in_check": 0, "move_history_json": "[]",
+                    "value_estimate": 0.0,
                 }])
 
                 # Drain until game_update

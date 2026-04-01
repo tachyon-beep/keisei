@@ -13,6 +13,33 @@ import numpy as np
 import torch
 
 from keisei.config import AppConfig
+
+# ---------------------------------------------------------------------------
+# Move notation helpers
+# ---------------------------------------------------------------------------
+
+_DROP_PIECE_CHARS = ["P", "L", "N", "S", "G", "B", "R"]
+
+
+def _sq_to_notation(sq: int) -> str:
+    """Convert square index (0-80) to shogi notation like '5g'."""
+    row = sq // 9
+    col = sq % 9
+    return f"{9 - col}{chr(ord('a') + row)}"
+
+
+def _move_notation(decoded: dict[str, Any]) -> str:
+    """Convert a decoded action dict to human-readable notation."""
+    if decoded["type"] == "board":
+        from_str = _sq_to_notation(decoded["from_sq"])
+        to_str = _sq_to_notation(decoded["to_sq"])
+        promo = "+" if decoded.get("promote") else ""
+        return f"{from_str}\u2192{to_str}{promo}"
+    else:  # drop
+        idx = decoded["piece_type_idx"]
+        piece = _DROP_PIECE_CHARS[idx] if idx < len(_DROP_PIECE_CHARS) else "?"
+        to_str = _sq_to_notation(decoded["to_sq"])
+        return f"{piece}*{to_str}"
 from keisei.db import (
     init_db,
     read_training_state,
@@ -61,6 +88,10 @@ class TrainingLoop:
                 max_ply=config.training.max_ply,
             )
 
+        from shogi_gym import DefaultActionMapper
+
+        self.action_mapper = DefaultActionMapper()
+
         self.num_envs = config.training.num_games
         self.buffer = RolloutBuffer(
             num_envs=self.num_envs, obs_shape=(46, 9, 9), action_space=13527
@@ -68,6 +99,7 @@ class TrainingLoop:
         self.move_histories: list[list[dict[str, Any]]] = [
             [] for _ in range(self.num_envs)
         ]
+        self.latest_values: list[float] = [0.0] * self.num_envs
         self.moves_per_minute = config.display.moves_per_minute
         self._last_snapshot_time = 0.0
         self.epoch = 0
@@ -118,11 +150,16 @@ class TrainingLoop:
         reset_result = self.vecenv.reset()
         obs = torch.from_numpy(np.array(reset_result.observations))
         legal_masks = torch.from_numpy(np.array(reset_result.legal_masks))
+        # All games start with Black (0) to move
+        current_players = np.zeros(self.num_envs, dtype=np.uint8)
 
         start_epoch = self.epoch
         for epoch_i in range(start_epoch, start_epoch + num_epochs):
             self.epoch = epoch_i
             win_count = 0
+            black_wins = 0
+            white_wins = 0
+            draw_count = 0
 
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
@@ -131,24 +168,52 @@ class TrainingLoop:
                     obs, legal_masks
                 )
                 action_list = actions.tolist()
+                # Snapshot who is moving *before* the step
+                pre_step_players = current_players.copy()
                 step_result = self.vecenv.step(action_list)
 
                 rewards = torch.from_numpy(np.array(step_result.rewards))
                 terminated = torch.from_numpy(np.array(step_result.terminated))
                 truncated = torch.from_numpy(np.array(step_result.truncated))
                 dones = terminated | truncated
+                current_players = np.array(step_result.current_players)
 
                 win_count += int((rewards > 0).sum().item())
+                self.latest_values = values.tolist()
 
                 for env_i in range(self.num_envs):
+                    is_white = bool(pre_step_players[env_i])
+                    try:
+                        decoded = self.action_mapper.decode(
+                            action_list[env_i], is_white
+                        )
+                        notation = _move_notation(decoded)
+                    except Exception:
+                        notation = f"a{action_list[env_i]}"
                     self.move_histories[env_i].append(
                         {
                             "action": action_list[env_i],
-                            "notation": f"a{action_list[env_i]}",
+                            "notation": notation,
                         }
                     )
                     if dones[env_i]:
+                        r = rewards[env_i].item()
+                        if r > 0:
+                            # Last mover won
+                            if is_white:
+                                white_wins += 1
+                            else:
+                                black_wins += 1
+                        elif r < 0:
+                            # Last mover lost — opponent won
+                            if is_white:
+                                black_wins += 1
+                            else:
+                                white_wins += 1
+                        else:
+                            draw_count += 1
                         self.move_histories[env_i] = []
+                        current_players[env_i] = 0  # reset to Black
 
                 self.buffer.add(
                     obs, actions, log_probs, values, rewards, dones, legal_masks
@@ -178,7 +243,15 @@ class TrainingLoop:
                 "win_rate": win_count / max(ep_completed, 1)
                 if ep_completed
                 else None,
-                "draw_rate": getattr(self.vecenv, "draw_rate", None),
+                "black_win_rate": black_wins / max(ep_completed, 1)
+                if ep_completed
+                else None,
+                "white_win_rate": white_wins / max(ep_completed, 1)
+                if ep_completed
+                else None,
+                "draw_rate": draw_count / max(ep_completed, 1)
+                if ep_completed
+                else None,
                 "truncation_rate": getattr(
                     self.vecenv, "truncation_rate", None
                 ),
@@ -247,6 +320,9 @@ class TrainingLoop:
                         "move_history_json": json.dumps(
                             self.move_histories[i]
                         ),
+                        "value_estimate": self.latest_values[i]
+                        if i < len(self.latest_values)
+                        else 0.0,
                     }
                 )
             write_game_snapshots(self.db_path, snapshots)

@@ -78,8 +78,8 @@
 
   .board {
     display: grid;
-    grid-template-columns: repeat(9, 36px);
-    grid-template-rows: repeat(9, 36px);
+    grid-template-columns: repeat(9, 72px);
+    grid-template-rows: repeat(9, 72px);
     border: 2px solid var(--border-board);
     background: var(--bg-board);
   }
@@ -89,7 +89,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: 36px;
     position: relative;
   }
 

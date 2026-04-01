@@ -164,6 +164,7 @@ class TestVecEnvMissingAttrs:
         step_result.rewards = np.zeros(num_envs, dtype=np.float32)
         step_result.terminated = np.zeros(num_envs, dtype=bool)
         step_result.truncated = np.zeros(num_envs, dtype=bool)
+        step_result.current_players = np.zeros(num_envs, dtype=np.uint8)
         mock.step.return_value = step_result
 
         return mock

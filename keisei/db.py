@@ -33,6 +33,8 @@ def init_db(db_path: str) -> None:
                 value_loss         REAL,
                 entropy            REAL,
                 win_rate           REAL,
+                black_win_rate     REAL,
+                white_win_rate     REAL,
                 draw_rate          REAL,
                 truncation_rate    REAL,
                 avg_episode_length REAL,
@@ -53,6 +55,7 @@ def init_db(db_path: str) -> None:
                 sfen              TEXT NOT NULL,
                 in_check          INTEGER NOT NULL,
                 move_history_json TEXT NOT NULL,
+                value_estimate    REAL NOT NULL DEFAULT 0.0,
                 updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS training_state (
@@ -82,15 +85,19 @@ def write_metrics(db_path: str, metrics: dict[str, Any]) -> None:
     try:
         conn.execute(
             """INSERT INTO metrics (epoch, step, policy_loss, value_loss, entropy,
-               win_rate, draw_rate, truncation_rate, avg_episode_length,
+               win_rate, black_win_rate, white_win_rate, draw_rate,
+               truncation_rate, avg_episode_length,
                gradient_norm, episodes_completed)
                VALUES (:epoch, :step, :policy_loss, :value_loss, :entropy,
-               :win_rate, :draw_rate, :truncation_rate, :avg_episode_length,
+               :win_rate, :black_win_rate, :white_win_rate, :draw_rate,
+               :truncation_rate, :avg_episode_length,
                :gradient_norm, :episodes_completed)""",
             {
                 "epoch": metrics.get("epoch", 0), "step": metrics.get("step", 0),
                 "policy_loss": metrics.get("policy_loss"), "value_loss": metrics.get("value_loss"),
                 "entropy": metrics.get("entropy"), "win_rate": metrics.get("win_rate"),
+                "black_win_rate": metrics.get("black_win_rate"),
+                "white_win_rate": metrics.get("white_win_rate"),
                 "draw_rate": metrics.get("draw_rate"),
                 "truncation_rate": metrics.get("truncation_rate"),
                 "avg_episode_length": metrics.get("avg_episode_length"),
@@ -122,9 +129,9 @@ def write_game_snapshots(db_path: str, snapshots: list[dict[str, Any]]) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO game_snapshots
                    (game_id, board_json, hands_json, current_player, ply,
-                    is_over, result, sfen, in_check, move_history_json)
+                    is_over, result, sfen, in_check, move_history_json, value_estimate)
                    VALUES (:game_id, :board_json, :hands_json, :current_player,
-                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json)""",
+                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json, :value_estimate)""",
                 snap,
             )
         conn.commit()

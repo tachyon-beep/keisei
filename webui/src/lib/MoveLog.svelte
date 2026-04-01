@@ -66,6 +66,8 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    flex: 1;
+    min-height: 0;
   }
 
   h2.header {
@@ -83,7 +85,8 @@
 
   .table-container {
     overflow-y: auto;
-    max-height: 300px;
+    flex: 1;
+    min-height: 0;
     padding: 4px;
   }
 
@@ -96,7 +99,7 @@
     width: 100%;
     border-collapse: collapse;
     font-family: monospace;
-    font-size: 12px;
+    font-size: 14px;
   }
 
   thead tr {

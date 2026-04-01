@@ -40,6 +40,7 @@
     padding: 6px 12px;
     border: 1px solid var(--border);
     border-radius: 6px;
+    height: 46px;
   }
 
   .tray.black {

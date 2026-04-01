@@ -1,0 +1,83 @@
+<script>
+  /** Value estimate from the model's value head. Range roughly -1 to +1. */
+  export let value = 0
+  /** Who is currently to move. */
+  export let currentPlayer = 'black'
+
+  // Clamp to [-1, 1] and convert to a percentage for black (bottom)
+  $: clamped = Math.max(-1, Math.min(1, value))
+  // value > 0 means current player is winning.
+  // Normalise so that positive = black advantage regardless of who's moving.
+  $: blackAdvantage = currentPlayer === 'black' ? clamped : -clamped
+  // Convert to percentage: 0.0 = even (50%), +1 = black winning (100%), -1 = white winning (0%)
+  $: blackPct = 50 + blackAdvantage * 50
+  $: displayValue = Math.abs(blackAdvantage) < 0.005 ? '0.00' : (blackAdvantage > 0 ? '+' : '') + blackAdvantage.toFixed(2)
+</script>
+
+<div class="eval-bar" title="Value estimate: {displayValue}">
+  <div class="label top">☖</div>
+  <div class="bar">
+    <div class="white-fill" style="height: {100 - blackPct}%"></div>
+    <div class="midline"></div>
+    <div class="black-fill" style="height: {blackPct}%"></div>
+  </div>
+  <div class="value-label">{displayValue}</div>
+  <div class="label bottom">☗</div>
+</div>
+
+<style>
+  .eval-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    align-self: stretch;
+    gap: 4px;
+    width: 40px;
+    flex-shrink: 0;
+  }
+
+  .label {
+    font-size: 14px;
+    color: var(--text-muted);
+    line-height: 1;
+  }
+
+  .bar {
+    flex: 1;
+    width: 24px;
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border: 1px solid var(--border);
+    min-height: 200px;
+  }
+
+  .white-fill {
+    background: #d4d4d4;
+    transition: height 0.3s ease;
+  }
+
+  .black-fill {
+    background: #1a1a1a;
+    transition: height 0.3s ease;
+  }
+
+  .midline {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--accent-amber);
+    opacity: 0.6;
+  }
+
+  .value-label {
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+</style>

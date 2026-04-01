@@ -102,6 +102,7 @@ def test_game_snapshots_round_trip(db: Path) -> None:
         "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
         "in_check": 0,
         "move_history_json": json.dumps(history),
+        "value_estimate": 0.42,
     }]
     write_game_snapshots(str(db), snapshots)
     result = read_game_snapshots(str(db))
@@ -118,6 +119,7 @@ def test_game_snapshots_overwrite(db: Path) -> None:
         "current_player": "black", "ply": 1, "is_over": 0,
         "result": "in_progress", "sfen": "startpos", "in_check": 0,
         "move_history_json": "[]",
+        "value_estimate": 0.0,
     }
     write_game_snapshots(str(db), [snap])
     snap["ply"] = 99
