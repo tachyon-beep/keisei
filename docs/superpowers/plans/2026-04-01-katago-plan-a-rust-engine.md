@@ -12,6 +12,20 @@
 
 ---
 
+## Task Dependency Graph
+
+- Tasks 1–4: KataGo observation generator + tests (can be done first, no dependencies)
+- Tasks 5–6: Spatial action mapper + tests (independent of 1–4)
+- Task 7: VecEnv wiring (depends on both)
+- Tasks 8–9: Python integration tests (depend on Task 7 + maturin build)
+- Task 10: Full suite verification
+
+## Implementation Note
+
+**Task 3's repetition test helper should be validated interactively first** before writing the full test suite around it. The Gold oscillation pattern assumes standard shogi starting position piece placement — if the engine uses a non-standard piece arrangement for testing or the legal move generator has any quirks, the `expect("Gold 6i-5h should be legal")` panics are harder to debug mid-test-run than they are to pre-validate with a quick `cargo run` snippet. Fifteen minutes of upfront validation of the move sequence saves a potentially confusing Task 3 failure.
+
+---
+
 ## File Map
 
 | Action | File | Responsibility |
