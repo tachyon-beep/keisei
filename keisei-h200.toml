@@ -22,4 +22,4 @@ architecture = "resnet"
 
 [model.params]
 hidden_size = 256
-num_layers = 8
+num_layers = 16
