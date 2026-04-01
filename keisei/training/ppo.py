@@ -157,7 +157,7 @@ class PPOAlgorithm:
 
                 value_loss = F.mse_loss(values.squeeze(-1), batch_returns)
 
-                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+                loss = policy_loss + self.params.value_loss_coeff * value_loss - self.params.entropy_coeff * entropy
 
                 self.optimizer.zero_grad()
                 loss.backward()

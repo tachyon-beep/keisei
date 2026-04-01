@@ -13,6 +13,8 @@ class PPOParams:
     clip_epsilon: float = 0.2
     epochs_per_batch: int = 4
     batch_size: int = 256
+    entropy_coeff: float = 0.01
+    value_loss_coeff: float = 0.5
 
 
 _PARAM_SCHEMAS: dict[str, type] = {
