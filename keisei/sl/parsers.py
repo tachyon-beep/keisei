@@ -210,7 +210,34 @@ class CSAParser(GameParser):
         return board
 
     def parse(self, path: Path) -> Iterator[GameRecord]:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # Try UTF-8 first, fall back to Shift-JIS for older Floodgate files.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                import chardet
+                raw = path.read_bytes()
+                detected = chardet.detect(raw)
+                encoding = detected.get("encoding", "shift_jis") or "shift_jis"
+                text = raw.decode(encoding, errors="replace")
+                logger.info("Decoded %s as %s (confidence %.0f%%)",
+                            path.name, encoding, (detected.get("confidence", 0) or 0) * 100)
+            except ImportError:
+                text = path.read_text(encoding="shift_jis", errors="replace")
+                logger.warning("Non-UTF-8 file %s decoded as Shift-JIS (chardet not available)", path.name)
+
+        # Split on '/' separator lines for multi-game archives
+        blocks = text.split("\n/\n")
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            record = self._parse_single_game(block)
+            if record is not None:
+                yield record
+
+    def _parse_single_game(self, text: str) -> GameRecord | None:
+        """Parse a single CSA game block into a GameRecord."""
         lines = text.split("\n")
 
         metadata: dict[str, str] = {}
@@ -269,7 +296,7 @@ class CSAParser(GameParser):
                 result_line = line
 
         if not moves:
-            return
+            return None
 
         # Determine outcome from result line.
         # %TORYO, %TIME_UP, %ILLEGAL_MOVE: side-to-move loses (last_mover wins).
@@ -288,9 +315,9 @@ class CSAParser(GameParser):
         elif result_line in _draws:
             outcome = GameOutcome.DRAW
         elif result_line == "%CHUDAN":
-            return  # interrupted game, skip
+            return None  # interrupted game, skip
         else:
             logger.warning("Unknown CSA result '%s', skipping game", result_line)
-            return
+            return None
 
-        yield GameRecord(moves=moves, outcome=outcome, metadata=metadata)
+        return GameRecord(moves=moves, outcome=outcome, metadata=metadata)

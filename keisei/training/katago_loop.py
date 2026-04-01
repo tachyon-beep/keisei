@@ -178,6 +178,12 @@ class KataGoTrainingLoop:
         self._check_resume()
 
     def _check_resume(self) -> None:
+        # NOTE: When resuming from an SL checkpoint into RL training, the SL
+        # optimizer state is intentionally discarded. KataGoTrainingLoop creates
+        # a fresh Adam optimizer. The SL optimizer has momentum from supervised
+        # gradients that would fight the RL gradient signal. The RL warmup
+        # elevated entropy (Plan D Task 3) compensates for the overconfident
+        # SL policy by encouraging exploration in early RL epochs.
         state = read_training_state(self.db_path)
         if state is not None and state.get("checkpoint_path"):
             checkpoint_path = Path(state["checkpoint_path"])

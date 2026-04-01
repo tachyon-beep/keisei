@@ -159,6 +159,40 @@ class TestCSAParser:
         assert games[0].moves[0].move_usi == "P*5e"
 
 
+class TestCSAParserHardening:
+    def test_multi_game_csa_file(self, tmp_path):
+        """Games separated by '/' should parse as individual records."""
+        multi_game = (
+            "V2.2\nN+Player1\nN-Player2\n"
+            "P1-KY-KE-GI-KI-OU-KI-GI-KE-KY\n"
+            "P2 * -HI *  *  *  *  * -KA * \n"
+            "P3-FU-FU-FU-FU-FU-FU-FU-FU-FU\n"
+            "P4 *  *  *  *  *  *  *  *  * \n"
+            "P5 *  *  *  *  *  *  *  *  * \n"
+            "P6 *  *  *  *  *  *  *  *  * \n"
+            "P7+FU+FU+FU+FU+FU+FU+FU+FU+FU\n"
+            "P8 * +KA *  *  *  *  * +HI * \n"
+            "P9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n"
+            "+\n+7776FU\n-3334FU\n%TORYO\n"
+            "/\n"
+            "V2.2\nN+A\nN-B\n+\n+2726FU\n-8384FU\n%TORYO\n"
+        )
+        csa_file = tmp_path / "multi.csa"
+        csa_file.write_text(multi_game)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+
+    def test_empty_game_between_separators(self, tmp_path):
+        """Empty blocks between '/' separators should be skipped."""
+        content = "+7776FU\n%TORYO\n/\n/\n+2726FU\n%TORYO\n"
+        csa_file = tmp_path / "gaps.csa"
+        csa_file.write_text(content)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+
+
 class TestSLDataset:
     def test_write_and_read_shard(self, tmp_path):
         """Write a shard with 10 positions and read them back."""
