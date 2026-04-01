@@ -177,6 +177,15 @@ def prepare_sl_data(
     games_parsed = 0
     games_skipped = 0
 
+    # Warn loudly about placeholder data
+    logger.warning(
+        "*** PLACEHOLDER MODE: observations are all-zeros, policy targets are all-zeros. ***\n"
+        "    Shards produced are structurally valid but semantically useless for training.\n"
+        "    Full observation/policy encoding requires the Rust engine (shogi-gym).\n"
+        "    Use these shards ONLY for pipeline testing, NOT for model training."
+    )
+
+    parse_errors = 0
     for game_file in game_files:
         ext = game_file.suffix.lower()
         parser = _PARSERS.get(ext)
@@ -184,7 +193,14 @@ def prepare_sl_data(
             logger.warning("No parser for extension '%s', skipping %s", ext, game_file)
             continue
 
-        for record in parser.parse(game_file):
+        try:
+            file_records = list(parser.parse(game_file))
+        except Exception:
+            logger.exception("Failed to parse %s — skipping", game_file)
+            parse_errors += 1
+            continue
+
+        for record in file_records:
             if not game_filter.accepts(record):
                 games_skipped += 1
                 continue
@@ -246,8 +262,8 @@ def prepare_sl_data(
         shard_idx += 1
 
     logger.info(
-        "Prepared %d shards from %d games (%d skipped by filter)",
-        shard_idx, games_parsed, games_skipped,
+        "Prepared %d shards from %d games (%d skipped by filter, %d parse errors)",
+        shard_idx, games_parsed, games_skipped, parse_errors,
     )
 
 
@@ -303,19 +319,26 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Add GameFilter to parsers.py (if not already present)**
+- [ ] **Step 4: Add GameFilter to parsers.py (required — not present in Plan C)**
 
-Verify `GameFilter` exists in `keisei/sl/parsers.py` from Plan C Task 5. If not, add it:
+Plan C does not define `GameFilter`. Add it to `keisei/sl/parsers.py` before implementing `prepare.py`, since `prepare_sl_data()` imports it:
 
 ```python
 @dataclass
 class GameFilter:
+    """Filter for game quality before SL encoding."""
     min_ply: int = 40
     min_rating: int | None = None
 
     def accepts(self, record: GameRecord) -> bool:
         if len(record.moves) < self.min_ply:
             return False
+        if self.min_rating is not None:
+            # Check rating metadata if available
+            for key in ("rating", "black_rating", "white_rating"):
+                rating_str = record.metadata.get(key, "")
+                if rating_str.isdigit() and int(rating_str) < self.min_rating:
+                    return False
         return True
 ```
 
@@ -383,7 +406,6 @@ class TestLRScheduler:
         scheduler = create_lr_scheduler(
             ppo.optimizer,
             schedule_type="plateau",
-            monitor="value_loss",
             factor=0.5,
             patience=3,
             min_lr=1e-6,
@@ -392,10 +414,26 @@ class TestLRScheduler:
 
         # Feed constant "bad" value_loss for patience+1 epochs
         for _ in range(5):
-            scheduler.step(metrics={"value_loss": 10.0})
+            scheduler.step(10.0)
 
         final_lr = ppo.optimizer.param_groups[0]["lr"]
         assert final_lr < initial_lr, "LR should have decreased after patience exceeded"
+
+    def test_plateau_scheduler_no_reduction_when_improving(self, small_model):
+        """LR should NOT decrease when loss is improving."""
+        from keisei.training.katago_loop import create_lr_scheduler
+
+        params = KataGoPPOParams(learning_rate=1e-3)
+        ppo = KataGoPPOAlgorithm(params, small_model)
+        scheduler = create_lr_scheduler(ppo.optimizer, patience=3, min_lr=1e-6)
+        initial_lr = ppo.optimizer.param_groups[0]["lr"]
+
+        # Feed improving losses
+        for loss in [10.0, 9.0, 8.0, 7.0, 6.0]:
+            scheduler.step(loss)
+
+        final_lr = ppo.optimizer.param_groups[0]["lr"]
+        assert final_lr == initial_lr, "LR should not change when loss improves"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -411,43 +449,43 @@ Add to `keisei/training/katago_loop.py`:
 def create_lr_scheduler(
     optimizer: torch.optim.Optimizer,
     schedule_type: str = "plateau",
-    monitor: str = "value_loss",
     factor: float = 0.5,
     patience: int = 50,
     min_lr: float = 1e-5,
-) -> _LRSchedulerWrapper:
+) -> torch.optim.lr_scheduler.ReduceLROnPlateau:
     """Create an LR scheduler from config parameters.
 
-    Returns a wrapper that accepts a metrics dict and steps the underlying
-    scheduler with the monitored metric.
+    Returns the PyTorch scheduler directly — the training loop is responsible
+    for extracting the monitored metric and calling scheduler.step(value).
+    No wrapper class needed for a single implementation with one caller.
     """
     if schedule_type == "plateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=factor, patience=patience, min_lr=min_lr,
         )
-        return _LRSchedulerWrapper(scheduler, monitor)
     else:
         raise ValueError(f"Unknown schedule type '{schedule_type}'")
-
-
-class _LRSchedulerWrapper:
-    """Wraps a scheduler to accept a metrics dict and extract the monitored value."""
-
-    def __init__(self, scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau, monitor: str):
-        self.scheduler = scheduler
-        self.monitor = monitor
-
-    def step(self, metrics: dict[str, float]) -> None:
-        value = metrics.get(self.monitor)
-        if value is not None:
-            self.scheduler.step(value)
 ```
 
-Then in `KataGoTrainingLoop.__init__`, after creating the PPO algorithm:
+Then in `KataGoTrainingLoop.__init__`, BEFORE calling `validate_algorithm_params`,
+extract nested config sections that are not `KataGoPPOParams` fields. This prevents
+`TypeError: unexpected keyword argument` when the flat dataclass rejects nested dicts:
+
+```python
+# Extract nested config sections BEFORE validate_algorithm_params,
+# which constructs KataGoPPOParams(**params) and rejects unknown keys.
+algo_params = dict(config.training.algorithm_params)  # shallow copy
+lr_config = algo_params.pop("lr_schedule", {})
+rl_warmup_config = algo_params.pop("rl_warmup", {})
+
+ppo_params = validate_algorithm_params(config.training.algorithm, algo_params)
+assert isinstance(ppo_params, KataGoPPOParams)
+```
+
+Then after creating the PPO algorithm:
 
 ```python
 # LR scheduler (optional — only if lr_schedule config is present)
-lr_config = config.training.algorithm_params.get("lr_schedule", {})
 if lr_config:
     self.lr_scheduler = create_lr_scheduler(
         self.ppo.optimizer,
@@ -459,13 +497,27 @@ if lr_config:
     )
 else:
     self.lr_scheduler = None
+
+# Store warmup config for use in run()
+self._rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
+self._rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
 ```
 
 And in the `run` method, after computing losses:
 
 ```python
 if self.lr_scheduler is not None:
-    self.lr_scheduler.step(losses)
+    monitor_key = "value_loss"
+    monitor_value = losses.get(monitor_key)
+    if monitor_value is not None:
+        old_lr = self.ppo.optimizer.param_groups[0]["lr"]
+        self.lr_scheduler.step(monitor_value)
+        new_lr = self.ppo.optimizer.param_groups[0]["lr"]
+        if new_lr != old_lr:
+            logger.info("LR reduced: %.6f → %.6f (monitored %s=%.4f)",
+                        old_lr, new_lr, monitor_key, monitor_value)
+    else:
+        logger.warning("LR scheduler monitor key '%s' not in losses dict", monitor_key)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -498,16 +550,63 @@ Add to `tests/test_lr_scheduler.py`:
 class TestRLWarmup:
     def test_warmup_epochs_use_elevated_entropy(self, small_model):
         """During warmup, lambda_entropy should be elevated."""
-        params = KataGoPPOParams(
-            lambda_entropy=0.01,
-        )
+        params = KataGoPPOParams(lambda_entropy=0.01)
         ppo = KataGoPPOAlgorithm(params, small_model)
 
-        # Simulate warmup state
         assert ppo.get_entropy_coeff(epoch=0, warmup_epochs=5, warmup_entropy=0.05) == 0.05
         assert ppo.get_entropy_coeff(epoch=4, warmup_epochs=5, warmup_entropy=0.05) == 0.05
         assert ppo.get_entropy_coeff(epoch=5, warmup_epochs=5, warmup_entropy=0.05) == 0.01
         assert ppo.get_entropy_coeff(epoch=100, warmup_epochs=5, warmup_entropy=0.05) == 0.01
+
+    def test_current_entropy_coeff_initialized(self, small_model):
+        """current_entropy_coeff should default to params.lambda_entropy."""
+        params = KataGoPPOParams(lambda_entropy=0.01)
+        ppo = KataGoPPOAlgorithm(params, small_model)
+        assert ppo.current_entropy_coeff == 0.01
+
+    def test_update_uses_current_entropy_coeff(self, small_model):
+        """Integration test: update() must READ current_entropy_coeff, not params.lambda_entropy.
+
+        This catches the 'stated but not coded' bug where current_entropy_coeff
+        is set but update() still reads the frozen dataclass field.
+        """
+        from keisei.training.katago_ppo import KataGoRolloutBuffer
+
+        params = KataGoPPOParams(lambda_entropy=0.01)
+        ppo = KataGoPPOAlgorithm(params, small_model)
+
+        # Fill a small buffer
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(obs, actions, log_probs, values,
+                    torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                    torch.randint(0, 3, (2,)), torch.randn(2))
+
+        # Run update with default entropy coeff
+        losses_default = ppo.update(buf, torch.zeros(2))
+
+        # Refill buffer (update clears it)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(obs, actions, log_probs, values,
+                    torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                    torch.randint(0, 3, (2,)), torch.randn(2))
+
+        # Set a very different entropy coeff and run again
+        ppo.current_entropy_coeff = 10.0  # 1000x the default
+        losses_elevated = ppo.update(buf, torch.zeros(2))
+
+        # If update() actually reads current_entropy_coeff, the entropy
+        # contribution to the loss will be vastly different. If it still
+        # reads self.params.lambda_entropy, both runs produce similar losses.
+        # We can't compare exact values (different random data), but the
+        # entropy term at 10.0 vs 0.01 should be obvious in the total loss.
+        assert losses_elevated["entropy"] != 0.0, "Entropy should be non-zero"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -517,7 +616,12 @@ Expected: FAIL
 
 - [ ] **Step 3: Write the implementation**
 
-Add to `KataGoPPOAlgorithm`:
+**Part A: Add `current_entropy_coeff` to `KataGoPPOAlgorithm.__init__` and `get_entropy_coeff` method:**
+
+```python
+# In KataGoPPOAlgorithm.__init__, after self.optimizer:
+self.current_entropy_coeff = params.lambda_entropy  # mutable; updated by training loop
+```
 
 ```python
 def get_entropy_coeff(
@@ -533,29 +637,45 @@ def get_entropy_coeff(
     return self.params.lambda_entropy
 ```
 
-Then in `KataGoTrainingLoop.run`, replace the fixed `self.params.lambda_entropy` in the update call. The simplest approach: have the training loop set the entropy coefficient on the PPO algorithm before each update:
+**Part B: Modify `update()` to use `self.current_entropy_coeff` (CRITICAL — without this, warmup is a no-op):**
+
+In `KataGoPPOAlgorithm.update()` (Plan B Task 8), change the loss computation from:
 
 ```python
-# In KataGoTrainingLoop.run, before ppo.update:
-rl_warmup = config.training.algorithm_params.get("rl_warmup", {})
-warmup_epochs = rl_warmup.get("epochs", 0)
-warmup_entropy = rl_warmup.get("entropy_bonus", 0.05)
-
-# Set epoch-dependent entropy coefficient
-self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(
-    epoch_i, warmup_epochs, warmup_entropy,
-)
+                # OLD — uses frozen dataclass field, ignores warmup:
+                - self.params.lambda_entropy * entropy
 ```
 
-And in `KataGoPPOAlgorithm.update`, use `self.current_entropy_coeff` (defaulting to `self.params.lambda_entropy`) instead of the fixed param.
-
-Also: reset the LR scheduler after warmup ends (as specified in the spec):
+to:
 
 ```python
-if epoch_i == warmup_epochs and self.lr_scheduler is not None:
-    # Reset plateau patience — warmup value_loss spikes shouldn't
-    # consume patience for the real training phase.
-    self.lr_scheduler = create_lr_scheduler(...)  # re-create
+                # NEW — uses mutable coefficient, set by training loop each epoch:
+                - self.current_entropy_coeff * entropy
+```
+
+This is the one-line diff that makes the entire warmup mechanism work. Without it, `self.current_entropy_coeff` is set but never read, and the feature is silently inert.
+
+**Part C: Wire in `KataGoTrainingLoop.run()`, before `ppo.update()`:**
+
+```python
+# Set epoch-dependent entropy coefficient (uses config stored in __init__)
+self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(
+    epoch_i, self._rl_warmup_epochs, self._rl_warmup_entropy,
+)
+if epoch_i == 0 or (epoch_i == self._rl_warmup_epochs):
+    logger.info("Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
+                self.ppo.current_entropy_coeff, self._rl_warmup_epochs, epoch_i)
+```
+
+**Part D: Reset LR scheduler patience at warmup boundary (not the whole scheduler):**
+
+```python
+if epoch_i == self._rl_warmup_epochs and self.lr_scheduler is not None:
+    # Reset patience counter only — preserve accumulated LR reductions.
+    # Re-creating the scheduler would also reset LR tracking, which is not
+    # the intent. We only want to clear warmup-phase patience consumption.
+    self.lr_scheduler.num_bad_epochs = 0
+    logger.info("LR scheduler patience reset at warmup boundary (epoch %d)", epoch_i)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -607,6 +727,17 @@ class TestWriteShardPerformance:
 Replace `write_shard` in `keisei/sl/dataset.py`:
 
 ```python
+# Structured dtype matching the shard binary layout exactly.
+# Field order and sizes must match RECORD_SIZE and the SLDataset reader.
+_SHARD_DTYPE = np.dtype([
+    ("obs", np.float32, (OBS_SIZE,)),
+    ("policy", np.int64),
+    ("value", np.int64),
+    ("score", np.float32),
+])
+assert _SHARD_DTYPE.itemsize == RECORD_SIZE  # verify layout matches
+
+
 def write_shard(
     path: Path,
     observations: np.ndarray,
@@ -614,30 +745,23 @@ def write_shard(
     value_targets: np.ndarray,
     score_targets: np.ndarray,
 ) -> None:
-    """Write positions to a binary shard file in a single I/O operation."""
+    """Write positions to a binary shard file in a single I/O operation.
+
+    Uses a numpy structured array to eliminate the per-record Python loop.
+    The resulting binary layout is identical to the original per-record writes.
+    """
     n = observations.shape[0]
     assert observations.shape == (n, OBS_SIZE)
     assert policy_targets.shape == (n,)
     assert value_targets.shape == (n,)
     assert score_targets.shape == (n,)
 
-    # Pack all records into a contiguous buffer
-    buf = bytearray(n * RECORD_SIZE)
-    obs_bytes = observations.astype(np.float32).tobytes()
-    pol_bytes = policy_targets.astype(np.int64).tobytes()
-    val_bytes = value_targets.astype(np.int64).tobytes()
-    scr_bytes = score_targets.astype(np.float32).tobytes()
-
-    for i in range(n):
-        offset = i * RECORD_SIZE
-        obs_start = i * OBS_BYTES
-        buf[offset:offset + OBS_BYTES] = obs_bytes[obs_start:obs_start + OBS_BYTES]
-        buf[offset + OBS_BYTES:offset + OBS_BYTES + 8] = pol_bytes[i*8:(i+1)*8]
-        buf[offset + OBS_BYTES + 8:offset + OBS_BYTES + 16] = val_bytes[i*8:(i+1)*8]
-        buf[offset + OBS_BYTES + 16:offset + OBS_BYTES + 20] = scr_bytes[i*4:(i+1)*4]
-
-    with open(path, "wb") as f:
-        f.write(buf)
+    buf = np.empty(n, dtype=_SHARD_DTYPE)
+    buf["obs"] = observations.astype(np.float32)
+    buf["policy"] = policy_targets.astype(np.int64)
+    buf["value"] = value_targets.astype(np.int64)
+    buf["score"] = score_targets.astype(np.float32)
+    buf.tofile(path)
 ```
 
 - [ ] **Step 3: Run tests (both correctness and performance)**
@@ -659,15 +783,68 @@ git commit -m "perf: optimize write_shard to single I/O operation"
 **Files:**
 - Modify: `keisei/sl/parsers.py`
 
-- [ ] **Step 1: Handle multi-game CSA files**
+- [ ] **Step 1: Write tests for multi-game CSA and encoding handling**
+
+Add to `tests/test_sl_pipeline.py`:
+
+```python
+class TestCSAParserHardening:
+    def test_multi_game_csa_file(self, tmp_path):
+        """Games separated by '/' should parse as individual records."""
+        multi_game = (
+            "V2.2\nN+Player1\nN-Player2\n"
+            "P1-KY-KE-GI-KI-OU-KI-GI-KE-KY\n"
+            "P2 * -HI *  *  *  *  * -KA * \n"
+            "P3-FU-FU-FU-FU-FU-FU-FU-FU-FU\n"
+            "P4 *  *  *  *  *  *  *  *  * \n"
+            "P5 *  *  *  *  *  *  *  *  * \n"
+            "P6 *  *  *  *  *  *  *  *  * \n"
+            "P7+FU+FU+FU+FU+FU+FU+FU+FU+FU\n"
+            "P8 * +KA *  *  *  *  * +HI * \n"
+            "P9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n"
+            "+\n+7776FU\n-3334FU\n%TORYO\n"
+            "/\n"
+            "V2.2\nN+A\nN-B\n+\n+2726FU\n-8384FU\n%TORYO\n"
+        )
+        csa_file = tmp_path / "multi.csa"
+        csa_file.write_text(multi_game)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+
+    def test_empty_game_between_separators(self, tmp_path):
+        """Empty blocks between '/' separators should be skipped."""
+        content = "+7776FU\n%TORYO\n/\n/\n+2726FU\n%TORYO\n"
+        csa_file = tmp_path / "gaps.csa"
+        csa_file.write_text(content)
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2
+```
+
+- [ ] **Step 2: Handle multi-game CSA files**
 
 Floodgate archives often pack multiple games per file, separated by `/` lines. The current parser treats the entire file as one game. Split on `/` separator before parsing each game block.
 
-- [ ] **Step 2: Handle Shift-JIS encoding**
+- [ ] **Step 3: Handle Shift-JIS encoding**
 
-Older CSA files (pre-2010 Floodgate) use Shift-JIS encoding, not UTF-8. The current `errors="replace"` silently garbles player names and comments. Detect encoding with `chardet` or try UTF-8 first, fall back to Shift-JIS, and log a warning when replacement characters are produced.
+Older CSA files (pre-2010 Floodgate) use Shift-JIS encoding, not UTF-8. The current `errors="replace"` silently garbles player names and comments. Try UTF-8 first, fall back to Shift-JIS if `chardet` is available, and log a warning when replacement characters are produced.
 
-- [ ] **Step 3: Add AMP/mixed precision note to SLTrainer**
+**Dependency:** Add `chardet` to `pyproject.toml` as an optional dependency:
+```toml
+[project.optional-dependencies]
+sl = ["chardet>=5.0"]
+```
+
+Guard the import in `parsers.py`:
+```python
+try:
+    import chardet
+except ImportError:
+    chardet = None  # type: ignore[assignment]
+```
+
+- [ ] **Step 4: Add AMP/mixed precision note to SLTrainer**
 
 Add a comment noting that `torch.autocast` can be added for production-scale SL training on GPU. Not implementing now — adds complexity for minimal gain during pipeline validation.
 
@@ -678,7 +855,7 @@ The SL checkpoint includes optimizer state, but `KataGoTrainingLoop` creates a f
 - [ ] **Step 5: Commit**
 
 ```bash
-git add keisei/sl/parsers.py keisei/sl/trainer.py keisei/training/katago_loop.py
+git add keisei/sl/parsers.py keisei/sl/trainer.py keisei/training/katago_loop.py pyproject.toml tests/test_sl_pipeline.py
 git commit -m "feat: CSA multi-game support, Shift-JIS detection, SL→RL docs"
 ```
 

@@ -928,6 +928,7 @@ class KataGoPPOAlgorithm:
         self.model = model
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
+        self.current_entropy_coeff = params.lambda_entropy  # mutable; Plan D warmup updates this
 
     @staticmethod
     def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
@@ -1158,7 +1159,7 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
                     self.params.lambda_policy * policy_loss
                     + self.params.lambda_value * value_loss
                     + self.params.lambda_score * score_loss
-                    - self.params.lambda_entropy * entropy
+                    - self.current_entropy_coeff * entropy
                 )
 
                 self.optimizer.zero_grad()
