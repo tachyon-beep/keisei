@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
@@ -44,7 +45,7 @@ class KataGoPPOParams:
     lambda_value: float = 1.5
     lambda_score: float = 0.02
     lambda_entropy: float = 0.01
-    score_normalization: float = 76.0  # used by KataGoTrainingLoop to normalize targets at buffer level
+    score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
 
 
@@ -379,4 +380,5 @@ class KataGoPPOAlgorithm:
                 )
                 metrics.update(value_metrics)
 
+        self.forward_model.train()
         return metrics

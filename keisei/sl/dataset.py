@@ -20,6 +20,11 @@ OBS_SIZE = 50 * 81
 OBS_BYTES = OBS_SIZE * 4  # float32
 RECORD_SIZE = OBS_BYTES + 8 + 8 + 4  # 16220 bytes
 
+# Score normalization divisor — shared between SL shard writer and RL buffer.
+# Raw material difference in Shogi can range roughly -200 to +200. Dividing by
+# this constant maps to ~[-1, 1] to prevent MSE score loss from dominating.
+SCORE_NORMALIZATION = 76.0
+
 
 # Structured dtype matching the shard binary layout exactly.
 # Field order and sizes must match RECORD_SIZE and the SLDataset reader.

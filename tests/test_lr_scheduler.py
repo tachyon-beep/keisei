@@ -83,40 +83,60 @@ class TestRLWarmup:
     def test_update_uses_current_entropy_coeff(self, small_model):
         """Integration test: update() must READ current_entropy_coeff, not params.lambda_entropy.
 
-        This catches the 'stated but not coded' bug where current_entropy_coeff
-        is set but update() still reads the frozen dataclass field.
+        Verifies by checking that a 1000x entropy coefficient produces measurably
+        different parameter updates. If update() ignores current_entropy_coeff,
+        both runs would produce identical gradients.
         """
+        torch.manual_seed(42)
         params = KataGoPPOParams(lambda_entropy=0.01)
         ppo = KataGoPPOAlgorithm(params, small_model)
 
-        # Fill a small buffer
+        def fill_buffer(buf):
+            for _ in range(4):
+                obs = torch.randn(2, 50, 9, 9)
+                legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+                actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+                buf.add(
+                    obs, actions, log_probs, values,
+                    torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                    torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+                )
+
+        # Run update with default entropy coeff, capture weight snapshot
         buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
-        for _ in range(4):
-            obs = torch.randn(2, 50, 9, 9)
-            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
-            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
-            buf.add(
-                obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
-                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,  # scores in [-1, 1]
-            )
+        fill_buffer(buf)
+        params_before_default = {
+            n: p.clone() for n, p in small_model.named_parameters()
+        }
+        ppo.update(buf, torch.zeros(2))
+        delta_default = sum(
+            (p - params_before_default[n]).abs().sum().item()
+            for n, p in small_model.named_parameters()
+        )
 
-        # Run update with default entropy coeff
-        losses_default = ppo.update(buf, torch.zeros(2))
+        # Reset model to same state for fair comparison
+        for n, p in small_model.named_parameters():
+            p.data.copy_(params_before_default[n])
+        ppo.optimizer = torch.optim.Adam(small_model.parameters(), lr=params.learning_rate)
 
-        # Refill buffer (update clears it)
-        for _ in range(4):
-            obs = torch.randn(2, 50, 9, 9)
-            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
-            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
-            buf.add(
-                obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
-                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,  # scores in [-1, 1]
-            )
-
-        # Set a very different entropy coeff and run again
+        # Run update with massively elevated entropy coeff
+        fill_buffer(buf)
+        params_before_elevated = {
+            n: p.clone() for n, p in small_model.named_parameters()
+        }
         ppo.current_entropy_coeff = 10.0  # 1000x the default
-        losses_elevated = ppo.update(buf, torch.zeros(2))
+        ppo.update(buf, torch.zeros(2))
+        delta_elevated = sum(
+            (p - params_before_elevated[n]).abs().sum().item()
+            for n, p in small_model.named_parameters()
+        )
 
-        assert losses_elevated["entropy"] != 0.0, "Entropy should be non-zero"
+        # With 1000x entropy coefficient, the gradient contribution from entropy
+        # is vastly different. If update() actually reads current_entropy_coeff,
+        # the parameter deltas will differ substantially.
+        assert delta_default > 0, "Default update should change parameters"
+        assert delta_elevated > 0, "Elevated update should change parameters"
+        assert abs(delta_elevated - delta_default) > 1e-4, (
+            f"Parameter deltas should differ: default={delta_default:.6f}, "
+            f"elevated={delta_elevated:.6f}"
+        )

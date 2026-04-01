@@ -315,6 +315,14 @@ class KataGoTrainingLoop:
 
             losses = self.ppo.update(self.buffer, next_values)
 
+            # Reset LR scheduler fully at warmup boundary BEFORE the step,
+            # so the boundary epoch's anomalous loss doesn't leak into the
+            # post-warmup patience window.
+            if epoch_i == self._rl_warmup_epochs and self.lr_scheduler is not None:
+                self.lr_scheduler.best = self.lr_scheduler.mode_worse  # +inf for mode='min'
+                self.lr_scheduler.num_bad_epochs = 0
+                logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
+
             # LR scheduler step (monitors value_loss)
             if self.lr_scheduler is not None:
                 monitor_value = losses.get("value_loss")
@@ -327,11 +335,6 @@ class KataGoTrainingLoop:
                             "LR reduced: %.6f -> %.6f (value_loss=%.4f)",
                             old_lr, new_lr, monitor_value,
                         )
-
-            # Reset LR scheduler patience at warmup boundary
-            if epoch_i == self._rl_warmup_epochs and self.lr_scheduler is not None:
-                self.lr_scheduler.num_bad_epochs = 0
-                logger.info("LR scheduler patience reset at warmup boundary (epoch %d)", epoch_i)
 
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
             metrics = {

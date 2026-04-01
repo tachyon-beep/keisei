@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from keisei.sl.dataset import OBS_SIZE, write_shard
+from keisei.sl.dataset import OBS_SIZE, SCORE_NORMALIZATION, write_shard
 from keisei.sl.parsers import (
     CSAParser,
     GameFilter,
@@ -130,7 +130,7 @@ def prepare_sl_data(
                 observations.append(obs)
                 policy_targets.append(policy_target)
                 value_targets.append(value_cat)
-                score_targets.append(raw_score / 76.0)  # normalize
+                score_targets.append(raw_score / SCORE_NORMALIZATION)
 
             # Flush shard if buffer is full
             if len(observations) >= shard_size:
