@@ -5,6 +5,8 @@ from enum import IntEnum
 from shogi_gym._native import (
     DefaultActionMapper,
     DefaultObservationGenerator,
+    KataGoObservationGenerator,
+    SpatialActionMapper,
     VecEnv,
     SpectatorEnv,
     StepResult,
@@ -43,6 +45,8 @@ OBS_NUM_CHANNELS = 46
 __all__ = [
     "DefaultActionMapper",
     "DefaultObservationGenerator",
+    "KataGoObservationGenerator",
+    "SpatialActionMapper",
     "VecEnv",
     "SpectatorEnv",
     "StepResult",
