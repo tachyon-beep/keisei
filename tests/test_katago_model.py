@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import pytest
 
 from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
-from keisei.training.models.se_resnet import SEResNetParams, GlobalPoolBiasBlock
+from keisei.training.models.se_resnet import SEResNetParams, GlobalPoolBiasBlock, SEResNetModel
 
 
 def test_katago_output_fields():
@@ -49,3 +49,67 @@ class TestGlobalPoolBiasBlock:
         loss.backward()
         assert x.grad is not None
         assert x.grad.abs().sum() > 0
+
+
+class TestSEResNetModel:
+    @pytest.fixture
+    def model(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        return SEResNetModel(params)
+
+    def test_output_types(self, model):
+        obs = torch.randn(4, 50, 9, 9)
+        output = model(obs)
+        assert isinstance(output, KataGoOutput)
+
+    def test_policy_shape(self, model):
+        obs = torch.randn(4, 50, 9, 9)
+        output = model(obs)
+        assert output.policy_logits.shape == (4, 9, 9, 139)
+
+    def test_value_shape(self, model):
+        obs = torch.randn(4, 50, 9, 9)
+        output = model(obs)
+        assert output.value_logits.shape == (4, 3)
+
+    def test_score_shape(self, model):
+        obs = torch.randn(4, 50, 9, 9)
+        output = model(obs)
+        assert output.score_lead.shape == (4, 1)
+
+    def test_value_logits_are_raw(self, model):
+        """Value logits should be raw (not softmaxed). Deterministic check."""
+        obs = torch.randn(4, 50, 9, 9)
+        output = model(obs)
+        row_sums = output.value_logits.sum(dim=-1)
+        assert not torch.allclose(row_sums, torch.ones_like(row_sums)), \
+            "Value logits should be raw, not already a probability distribution"
+
+    def test_gradient_through_all_heads(self, model):
+        obs = torch.randn(4, 50, 9, 9, requires_grad=True)
+        output = model(obs)
+        loss = (
+            output.policy_logits.sum()
+            + output.value_logits.sum()
+            + output.score_lead.sum()
+        )
+        loss.backward()
+        assert obs.grad is not None
+        assert obs.grad.abs().sum() > 0
+
+    def test_wrong_input_channels_raises(self, model):
+        obs = torch.randn(4, 46, 9, 9)  # wrong: 46 instead of 50
+        with pytest.raises(ValueError, match="Expected 50 input channels"):
+            model(obs)
+
+    def test_batch_size_1(self, model):
+        model.eval()
+        obs = torch.randn(1, 50, 9, 9)
+        output = model(obs)
+        assert output.policy_logits.shape == (1, 9, 9, 139)
+        assert output.value_logits.shape == (1, 3)
+        assert output.score_lead.shape == (1, 1)
