@@ -1458,18 +1458,33 @@ let num_ch = self.num_channels;
 // Use these locals inside process_env instead of self.obs_buffer_len, etc.
 ```
 
-Also create local instances of the mapper and obs_gen for the closure (both `ObsMode` and `ActionMode` are stateless, so creating new instances is cheap):
+For the mapper and obs_gen, **do NOT clone or move the enum wrappers** — they may not implement `Send` and rayon's `.par_iter()` will reject them. Instead, capture a plain tag enum and reconstruct the zero-size generators inside the closure:
 
 ```rust
-let mapper = match &self.mapper {
-    ActionMode::Default(_) => ActionMode::Default(DefaultActionMapper),
-    ActionMode::Spatial(_) => ActionMode::Spatial(SpatialActionMapper),
+#[derive(Copy, Clone)]
+enum ObsModeTag { Default, KataGo }
+#[derive(Copy, Clone)]
+enum ActionModeTag { Default, Spatial }
+
+// Before the closure:
+let obs_tag = match &self.obs_gen {
+    ObsMode::Default(_) => ObsModeTag::Default,
+    ObsMode::KataGo(_) => ObsModeTag::KataGo,
 };
-let obs_gen = match &self.obs_gen {
-    ObsMode::Default(_) => ObsMode::Default(DefaultObservationGenerator::new()),
-    ObsMode::KataGo(_) => ObsMode::KataGo(KataGoObservationGenerator::new()),
+let act_tag = match &self.mapper {
+    ActionMode::Default(_) => ActionModeTag::Default,
+    ActionMode::Spatial(_) => ActionModeTag::Spatial,
 };
+
+// Inside the parallel closure (per-thread, zero-cost — all generators are zero-size structs):
+let obs_gen: Box<dyn ObservationGenerator> = match obs_tag {
+    ObsModeTag::Default => Box::new(DefaultObservationGenerator::new()),
+    ObsModeTag::KataGo => Box::new(KataGoObservationGenerator::new()),
+};
+// Or avoid the Box entirely by duplicating the match at call sites.
 ```
+
+This sidesteps `Send` bound issues entirely. Since `DefaultObservationGenerator`, `KataGoObservationGenerator`, `DefaultActionMapper`, and `SpatialActionMapper` are all zero-size structs with no fields, constructing them per-thread is genuinely free.
 
 - [ ] **Step 4: Update property getters**
 
