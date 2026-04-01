@@ -42,40 +42,47 @@ Standard computer Shogi piece values:
 
 Max one-sided material: 9×1 + 2×3 + 2×4 + 2×5 + 2×6 + 1×8 + 1×10 = 63. With all promotions, theoretical max advantage is ~130. `SCORE_NORMALIZATION = 76.0` maps the typical range to roughly [-1, 1].
 
-### `GameState.material_balance`
+### `material_balance` and `piece_value`
+
+**Module:** `shogi-core/src/rules.rs` — alongside the existing `piece_impasse_value()` and `compute_impasse_score()` functions. This follows the established pattern: evaluation-related free functions live in `rules.rs`, not as methods on data types.
+
+Note: `piece_impasse_value` uses simplified values (Bishop/Rook = 5, others = 1) for impasse adjudication. `piece_value` uses standard material values for training. These are distinct evaluation semantics — both belong in `rules.rs` but serve different purposes.
 
 ```rust
-impl GameState {
-    /// Compute material balance from `perspective`'s point of view.
-    /// Positive = perspective has more material. Counts board pieces + hand pieces.
-    /// King is excluded (always present, never captured in standard Shogi).
-    pub fn material_balance(&self, perspective: Color) -> i32 {
-        let mut balance: i32 = 0;
-        // Board pieces
-        for sq_idx in 0..81 {
-            if let Some(piece) = self.position.piece_at(Square::new_unchecked(sq_idx)) {
-                let value = piece_value(piece.piece_type(), piece.is_promoted());
-                if piece.color() == perspective {
-                    balance += value;
-                } else {
-                    balance -= value;
-                }
+/// Compute material balance from `perspective`'s point of view.
+/// Positive = perspective has more material. Counts board pieces + hand pieces.
+/// King is excluded — it is never captured in standard Shogi, so including it
+/// would add an identical constant to both sides with no effect on the differential.
+///
+/// Takes &Position (not &GameState) matching compute_impasse_score pattern.
+pub fn material_balance(pos: &Position, perspective: Color) -> i32 {
+    let mut balance: i32 = 0;
+    // Board pieces
+    for sq_idx in 0..81u8 {
+        if let Some(piece) = pos.piece_at(Square::new_unchecked(sq_idx)) {
+            let value = piece_value(piece.piece_type(), piece.is_promoted());
+            if piece.color() == perspective {
+                balance += value;
+            } else {
+                balance -= value;
             }
         }
-        // Hand pieces (never promoted)
-        for &hpt in &HandPieceType::ALL {
-            let pt = hpt.to_piece_type();
-            let value = piece_value(pt, false);
-            let own = self.position.hand_count(perspective, hpt) as i32;
-            let opp = self.position.hand_count(perspective.opponent(), hpt) as i32;
-            balance += value * own;
-            balance -= value * opp;
-        }
-        balance
     }
+    // Hand pieces (never promoted)
+    for &hpt in &HandPieceType::ALL {
+        let pt = hpt.to_piece_type();
+        let value = piece_value(pt, false);
+        let own = pos.hand_count(perspective, hpt) as i32;
+        let opp = pos.hand_count(perspective.opponent(), hpt) as i32;
+        balance += value * own;
+        balance -= value * opp;
+    }
+    balance
 }
 
-fn piece_value(pt: PieceType, promoted: bool) -> i32 {
+/// Material value of a piece for training score head targets.
+/// Distinct from piece_impasse_value() which uses simplified counts for adjudication.
+pub fn piece_value(pt: PieceType, promoted: bool) -> i32 {
     match (pt, promoted) {
         (PieceType::Pawn, false) => 1,
         (PieceType::Pawn, true) => 7,     // Tokin
@@ -103,17 +110,23 @@ Add `material_balance_buffer: Vec<i32>` to `VecEnv`. At terminal states (inside 
 
 ```rust
 let last_mover = game.position.current_player.opponent();
-*material_balance_ptr.offset(i) = game.material_balance(last_mover);
+*material_balance_ptr.offset(i) = material_balance(&game.position, last_mover);
 ```
+
+**ORDERING CONSTRAINT:** This must be called BEFORE the auto-reset line `*game = GameState::with_max_ply(max_ply)` — after reset, the game state is gone.
 
 For non-terminal steps, the value is 0 (unused — Python filters by `terminal_mask`).
 
-Expose via `StepResult`:
+**Truncated games:** `terminal_mask = terminated | truncated` includes MaxMoves truncation. Material balance at truncation is meaningful — a game truncated at 512 ply with a rook advantage should produce a non-zero score target. This is intentional and is the correct learning signal.
+
+Expose via `StepMetadata` (not `StepResult` directly — it's terminal-only data, like `captured_piece` and `termination_reason`):
 
 ```python
-class StepResult:
-    # ... existing fields ...
-    material_balance: NDArray[np.int32]  # per-env material balance at terminal
+class StepMetadata:
+    captured_piece: NDArray[np.uint8]
+    termination_reason: NDArray[np.uint8]
+    ply_count: NDArray[np.uint16]
+    material_balance: NDArray[np.int32]  # per-env, valid at terminal states only
 ```
 
 ### Training Loop Change
@@ -127,10 +140,36 @@ score_targets[terminal_mask] = rewards[terminal_mask] / self.score_norm
 with:
 
 ```python
-material = torch.from_numpy(
-    np.asarray(step_result.material_balance)
-).to(self.device)
-score_targets[terminal_mask] = material[terminal_mask].float() / self.score_norm
+material = torch.tensor(
+    np.asarray(step_result.step_metadata.material_balance),
+    dtype=torch.float32, device=self.device,
+)
+score_targets[terminal_mask] = material[terminal_mask] / self.score_norm
+```
+
+### Buffer Guard Update
+
+The `KataGoRolloutBuffer.add()` guard threshold must be widened from `> 2.0` to `> 3.0`. With material/76, extreme positions (two rooks + bishop advantage) can legitimately reach ~1.7. The current 2.0 threshold is fragile. Update the error message to match:
+
+```python
+if score_targets[~score_targets.isnan()].abs().max() > 3.0:
+    raise ValueError(
+        f"score_targets appear unnormalized: max abs value = "
+        f"{score_targets[~score_targets.isnan()].abs().max().item():.1f}, "
+        f"expected in [-2.0, +2.0] approximately. "
+        f"Divide by score_normalization before storing."
+    )
+```
+
+### SL Pipeline
+
+Add a FIXME comment to `sl/prepare.py` at the score target computation:
+
+```python
+# FIXME(keisei-8ad9dd8509): score_targets use game outcome (±1/76 ≈ ±0.013),
+# not material difference. The score head will learn near-zero targets from
+# this data. Real material scoring requires Rust replay of positions.
+score_targets.append(raw_score / SCORE_NORMALIZATION)
 ```
 
 ### What Does NOT Change
