@@ -92,6 +92,14 @@ impl SpatialActionMapper {
     }
 
     /// Check if a board move is a knight move, and if so return slot (0=left, 1=right).
+    ///
+    /// In perspective space, knights always move |dr|=2, |dc|=1. The "left/right"
+    /// classification is based on dc sign relative to dr sign:
+    ///   dc < 0 when dr < 0 (or dc > 0 when dr > 0) → slot 0 ("left")
+    ///   dc > 0 when dr < 0 (or dc < 0 when dr > 0) → slot 1 ("right")
+    ///
+    /// This normalization ensures encode/decode roundtrip regardless of whether
+    /// dr is -2 (Black perspective) or +2 (White perspective after flip).
     fn knight_slot(from_row: i8, from_col: i8, to_row: i8, to_col: i8) -> Option<usize> {
         let dr = to_row - from_row;
         let dc = to_col - from_col;
@@ -100,12 +108,14 @@ impl SpatialActionMapper {
             return None;
         }
 
-        let norm_dc = if dr < 0 { dc } else { -dc };
+        // Normalize dc relative to dr: "same sign as dr" → left, "opposite sign" → right.
+        // This is invariant under the 180° perspective flip which negates both dr and dc.
+        let same_sign = (dr > 0 && dc > 0) || (dr < 0 && dc < 0);
 
-        if norm_dc < 0 {
-            Some(0) // "left" in perspective space
+        if same_sign {
+            Some(0) // "left" (dc same sign as dr)
         } else {
-            Some(1) // "right" in perspective space
+            Some(1) // "right" (dc opposite sign to dr)
         }
     }
 }
@@ -202,15 +212,25 @@ impl ActionMapper for SpatialActionMapper {
         } else if slot < 132 {
             // Knight move (slots 128-131)
             let knight_idx = slot - 128;
-            let knight_side = knight_idx / 2; // 0=left, 1=right
+            let knight_side = knight_idx / 2; // 0=left (dc same sign as dr), 1=right (opposite)
             let promote = (knight_idx % 2) == 1;
 
             let from_sq = Square::new_unchecked(square_idx as u8);
             let from_row = from_sq.row() as i8;
             let from_col = from_sq.col() as i8;
 
-            let dr: i8 = -2;
-            let dc: i8 = if knight_side == 0 { -1 } else { 1 };
+            // In perspective space, Black's forward is dr=-2, White's forward is dr=+2
+            // (because Square::flip is a 180° rotation that reverses move direction).
+            let dr: i8 = match perspective {
+                Color::Black => -2,
+                Color::White => 2,
+            };
+            // Slot 0 = "left" (dc same sign as dr), slot 1 = "right" (dc opposite sign)
+            let dc: i8 = if knight_side == 0 {
+                if dr < 0 { -1 } else { 1 }  // same sign as dr
+            } else {
+                if dr < 0 { 1 } else { -1 }  // opposite sign to dr
+            };
             let to_row = from_row + dr;
             let to_col = from_col + dc;
 
@@ -579,6 +599,23 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 81 * 7);
+    }
+
+    #[test]
+    fn test_knight_move_roundtrip_white() {
+        let m = mapper();
+        // White knight at absolute (6,4) moves forward to (4,3) and (4,5)
+        let from = Square::from_row_col(6, 4).unwrap();
+        let to_left = Square::from_row_col(4, 3).unwrap();
+        let to_right = Square::from_row_col(4, 5).unwrap();
+        for (to, side) in [(to_left, "left"), (to_right, "right")] {
+            for promote in [false, true] {
+                let mv = Move::Board { from, to, promote };
+                let idx = trait_encode(&m, mv, Color::White);
+                let decoded = trait_decode(&m, idx, Color::White).expect("decode failed");
+                assert_eq!(decoded, mv, "White knight roundtrip failed: {}, promote={}", side, promote);
+            }
+        }
     }
 
     /// Round-trip all legal moves from the starting position.
