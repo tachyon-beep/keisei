@@ -301,3 +301,22 @@ class TestSLTrainer:
         assert metrics["policy_loss"] == 0.0
         assert metrics["value_loss"] == 0.0
         assert metrics["score_loss"] == 0.0
+
+
+class TestWriteShardPerformance:
+    def test_write_large_shard(self, tmp_path):
+        """Write 10K positions -- should complete in < 5 seconds."""
+        import time
+
+        n = 10_000
+        rng = np.random.default_rng(42)
+        obs = rng.standard_normal((n, 50 * 81)).astype(np.float32)
+        policy = rng.integers(0, 11259, size=n).astype(np.int64)
+        value = rng.integers(0, 3, size=n).astype(np.int64)
+        score = rng.standard_normal(n).astype(np.float32)
+
+        start = time.monotonic()
+        write_shard(tmp_path / "perf_test.bin", obs, policy, value, score)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"write_shard took {elapsed:.1f}s for 10K positions"
