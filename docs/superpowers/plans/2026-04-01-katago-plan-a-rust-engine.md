@@ -112,7 +112,7 @@ fn promoted_channel(pt: PieceType) -> usize {
         PieceType::Silver => 3,
         PieceType::Bishop => 4,
         PieceType::Rook   => 5,
-        _ => panic!("piece type {:?} cannot be promoted", pt),
+        PieceType::Gold | PieceType::King => panic!("piece type {:?} cannot be promoted", pt),
     }
 }
 
