@@ -68,9 +68,20 @@ export function handleMessage(msg) {
       }
       break
 
-    case 'game_update':
-      games.set(msg.snapshots || [])
+    case 'game_update': {
+      const snapshots = msg.snapshots || []
+      games.set(snapshots)
+      // Auto-switch away from ended games
+      selectedGameId.update(id => {
+        const current = snapshots.find(g => g.game_id === id)
+        if (current && current.is_over) {
+          const active = snapshots.find(g => !g.is_over)
+          if (active) return active.game_id
+        }
+        return id
+      })
       break
+    }
 
     case 'metrics_update':
       appendMetrics(msg.rows || [])

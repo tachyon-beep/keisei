@@ -67,10 +67,12 @@
             <PieceTray color="black" hand={hands.black || {}} />
           </div>
 
-          <EvalBar
-            value={game.value_estimate || 0}
-            currentPlayer={game.current_player || 'black'}
-          />
+          <div class="eval-area" style="height: {boardAreaHeight}px">
+            <EvalBar
+              value={game.value_estimate || 0}
+              currentPlayer={game.current_player || 'black'}
+            />
+          </div>
 
           <div class="info-area" style="height: {boardAreaHeight}px">
             <div class="game-info">
@@ -147,7 +149,7 @@
   }
 
   .thumbnail-panel {
-    width: 400px;
+    width: 700px;
     flex-shrink: 0;
     border-right: 1px solid var(--border);
     padding: 8px;
@@ -165,7 +167,7 @@
 
   .thumb-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 6px;
   }
 
@@ -186,6 +188,11 @@
     flex-direction: column;
     flex-shrink: 0;
     justify-content: center;
+  }
+
+  .eval-area {
+    display: flex;
+    flex-shrink: 0;
   }
 
   .info-area {

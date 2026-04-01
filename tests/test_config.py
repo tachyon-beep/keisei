@@ -87,7 +87,7 @@ def test_num_games_too_high(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text("""\
 [training]
-num_games = 11
+num_games = 65
 max_ply = 500
 algorithm = "ppo"
 checkpoint_interval = 50

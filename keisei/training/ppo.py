@@ -102,7 +102,7 @@ class PPOAlgorithm:
         values_2d = data["values"].reshape(T, N)
         dones_2d = data["dones"].reshape(T, N)
 
-        all_advantages = torch.zeros(T, N)
+        all_advantages = torch.zeros(T, N, device=data["rewards"].device)
         for env_i in range(N):
             all_advantages[:, env_i] = compute_gae(
                 rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
@@ -124,7 +124,7 @@ class PPOAlgorithm:
         num_updates = 0
 
         for _ in range(self.params.epochs_per_batch):
-            indices = torch.randperm(total_samples)
+            indices = torch.randperm(total_samples, device=data["rewards"].device)
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
                 idx = indices[start:end]

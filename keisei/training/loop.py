@@ -64,12 +64,18 @@ class TrainingLoop:
 
         init_db(self.db_path)
 
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
         self.model = build_model(config.model.architecture, config.model.params)
+        self.model = self.model.to(self.device)
         logger.info(
-            "Model: %s (%s), params: %d",
+            "Model: %s (%s), params: %d, device: %s",
             config.model.display_name,
             config.model.architecture,
             sum(p.numel() for p in self.model.parameters()),
+            self.device,
         )
 
         ppo_params = validate_algorithm_params(
@@ -148,8 +154,8 @@ class TrainingLoop:
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
         reset_result = self.vecenv.reset()
-        obs = torch.from_numpy(np.array(reset_result.observations))
-        legal_masks = torch.from_numpy(np.array(reset_result.legal_masks))
+        obs = torch.from_numpy(np.array(reset_result.observations)).to(self.device)
+        legal_masks = torch.from_numpy(np.array(reset_result.legal_masks)).to(self.device)
         # All games start with Black (0) to move
         current_players = np.zeros(self.num_envs, dtype=np.uint8)
 
@@ -172,9 +178,9 @@ class TrainingLoop:
                 pre_step_players = current_players.copy()
                 step_result = self.vecenv.step(action_list)
 
-                rewards = torch.from_numpy(np.array(step_result.rewards))
-                terminated = torch.from_numpy(np.array(step_result.terminated))
-                truncated = torch.from_numpy(np.array(step_result.truncated))
+                rewards = torch.from_numpy(np.array(step_result.rewards)).to(self.device)
+                terminated = torch.from_numpy(np.array(step_result.terminated)).to(self.device)
+                truncated = torch.from_numpy(np.array(step_result.truncated)).to(self.device)
                 dones = terminated | truncated
                 current_players = np.array(step_result.current_players)
 
@@ -219,8 +225,8 @@ class TrainingLoop:
                     obs, actions, log_probs, values, rewards, dones, legal_masks
                 )
 
-                obs = torch.from_numpy(np.array(step_result.observations))
-                legal_masks = torch.from_numpy(np.array(step_result.legal_masks))
+                obs = torch.from_numpy(np.array(step_result.observations)).to(self.device)
+                legal_masks = torch.from_numpy(np.array(step_result.legal_masks)).to(self.device)
 
                 self._maybe_write_snapshots()
                 self._maybe_update_heartbeat()
