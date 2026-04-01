@@ -12,9 +12,7 @@
 
 **Spec reference:** `docs/superpowers/specs/2026-04-01-katago-se-resnet-design.md` — Slices 5 & 6.
 
-**Deferred to follow-up:**
-- LR plateau scheduler (`ReduceLROnPlateau` monitoring `value_loss`) and RL warmup elevated entropy (`rl_warmup.epochs` / `rl_warmup.entropy_bonus`). Config fields are present but not wired into the training loop. Constant LR works for initial validation.
-- `keisei-prepare-sl` CLI entrypoint (`keisei/sl/prepare.py`). Listed in the File Map but not implemented in any task. The SL pipeline can be tested via `SLDataset` + `SLTrainer` directly with manually-prepared shards. The CLI script for batch data preparation is a follow-up once the pipeline is validated.
+**Deferred to Plan D:** LR plateau scheduler, RL warmup elevated entropy, `keisei-prepare-sl` CLI, and optimized `write_shard`. See `plans/2026-04-01-katago-plan-d-deferred.md`.
 
 ---
 
