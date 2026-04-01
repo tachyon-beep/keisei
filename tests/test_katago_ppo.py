@@ -10,7 +10,7 @@ from keisei.training.katago_ppo import (
     KataGoRolloutBuffer,
     compute_value_metrics,
 )
-from keisei.training.ppo import compute_gae
+from keisei.training.gae import compute_gae
 from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 

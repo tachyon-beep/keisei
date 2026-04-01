@@ -11,13 +11,11 @@ import torch
 
 from keisei.config import AppConfig, load_config
 from keisei.db import init_db
-from keisei.training.algorithm_registry import PPOParams
 from keisei.training.models.resnet import ResNetModel, ResNetParams
-from keisei.training.ppo import PPOAlgorithm, RolloutBuffer
 
 
 # ---------------------------------------------------------------------------
-# Model / PPO fixtures
+# Model fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -25,13 +23,6 @@ from keisei.training.ppo import PPOAlgorithm, RolloutBuffer
 def small_resnet() -> ResNetModel:
     """A minimal ResNet for fast tests."""
     return ResNetModel(ResNetParams(hidden_size=16, num_layers=1))
-
-
-@pytest.fixture
-def small_ppo(small_resnet: ResNetModel) -> PPOAlgorithm:
-    """A minimal PPO instance backed by a small ResNet."""
-    params = PPOParams(learning_rate=1e-3, batch_size=4, epochs_per_batch=1)
-    return PPOAlgorithm(params, small_resnet)
 
 
 # ---------------------------------------------------------------------------
@@ -164,40 +155,3 @@ def make_mock_vecenv(num_envs: int = 4) -> MagicMock:
     mock.get_sfens.return_value = ["startpos"] * num_envs
 
     return mock
-
-
-# ---------------------------------------------------------------------------
-# Rollout buffer helper
-# ---------------------------------------------------------------------------
-
-
-def fill_buffer(
-    ppo: PPOAlgorithm,
-    num_envs: int = 2,
-    steps: int = 8,
-    *,
-    legal_mask: torch.Tensor | None = None,
-    all_done: bool = False,
-    rewards_val: float = 0.0,
-) -> RolloutBuffer:
-    """Fill a RolloutBuffer with steps from select_actions."""
-    buf = RolloutBuffer(
-        num_envs=num_envs, obs_shape=(46, 9, 9), action_space=13527
-    )
-    if legal_mask is None:
-        legal_mask = torch.ones(num_envs, 13527, dtype=torch.bool)
-    for _ in range(steps):
-        obs = torch.randn(num_envs, 46, 9, 9)
-        actions, log_probs, values = ppo.select_actions(obs, legal_mask)
-        buf.add(
-            obs,
-            actions,
-            log_probs,
-            values,
-            torch.full((num_envs,), rewards_val),
-            torch.ones(num_envs, dtype=torch.bool)
-            if all_done
-            else torch.zeros(num_envs, dtype=torch.bool),
-            legal_mask,
-        )
-    return buf
