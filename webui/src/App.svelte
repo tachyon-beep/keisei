@@ -37,6 +37,7 @@
 </script>
 
 <div class="app">
+  <a href="#game-panel" class="skip-nav">Skip to game</a>
   <StatusIndicator />
 
   <div class="main-content">
@@ -49,7 +50,7 @@
       </div>
     </aside>
 
-    <section class="game-panel" aria-label="Game viewer">
+    <main id="game-panel" class="game-panel" aria-label="Game viewer">
       {#if game}
         <div class="game-view">
           <div class="board-area">
@@ -79,7 +80,7 @@
                   class:in-progress={game.result === 'in_progress'}
                   class:terminal={game.result !== 'in_progress'}
                 >
-                  {(game.result || 'in_progress').replaceAll('_', ' ')}
+                  {#if game.result === 'in_progress'}In progress{:else}&#10003; {(game.result || '').replaceAll('_', ' ')}{/if}
                 </span>
               </div>
             </div>
@@ -92,10 +93,11 @@
         </div>
       {:else}
         <div class="no-game">
-          <p>Waiting for game data...</p>
+          <p>Waiting for game data&hellip;</p>
+          <p class="no-game-hint">Connect a training session to see live games.</p>
         </div>
       {/if}
-    </section>
+    </main>
   </div>
 
   <section class="metrics-panel" aria-label="Training metrics">
@@ -104,6 +106,24 @@
 </div>
 
 <style>
+  .skip-nav {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 100;
+    padding: 8px 16px;
+    background: var(--accent-blue);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0 0 4px 0;
+  }
+
+  .skip-nav:focus {
+    left: 0;
+  }
+
   .app {
     display: flex;
     flex-direction: column;
@@ -193,9 +213,16 @@
 
   .no-game {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     min-height: 300px;
+    color: var(--text-muted);
+    gap: 8px;
+  }
+
+  .no-game-hint {
+    font-size: 12px;
     color: var(--text-muted);
   }
 

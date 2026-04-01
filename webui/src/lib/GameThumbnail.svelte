@@ -96,12 +96,18 @@
   }
 
   .label {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-secondary);
     margin-top: 4px;
   }
 
   .thumbnail.selected .label {
     color: var(--accent-green);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .thumbnail {
+      transition: none;
+    }
   }
 </style>

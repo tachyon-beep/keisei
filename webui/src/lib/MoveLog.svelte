@@ -87,6 +87,11 @@
     padding: 4px;
   }
 
+  .table-container:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: -2px;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -96,7 +101,7 @@
 
   thead tr {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
   }
 
   th, td {

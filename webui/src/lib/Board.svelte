@@ -66,7 +66,7 @@
     grid-template-columns: repeat(9, 1fr);
     padding-left: 0;
     padding-right: 20px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     text-align: center;
   }
@@ -102,6 +102,7 @@
     cursor: default;
     user-select: none;
     line-height: 1;
+    color: #1a1a1a;
   }
 
   .piece.white {
@@ -109,14 +110,14 @@
   }
 
   .piece.promoted {
-    color: var(--promoted);
+    color: #8b0000;
   }
 
   .row-labels {
     display: flex;
     flex-direction: column;
     justify-content: space-around;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     padding: 0 2px;
   }

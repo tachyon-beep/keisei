@@ -34,13 +34,13 @@
           stroke: darkTheme.textColor,
           grid: { stroke: darkTheme.gridColor, width: 0.5 },
           ticks: { stroke: darkTheme.axisColor },
-          font: '10px sans-serif',
+          font: '12px sans-serif',
         },
         {
           stroke: darkTheme.textColor,
           grid: { stroke: darkTheme.gridColor, width: 0.5 },
           ticks: { stroke: darkTheme.axisColor },
-          font: '10px sans-serif',
+          font: '12px sans-serif',
         },
       ],
       series: [
@@ -130,12 +130,12 @@
   }
 
   .chart-container :global(.u-legend) {
-    font-size: 10px !important;
+    font-size: 12px !important;
     color: var(--text-secondary) !important;
   }
 
   .annotation {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     font-style: italic;
     margin-top: 6px;

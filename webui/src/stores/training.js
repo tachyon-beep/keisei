@@ -10,10 +10,10 @@ if (typeof window !== 'undefined') {
 
 export const trainingAlive = derived(
   [trainingState, tick],
-  ([$s, $now]) => {
+  ([$s]) => {
     if (!$s || !$s.heartbeat_at) return false
     const hbTime = new Date($s.heartbeat_at).getTime()
-    const age = $now - hbTime
+    const age = Date.now() - hbTime
     return age < 30000
   }
 )
