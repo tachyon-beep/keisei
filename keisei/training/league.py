@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import random
 import sqlite3
 from dataclasses import dataclass
@@ -32,16 +31,16 @@ class OpponentEntry:
     created_at: str
 
     @classmethod
-    def from_db_row(cls, row: tuple) -> OpponentEntry:
+    def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
         return cls(
-            id=row[0],
-            architecture=row[1],
-            model_params=json.loads(row[2]),
-            checkpoint_path=row[3],
-            elo_rating=row[4],
-            created_epoch=row[5],
-            games_played=row[6],
-            created_at=row[7],
+            id=row["id"],
+            architecture=row["architecture"],
+            model_params=json.loads(row["model_params"]),
+            checkpoint_path=row["checkpoint_path"],
+            elo_rating=row["elo_rating"],
+            created_epoch=row["created_epoch"],
+            games_played=row["games_played"],
+            created_at=row["created_at"],
         )
 
 
@@ -83,8 +82,10 @@ class OpponentPool:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def add_snapshot(
@@ -127,10 +128,7 @@ class OpponentPool:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT id, architecture, model_params, checkpoint_path, "
-                "elo_rating, created_epoch, games_played, created_at "
-                "FROM league_entries WHERE id = ?",
-                (entry_id,),
+                "SELECT * FROM league_entries WHERE id = ?", (entry_id,),
             ).fetchone()
             return OpponentEntry.from_db_row(row) if row else None
         finally:
@@ -140,9 +138,7 @@ class OpponentPool:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, architecture, model_params, checkpoint_path, "
-                "elo_rating, created_epoch, games_played, created_at "
-                "FROM league_entries ORDER BY created_epoch ASC"
+                "SELECT * FROM league_entries ORDER BY created_epoch ASC"
             ).fetchall()
             return [OpponentEntry.from_db_row(r) for r in rows]
         finally:
@@ -171,6 +167,11 @@ class OpponentPool:
             ckpt.unlink()
         conn = self._connect()
         try:
+            # Clean up orphaned results before deleting the entry
+            conn.execute(
+                "DELETE FROM league_results WHERE learner_id = ? OR opponent_id = ?",
+                (entry.id, entry.id),
+            )
             conn.execute("DELETE FROM league_entries WHERE id = ?", (entry.id,))
             conn.commit()
         finally:
@@ -222,9 +223,14 @@ class OpponentPool:
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (epoch, learner_id, opponent_id, wins, losses, draws),
             )
+            total_games = wins + losses + draws
             conn.execute(
                 "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-                (wins + losses + draws, opponent_id),
+                (total_games, learner_id),
+            )
+            conn.execute(
+                "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
+                (total_games, opponent_id),
             )
             conn.commit()
         finally:
@@ -254,15 +260,19 @@ class OpponentSampler:
         if len(entries) == 1:
             return entries[0]
 
-        # Current best = most recent entry
-        current_best = entries[-1]
+        # Current best = highest Elo entry (not most recent — learner may regress)
+        current_best = max(entries, key=lambda e: e.elo_rating)
 
-        # Historical = all entries above elo_floor (excluding current best)
-        historical = [e for e in entries[:-1] if e.elo_rating >= self.elo_floor]
+        # Historical = all entries above elo_floor, excluding current_best
+        historical = [
+            e for e in entries
+            if e.id != current_best.id and e.elo_rating >= self.elo_floor
+        ]
 
-        # Fallback: if no historical entries above floor, use all except current best
+        # If no historical entries above floor, sample current_best only.
+        # The fallback to all entries would defeat the floor's purpose.
         if not historical:
-            historical = entries[:-1]
+            return current_best
 
         if random.random() < self.current_best_ratio:
             return current_best

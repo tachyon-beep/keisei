@@ -70,7 +70,7 @@ class TestModelContractTypes:
             get_model_contract("nonexistent")
 
     def test_obs_channels_scalar(self):
-        assert get_obs_channels("resnet") == 50
+        assert get_obs_channels("resnet") == 46
 
     def test_obs_channels_multi_head(self):
         assert get_obs_channels("se_resnet") == 50

@@ -1,8 +1,8 @@
-"""Model registry: architecture name -> (model class, params dataclass)."""
+"""Model registry: architecture name -> spec (model class, params, contract, channels)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch.nn as nn
 
@@ -13,28 +13,38 @@ from keisei.training.models.resnet import ResNetModel, ResNetParams
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 from keisei.training.models.transformer import TransformerModel, TransformerParams
 
-# Registry: architecture -> (model_cls, params_cls, contract, obs_channels)
-# contract: "scalar" for BaseModel (single value output), "multi_head" for KataGoBaseModel (W/D/L)
-_REGISTRY: dict[str, tuple[type[nn.Module], type, str, int]] = {
-    "resnet": (ResNetModel, ResNetParams, "scalar", 50),
-    "mlp": (MLPModel, MLPParams, "scalar", 50),
-    "transformer": (TransformerModel, TransformerParams, "scalar", 50),
-    "se_resnet": (SEResNetModel, SEResNetParams, "multi_head", 50),
+
+class ArchitectureSpec(NamedTuple):
+    model_cls: type[nn.Module]
+    params_cls: type
+    contract: str  # "scalar" or "multi_head"
+    obs_channels: int
+
+
+_REGISTRY: dict[str, ArchitectureSpec] = {
+    "resnet": ArchitectureSpec(ResNetModel, ResNetParams, "scalar", 46),
+    "mlp": ArchitectureSpec(MLPModel, MLPParams, "scalar", 46),
+    "transformer": ArchitectureSpec(TransformerModel, TransformerParams, "scalar", 46),
+    "se_resnet": ArchitectureSpec(SEResNetModel, SEResNetParams, "multi_head", 50),
 }
 
 VALID_ARCHITECTURES = set(_REGISTRY.keys())
 
 
-def validate_model_params(architecture: str, params: dict[str, Any]) -> object:
-    """Validate and instantiate params for the given architecture."""
+def _get_spec(architecture: str) -> ArchitectureSpec:
     if architecture not in _REGISTRY:
         raise ValueError(
             f"Unknown architecture '{architecture}'. "
             f"Valid: {sorted(VALID_ARCHITECTURES)}"
         )
-    _, params_cls, _, _ = _REGISTRY[architecture]
+    return _REGISTRY[architecture]
+
+
+def validate_model_params(architecture: str, params: dict[str, Any]) -> object:
+    """Validate and instantiate params for the given architecture."""
+    spec = _get_spec(architecture)
     try:
-        return params_cls(**params)
+        return spec.params_cls(**params)
     except TypeError as e:
         raise TypeError(f"Invalid params for '{architecture}': {e}") from e
 
@@ -42,19 +52,15 @@ def validate_model_params(architecture: str, params: dict[str, Any]) -> object:
 def build_model(architecture: str, params: dict[str, Any]) -> BaseModel | KataGoBaseModel:
     """Build a model instance for the given architecture and params."""
     validated_params = validate_model_params(architecture, params)
-    model_cls, _, _, _ = _REGISTRY[architecture]
-    return model_cls(validated_params)
+    spec = _get_spec(architecture)
+    return spec.model_cls(validated_params)
 
 
 def get_model_contract(architecture: str) -> str:
     """Return the value-head contract type for an architecture."""
-    if architecture not in _REGISTRY:
-        raise ValueError(f"Unknown architecture '{architecture}'")
-    return _REGISTRY[architecture][2]
+    return _get_spec(architecture).contract
 
 
 def get_obs_channels(architecture: str) -> int:
     """Return the expected observation channels for an architecture."""
-    if architecture not in _REGISTRY:
-        raise ValueError(f"Unknown architecture '{architecture}'")
-    return _REGISTRY[architecture][3]
+    return _get_spec(architecture).obs_channels

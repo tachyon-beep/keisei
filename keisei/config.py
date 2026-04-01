@@ -48,6 +48,14 @@ class LeagueConfig:
     elo_k_factor: float = 32.0
     elo_floor: float = 500.0
 
+    def __post_init__(self) -> None:
+        ratio_sum = self.historical_ratio + self.current_best_ratio
+        if abs(ratio_sum - 1.0) > 1e-6:
+            raise ValueError(
+                f"League ratio sum must be 1.0, got "
+                f"{self.historical_ratio} + {self.current_best_ratio} = {ratio_sum}"
+            )
+
 
 @dataclass(frozen=True)
 class DemonstratorConfig:
@@ -131,14 +139,7 @@ def load_config(path: Path) -> AppConfig:
 
     league_config = None
     if "league" in raw:
-        league_config = LeagueConfig(**raw["league"])
-        ratio_sum = league_config.historical_ratio + league_config.current_best_ratio
-        if abs(ratio_sum - 1.0) > 1e-6:
-            raise ValueError(
-                f"League ratio sum must be 1.0, got "
-                f"{league_config.historical_ratio} + {league_config.current_best_ratio} = "
-                f"{ratio_sum}"
-            )
+        league_config = LeagueConfig(**raw["league"])  # ratio validation in __post_init__
 
     demo_config = None
     if "demonstrator" in raw:

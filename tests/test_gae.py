@@ -47,3 +47,4 @@ class TestComputeGAE:
         advantages = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
         assert advantages.dtype == torch.float32
         assert advantages.shape == (3,)
+        assert advantages.device == rewards.device

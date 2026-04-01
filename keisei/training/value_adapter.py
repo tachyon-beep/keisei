@@ -80,8 +80,24 @@ class MultiHeadValueAdapter(ValueHeadAdapter):
         if score_pred is None:
             raise ValueError("MultiHeadValueAdapter requires score_pred")
 
-        value_loss = F.cross_entropy(value_output, value_cats, ignore_index=-1)
-        score_loss = F.mse_loss(score_pred.squeeze(-1), score_targets)
+        # Guard: when all value_cats are -1 (all non-terminal), cross_entropy
+        # returns NaN. Use graph-connected zero to preserve backward() graph.
+        has_valid = (value_cats >= 0).any()
+        if has_valid:
+            value_loss = F.cross_entropy(value_output, value_cats, ignore_index=-1)
+        else:
+            value_loss = value_output.sum() * 0.0
+
+        # Guard: score_targets uses NaN sentinel for non-terminal positions.
+        # Filter before MSE to avoid NaN propagation.
+        score_valid = ~score_targets.isnan()
+        if score_valid.any():
+            score_loss = F.mse_loss(
+                score_pred.squeeze(-1)[score_valid], score_targets[score_valid],
+            )
+        else:
+            score_loss = score_pred.sum() * 0.0
+
         return self.lambda_value * value_loss + self.lambda_score * score_loss
 
 
