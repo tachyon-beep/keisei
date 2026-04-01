@@ -33,6 +33,26 @@ from keisei.training.model_registry import build_model
 logger = logging.getLogger(__name__)
 
 
+def create_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    schedule_type: str = "plateau",
+    factor: float = 0.5,
+    patience: int = 50,
+    min_lr: float = 1e-5,
+) -> torch.optim.lr_scheduler.ReduceLROnPlateau:
+    """Create an LR scheduler from config parameters.
+
+    Returns the PyTorch scheduler directly — the training loop is responsible
+    for extracting the monitored metric and calling scheduler.step(value).
+    """
+    if schedule_type == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=factor, patience=patience, min_lr=min_lr,
+        )
+    else:
+        raise ValueError(f"Unknown schedule type '{schedule_type}'")
+
+
 class KataGoTrainingLoop:
     def __init__(self, config: AppConfig, vecenv: Any = None) -> None:
         self.config = config
@@ -80,8 +100,14 @@ class KataGoTrainingLoop:
                 f"which is a {type(base_model).__name__}"
             )
 
+        # Extract nested config sections BEFORE validate_algorithm_params,
+        # which constructs KataGoPPOParams(**params) and rejects unknown keys.
+        algo_params = dict(config.training.algorithm_params)
+        lr_config = algo_params.pop("lr_schedule", {})
+        rl_warmup_config = algo_params.pop("rl_warmup", {})
+
         ppo_params = validate_algorithm_params(
-            config.training.algorithm, config.training.algorithm_params
+            config.training.algorithm, algo_params
         )
         if not isinstance(ppo_params, KataGoPPOParams):
             raise TypeError(
@@ -89,6 +115,24 @@ class KataGoTrainingLoop:
             )
 
         self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
+
+        # LR scheduler (optional — only if lr_schedule config is present)
+        if lr_config:
+            self.lr_scheduler: torch.optim.lr_scheduler.ReduceLROnPlateau | None = (
+                create_lr_scheduler(
+                    self.ppo.optimizer,
+                    schedule_type=lr_config.get("type", "plateau"),
+                    factor=lr_config.get("factor", 0.5),
+                    patience=lr_config.get("patience", 50),
+                    min_lr=lr_config.get("min_lr", 1e-5),
+                )
+            )
+        else:
+            self.lr_scheduler = None
+
+        # Store warmup config for use in run()
+        self._rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
+        self._rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
 
         if vecenv is not None:
             self.vecenv = vecenv
@@ -253,7 +297,35 @@ class KataGoTrainingLoop:
                 next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
             self.model.train()
 
+            # Set epoch-dependent entropy coefficient
+            self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(
+                epoch_i, self._rl_warmup_epochs, self._rl_warmup_entropy,
+            )
+            if epoch_i == 0 or (epoch_i == self._rl_warmup_epochs):
+                logger.info(
+                    "Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
+                    self.ppo.current_entropy_coeff, self._rl_warmup_epochs, epoch_i,
+                )
+
             losses = self.ppo.update(self.buffer, next_values)
+
+            # LR scheduler step (monitors value_loss)
+            if self.lr_scheduler is not None:
+                monitor_value = losses.get("value_loss")
+                if monitor_value is not None:
+                    old_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                    self.lr_scheduler.step(monitor_value)
+                    new_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                    if new_lr != old_lr:
+                        logger.info(
+                            "LR reduced: %.6f -> %.6f (value_loss=%.4f)",
+                            old_lr, new_lr, monitor_value,
+                        )
+
+            # Reset LR scheduler patience at warmup boundary
+            if epoch_i == self._rl_warmup_epochs and self.lr_scheduler is not None:
+                self.lr_scheduler.num_bad_epochs = 0
+                logger.info("LR scheduler patience reset at warmup boundary (epoch %d)", epoch_i)
 
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
             metrics = {
