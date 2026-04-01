@@ -11,6 +11,27 @@ import torch.nn.functional as F
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
+def compute_value_metrics(
+    value_logits: torch.Tensor, value_targets: torch.Tensor,
+) -> dict[str, float]:
+    """Compute value prediction metrics for monitoring.
+
+    Args:
+        value_logits: (N, 3) raw W/D/L logits
+        value_targets: (N,) int targets {0=W, 1=D, 2=L}
+
+    Returns:
+        Dict with value_accuracy, frac_predicted_win/draw/loss
+    """
+    predictions = value_logits.argmax(dim=-1)
+    return {
+        "value_accuracy": (predictions == value_targets).float().mean().item(),
+        "frac_predicted_win": (predictions == 0).float().mean().item(),
+        "frac_predicted_draw": (predictions == 1).float().mean().item(),
+        "frac_predicted_loss": (predictions == 2).float().mean().item(),
+    }
+
+
 @dataclass(frozen=True)
 class KataGoPPOParams:
     learning_rate: float = 2e-4

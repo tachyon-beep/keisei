@@ -4,7 +4,12 @@
 import pytest
 import torch
 
-from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
+from keisei.training.katago_ppo import (
+    KataGoPPOAlgorithm,
+    KataGoPPOParams,
+    KataGoRolloutBuffer,
+    compute_value_metrics,
+)
 from keisei.training.ppo import compute_gae
 from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
@@ -138,6 +143,25 @@ class TestKataGoPPOActionSelection:
             actions, _, _ = ppo.select_actions(obs, legal_masks)
             for a in actions.tolist():
                 assert a in (0, 1000), f"Action {a} should be 0 or 1000"
+
+
+class TestValueMetrics:
+    def test_compute_value_metrics(self):
+        """Verify the metrics helper computes frac_predicted_win/draw/loss correctly."""
+        # 4 predictions: 2 predict W, 1 predicts D, 1 predicts L
+        value_logits = torch.tensor([
+            [2.0, 0.0, 0.0],  # predicts W
+            [0.0, 2.0, 0.0],  # predicts D
+            [0.0, 0.0, 2.0],  # predicts L
+            [1.5, 0.0, 0.0],  # predicts W
+        ])
+        value_targets = torch.tensor([0, 1, 2, 0])  # W, D, L, W
+
+        metrics = compute_value_metrics(value_logits, value_targets)
+        assert metrics["value_accuracy"] == 1.0  # all correct
+        assert metrics["frac_predicted_win"] == 0.5
+        assert metrics["frac_predicted_draw"] == 0.25
+        assert metrics["frac_predicted_loss"] == 0.25
 
 
 class TestKataGoPPOUpdate:
