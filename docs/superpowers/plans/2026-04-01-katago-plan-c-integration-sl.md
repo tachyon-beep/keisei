@@ -411,6 +411,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from keisei.config import AppConfig
 from keisei.db import (
@@ -507,9 +508,9 @@ class KataGoTrainingLoop:
         self.global_step = 0
         self._last_heartbeat = time.monotonic()
 
-        # Per-episode accumulators for backfilling
-        self._episode_outcomes: list[int | None] = [None] * self.num_envs
-        self._episode_scores: list[float] = [0.0] * self.num_envs
+        # Per-episode tracking for value category backfilling.
+        # episode_start_step[env_i] = buffer index where current episode began
+        self._episode_start_step: list[int] = [0] * self.num_envs
 
         self._check_resume()
 
@@ -580,9 +581,11 @@ class KataGoTrainingLoop:
                 truncated = torch.from_numpy(np.array(step_result.truncated)).to(self.device)
                 dones = terminated | truncated
 
-                # Placeholder value categories and score targets
-                # These are backfilled from episode outcomes
-                value_cats = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+                # Value categories and score targets: use placeholder (1=Draw)
+                # for non-terminal steps. Terminal steps get the real outcome.
+                # After the rollout, _backfill_episodes() overwrites all steps
+                # in completed episodes with the actual outcome.
+                value_cats = torch.ones(self.num_envs, dtype=torch.long, device=self.device)  # 1=Draw placeholder
                 score_targets = torch.zeros(self.num_envs, device=self.device)
 
                 for env_i in range(self.num_envs):
@@ -596,24 +599,39 @@ class KataGoTrainingLoop:
                         else:
                             value_cats[env_i] = 1  # Draw
                             draw_count += 1
-                        # Score target: normalized material difference (placeholder: use reward)
-                        score_targets[env_i] = r  # simplified: +1/-1/0
+                        # Score: use reward as simplified score signal, normalized.
+                        # NOTE: This is outcome-conditioned (+1/-1/0), not material
+                        # advantage. A real material score would require the engine
+                        # to report piece counts at game end. Documented simplification.
+                        score_targets[env_i] = r / self.score_norm  # r is already in [-1,1]
 
                 self.buffer.add(
                     obs, actions, log_probs, values, rewards, dones, legal_masks,
                     value_cats, score_targets,
                 )
 
+                # Backfill completed episodes: overwrite all timesteps in the
+                # episode with the terminal outcome.
+                for env_i in range(self.num_envs):
+                    if dones[env_i]:
+                        ep_start = self._episode_start_step[env_i]
+                        ep_end = self.buffer.size  # current buffer position
+                        outcome = value_cats[env_i].item()
+                        score = score_targets[env_i].item()
+                        for t in range(ep_start, ep_end):
+                            self.buffer.value_categories[t][env_i] = outcome
+                            self.buffer.score_targets[t][env_i] = score
+                        self._episode_start_step[env_i] = ep_end
+
                 obs = torch.from_numpy(np.array(step_result.observations)).to(self.device)
                 legal_masks = torch.from_numpy(np.array(step_result.legal_masks)).to(self.device)
 
                 self._maybe_update_heartbeat()
 
-            # Bootstrap
+            # Bootstrap value for GAE: P(W) - P(L) scalar projection
             self.model.eval()
             with torch.no_grad():
                 output = self.model(obs)
-                import torch.nn.functional as F
                 value_probs = F.softmax(output.value_logits, dim=-1)
                 next_values = value_probs[:, 0] - value_probs[:, 2]
 
@@ -967,7 +985,9 @@ class TestCSAParser:
         parser = CSAParser()
         games = list(parser.parse(csa_file))
         assert len(games) == 1
-        assert games[0].outcome == GameOutcome.WIN_BLACK  # %TORYO after Black's last move
+        # After -3334FU (White moves), it's Black's turn. %TORYO = side-to-move resigns.
+        # Black resigns → White wins. last_mover="-" → WIN_WHITE.
+        assert games[0].outcome == GameOutcome.WIN_WHITE
         assert len(games[0].moves) == 2
         assert games[0].metadata.get("player_black") == "Player1"
         assert games[0].metadata.get("player_white") == "Player2"
@@ -1017,11 +1037,14 @@ class CSAParser(GameParser):
     def supported_extensions(self) -> set[str]:
         return {".csa"}
 
-    def _csa_move_to_usi(self, csa_move: str) -> str:
+    def _csa_move_to_usi(self, csa_move: str, board: dict[tuple[int,int], str]) -> str:
         """Convert CSA move like '+7776FU' to USI move like '7g7f'.
 
         CSA format: [+-]<from_col><from_row><to_col><to_row><piece>
         If from is "00", it's a drop.
+
+        `board` tracks piece names at each (col, row) position for promotion
+        detection. Updated in-place by the caller after each move.
         """
         # Strip the +/- prefix
         side = csa_move[0]
@@ -1031,7 +1054,7 @@ class CSAParser(GameParser):
         from_row = int(body[1])
         to_col = int(body[2])
         to_row = int(body[3])
-        piece = body[4:]
+        piece = body[4:]  # piece name at DESTINATION (post-move)
 
         if from_col == 0 and from_row == 0:
             # Drop move: "0055FU" -> "P*5e"
@@ -1048,11 +1071,40 @@ class CSAParser(GameParser):
 
         usi = f"{from_file}{from_rank}{to_file}{to_rank}"
 
-        # Check if the piece is promoted (indicates promotion happened)
-        if piece in self._PROMOTED:
+        # Promotion detection: compare piece at source (before move) with
+        # piece at destination (after move). If the destination piece is a
+        # promoted type but the source piece was not, promotion happened.
+        source_piece = board.get((from_col, from_row), "")
+        if piece in self._PROMOTED and source_piece not in self._PROMOTED:
             usi += "+"
 
         return usi
+
+    @staticmethod
+    def _parse_board_from_p_lines(p_lines: list[str]) -> dict[tuple[int,int], str]:
+        """Parse CSA P1-P9 position lines into a (col, row) -> piece_name dict."""
+        board: dict[tuple[int,int], str] = {}
+        for line in p_lines:
+            if not line.startswith("P") or len(line) < 3:
+                continue
+            row_char = line[1]
+            if not row_char.isdigit():
+                continue
+            row = int(row_char)
+            # Each position is 3 chars: " * " (empty) or "+FU" / "-FU"
+            content = line[2:]
+            for col_idx in range(9):
+                start = col_idx * 3
+                if start + 3 > len(content):
+                    break
+                cell = content[start:start+3]
+                if cell.strip() == "*" or cell.strip() == "":
+                    continue
+                # cell is like "+FU" or "-KY"
+                piece_name = cell[1:3] if len(cell) >= 3 else cell
+                actual_col = 9 - col_idx  # CSA columns are 9..1 left-to-right
+                board[(actual_col, row)] = piece_name
+        return board
 
     def parse(self, path: Path) -> Iterator[GameRecord]:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -1062,6 +1114,16 @@ class CSAParser(GameParser):
         moves: list[ParsedMove] = []
         last_mover: str = "+"
         result_line: str = ""
+        p_lines: list[str] = []
+
+        # First pass: collect P-lines for board state initialization
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped.startswith("P") and len(line_stripped) > 2 and line_stripped[1].isdigit():
+                p_lines.append(line_stripped)
+
+        # Initialize board state from position definition
+        board = self._parse_board_from_p_lines(p_lines) if p_lines else {}
 
         for line in lines:
             line = line.strip()
@@ -1074,18 +1136,28 @@ class CSAParser(GameParser):
             elif line.startswith("N-"):
                 metadata["player_white"] = line[2:]
             elif line.startswith("$"):
-                # Metadata like $EVENT:, $SITE:, etc.
                 key, _, val = line[1:].partition(":")
                 metadata[key.lower()] = val.strip()
             elif line.startswith("P"):
-                continue  # position definition lines
+                continue  # position definition lines (already parsed)
             elif line == "+" or line == "-":
                 continue  # side to move indicator
             elif line.startswith("+") or line.startswith("-"):
-                # Move line
-                last_mover = line[0]
-                usi_move = self._csa_move_to_usi(line)
-                moves.append(ParsedMove(move_usi=usi_move))
+                if "%" in line:
+                    result_line = line[1:]
+                else:
+                    last_mover = line[0]
+                    usi_move = self._csa_move_to_usi(line, board)
+                    moves.append(ParsedMove(move_usi=usi_move))
+
+                    # Update board state
+                    body = line[1:]
+                    from_col, from_row = int(body[0]), int(body[1])
+                    to_col, to_row = int(body[2]), int(body[3])
+                    piece = body[4:]
+                    if from_col != 0 or from_row != 0:
+                        board.pop((from_col, from_row), None)
+                    board[(to_col, to_row)] = piece
             elif line.startswith("%"):
                 result_line = line
 
@@ -1094,8 +1166,9 @@ class CSAParser(GameParser):
 
         # Determine outcome from result line
         if result_line == "%TORYO":
-            # The side that resigned lost — the other side won
-            # last_mover is the last to play; %TORYO means the opponent resigns
+            # %TORYO = side-to-move resigns. last_mover is the player who
+            # made the final actual move, so the OPPONENT of last_mover is the
+            # side-to-move who resigned. last_mover's side wins.
             outcome = GameOutcome.WIN_BLACK if last_mover == "+" else GameOutcome.WIN_WHITE
         elif result_line == "%SENNICHITE":
             outcome = GameOutcome.DRAW
@@ -1220,6 +1293,9 @@ def write_shard(
     assert value_targets.shape == (n,)
     assert score_targets.shape == (n,)
 
+    # NOTE: Per-record writes (4 syscalls per position). For initial implementation
+    # this is acceptable. For production scale (millions of positions), interleave
+    # into a single contiguous buffer and write in one call to reduce I/O overhead.
     with open(path, "wb") as f:
         for i in range(n):
             f.write(observations[i].astype(np.float32).tobytes())
@@ -1258,6 +1334,9 @@ class SLDataset(Dataset):
         return self._mmap_cache[path]
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        if idx < 0 or idx >= self._total:
+            raise IndexError(f"index {idx} out of range for dataset with {self._total} positions")
+
         # Find which shard this index belongs to
         shard_idx = 0
         local_idx = idx
@@ -1390,6 +1469,14 @@ class SLConfig:
 
 
 class SLTrainer:
+    """Supervised learning trainer. Trains one epoch at a time.
+
+    Checkpoint management is the caller's responsibility — call
+    save_checkpoint() between epochs and load_checkpoint() to resume.
+    This keeps the trainer simple and composable with different
+    training scripts (CLI, notebook, distributed).
+    """
+
     def __init__(self, model: KataGoBaseModel, config: SLConfig) -> None:
         self.model = model
         self.config = config
@@ -1478,19 +1565,50 @@ Expected: All tests PASS — existing + new.
 
 - [ ] **Step 2: Verify end-to-end KataGo training loop**
 
+`AppConfig` is a frozen dataclass (can't use `_replace`). Create a minimal TOML for the smoke test:
+
 Run: `uv run python -c "
+import tempfile
 from pathlib import Path
 from keisei.config import load_config
 from keisei.training.katago_loop import KataGoTrainingLoop
-config = load_config(Path('keisei-katago.toml'))
-# Override for quick test
-config = config._replace(training=config.training._replace(num_games=2))
+
+# Write a small test config (2 envs, tiny model)
+toml = '''
+[model]
+display_name = \"smoke-test\"
+architecture = \"se_resnet\"
+[model.params]
+num_blocks = 2
+channels = 32
+se_reduction = 8
+global_pool_channels = 16
+policy_channels = 8
+value_fc_size = 32
+score_fc_size = 16
+obs_channels = 50
+[training]
+algorithm = \"katago_ppo\"
+num_games = 2
+max_ply = 50
+checkpoint_interval = 100
+checkpoint_dir = \"/tmp/katago_smoke/\"
+[training.algorithm_params]
+learning_rate = 0.0002
+score_normalization = 76.0
+grad_clip = 1.0
+[display]
+moves_per_minute = 0
+db_path = \"/tmp/katago_smoke.db\"
+'''
+with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
+    f.write(toml)
+    config = load_config(Path(f.name))
 loop = KataGoTrainingLoop(config)
 loop.run(num_epochs=1, steps_per_epoch=4)
 print(f'Completed: epoch={loop.epoch}, step={loop.global_step}')
 "`
-
-Note: This will fail if `AppConfig` uses `frozen=True` dataclass (can't use `_replace`). If so, create a minimal test config inline instead. Expected: prints completion message.
+Expected: `Completed: epoch=0, step=4`
 
 - [ ] **Step 3: Final commit if any fixes were needed**
 
