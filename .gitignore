@@ -34,3 +34,4 @@ target/
 # Svelte build output (served by FastAPI, rebuilt from webui/)
 keisei/server/static/
 checkpoints/
+keisei.db
