@@ -50,10 +50,11 @@
 | Create | `shogi-gym/src/spatial_action_mapper.rs` | 11,259-action `SpatialActionMapper` |
 | Modify | `shogi-gym/src/lib.rs` | Register new modules + export new PyO3 classes |
 | Modify | `shogi-gym/src/vec_env.rs` | Add `observation_mode`/`action_mode` params, generic over generators |
+| Modify | `shogi-engine/python/shogi_gym/__init__.py` | Re-export `SpatialActionMapper` + `KataGoObservationGenerator` |
 | Create | `tests/test_katago_observation.py` | Python integration tests for 50-channel observations |
 | Create | `tests/test_spatial_action_mapper.py` | Python integration tests for spatial mapper |
 
-All paths relative to `shogi-engine/crates/` for Rust files, project root for Python tests.
+All paths relative to `shogi-engine/crates/` for Rust files unless otherwise specified, project root for Python tests.
 
 ---
 
@@ -213,18 +214,27 @@ impl ObservationGenerator for KataGoObservationGenerator {
 
         // --- Channels 44-47: Repetition count (binary planes) ---
         let current_hash = pos.hash;
-        let rep_count = state.repetition_map.get(&current_hash).copied().unwrap_or(0);
-        // rep_count is the number of times this position has been seen BEFORE this occurrence.
-        // Channel 44 = seen 1× before, channel 45 = 2×, channel 46 = 3×, channel 47 = 4+×
-        if rep_count >= 1 && rep_count <= 3 {
-            let ch = 44 + (rep_count as usize - 1);
+        let raw_count = state.repetition_map.get(&current_hash).copied().unwrap_or(0);
+        // raw_count starts at 1 for the initial position (see GameState::from_position
+        // which does repetition_map.insert(hash, 1)). After each return to the same
+        // position, make_move increments it. So:
+        //   raw_count=1 → first occurrence (no prior repetitions)
+        //   raw_count=2 → seen once before
+        //   raw_count=3 → seen twice before
+        //   raw_count=4 → seen three times before (sennichite)
+        //
+        // Subtract 1 to get "number of prior repetitions":
+        let prior_reps = raw_count.saturating_sub(1);
+        // Channel 44 = 1 prior rep, channel 45 = 2, channel 46 = 3, channel 47 = 4+
+        if prior_reps >= 1 && prior_reps <= 3 {
+            let ch = 44 + (prior_reps as usize - 1);
             let start = ch * KATAGO_NUM_SQUARES;
             buffer[start..start + KATAGO_NUM_SQUARES].fill(1.0);
-        } else if rep_count >= 4 {
+        } else if prior_reps >= 4 {
             let start = 47 * KATAGO_NUM_SQUARES;
             buffer[start..start + KATAGO_NUM_SQUARES].fill(1.0);
         }
-        // rep_count == 0: all repetition channels stay 0.0 (first occurrence)
+        // prior_reps == 0: all repetition channels stay 0.0 (first occurrence)
 
         // --- Channel 48: Check indicator ---
         if state.is_in_check() {
@@ -422,6 +432,7 @@ Add to the `mod tests` block in `katago_observation.rs`:
         // This returns to startpos (rep_count increments by 1).
         use shogi_core::Move;
 
+        // legal_moves() requires &mut self
         let mut state = GameState::with_max_ply(500);
 
         for _ in 0..reps {
@@ -765,10 +776,9 @@ const DIRECTIONS: [(i8, i8); 8] = [
     (-1, -1), // 7: NW
 ];
 
-// Knight jump deltas relative to current player:
-// Left = (-2, -1), Right = (-2, +1)  (two forward, one to the side)
-const KNIGHT_LEFT: (i8, i8) = (-2, -1);
-const KNIGHT_RIGHT: (i8, i8) = (-2, 1);
+// Knight moves: |dr|=2, |dc|=1. Slot assignment uses normalized dc sign
+// (see knight_slot for details). No fixed constants needed — encode/decode
+// derive the deltas from the slot index.
 
 #[pyclass]
 pub struct SpatialActionMapper;
@@ -823,16 +833,43 @@ impl SpatialActionMapper {
     }
 
     /// Check if a board move is a knight move, and if so, which one (left/right).
+    ///
+    /// In perspective space (post-flip), knight moves always have dr=-2
+    /// (forward = toward row 0 for both colors after flip). dc=-1 is "left"
+    /// (slot 0), dc=+1 is "right" (slot 1).
+    ///
+    /// The perspective flip (80 - sq) is a 180° rotation that maps both
+    /// colors' "forward" to decreasing row. Verified:
+    ///   - Black knight at (4,4)→(2,3): no flip, dr=-2, dc=-1 ✓
+    ///   - White knight at (2,4)→(4,3): flip gives (6,4)→(4,5)... 
+    ///
+    /// Wait — `flip(row=2,col=4) = 80 - 22 = 58 = (6,4)` and
+    /// `flip(row=4,col=3) = 80 - 39 = 41 = (4,5)`. Delta = (4-6, 5-4) = (-2, +1).
+    /// So White's left-jump maps to dc=+1 in perspective space.
+    ///
+    /// The flip reverses column as well as row, so "left" and "right" swap
+    /// between physical and perspective space for White. This is fine — the
+    /// slot assignment is arbitrary as long as encode and decode agree.
+    ///
+    /// We assert dr == -2 to catch any bug where a non-forward knight move
+    /// is passed (which would be illegal in shogi anyway).
     fn knight_slot(from_row: i8, from_col: i8, to_row: i8, to_col: i8) -> Option<usize> {
         let dr = to_row - from_row;
         let dc = to_col - from_col;
 
-        if (dr, dc) == KNIGHT_LEFT {
-            Some(0) // left
-        } else if (dr, dc) == KNIGHT_RIGHT {
-            Some(1) // right
+        if dr.unsigned_abs() != 2 || dc.unsigned_abs() != 1 {
+            return None;
+        }
+
+        // In perspective space, forward = dr < 0 for both colors.
+        // If dr > 0, this is a backward knight move — illegal in shogi but
+        // we handle it defensively by normalizing.
+        let norm_dc = if dr < 0 { dc } else { -dc };
+
+        if norm_dc < 0 {
+            Some(0) // "left" in perspective space
         } else {
-            None
+            Some(1) // "right" in perspective space
         }
     }
 }
@@ -936,7 +973,11 @@ impl ActionMapper for SpatialActionMapper {
             let from_row = from_sq.row() as i8;
             let from_col = from_sq.col() as i8;
 
-            let (dr, dc) = if knight_side == 0 { KNIGHT_LEFT } else { KNIGHT_RIGHT };
+            // Knight decode: in perspective space, dr = -2 (forward).
+            // Slot 0 = norm_dc < 0 → dc = -1. Slot 1 = norm_dc > 0 → dc = +1.
+            // (norm_dc = dc when dr < 0, since normalization flips sign when dr > 0)
+            let dr: i8 = -2;
+            let dc: i8 = if knight_side == 0 { -1 } else { 1 };
             let to_row = from_row + dr;
             let to_col = from_col + dc;
 
@@ -1280,7 +1321,7 @@ mod tests {
     #[test]
     fn test_startpos_legal_moves_roundtrip() {
         let m = mapper();
-        let state = shogi_core::GameState::new();
+        let mut state = shogi_core::GameState::new();
         let legal_moves = state.legal_moves();
 
         assert!(!legal_moves.is_empty(), "Startpos should have legal moves");
@@ -1484,16 +1525,43 @@ pub fn action_space_size(&self) -> usize {
 }
 ```
 
-- [ ] **Step 5: Build (expect errors in reset/step — those are next)**
+- [ ] **Step 5: Update Python `__init__.py` to re-export new classes**
+
+In `shogi-engine/python/shogi_gym/__init__.py`, add to the import block:
+
+```python
+from shogi_gym._native import (
+    DefaultActionMapper,
+    DefaultObservationGenerator,
+    KataGoObservationGenerator,   # NEW
+    SpatialActionMapper,          # NEW
+    VecEnv,
+    SpectatorEnv,
+    StepResult,
+    ResetResult,
+    StepMetadata,
+)
+```
+
+And add to `__all__`:
+
+```python
+    "KataGoObservationGenerator",
+    "SpatialActionMapper",
+```
+
+Without this, `from shogi_gym import SpatialActionMapper` in the Python integration tests will fail.
+
+- [ ] **Step 6: Build (expect errors in reset/step — those are next)**
 
 Run: `cd shogi-engine && cargo build 2>&1 | head -20`
 Expected: Errors in `reset` and `step` methods referencing old constants. This is expected — we fix those in 7b and 7c.
 
-- [ ] **Step 6: Commit (WIP)**
+- [ ] **Step 7: Commit (WIP)**
 
 ```bash
-git add shogi-engine/crates/shogi-gym/src/vec_env.rs
-git commit -m "wip(shogi-gym): VecEnv enum types, constructor, and mode params"
+git add shogi-engine/crates/shogi-gym/src/vec_env.rs shogi-engine/python/shogi_gym/__init__.py
+git commit -m "wip(shogi-gym): VecEnv enum types, constructor, mode params, Python re-exports"
 ```
 
 ---
@@ -1586,11 +1654,16 @@ let act_tag = match &self.mapper {
 
 Replace every occurrence of `BUFFER_LEN` with `obs_buf_len` and `ACTION_SPACE_SIZE` with `act_space` inside the closure. Key sites to update (exhaustive list — verify against current `vec_env.rs`):
 
+**Inside the parallel closure (`process_env`):**
 1. Terminal observation save: `obs_start = i * obs_buf_len`
 2. Terminal observation copy: `slice::copy_from_raw_parts` with `obs_buf_len`
 3. Auto-reset observation write: `obs_start = i * obs_buf_len`, slice length `obs_buf_len`
 4. Legal mask write after auto-reset: `mask_start = i * act_space`, slice length `act_space`
-5. All numpy reshape calls in the step return: `num_ch` for obs channels, `act_space` for mask width
+
+**After the closure (numpy reshape for return values):**
+5. Main observation reshape: `.reshape([num_envs, num_ch, 9, 9])` (line ~383)
+6. Legal mask reshape: `.reshape([num_envs, act_space])` (line ~388)
+7. **Terminal observation reshape: `.reshape([num_envs, num_ch, 9, 9])`** (line ~397 — easy to miss, uses same `NUM_CHANNELS` constant as #5)
 
 For observation generation and move encoding inside the closure, use direct static dispatch on the tag enums:
 
@@ -1616,17 +1689,29 @@ Since all four types are zero-size structs, `DefaultObservationGenerator::new()`
 
 - [ ] **Step 3: Update the action validation in Phase 1 of `step`**
 
-The action validation before the parallel closure also references `ACTION_SPACE_SIZE` for the legal mask check. Update:
+Phase 1 (before the parallel closure) has TWO hardcoded references that will break:
 
+**3a. The decode call on line ~221 is hardwired to `DefaultActionMapper`:**
 ```rust
-let mask_start = i * act_space;  // was: i * ACTION_SPACE_SIZE
-if !self.legal_mask_buffer[mask_start + action_idx] {
+// BEFORE (broken — won't compile after field type changes):
+let mv = <DefaultActionMapper as ActionMapper>::decode(
+    &self.mapper, action_idx, perspective,
+)
+
+// AFTER (dispatches through ActionMode enum):
+let mv = self.mapper.decode(action_idx, perspective)
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+        format!("env {}: invalid action index {}: {}", i, action_idx, e)
+    ))?;
 ```
 
-And the mapper decode call:
-
+**3b. The legal mask check on line ~234 uses `ACTION_SPACE_SIZE`:**
 ```rust
-let mv = self.mapper.decode(action_idx, perspective)  // uses ActionMode enum dispatch
+// BEFORE:
+let mask_start = i * ACTION_SPACE_SIZE;
+
+// AFTER:
+let mask_start = i * self.action_space;
 ```
 
 - [ ] **Step 4: Mechanical verification — confirm zero remaining old constant references**
