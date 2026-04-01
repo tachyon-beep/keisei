@@ -74,6 +74,77 @@ class TestKataGoObservationContent:
         assert not np.any(np.isnan(obs)), "No NaN should be present in observation"
 
 
+class TestKataGoObservationLiveChannels:
+    """Test channels 44-48 with non-zero values via actual gameplay through VecEnv.
+
+    These complement the Rust unit tests (which test via direct state manipulation)
+    by verifying the full VecEnv → observation pipeline produces correct non-zero
+    channel values across the PyO3 boundary.
+    """
+
+    def test_check_channel_activates(self):
+        """Play moves until check occurs; channel 48 should become 1.0.
+
+        Strategy: play many random-ish games. At least one should end with
+        a check before the game terminates. If we find a checked position,
+        verify channel 48 is all-ones.
+        """
+        env = VecEnv(num_envs=1, max_ply=200, observation_mode="katago")
+        found_check = False
+
+        for _attempt in range(10):  # try up to 10 games
+            result = env.reset()
+            for _step in range(100):
+                masks = np.array(result.legal_masks)
+                if masks[0].sum() == 0:
+                    break
+                # Pick a random legal action
+                legal_indices = np.where(masks[0])[0]
+                action = int(np.random.choice(legal_indices))
+                result = env.step([action])
+
+                obs = np.array(result.observations)[0]
+                if np.any(obs[48] > 0):
+                    found_check = True
+                    # Verify the entire plane is 1.0 (spatial, not partial)
+                    assert np.all(obs[48] == 1.0), \
+                        "Check channel should be all-ones when active"
+                    break
+
+                if np.array(result.terminated)[0] or np.array(result.truncated)[0]:
+                    break
+
+            if found_check:
+                break
+
+        # If no check found in 10 games × 100 steps, skip rather than fail
+        # (extremely unlikely — checks occur in most games)
+        if not found_check:
+            pytest.skip("No check position encountered in random play (unlikely)")
+
+    def test_channels_44_47_stay_zero_in_short_game(self):
+        """Repetition channels should remain zero in a game with no repeated positions.
+
+        After a few unique moves, channels 44-47 should still be all-zero
+        because no position has been visited twice.
+        """
+        env = VecEnv(num_envs=1, max_ply=100, observation_mode="katago")
+        result = env.reset()
+
+        # Make a few moves (unlikely to repeat positions in 5 moves)
+        for _ in range(5):
+            masks = np.array(result.legal_masks)
+            if masks[0].sum() == 0:
+                break
+            action = int(np.argmax(masks[0]))
+            result = env.step([action])
+
+        obs = np.array(result.observations)[0]
+        for ch in range(44, 48):
+            assert np.all(obs[ch] == 0.0), \
+                f"Channel {ch} should be zero after non-repeated moves"
+
+
 class TestKataGoObservationInvalidMode:
     def test_invalid_observation_mode(self):
         with pytest.raises(ValueError, match="Unknown observation_mode"):

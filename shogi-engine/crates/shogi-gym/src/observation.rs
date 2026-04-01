@@ -79,6 +79,12 @@ pub(crate) fn promoted_channel(pt: PieceType) -> usize {
 /// Writes channels 0-43 into the first 44*81 elements of `buffer`.
 /// Buffer must have length >= 44 * NUM_SQUARES.
 pub fn generate_base_channels(state: &GameState, perspective: Color, buffer: &mut [f32]) {
+    assert!(
+        buffer.len() >= 44 * NUM_SQUARES,
+        "generate_base_channels requires buffer.len() >= {} (got {})",
+        44 * NUM_SQUARES,
+        buffer.len()
+    );
     let pos = &state.position;
     let opponent = perspective.opponent();
     let flip = perspective == Color::White;

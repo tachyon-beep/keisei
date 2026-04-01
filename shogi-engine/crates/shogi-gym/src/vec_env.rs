@@ -92,6 +92,15 @@ fn compute_reward(result: &GameResult, last_mover: Color) -> f32 {
 // ---------------------------------------------------------------------------
 // Mode enums for dynamic dispatch
 // ---------------------------------------------------------------------------
+//
+// COUPLING NOTE: Adding a new observation or action mode requires changes in
+// FOUR places:
+//   1. The `ObsMode` / `ActionMode` enum (here) — add variant + trait dispatch
+//   2. The `ObsModeTag` / `ActionModeTag` enum — add Copy variant
+//   3. The rayon closure's `match obs_tag { ... }` / `match act_tag { ... }`
+//   4. The `VecEnv::new()` string-to-enum match in the constructor
+// The ZST compile-time assertions below guard against generators with state,
+// but they do not guard against forgetting a match arm.
 
 enum ObsMode {
     Default(DefaultObservationGenerator),
@@ -442,7 +451,13 @@ impl VecEnv {
                             _ => {}
                         }
 
-                        // Save terminal observation
+                        // Save terminal observation.
+                        // NOTE: perspective is current_player AFTER the terminal move,
+                        // which is the OPPONENT of the player who caused termination.
+                        // This is correct for RL value bootstrapping (the "next state"
+                        // perspective), but training code that indexes terminal_observations
+                        // by the player who received rewards[i] must be aware they are
+                        // seeing the opposite player's frame of reference.
                         let term_obs_slice = std::slice::from_raw_parts_mut(
                             terminal_obs_ptr.offset(i * obs_buf_len),
                             obs_buf_len,
