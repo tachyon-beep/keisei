@@ -435,6 +435,55 @@ mod tests {
         obs_gen.generate(&state, Color::Black, &mut bad_buf);
     }
 
+    /// Verify that GameState::from_position inserts the initial hash at count=1.
+    /// The repetition channel encoding assumes raw_count starts at 1 for a first
+    /// occurrence and uses saturating_sub(1) to derive prior repetitions. If
+    /// from_position does NOT insert the initial hash, raw_count would be 0 and
+    /// prior_reps would be 0 (correct by coincidence), but a subsequent return to
+    /// the same position would give raw_count=1 instead of 2, making channel 44
+    /// (1 prior rep) not light when it should.
+    #[test]
+    fn test_from_position_inserts_initial_hash() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+
+        // The repetition_map should contain the initial position hash at count=1
+        let hash = state.position.hash;
+        let count = state.repetition_map.get(&hash).copied();
+        assert_eq!(
+            count,
+            Some(1),
+            "from_position must insert the initial hash at count=1, got {:?}",
+            count,
+        );
+
+        // Verify the observation channels: no prior repetitions → all rep channels zero
+        let obs_gen = make_gen();
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+        for ch in 44..=47 {
+            let start = ch * 81;
+            assert!(
+                buf[start..start + 81].iter().all(|&v| v == 0.0),
+                "Channel {} should be zero for first occurrence (raw_count=1, prior_reps=0)",
+                ch,
+            );
+        }
+    }
+
     #[test]
     fn test_check_channel_perspective_mismatch() {
         use shogi_core::{Piece, PieceType, Position, Square};

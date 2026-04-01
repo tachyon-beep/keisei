@@ -618,6 +618,27 @@ mod tests {
         }
     }
 
+    /// Verify HandPieceType::index() is the inverse of HandPieceType::ALL[idx].
+    /// The drop encoding relies on this invariant: encode uses piece_type.index(),
+    /// decode uses HandPieceType::ALL[piece_idx]. If shogi-core ever reorders
+    /// the enum variants, this test will catch it before drop encoding silently breaks.
+    #[test]
+    fn test_hand_piece_type_index_stability() {
+        for (expected_idx, &hpt) in HandPieceType::ALL.iter().enumerate() {
+            assert_eq!(
+                hpt.index(), expected_idx,
+                "HandPieceType::{:?}.index() should be {}, got {}",
+                hpt, expected_idx, hpt.index()
+            );
+            assert_eq!(
+                HandPieceType::ALL[hpt.index()], hpt,
+                "HandPieceType::ALL[{:?}.index()] should round-trip to {:?}",
+                hpt, hpt
+            );
+        }
+        assert_eq!(HandPieceType::ALL.len(), 7, "Should have exactly 7 droppable piece types");
+    }
+
     /// Round-trip all legal moves from the starting position.
     #[test]
     fn test_startpos_legal_moves_roundtrip() {
