@@ -22,6 +22,8 @@
 - Tasks 8–9: Python integration tests (depend on 7c + maturin build)
 - Task 10: Full suite verification
 
+**Recommended execution order:** 1→2, then 5→6 (independent, can interleave), then 3→4 (discovers early if Gold oscillation helper works), then 7a→7b→7c, then 8→9→10. This front-loads API mismatch discovery before the VecEnv refactor.
+
 ## Implementation Notes
 
 **API verification (confirmed):** All shogi-core APIs used in test construction exist:
@@ -533,10 +535,15 @@ Add to the `mod tests` block in `katago_observation.rs`:
     #[test]
     fn test_repetition_channel_47_after_four_repeats() {
         let gen = make_gen();
-        // Note: the game may terminate due to sennichite before reaching 4 reps.
-        // If make_state_with_repetitions(4) triggers game termination, this test
-        // should construct the position directly using repetition_map instead.
-        let state = make_state_with_repetitions(4);
+
+        // Cannot use make_state_with_repetitions(4) — sennichite terminates
+        // the game on the 4th repetition, so the move loop would fail.
+        // Instead, construct the repetition_map directly.
+        let mut state = GameState::new();
+        let hash = state.position.hash;
+        // Manually set repetition count to 4 (simulating 4 prior occurrences)
+        state.repetition_map.insert(hash, 4);
+
         let mut buf = make_buffer();
         gen.generate(&state, Color::Black, &mut buf);
 
@@ -553,7 +560,7 @@ Add to the `mod tests` block in `katago_observation.rs`:
     fn test_repetition_channels_mutually_exclusive() {
         let gen = make_gen();
 
-        for reps in 0..=4u8 {
+        for reps in 0..=3u8 {
             let state = make_state_with_repetitions(reps);
             let mut buf = make_buffer();
             gen.generate(&state, Color::Black, &mut buf);
@@ -1534,10 +1541,10 @@ let mask_2d = mask_array
     // ...
 ```
 
-- [ ] **Step 3: Build (expect errors only in `step`)**
+- [ ] **Step 3: Build (expect remaining errors in `step` and possibly other methods)**
 
-Run: `cd shogi-engine && cargo build 2>&1 | head -20`
-Expected: Only `step` method errors remain.
+Run: `cd shogi-engine && cargo build 2>&1 | head -40`
+Expected: Errors in `step` and potentially any other methods that reference `BUFFER_LEN`, `ACTION_SPACE_SIZE`, or `NUM_CHANNELS`. The `write_obs_and_mask` and `reset` paths should be clean.
 
 - [ ] **Step 4: Commit (WIP)**
 
@@ -1622,12 +1629,17 @@ And the mapper decode call:
 let mv = self.mapper.decode(action_idx, perspective)  // uses ActionMode enum dispatch
 ```
 
-- [ ] **Step 4: Build and run ALL tests**
+- [ ] **Step 4: Mechanical verification — confirm zero remaining old constant references**
+
+Run: `grep -n 'BUFFER_LEN\|ACTION_SPACE_SIZE\|NUM_CHANNELS' shogi-engine/crates/shogi-gym/src/vec_env.rs | grep -v '//'`
+Expected: Zero non-comment references. Any remaining hits are missed substitutions. The plan was written against a snapshot — if the file has been modified since, new references may exist.
+
+- [ ] **Step 5: Build and run ALL tests**
 
 Run: `cd shogi-engine && cargo build && cargo test -p shogi-gym`
 Expected: All tests PASS. If any fail, the most likely cause is a missed buffer size substitution — check `obs_buf_len` vs `obs_buffer_len` and `act_space` vs `action_space` naming.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add shogi-engine/crates/shogi-gym/src/vec_env.rs
@@ -1725,6 +1737,29 @@ class TestKataGoObservationInvalidMode:
     def test_invalid_observation_mode(self):
         with pytest.raises(ValueError, match="Unknown observation_mode"):
             VecEnv(num_envs=1, max_ply=100, observation_mode="invalid")
+
+
+class TestDefaultConstructorBackwardCompat:
+    """Verify the default constructor (no mode params) still produces old shapes."""
+
+    def test_default_constructor_obs_shape(self):
+        env = VecEnv(num_envs=1, max_ply=50)
+        assert env.observation_channels == 46
+        assert env.action_space_size == 13527
+        result = env.reset()
+        obs = np.array(result.observations)
+        masks = np.array(result.legal_masks)
+        assert obs.shape == (1, 46, 9, 9)
+        assert masks.shape == (1, 13527)
+
+    def test_default_constructor_step(self):
+        env = VecEnv(num_envs=1, max_ply=50)
+        result = env.reset()
+        masks = np.array(result.legal_masks)
+        action = int(np.argmax(masks[0]))
+        step_result = env.step([action])
+        assert np.array(step_result.observations).shape == (1, 46, 9, 9)
+        assert np.array(step_result.legal_masks).shape == (1, 13527)
 ```
 
 - [ ] **Step 2: Run tests**
