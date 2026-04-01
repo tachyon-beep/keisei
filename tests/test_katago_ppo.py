@@ -82,6 +82,17 @@ class TestKataGoRolloutBuffer:
         buf.clear()
         assert buf.size == 0
 
+    def test_unnormalized_score_targets_rejected(self):
+        """Buffer should reject score_targets that appear unnormalized (abs > 2.0)."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="unnormalized"):
+            buf.add(
+                torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2),
+                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.long), torch.tensor([10.0, -5.0]),
+            )
+
 
 class TestAlgorithmRegistry:
     def test_katago_ppo_in_valid_algorithms(self):
@@ -214,3 +225,25 @@ class TestKataGoPPOUpdate:
             )
         ppo.update(buf, torch.zeros(2))
         assert buf.size == 0
+
+    def test_update_changes_model_parameters(self, ppo):
+        """Optimizer step should actually modify model weights."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+            )
+        params_before = {
+            n: p.clone() for n, p in ppo.model.named_parameters()
+        }
+        ppo.update(buf, torch.zeros(2))
+        changed = any(
+            not torch.equal(params_before[n], p)
+            for n, p in ppo.model.named_parameters()
+        )
+        assert changed, "update() should modify at least some model parameters"
