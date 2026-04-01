@@ -3,7 +3,9 @@
 import numpy as np
 import pytest
 
-from shogi_gym import SpatialActionMapper, VecEnv
+shogi_gym = pytest.importorskip("shogi_gym", reason="Requires compiled shogi-gym Rust extension")
+SpatialActionMapper = shogi_gym.SpatialActionMapper
+VecEnv = shogi_gym.VecEnv
 
 
 @pytest.fixture

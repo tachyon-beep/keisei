@@ -101,7 +101,10 @@ class SLTrainer:
             total_score += score_loss.item()
             num_batches += 1
 
-        self.scheduler.step()
+        # Only advance scheduler if we actually trained on data.
+        # An empty dataset would burn through all annealing ticks without learning.
+        if num_batches > 0:
+            self.scheduler.step()
 
         denom = max(num_batches, 1)
         metrics = {

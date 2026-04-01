@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from shogi_gym import VecEnv
+shogi_gym = pytest.importorskip("shogi_gym", reason="Requires compiled shogi-gym Rust extension")
+VecEnv = shogi_gym.VecEnv
 
 
 @pytest.fixture

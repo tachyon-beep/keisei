@@ -295,12 +295,13 @@ class KataGoTrainingLoop:
 
                 self._maybe_update_heartbeat()
 
-            # Bootstrap value for GAE
-            self.model.eval()
+            # Bootstrap value for GAE — use forward_model (not self.model) for
+            # consistency with select_actions and for DDP compatibility.
+            self.ppo.forward_model.eval()
             with torch.no_grad():
-                output = self.model(obs)
+                output = self.ppo.forward_model(obs)
                 next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
-            self.model.train()
+            self.ppo.forward_model.train()
 
             # Set epoch-dependent entropy coefficient
             self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
@@ -386,21 +387,25 @@ class KataGoTrainingLoop:
                     if hasattr(self.model, "module")
                     else self.model
                 )
-                save_checkpoint(
-                    ckpt_path,
-                    base_model,
-                    self.ppo.optimizer,
-                    epoch_i + 1,
-                    self.global_step,
-                    architecture=self.config.model.architecture,
-                )
+                try:
+                    save_checkpoint(
+                        ckpt_path,
+                        base_model,
+                        self.ppo.optimizer,
+                        epoch_i + 1,
+                        self.global_step,
+                        architecture=self.config.model.architecture,
+                    )
+                    logger.info("Checkpoint saved: %s", ckpt_path)
+                except Exception:
+                    logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
+
                 try:
                     update_training_progress(
                         self.db_path, epoch_i + 1, self.global_step, str(ckpt_path)
                     )
                 except Exception:
                     logger.exception("Failed to record checkpoint path in DB — continuing")
-                logger.info("Checkpoint saved: %s", ckpt_path)
 
     def _maybe_update_heartbeat(self) -> None:
         now = time.monotonic()

@@ -208,31 +208,33 @@ class KataGoPPOAlgorithm:
         PPO recomputes new_log_probs under train() in update().
         """
         self.forward_model.eval()
-        output = self.forward_model(obs)
+        try:
+            output = self.forward_model(obs)
 
-        # Guard: no env should have zero legal actions
-        legal_counts = legal_masks.sum(dim=-1)
-        if (legal_counts == 0).any():
-            zero_envs = (legal_counts == 0).nonzero(as_tuple=True)[0].tolist()
-            raise RuntimeError(
-                f"Environments {zero_envs} have zero legal actions — "
-                f"all-False legal mask would produce NaN"
-            )
+            # Guard: no env should have zero legal actions
+            legal_counts = legal_masks.sum(dim=-1)
+            if (legal_counts == 0).any():
+                zero_envs = (legal_counts == 0).nonzero(as_tuple=True)[0].tolist()
+                raise RuntimeError(
+                    f"Environments {zero_envs} have zero legal actions — "
+                    f"all-False legal mask would produce NaN"
+                )
 
-        # Flatten spatial policy to (B, 11259), apply mask
-        flat_logits = output.policy_logits.reshape(obs.shape[0], -1)
-        masked_logits = flat_logits.masked_fill(~legal_masks, float("-inf"))
+            # Flatten spatial policy to (B, 11259), apply mask
+            flat_logits = output.policy_logits.reshape(obs.shape[0], -1)
+            masked_logits = flat_logits.masked_fill(~legal_masks, float("-inf"))
 
-        probs = F.softmax(masked_logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
-        actions = dist.sample()
-        log_probs = dist.log_prob(actions)
+            probs = F.softmax(masked_logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
+            actions = dist.sample()
+            log_probs = dist.log_prob(actions)
 
-        # Scalar value for GAE — uses shared projection method
-        scalar_values = self.scalar_value(output.value_logits)
+            # Scalar value for GAE — uses shared projection method
+            scalar_values = self.scalar_value(output.value_logits)
 
-        self.forward_model.train()
-        return actions, log_probs, scalar_values
+            return actions, log_probs, scalar_values
+        finally:
+            self.forward_model.train()
 
     def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
         # Deferred import to avoid circular: katago_ppo -> ppo -> algorithm_registry -> katago_ppo
@@ -327,7 +329,8 @@ class KataGoPPOAlgorithm:
                         output.value_logits, batch_value_cats, ignore_index=-1
                     )
                 else:
-                    value_loss = torch.tensor(0.0, device=batch_obs.device, requires_grad=True)
+                    # Zero loss that preserves the autograd graph (not a detached leaf tensor)
+                    value_loss = output.value_logits.sum() * 0.0
 
                 # Score loss (MSE on normalized score, terminal positions only).
                 # Non-terminal positions use NaN sentinel — exclude from loss.

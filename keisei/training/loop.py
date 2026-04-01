@@ -382,8 +382,16 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    loop = TrainingLoop(config)
-    loop.run(num_epochs=args.epochs, steps_per_epoch=args.steps_per_epoch)
+
+    # Dispatch to the correct training loop based on algorithm
+    if config.training.algorithm == "katago_ppo":
+        from keisei.training.katago_loop import KataGoTrainingLoop
+
+        loop = KataGoTrainingLoop(config)
+        loop.run(num_epochs=args.epochs, steps_per_epoch=args.steps_per_epoch)
+    else:
+        loop = TrainingLoop(config)
+        loop.run(num_epochs=args.epochs, steps_per_epoch=args.steps_per_epoch)
 
 
 if __name__ == "__main__":
