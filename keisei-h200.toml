@@ -1,0 +1,25 @@
+[training]
+num_games = 512
+max_ply = 500
+algorithm = "ppo"
+checkpoint_interval = 5000
+checkpoint_dir = "checkpoints/"
+
+[training.algorithm_params]
+learning_rate = 3e-4
+gamma = 0.99
+clip_epsilon = 0.2
+epochs_per_batch = 4
+batch_size = 4096
+
+[display]
+moves_per_minute = 60
+db_path = "keisei.db"
+
+[model]
+display_name = "Hikaru"
+architecture = "resnet"
+
+[model.params]
+hidden_size = 256
+num_layers = 8

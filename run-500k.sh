@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-CONFIG="keisei-500k.toml"
+CONFIG="${CONFIG:-keisei-500k.toml}"
 EPOCHS=500000
 STEPS=256
 PORT=8001
