@@ -1,8 +1,10 @@
 # tests/test_sl_pipeline.py
 """Tests for the supervised learning pipeline."""
 
+import numpy as np
 import pytest
 
+from keisei.sl.dataset import SLDataset, write_shard
 from keisei.sl.parsers import (
     CSAParser,
     GameOutcome,
@@ -83,3 +85,37 @@ class TestCSAParser:
         # CSA move "+7776FU" should be converted to USI "7g7f"
         assert games[0].moves[0].move_usi == "7g7f"
         assert games[0].moves[1].move_usi == "3c3d"
+
+
+class TestSLDataset:
+    def test_write_and_read_shard(self, tmp_path):
+        """Write a shard with 10 positions and read them back."""
+        observations = np.random.randn(10, 50 * 81).astype(np.float32)
+        policy_targets = np.random.randint(0, 11259, size=10).astype(np.int64)
+        value_targets = np.random.randint(0, 3, size=10).astype(np.int64)
+        score_targets = np.random.randn(10).astype(np.float32)
+
+        shard_path = tmp_path / "shard_000.bin"
+        write_shard(shard_path, observations, policy_targets, value_targets, score_targets)
+
+        dataset = SLDataset(tmp_path)
+        assert len(dataset) == 10
+
+        item = dataset[0]
+        assert item["observation"].shape == (50, 9, 9)
+        assert item["policy_target"].shape == ()  # scalar
+        assert item["value_target"].shape == ()
+        assert item["score_target"].shape == ()
+
+    def test_multiple_shards(self, tmp_path):
+        for i in range(3):
+            n = 5
+            write_shard(
+                tmp_path / f"shard_{i:03d}.bin",
+                np.random.randn(n, 50 * 81).astype(np.float32),
+                np.random.randint(0, 11259, size=n).astype(np.int64),
+                np.random.randint(0, 3, size=n).astype(np.int64),
+                np.random.randn(n).astype(np.float32),
+            )
+        dataset = SLDataset(tmp_path)
+        assert len(dataset) == 15
