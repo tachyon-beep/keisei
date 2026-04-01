@@ -278,6 +278,11 @@ class CSAParser(GameParser):
                 continue  # side to move indicator
             elif line.startswith("+") or line.startswith("-"):
                 if "%" in line:
+                    # Embedded resign/result (e.g., "+%TORYO"): do NOT update last_mover.
+                    # The side that writes %TORYO is the resigning side (the side-to-move),
+                    # NOT the side that played the last board move. last_mover must remain
+                    # as the previous move's player so the outcome logic correctly awards
+                    # the win to last_mover (the opponent of the resigner).
                     result_line = line[1:]
                 else:
                     last_mover = line[0]

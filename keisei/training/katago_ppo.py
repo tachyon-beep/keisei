@@ -201,6 +201,12 @@ class KataGoPPOAlgorithm:
     def select_actions(
         self, obs: torch.Tensor, legal_masks: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Select actions for rollout collection.
+
+        Sets model to eval mode for BatchNorm running stats, then restores
+        train mode on exit. The stored log_probs are detached (no_grad);
+        PPO recomputes new_log_probs under train() in update().
+        """
         self.forward_model.eval()
         output = self.forward_model(obs)
 
@@ -225,6 +231,7 @@ class KataGoPPOAlgorithm:
         # Scalar value for GAE — uses shared projection method
         scalar_values = self.scalar_value(output.value_logits)
 
+        self.forward_model.train()
         return actions, log_probs, scalar_values
 
     def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
@@ -383,6 +390,7 @@ class KataGoPPOAlgorithm:
                     sample_output.value_logits, sample_cats
                 )
                 metrics.update(value_metrics)
+                self.forward_model.train()
 
         self.forward_model.train()
         return metrics
