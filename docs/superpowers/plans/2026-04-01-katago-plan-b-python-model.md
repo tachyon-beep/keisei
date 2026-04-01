@@ -220,8 +220,13 @@ class GlobalPoolBiasBlock(nn.Module):
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(channels)
 
-        # Global pooling bias: pools from block INPUT (mean + max + std -> FC -> channels)
-        self.global_fc = nn.Linear(channels * 3, channels)
+        # Global pooling bias: pools from block INPUT (mean + max + std -> bottleneck -> channels)
+        # global_pool_channels controls the bottleneck width (spec: configurable, default 128)
+        self.global_fc = nn.Sequential(
+            nn.Linear(channels * 3, global_pool_channels),
+            nn.ReLU(),
+            nn.Linear(global_pool_channels, channels),
+        )
 
         # SE: squeeze-and-excitation with scale + shift
         se_hidden = channels // se_reduction
@@ -236,7 +241,7 @@ class GlobalPoolBiasBlock(nn.Module):
         # Global pool bias from block INPUT x (not post-conv1 out)
         g_mean = x.mean(dim=(-2, -1))                  # (B, C)
         g_max = x.amax(dim=(-2, -1))                    # (B, C)
-        g_std = x.std(dim=(-2, -1), correction=0)          # (B, C) — correction=0 avoids NaN on 1-element inputs
+        g_std = x.std(dim=(-2, -1), correction=0)  # population std          # (B, C) — population std (divides by N, not N-1)
         g = self.global_fc(torch.cat([g_mean, g_max, g_std], dim=-1))  # (B, C)
         out = out + g.unsqueeze(-1).unsqueeze(-1)        # broadcast over 9x9
 
@@ -340,6 +345,9 @@ class TestSEResNetModel:
             model(obs)
 
     def test_batch_size_1(self, model):
+        # BatchNorm2d with a single sample in training mode produces undefined
+        # variance. Must use eval() mode for batch_size=1.
+        model.eval()
         obs = torch.randn(1, 50, 9, 9)
         output = model(obs)
         assert output.policy_logits.shape == (1, 9, 9, 139)
@@ -361,7 +369,7 @@ def _global_pool(x: torch.Tensor) -> torch.Tensor:
     """Global pool: mean + max + std concatenated. Input (B, C, H, W) -> (B, 3C)."""
     g_mean = x.mean(dim=(-2, -1))
     g_max = x.amax(dim=(-2, -1))
-    g_std = x.std(dim=(-2, -1), correction=0)
+    g_std = x.std(dim=(-2, -1), correction=0)  # population std
     return torch.cat([g_mean, g_max, g_std], dim=-1)
 
 
@@ -414,14 +422,15 @@ class SEResNetModel(KataGoBaseModel):
         p = self.policy_conv2(p)                    # (B, 139, 9, 9)
         p = p.permute(0, 2, 3, 1)                   # (B, 9, 9, 139)
 
+        # Global pool shared by value and score heads (computed once)
+        pool = _global_pool(x)                       # (B, 3C)
+
         # Value head
-        v_pool = _global_pool(x)                     # (B, 3C)
-        v = F.relu(self.value_fc1(v_pool))
+        v = F.relu(self.value_fc1(pool))
         v = self.value_fc2(v)                        # (B, 3) raw logits
 
         # Score head
-        s_pool = _global_pool(x)                     # (B, 3C)
-        s = F.relu(self.score_fc1(s_pool))
+        s = F.relu(self.score_fc1(pool))
         s = self.score_fc2(s)                        # (B, 1)
 
         return KataGoOutput(policy_logits=p, value_logits=v, score_lead=s)
@@ -445,6 +454,8 @@ git commit -m "feat: add SEResNetModel with policy, W/D/L value, and score heads
 
 **Files:**
 - Modify: `keisei/training/model_registry.py`
+
+**WARNING:** `keisei/config.py:9-10` has separate allowlists `VALID_ARCHITECTURES` and `VALID_ALGORITHMS` that `load_config()` validates against BEFORE the registries are consulted. Plan B tests call `build_model()` directly (bypassing config), so this doesn't block Plan B. But Plan C MUST add `"se_resnet"` and `"katago_ppo"` to `config.py` — see Plan C Task 1.
 - Modify: `tests/test_katago_model.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -608,6 +619,8 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+
+from keisei.training.ppo import compute_gae
 
 
 @dataclass(frozen=True)
@@ -774,6 +787,13 @@ class KataGoRolloutBuffer:
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
         """
+        # Guard against unnormalized score targets (catches Plan C integration bugs)
+        if score_targets.abs().max() > 2.0:
+            raise ValueError(
+                f"score_targets appear unnormalized: max abs value = "
+                f"{score_targets.abs().max().item():.1f}, expected <= 1.0. "
+                f"Divide by score_normalization before storing."
+            )
         self.observations.append(obs)
         self.actions.append(actions)
         self.log_probs.append(log_probs)
@@ -860,6 +880,13 @@ class TestKataGoPPOActionSelection:
         assert values.min() >= -1.0
         assert values.max() <= 1.0
 
+    def test_select_actions_all_illegal_raises(self, ppo):
+        """All-False legal mask should raise, not produce NaN."""
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.zeros(2, 11259, dtype=torch.bool)  # all illegal
+        with pytest.raises(RuntimeError, match="zero legal actions"):
+            ppo.select_actions(obs, legal_masks)
+
     def test_select_actions_respects_mask(self, ppo):
         """Actions should only be sampled from legal positions."""
         obs = torch.randn(2, 50, 9, 9)
@@ -903,6 +930,15 @@ class KataGoPPOAlgorithm:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         self.forward_model.eval()
         output = self.forward_model(obs)
+
+        # Guard: no env should have zero legal actions
+        legal_counts = legal_masks.sum(dim=-1)
+        if (legal_counts == 0).any():
+            zero_envs = (legal_counts == 0).nonzero(as_tuple=True)[0].tolist()
+            raise RuntimeError(
+                f"Environments {zero_envs} have zero legal actions — "
+                f"all-False legal mask would produce NaN"
+            )
 
         # Flatten spatial policy to (B, 11259), apply mask
         flat_logits = output.policy_logits.reshape(obs.shape[0], -1)
@@ -1016,7 +1052,6 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
 
 ```python
     def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
-        from keisei.training.ppo import compute_gae
 
         self.forward_model.train()
         data = buffer.flatten()
@@ -1036,7 +1071,8 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
             )
 
         advantages = all_advantages.reshape(-1)
-        returns = advantages + data["values"]
+        # Note: no `returns` variable — KataGoPPO uses cross-entropy on W/D/L
+        # categories for value loss, not MSE on scalar returns.
         if advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -1068,6 +1104,13 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
 
                 # Policy loss (clipped surrogate)
                 flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
+
+                # NaN guard: check raw model output BEFORE masking.
+                # After masking, -inf is expected (not NaN). NaN in flat_logits
+                # means the model produced garbage — catch it before it propagates.
+                if flat_logits.isnan().any():
+                    raise RuntimeError("NaN in raw policy logits from model forward pass")
+
                 masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
                 log_probs_all = F.log_softmax(masked_logits, dim=-1)
                 new_log_probs = log_probs_all.gather(
@@ -1088,8 +1131,6 @@ Add to `KataGoPPOAlgorithm` in `keisei/training/katago_ppo.py`:
                 # masked positions, but multiplied by 0.0 they contribute nothing.
                 probs = F.softmax(masked_logits, dim=-1)
                 safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
-                if masked_logits.isnan().any():
-                    raise RuntimeError("NaN in policy logits during PPO update")
                 entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
                 # Value loss (cross-entropy on W/D/L)
@@ -1200,7 +1241,6 @@ def compute_value_metrics(
         Dict with value_accuracy, frac_predicted_win/draw/loss
     """
     predictions = value_logits.argmax(dim=-1)
-    n = predictions.shape[0]
     return {
         "value_accuracy": (predictions == value_targets).float().mean().item(),
         "frac_predicted_win": (predictions == 0).float().mean().item(),
