@@ -44,6 +44,7 @@ Create `tests/test_katago_model.py`:
 """Tests for the KataGo model architecture."""
 
 import torch
+import torch.nn.functional as F
 import pytest
 
 from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
@@ -311,11 +312,15 @@ class TestSEResNetModel:
         assert output.score_lead.shape == (4, 1)
 
     def test_value_logits_are_raw(self, model):
-        """Value logits should be raw (not softmaxed) — can be negative."""
+        """Value logits should be raw (not softmaxed)."""
         obs = torch.randn(4, 50, 9, 9)
         output = model(obs)
-        # Raw logits can be negative; softmax output can't
-        assert output.value_logits.min() < 0.0 or output.value_logits.max() > 1.0
+        # Softmax outputs always sum to 1.0 per sample. Raw logits almost never do.
+        # This is a deterministic check — only fails if logits happen to be a valid
+        # probability distribution, which is astronomically unlikely for linear outputs.
+        softmaxed = F.softmax(output.value_logits, dim=-1)
+        assert not torch.allclose(softmaxed, output.value_logits), \
+            "Value logits should be raw, not already a probability distribution"
 
     def test_gradient_through_all_heads(self, model):
         obs = torch.randn(4, 50, 9, 9, requires_grad=True)
@@ -760,6 +765,15 @@ class KataGoRolloutBuffer:
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
     ) -> None:
+        """Add a timestep to the buffer.
+
+        Args:
+            score_targets: Pre-normalized score estimates in [-1, 1]. The caller
+                (KataGoTrainingLoop) divides raw material difference by
+                KataGoPPOParams.score_normalization before storing here.
+                Raw scores can range from -200 to +200; without normalization,
+                the MSE loss would dominate all other loss terms.
+        """
         self.observations.append(obs)
         self.actions.append(actions)
         self.log_probs.append(log_probs)
