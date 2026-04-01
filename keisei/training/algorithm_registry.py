@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from keisei.training.katago_ppo import KataGoPPOParams
+
 
 @dataclass(frozen=True)
 class PPOParams:
@@ -19,6 +21,7 @@ class PPOParams:
 
 _PARAM_SCHEMAS: dict[str, type] = {
     "ppo": PPOParams,
+    "katago_ppo": KataGoPPOParams,
 }
 
 VALID_ALGORITHMS = set(_PARAM_SCHEMAS.keys())
