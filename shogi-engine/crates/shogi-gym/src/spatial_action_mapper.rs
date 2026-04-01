@@ -506,6 +506,81 @@ mod tests {
         assert_eq!(seen.len(), 81 * 7); // 567 drop actions
     }
 
+    #[test]
+    fn test_corner_square_roundtrips() {
+        let m = mapper();
+        // Corner squares: 0 (row 0, col 0), 8 (row 0, col 8), 72 (row 8, col 0), 80 (row 8, col 8)
+        for &corner in &[0u8, 8, 72, 80] {
+            let from = Square::new_unchecked(corner);
+            let from_row = from.row() as i8;
+            let from_col = from.col() as i8;
+
+            // Test all 8 directions at distance 1 from each corner
+            for (dir_idx, (dr, dc)) in DIRECTIONS.iter().enumerate() {
+                let to_row = from_row + dr;
+                let to_col = from_col + dc;
+                if to_row < 0 || to_row > 8 || to_col < 0 || to_col > 8 {
+                    continue; // Off-board, skip
+                }
+                let to = Square::from_row_col(to_row as u8, to_col as u8).unwrap();
+                let mv = Move::Board { from, to, promote: false };
+                let idx = trait_encode(&m, mv, Color::Black);
+                let decoded = trait_decode(&m, idx, Color::Black).expect("decode failed");
+                assert_eq!(
+                    decoded, mv,
+                    "Corner {} dir {} roundtrip failed", corner, dir_idx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_knight_from_edge_column() {
+        let m = mapper();
+        // Knight at col 0: can only jump to (row-2, col+1), not (row-2, col-1)
+        let from = Square::from_row_col(4, 0).unwrap();
+        let to_right = Square::from_row_col(2, 1).unwrap();
+        let mv = Move::Board { from, to: to_right, promote: false };
+        let idx = trait_encode(&m, mv, Color::Black);
+        let decoded = trait_decode(&m, idx, Color::Black).expect("decode failed");
+        assert_eq!(decoded, mv, "Knight from col 0 should encode/decode correctly");
+
+        // Knight at col 8: can only jump to (row-2, col-1), not (row-2, col+1)
+        let from = Square::from_row_col(4, 8).unwrap();
+        let to_left = Square::from_row_col(2, 7).unwrap();
+        let mv = Move::Board { from, to: to_left, promote: false };
+        let idx = trait_encode(&m, mv, Color::Black);
+        let decoded = trait_decode(&m, idx, Color::Black).expect("decode failed");
+        assert_eq!(decoded, mv, "Knight from col 8 should encode/decode correctly");
+    }
+
+    #[test]
+    fn test_decode_knight_off_board() {
+        let m = mapper();
+        // Knight on row 0 col 0: both knight destinations (row -2, col ±1) are off-board
+        // Slot 128 = left knight no promote from sq 0
+        let idx = 0 * SPATIAL_MOVE_TYPES + 128;
+        assert!(trait_decode(&m, idx, Color::Black).is_err(), "Knight off-board should fail");
+
+        // Slot 130 = right knight no promote from sq 0
+        let idx = 0 * SPATIAL_MOVE_TYPES + 130;
+        assert!(trait_decode(&m, idx, Color::Black).is_err(), "Knight off-board should fail");
+    }
+
+    #[test]
+    fn test_no_index_collisions_drops_white() {
+        let m = mapper();
+        let mut seen = HashSet::new();
+        for to_idx in 0u8..81 {
+            for &pt in &HandPieceType::ALL {
+                let mv = Move::Drop { to: Square::new_unchecked(to_idx), piece_type: pt };
+                let idx = trait_encode(&m, mv, Color::White);
+                assert!(seen.insert(idx), "White collision at index {} for drop to={} piece={:?}", idx, to_idx, pt);
+            }
+        }
+        assert_eq!(seen.len(), 81 * 7);
+    }
+
     /// Round-trip all legal moves from the starting position.
     #[test]
     fn test_startpos_legal_moves_roundtrip() {

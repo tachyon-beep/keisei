@@ -29,7 +29,7 @@ pub const BUFFER_LEN: usize = NUM_CHANNELS * NUM_SQUARES;
 /// Maximum hand counts per piece type for normalization.
 /// Order: [Pawn=18, Lance=4, Knight=4, Silver=4, Gold=4, Bishop=2, Rook=2]
 /// Indices match HandPieceType::index() (0-based, same order as HandPieceType::ALL).
-const HAND_MAX_COUNTS: [f32; HandPieceType::COUNT] = [18.0, 4.0, 4.0, 4.0, 4.0, 2.0, 2.0];
+pub(crate) const HAND_MAX_COUNTS: [f32; HandPieceType::COUNT] = [18.0, 4.0, 4.0, 4.0, 4.0, 2.0, 2.0];
 
 // ---------------------------------------------------------------------------
 // Channel mapping helpers
@@ -40,7 +40,7 @@ const HAND_MAX_COUNTS: [f32; HandPieceType::COUNT] = [18.0, 4.0, 4.0, 4.0, 4.0, 
 ///
 /// Mapping: Pawn→0, Lance→1, Knight→2, Silver→3, Gold→4, Bishop→5, Rook→6, King→7
 #[inline]
-fn unpromoted_channel(pt: PieceType) -> usize {
+pub(crate) fn unpromoted_channel(pt: PieceType) -> usize {
     match pt {
         PieceType::Pawn   => 0,
         PieceType::Lance  => 1,
@@ -59,7 +59,7 @@ fn unpromoted_channel(pt: PieceType) -> usize {
 /// Mapping: +Pawn→0, +Lance→1, +Knight→2, +Silver→3, +Bishop→4, +Rook→5
 /// (Gold and King cannot be promoted and should never appear here.)
 #[inline]
-fn promoted_channel(pt: PieceType) -> usize {
+pub(crate) fn promoted_channel(pt: PieceType) -> usize {
     match pt {
         PieceType::Pawn   => 0,
         PieceType::Lance  => 1,
@@ -69,6 +69,80 @@ fn promoted_channel(pt: PieceType) -> usize {
         PieceType::Rook   => 5,
         _ => panic!("piece type {:?} cannot be promoted", pt),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared base channel generation (channels 0-43)
+// ---------------------------------------------------------------------------
+
+/// Generate the base 44 channels shared by all observation generators.
+/// Writes channels 0-43 into the first 44*81 elements of `buffer`.
+/// Buffer must have length >= 44 * NUM_SQUARES.
+pub fn generate_base_channels(state: &GameState, perspective: Color, buffer: &mut [f32]) {
+    let pos = &state.position;
+    let opponent = perspective.opponent();
+    let flip = perspective == Color::White;
+
+    // --- Channels 0-27: Board piece planes ---
+    for idx in 0..NUM_SQUARES {
+        let sq = Square::new_unchecked(idx as u8);
+        if let Some(piece) = pos.piece_at(sq) {
+            let piece_color = piece.color();
+            let pt = piece.piece_type();
+            let promoted = piece.is_promoted();
+            let out_sq = if flip { 80 - idx } else { idx };
+
+            if piece_color == perspective {
+                let ch = if promoted {
+                    8 + promoted_channel(pt)
+                } else {
+                    unpromoted_channel(pt)
+                };
+                buffer[ch * NUM_SQUARES + out_sq] = 1.0;
+            } else {
+                let ch = if promoted {
+                    22 + promoted_channel(pt)
+                } else {
+                    14 + unpromoted_channel(pt)
+                };
+                buffer[ch * NUM_SQUARES + out_sq] = 1.0;
+            }
+        }
+    }
+
+    // --- Channels 28-34: Current player's hand counts ---
+    for &hpt in &HandPieceType::ALL {
+        let count = pos.hand_count(perspective, hpt) as f32;
+        let max_count = HAND_MAX_COUNTS[hpt.index()];
+        let normalized = count / max_count;
+        let ch = 28 + hpt.index();
+        let start = ch * NUM_SQUARES;
+        buffer[start..start + NUM_SQUARES].fill(normalized);
+    }
+
+    // --- Channels 35-41: Opponent's hand counts ---
+    for &hpt in &HandPieceType::ALL {
+        let count = pos.hand_count(opponent, hpt) as f32;
+        let max_count = HAND_MAX_COUNTS[hpt.index()];
+        let normalized = count / max_count;
+        let ch = 35 + hpt.index();
+        let start = ch * NUM_SQUARES;
+        buffer[start..start + NUM_SQUARES].fill(normalized);
+    }
+
+    // --- Channel 42: Player indicator ---
+    let player_indicator = if perspective == Color::Black { 1.0_f32 } else { 0.0_f32 };
+    let start = 42 * NUM_SQUARES;
+    buffer[start..start + NUM_SQUARES].fill(player_indicator);
+
+    // --- Channel 43: Move count ---
+    let move_count = if state.max_ply == 0 {
+        0.0_f32
+    } else {
+        (state.ply as f32 / state.max_ply as f32).clamp(0.0, 1.0)
+    };
+    let start = 43 * NUM_SQUARES;
+    buffer[start..start + NUM_SQUARES].fill(move_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,91 +198,8 @@ impl ObservationGenerator for DefaultObservationGenerator {
         // any squares left empty by piece placement).
         buffer.fill(0.0);
 
-        let pos = &state.position;
-        let opponent = perspective.opponent();
-
-        // Whether to flip square indices (White's perspective).
-        let flip = perspective == Color::White;
-
-        // -----------------------------------------------------------------------
-        // Channels 0-27: Board piece planes
-        // -----------------------------------------------------------------------
-        for idx in 0..NUM_SQUARES {
-            let sq = Square::new_unchecked(idx as u8);
-            if let Some(piece) = pos.piece_at(sq) {
-                let piece_color = piece.color();
-                let pt = piece.piece_type();
-                let promoted = piece.is_promoted();
-
-                // Determine the output square index (may be flipped for White's POV).
-                let out_sq = if flip { 80 - idx } else { idx };
-
-                if piece_color == perspective {
-                    // Current player's piece
-                    let ch = if promoted {
-                        // Promoted: channels 8-13
-                        8 + promoted_channel(pt)
-                    } else {
-                        // Unpromoted: channels 0-7
-                        unpromoted_channel(pt)
-                    };
-                    buffer[ch * NUM_SQUARES + out_sq] = 1.0;
-                } else {
-                    // Opponent's piece
-                    let ch = if promoted {
-                        // Promoted: channels 22-27
-                        22 + promoted_channel(pt)
-                    } else {
-                        // Unpromoted: channels 14-21
-                        14 + unpromoted_channel(pt)
-                    };
-                    buffer[ch * NUM_SQUARES + out_sq] = 1.0;
-                }
-            }
-        }
-
-        // -----------------------------------------------------------------------
-        // Channels 28-34: Current player's hand counts (normalized, constant planes)
-        // -----------------------------------------------------------------------
-        for &hpt in &HandPieceType::ALL {
-            let count = pos.hand_count(perspective, hpt) as f32;
-            let max_count = HAND_MAX_COUNTS[hpt.index()];
-            let normalized = count / max_count;
-            let ch = 28 + hpt.index();
-            // Fill all 81 squares with the same normalized value.
-            let start = ch * NUM_SQUARES;
-            buffer[start..start + NUM_SQUARES].fill(normalized);
-        }
-
-        // -----------------------------------------------------------------------
-        // Channels 35-41: Opponent's hand counts (normalized, constant planes)
-        // -----------------------------------------------------------------------
-        for &hpt in &HandPieceType::ALL {
-            let count = pos.hand_count(opponent, hpt) as f32;
-            let max_count = HAND_MAX_COUNTS[hpt.index()];
-            let normalized = count / max_count;
-            let ch = 35 + hpt.index();
-            let start = ch * NUM_SQUARES;
-            buffer[start..start + NUM_SQUARES].fill(normalized);
-        }
-
-        // -----------------------------------------------------------------------
-        // Channel 42: Player indicator (1.0 = Black perspective, 0.0 = White)
-        // -----------------------------------------------------------------------
-        let player_indicator = if perspective == Color::Black { 1.0_f32 } else { 0.0_f32 };
-        let start = 42 * NUM_SQUARES;
-        buffer[start..start + NUM_SQUARES].fill(player_indicator);
-
-        // -----------------------------------------------------------------------
-        // Channel 43: Move count (ply / max_ply), constant plane
-        // -----------------------------------------------------------------------
-        let move_count = if state.max_ply == 0 {
-            0.0_f32
-        } else {
-            state.ply as f32 / state.max_ply as f32
-        };
-        let start = 43 * NUM_SQUARES;
-        buffer[start..start + NUM_SQUARES].fill(move_count);
+        // Channels 0-43: shared base channels
+        generate_base_channels(state, perspective, buffer);
 
         // Channels 44-45 are already zeroed by the initial fill(0.0).
     }

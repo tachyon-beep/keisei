@@ -41,6 +41,12 @@ OBS_MOVE_COUNT = 43                # ply / max_ply
 OBS_RESERVED_START = 44            # channels 44-45: reserved (zeros)
 OBS_NUM_CHANNELS = 46
 
+# KataGo observation channel offsets (50-channel layout)
+KATAGO_OBS_REPETITION_START = 44  # channels 44-47: repetition count (4 binary planes)
+KATAGO_OBS_CHECK = 48             # 1.0 if current player is in check
+KATAGO_OBS_RESERVED = 49          # reserved (zeros)
+KATAGO_OBS_NUM_CHANNELS = 50
+
 
 __all__ = [
     "DefaultActionMapper",
@@ -64,4 +70,8 @@ __all__ = [
     "OBS_MOVE_COUNT",
     "OBS_RESERVED_START",
     "OBS_NUM_CHANNELS",
+    "KATAGO_OBS_REPETITION_START",
+    "KATAGO_OBS_CHECK",
+    "KATAGO_OBS_RESERVED",
+    "KATAGO_OBS_NUM_CHANNELS",
 ]

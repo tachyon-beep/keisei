@@ -26,6 +26,15 @@ use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Compile-time assertion: observation generators and action mappers must be ZSTs.
+// The rayon closure reconstructs these per-thread via ::new(). If a future generator
+// acquires state, this assertion will fail, forcing explicit resolution of the
+// sharing design (e.g., Arc<dyn Trait>).
+const _: () = assert!(std::mem::size_of::<DefaultObservationGenerator>() == 0);
+const _: () = assert!(std::mem::size_of::<KataGoObservationGenerator>() == 0);
+const _: () = assert!(std::mem::size_of::<DefaultActionMapper>() == 0);
+const _: () = assert!(std::mem::size_of::<SpatialActionMapper>() == 0);
+
 /// Minimum number of environments to use rayon parallel iteration.
 const PARALLEL_THRESHOLD: usize = 64;
 
@@ -312,6 +321,11 @@ impl VecEnv {
         // Decode all actions and validate against legal masks
         let mut decoded_moves: Vec<Move> = Vec::with_capacity(self.num_envs);
         for (i, action) in actions.iter().enumerate() {
+            if *action < 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "env {}: negative action index {}", i, *action
+                )));
+            }
             let action_idx = *action as usize;
             let perspective = self.games[i].position.current_player;
 

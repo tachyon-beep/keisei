@@ -8,42 +8,13 @@
 //! Channel  49:    Reserved (zeros)
 
 use pyo3::prelude::*;
-use shogi_core::{Color, GameState, HandPieceType, PieceType, Square};
+use shogi_core::{Color, GameState};
 
-use crate::observation::ObservationGenerator;
+use crate::observation::{generate_base_channels, ObservationGenerator};
 
 pub const KATAGO_NUM_CHANNELS: usize = 50;
 pub const KATAGO_NUM_SQUARES: usize = 81;
 pub const KATAGO_BUFFER_LEN: usize = KATAGO_NUM_CHANNELS * KATAGO_NUM_SQUARES;
-
-const HAND_MAX_COUNTS: [f32; HandPieceType::COUNT] = [18.0, 4.0, 4.0, 4.0, 4.0, 2.0, 2.0];
-
-#[inline]
-fn unpromoted_channel(pt: PieceType) -> usize {
-    match pt {
-        PieceType::Pawn   => 0,
-        PieceType::Lance  => 1,
-        PieceType::Knight => 2,
-        PieceType::Silver => 3,
-        PieceType::Gold   => 4,
-        PieceType::Bishop => 5,
-        PieceType::Rook   => 6,
-        PieceType::King   => 7,
-    }
-}
-
-#[inline]
-fn promoted_channel(pt: PieceType) -> usize {
-    match pt {
-        PieceType::Pawn   => 0,
-        PieceType::Lance  => 1,
-        PieceType::Knight => 2,
-        PieceType::Silver => 3,
-        PieceType::Bishop => 4,
-        PieceType::Rook   => 5,
-        PieceType::Gold | PieceType::King => panic!("piece type {:?} cannot be promoted", pt),
-    }
-}
 
 #[pyclass]
 pub struct KataGoObservationGenerator;
@@ -76,70 +47,10 @@ impl ObservationGenerator for KataGoObservationGenerator {
 
         buffer.fill(0.0);
 
+        // --- Channels 0-43: shared base channels ---
+        generate_base_channels(state, perspective, buffer);
+
         let pos = &state.position;
-        let opponent = perspective.opponent();
-        let flip = perspective == Color::White;
-
-        // --- Channels 0-27: Board piece planes (identical to Default) ---
-        for idx in 0..KATAGO_NUM_SQUARES {
-            let sq = Square::new_unchecked(idx as u8);
-            if let Some(piece) = pos.piece_at(sq) {
-                let piece_color = piece.color();
-                let pt = piece.piece_type();
-                let promoted = piece.is_promoted();
-                let out_sq = if flip { 80 - idx } else { idx };
-
-                if piece_color == perspective {
-                    let ch = if promoted {
-                        8 + promoted_channel(pt)
-                    } else {
-                        unpromoted_channel(pt)
-                    };
-                    buffer[ch * KATAGO_NUM_SQUARES + out_sq] = 1.0;
-                } else {
-                    let ch = if promoted {
-                        22 + promoted_channel(pt)
-                    } else {
-                        14 + unpromoted_channel(pt)
-                    };
-                    buffer[ch * KATAGO_NUM_SQUARES + out_sq] = 1.0;
-                }
-            }
-        }
-
-        // --- Channels 28-34: Current player's hand counts ---
-        for &hpt in &HandPieceType::ALL {
-            let count = pos.hand_count(perspective, hpt) as f32;
-            let max_count = HAND_MAX_COUNTS[hpt.index()];
-            let normalized = count / max_count;
-            let ch = 28 + hpt.index();
-            let start = ch * KATAGO_NUM_SQUARES;
-            buffer[start..start + KATAGO_NUM_SQUARES].fill(normalized);
-        }
-
-        // --- Channels 35-41: Opponent's hand counts ---
-        for &hpt in &HandPieceType::ALL {
-            let count = pos.hand_count(opponent, hpt) as f32;
-            let max_count = HAND_MAX_COUNTS[hpt.index()];
-            let normalized = count / max_count;
-            let ch = 35 + hpt.index();
-            let start = ch * KATAGO_NUM_SQUARES;
-            buffer[start..start + KATAGO_NUM_SQUARES].fill(normalized);
-        }
-
-        // --- Channel 42: Player indicator ---
-        let player_indicator = if perspective == Color::Black { 1.0_f32 } else { 0.0_f32 };
-        let start = 42 * KATAGO_NUM_SQUARES;
-        buffer[start..start + KATAGO_NUM_SQUARES].fill(player_indicator);
-
-        // --- Channel 43: Move count ---
-        let move_count = if state.max_ply == 0 {
-            0.0_f32
-        } else {
-            state.ply as f32 / state.max_ply as f32
-        };
-        let start = 43 * KATAGO_NUM_SQUARES;
-        buffer[start..start + KATAGO_NUM_SQUARES].fill(move_count);
 
         // --- Channels 44-47: Repetition count (binary planes) ---
         let current_hash = pos.hash;
@@ -495,5 +406,74 @@ mod tests {
         for sq in 0..81 {
             assert_eq!(buf[start48 + sq], 1.0, "ch48[{}] should be 1.0 for White in check", sq);
         }
+    }
+
+    #[test]
+    fn test_repetition_saturation_at_high_count() {
+        let obs_gen = make_gen();
+        let mut state = GameState::new();
+        let hash = state.position.hash;
+        // Set repetition count to 10 (raw_count=11, prior_reps=10)
+        state.repetition_map.insert(hash, 11);
+
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 47 should be 1.0 (saturated at 4+)
+        assert_eq!(buf[47 * 81], 1.0, "ch47 should be 1.0 at reps=10");
+        for ch in 44..=46 {
+            assert_eq!(buf[ch * 81], 0.0, "ch{} should be 0.0 at reps=10", ch);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer must have length")]
+    fn test_wrong_buffer_length_panics() {
+        let obs_gen = make_gen();
+        let state = GameState::new();
+        let mut bad_buf = vec![0.0_f32; 100]; // wrong size
+        obs_gen.generate(&state, Color::Black, &mut bad_buf);
+    }
+
+    #[test]
+    fn test_check_channel_perspective_mismatch() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+
+        // White is in check (current_player=White), but we request Black's perspective.
+        // Channel 48 should be 1.0 because is_in_check() checks current_player (White),
+        // regardless of the requested perspective.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        assert!(state.is_in_check(), "White should be in check");
+
+        let mut buf = make_buffer();
+        // Request Black's perspective even though White is to move
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Channel 48 reflects current_player's check status (White is in check),
+        // NOT the perspective's (Black is NOT in check).
+        // This documents the current behavior: ch48 = side-to-move check status.
+        let start48 = 48 * 81;
+        assert_eq!(
+            buf[start48], 1.0,
+            "ch48 should be 1.0 (reflects current_player=White in check, not perspective=Black)"
+        );
     }
 }
