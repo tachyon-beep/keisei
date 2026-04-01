@@ -317,14 +317,13 @@ class TestSEResNetModel:
         assert output.score_lead.shape == (4, 1)
 
     def test_value_logits_are_raw(self, model):
-        """Value logits should be raw (not softmaxed)."""
+        """Value logits should be raw (not softmaxed). Deterministic check."""
         obs = torch.randn(4, 50, 9, 9)
         output = model(obs)
-        # Softmax outputs always sum to 1.0 per sample. Raw logits almost never do.
-        # This is a deterministic check — only fails if logits happen to be a valid
-        # probability distribution, which is astronomically unlikely for linear outputs.
-        softmaxed = F.softmax(output.value_logits, dim=-1)
-        assert not torch.allclose(softmaxed, output.value_logits), \
+        # Softmax outputs always sum to exactly 1.0 per sample.
+        # Raw linear outputs have no such constraint — assert they DON'T sum to 1.
+        row_sums = output.value_logits.sum(dim=-1)
+        assert not torch.allclose(row_sums, torch.ones_like(row_sums)), \
             "Value logits should be raw, not already a probability distribution"
 
     def test_gradient_through_all_heads(self, model):
@@ -739,9 +738,12 @@ Expected: FAIL
 Add to `keisei/training/katago_ppo.py`:
 
 ```python
-# NOTE: legal_masks stored as (num_envs, 11259) bool tensors per timestep.
-# For 128 steps × 512 envs, this is ~700MB. If memory becomes the binding
-# constraint at scale, consider sparse storage or regenerating masks from
+# NOTE: Buffer memory at scale (128 steps × 512 envs):
+# - legal_masks: 128 × 512 × 11259 × 1 byte = ~740 MB
+# - observations: 128 × 512 × 50 × 9 × 9 × 4 bytes = ~1060 MB
+# - other fields (7 × ~33 MB each): ~230 MB
+# Total: ~2 GB CPU RAM. If memory becomes the binding constraint,
+# consider sparse legal_mask storage or regenerating masks from
 # game state during update. For now, keep it simple and dense.
 
 class KataGoRolloutBuffer:
@@ -888,15 +890,17 @@ class TestKataGoPPOActionSelection:
             ppo.select_actions(obs, legal_masks)
 
     def test_select_actions_respects_mask(self, ppo):
-        """Actions should only be sampled from legal positions."""
+        """Actions should only be sampled from legal positions (20 trials)."""
         obs = torch.randn(2, 50, 9, 9)
         legal_masks = torch.zeros(2, 11259, dtype=torch.bool)
         # Only allow action 0 and action 1000
         legal_masks[:, 0] = True
         legal_masks[:, 1000] = True
-        actions, _, _ = ppo.select_actions(obs, legal_masks)
-        for a in actions.tolist():
-            assert a in (0, 1000), f"Action {a} should be 0 or 1000"
+        # Match existing PPO test pattern: repeat to avoid single-trial flakes
+        for _ in range(20):
+            actions, _, _ = ppo.select_actions(obs, legal_masks)
+            for a in actions.tolist():
+                assert a in (0, 1000), f"Action {a} should be 0 or 1000"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -910,6 +914,7 @@ Add to `keisei/training/katago_ppo.py`:
 
 ```python
 from keisei.training.models.katago_base import KataGoBaseModel
+from keisei.training.ppo import compute_gae
 
 
 class KataGoPPOAlgorithm:

@@ -27,7 +27,7 @@
 | Create | `keisei/sl/parsers.py` | `GameParser` ABC, `GameRecord`, `SFENParser`, `CSAParser` |
 | Create | `keisei/sl/dataset.py` | `SLDataset` — memory-mapped position shards |
 | Create | `keisei/sl/trainer.py` | `SLTrainer` — supervised training loop |
-| Create | `keisei/sl/prepare.py` | `keisei-prepare-sl` CLI entrypoint |
+| Create | `keisei/sl/prepare.py` | `keisei-prepare-sl` CLI entrypoint (**deferred** — not covered in Tasks 1-9; tracked for follow-up) |
 | Create | `keisei-katago.toml` | TOML config for KataGo SE-ResNet |
 | Create | `tests/test_katago_loop.py` | Integration tests for KataGoTrainingLoop |
 | Create | `tests/test_sl_pipeline.py` | Tests for SL parsers, dataset, trainer |
@@ -518,12 +518,23 @@ class KataGoTrainingLoop:
             gpu_count,
         )
 
+        # Validate architecture-algorithm compatibility.
+        # KataGoPPO requires a KataGoBaseModel (returns KataGoOutput).
+        # Passing a BaseModel (returns tuple) would crash deep in the update loop.
+        from keisei.training.models.katago_base import KataGoBaseModel
+        base_model = self.model.module if hasattr(self.model, "module") else self.model
+        if config.training.algorithm == "katago_ppo" and not isinstance(base_model, KataGoBaseModel):
+            raise ValueError(
+                f"algorithm='katago_ppo' requires a KataGoBaseModel architecture "
+                f"(e.g. 'se_resnet'), got '{config.model.architecture}' "
+                f"which is a {type(base_model).__name__}"
+            )
+
         ppo_params = validate_algorithm_params(
             config.training.algorithm, config.training.algorithm_params
         )
         assert isinstance(ppo_params, KataGoPPOParams)
 
-        base_model = self.model.module if hasattr(self.model, "module") else self.model
         self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
 
         if vecenv is not None:
