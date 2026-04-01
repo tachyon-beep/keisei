@@ -16,13 +16,27 @@
 
 - Tasks 1–4: KataGo observation generator + tests (can be done first, no dependencies)
 - Tasks 5–6: Spatial action mapper + tests (independent of 1–4)
-- Task 7: VecEnv wiring (depends on both)
-- Tasks 8–9: Python integration tests (depend on Task 7 + maturin build)
+- Task 7a: VecEnv enum types + constructor (depends on 1 and 5)
+- Task 7b: VecEnv `write_obs_and_mask` + `reset` (depends on 7a)
+- Task 7c: VecEnv `step` — rayon parallel closure (depends on 7b, highest risk)
+- Tasks 8–9: Python integration tests (depend on 7c + maturin build)
 - Task 10: Full suite verification
 
-## Implementation Note
+## Implementation Notes
 
-**Task 3's repetition test helper should be validated interactively first** before writing the full test suite around it. The Gold oscillation pattern assumes standard shogi starting position piece placement — if the engine uses a non-standard piece arrangement for testing or the legal move generator has any quirks, the `expect("Gold 6i-5h should be legal")` panics are harder to debug mid-test-run than they are to pre-validate with a quick `cargo run` snippet. Fifteen minutes of upfront validation of the move sequence saves a potentially confusing Task 3 failure.
+**API verification (confirmed):** All shogi-core APIs used in test construction exist:
+- `Position::empty()` — `shogi-core/src/position.rs:39`
+- `Position::set_piece(sq, piece)` — `shogi-core/src/position.rs:129`
+- `Position::set_hand_count(color, hpt, count)` — `shogi-core/src/position.rs:151`
+- `Position::compute_hash()` — exists in position.rs
+- `GameState::from_position(pos, max_ply)` — `shogi-core/src/game.rs:88`
+- `GameState::is_in_check(&self)` — `shogi-core/src/game.rs:112` (checks **current player's** king, no args)
+- `Square::from_row_col(row, col)` — `shogi-core/src/types.rs:173` (indexing: `row * 9 + col`, where row 0 = rank a, col 0 = file 9)
+- `Square::flip(self)` — `shogi-core/src/types.rs:207` (returns `Square(80 - self.0)`)
+
+**Task 3 repetition test helper:** Validate the Gold oscillation move sequence interactively before building the test suite around it. The square indices (75, 67, 5, 13) were derived from the engine's `row * 9 + col` convention, but if the legal move generator has quirks, the `expect(...)` panics are harder to debug mid-test-run. A safer fallback: search legal moves by piece type at source square rather than hardcoding indices.
+
+**Channel 48 (check indicator) perspective semantics:** `is_in_check()` checks the **current player's** king. The `generate()` method receives a `perspective` parameter. In normal self-play, `perspective == state.position.current_player`. If they ever differ, channel 48 reflects the current player's check status, not the perspective's. This is the correct behavior (you always want to know if the side-to-move is in check), but add a comment in the generator explaining this.
 
 ---
 
@@ -517,10 +531,29 @@ Add to the `mod tests` block in `katago_observation.rs`:
     }
 
     #[test]
+    fn test_repetition_channel_47_after_four_repeats() {
+        let gen = make_gen();
+        // Note: the game may terminate due to sennichite before reaching 4 reps.
+        // If make_state_with_repetitions(4) triggers game termination, this test
+        // should construct the position directly using repetition_map instead.
+        let state = make_state_with_repetitions(4);
+        let mut buf = make_buffer();
+        gen.generate(&state, Color::Black, &mut buf);
+
+        let start47 = 47 * 81;
+        assert_eq!(buf[start47], 1.0, "ch47 should be 1.0 after 4+ repetitions");
+
+        // Channels 44-46 should be 0
+        for ch in 44..=46 {
+            assert_eq!(buf[ch * 81], 0.0, "ch{} should be 0.0 after 4 repetitions", ch);
+        }
+    }
+
+    #[test]
     fn test_repetition_channels_mutually_exclusive() {
         let gen = make_gen();
 
-        for reps in 0..=3u8 {
+        for reps in 0..=4u8 {
             let state = make_state_with_repetitions(reps);
             let mut buf = make_buffer();
             gen.generate(&state, Color::Black, &mut buf);
@@ -1274,22 +1307,16 @@ git commit -m "test(shogi-gym): comprehensive SpatialActionMapper unit tests"
 
 ---
 
-### Task 7: VecEnv Mode Parameters
+### Task 7a: VecEnv — Enum Types and Constructor
 
 **Files:**
 - Modify: `shogi-engine/crates/shogi-gym/src/vec_env.rs`
 
-Add `observation_mode` and `action_mode` parameters to the VecEnv constructor so it can use either the default or KataGo generators.
+Split VecEnv refactor into three sub-tasks with compilation checkpoints to bisect failures.
 
-- [ ] **Step 1: Make VecEnv generic over observation/action modes**
+- [ ] **Step 1: Add imports and enum types**
 
-The VecEnv currently stores `mapper: DefaultActionMapper` and `obs_gen: DefaultObservationGenerator` as concrete types. Change it to use trait objects or an enum dispatch.
-
-Since the mapper and obs_gen are stateless and lightweight, use an enum-based dispatch to avoid trait object overhead:
-
-In `shogi-engine/crates/shogi-gym/src/vec_env.rs`, replace the imports and struct fields:
-
-Add new imports at the top:
+Add new imports at the top of `vec_env.rs`:
 
 ```rust
 use crate::katago_observation::{
@@ -1298,7 +1325,7 @@ use crate::katago_observation::{
 use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE, SPATIAL_MOVE_TYPES};
 ```
 
-Add enum types before the `VecEnv` struct:
+Add enum types and tag enums before the `VecEnv` struct:
 
 ```rust
 enum ObsMode {
@@ -1356,7 +1383,16 @@ impl ActionMode {
         }
     }
 }
+
+/// Tag enums for rayon closure dispatch (Copy + Send safe).
+/// Used inside parallel closures where we can't borrow the enum wrappers.
+#[derive(Copy, Clone)]
+enum ObsModeTag { Default, KataGo }
+#[derive(Copy, Clone)]
+enum ActionModeTag { Default, Spatial }
 ```
+
+- [ ] **Step 2: Update VecEnv struct fields**
 
 Replace the `mapper` and `obs_gen` fields in the `VecEnv` struct:
 
@@ -1368,7 +1404,7 @@ action_space: usize,       // cached: action_mode.action_space_size()
 num_channels: usize,       // cached: obs_mode.channels()
 ```
 
-- [ ] **Step 2: Update the constructor to accept mode parameters**
+- [ ] **Step 3: Update the constructor to accept mode parameters**
 
 Replace the `#[new]` method:
 
@@ -1427,11 +1463,43 @@ pub fn new(num_envs: usize, max_ply: u32, observation_mode: &str, action_mode: &
 }
 ```
 
-- [ ] **Step 3: Update all methods that reference buffer sizes**
+- [ ] **Step 4: Add property getters**
 
-Replace all occurrences of `BUFFER_LEN` with `self.obs_buffer_len`, `ACTION_SPACE_SIZE` with `self.action_space`, and `NUM_CHANNELS` with `self.num_channels` throughout `vec_env.rs`.
+```rust
+#[getter]
+pub fn observation_channels(&self) -> usize {
+    self.num_channels
+}
 
-In `write_obs_and_mask`:
+#[getter]
+pub fn action_space_size(&self) -> usize {
+    self.action_space
+}
+```
+
+- [ ] **Step 5: Build (expect errors in reset/step — those are next)**
+
+Run: `cd shogi-engine && cargo build 2>&1 | head -20`
+Expected: Errors in `reset` and `step` methods referencing old constants. This is expected — we fix those in 7b and 7c.
+
+- [ ] **Step 6: Commit (WIP)**
+
+```bash
+git add shogi-engine/crates/shogi-gym/src/vec_env.rs
+git commit -m "wip(shogi-gym): VecEnv enum types, constructor, and mode params"
+```
+
+---
+
+### Task 7b: VecEnv — Update `write_obs_and_mask` and `reset`
+
+**Files:**
+- Modify: `shogi-engine/crates/shogi-gym/src/vec_env.rs`
+
+- [ ] **Step 1: Update `write_obs_and_mask`**
+
+Replace all occurrences of `BUFFER_LEN` with `self.obs_buffer_len` and `ACTION_SPACE_SIZE` with `self.action_space`:
+
 ```rust
 fn write_obs_and_mask(&mut self, i: usize) {
     let perspective = self.games[i].position.current_player;
@@ -1452,7 +1520,10 @@ fn write_obs_and_mask(&mut self, i: usize) {
 }
 ```
 
-In `reset`, update the reshape calls:
+- [ ] **Step 2: Update `reset`**
+
+Replace the reshape calls:
+
 ```rust
 let obs_4d = obs_array
     .reshape([self.num_envs, self.num_channels, 9, 9])
@@ -1463,24 +1534,37 @@ let mask_2d = mask_array
     // ...
 ```
 
-In `step`, update all references similarly. **Critical borrow checker note:** The existing `step` method uses a rayon parallel closure (`process_env`) that can't borrow `self` mutably while also reading `self.obs_buffer_len`. The existing code uses module-level constants (`BUFFER_LEN`, `ACTION_SPACE_SIZE`) which are implicitly `Copy`. After migrating to struct fields, capture them as local variables before the closure:
+- [ ] **Step 3: Build (expect errors only in `step`)**
+
+Run: `cd shogi-engine && cargo build 2>&1 | head -20`
+Expected: Only `step` method errors remain.
+
+- [ ] **Step 4: Commit (WIP)**
+
+```bash
+git add shogi-engine/crates/shogi-gym/src/vec_env.rs
+git commit -m "wip(shogi-gym): update write_obs_and_mask and reset for mode dispatch"
+```
+
+---
+
+### Task 7c: VecEnv — Update `step` (Rayon Parallel Closure)
+
+**Files:**
+- Modify: `shogi-engine/crates/shogi-gym/src/vec_env.rs`
+
+This is the highest-risk change — the parallel `step` method uses raw pointers and rayon for concurrent buffer writes. Every buffer size reference must be migrated precisely.
+
+- [ ] **Step 1: Capture cached sizes and mode tags before the closure**
+
+At the start of the `py.allow_threads(|| { ... })` block, before the `process_env` closure:
 
 ```rust
 let obs_buf_len = self.obs_buffer_len;
 let act_space = self.action_space;
 let num_ch = self.num_channels;
-// Use these locals inside process_env instead of self.obs_buffer_len, etc.
-```
 
-For the mapper and obs_gen, **do NOT clone or move the enum wrappers** — they may not implement `Send` and rayon's `.par_iter()` will reject them. Instead, capture a plain tag enum and reconstruct the zero-size generators inside the closure:
-
-```rust
-#[derive(Copy, Clone)]
-enum ObsModeTag { Default, KataGo }
-#[derive(Copy, Clone)]
-enum ActionModeTag { Default, Spatial }
-
-// Before the closure:
+// Tag enums for static dispatch inside the closure (Copy + Send safe)
 let obs_tag = match &self.obs_gen {
     ObsMode::Default(_) => ObsModeTag::Default,
     ObsMode::KataGo(_) => ObsModeTag::KataGo,
@@ -1489,8 +1573,22 @@ let act_tag = match &self.mapper {
     ActionMode::Default(_) => ActionModeTag::Default,
     ActionMode::Spatial(_) => ActionModeTag::Spatial,
 };
+```
 
-// Inside the parallel closure — no Box, no allocation, pure static dispatch:
+- [ ] **Step 2: Update the `process_env` closure**
+
+Replace every occurrence of `BUFFER_LEN` with `obs_buf_len` and `ACTION_SPACE_SIZE` with `act_space` inside the closure. Key sites to update (exhaustive list — verify against current `vec_env.rs`):
+
+1. Terminal observation save: `obs_start = i * obs_buf_len`
+2. Terminal observation copy: `slice::copy_from_raw_parts` with `obs_buf_len`
+3. Auto-reset observation write: `obs_start = i * obs_buf_len`, slice length `obs_buf_len`
+4. Legal mask write after auto-reset: `mask_start = i * act_space`, slice length `act_space`
+5. All numpy reshape calls in the step return: `num_ch` for obs channels, `act_space` for mask width
+
+For observation generation and move encoding inside the closure, use direct static dispatch on the tag enums:
+
+```rust
+// Observation generation (inside closure, per-thread):
 match obs_tag {
     ObsModeTag::Default => DefaultObservationGenerator::new()
         .generate(state, perspective, obs_slice),
@@ -1498,38 +1596,42 @@ match obs_tag {
         .generate(state, perspective, obs_slice),
 }
 
-match act_tag {
+// Move encoding (inside closure, per legal move):
+let idx = match act_tag {
     ActionModeTag::Default  => DefaultActionMapper.encode(mv, perspective),
     ActionModeTag::Spatial  => SpatialActionMapper.encode(mv, perspective),
-}
+};
 ```
 
-This sidesteps `Send` bound issues entirely. Since all four generators/mappers are zero-size structs, `DefaultObservationGenerator::new()` compiles to nothing — the match arm is just a static dispatch to the concrete impl. No allocation, no vtable, the compiler inlines it. Do NOT use `Box<dyn Trait>` here — it would add heap allocation and vtable indirection on every call for no reason.
+Since all four types are zero-size structs, `DefaultObservationGenerator::new()` compiles to nothing — the match arm is pure static dispatch. No allocation, no vtable, the compiler inlines it. Do NOT use `Box<dyn Trait>` — it would add heap allocation and vtable indirection for no reason.
 
-- [ ] **Step 4: Update property getters**
+**Note on future-proofing:** This pattern assumes generators are stateless ZSTs. If a future generator acquires state (e.g., a lookup table), per-thread reconstruction would create independent copies with divergent state. Add a comment in the code flagging this assumption.
+
+- [ ] **Step 3: Update the action validation in Phase 1 of `step`**
+
+The action validation before the parallel closure also references `ACTION_SPACE_SIZE` for the legal mask check. Update:
 
 ```rust
-#[getter]
-pub fn observation_channels(&self) -> usize {
-    self.num_channels
-}
-
-#[getter]
-pub fn action_space_size(&self) -> usize {
-    self.action_space
-}
+let mask_start = i * act_space;  // was: i * ACTION_SPACE_SIZE
+if !self.legal_mask_buffer[mask_start + action_idx] {
 ```
 
-- [ ] **Step 5: Build and run existing tests**
+And the mapper decode call:
+
+```rust
+let mv = self.mapper.decode(action_idx, perspective)  // uses ActionMode enum dispatch
+```
+
+- [ ] **Step 4: Build and run ALL tests**
 
 Run: `cd shogi-engine && cargo build && cargo test -p shogi-gym`
-Expected: All existing tests pass (they use default modes).
+Expected: All tests PASS. If any fail, the most likely cause is a missed buffer size substitution — check `obs_buf_len` vs `obs_buffer_len` and `act_space` vs `action_space` naming.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add shogi-engine/crates/shogi-gym/src/vec_env.rs
-git commit -m "feat(shogi-gym): add observation_mode and action_mode params to VecEnv"
+git commit -m "feat(shogi-gym): complete VecEnv mode dispatch with rayon-safe step"
 ```
 
 ---
