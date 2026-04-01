@@ -6,8 +6,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-VALID_ARCHITECTURES = {"resnet", "mlp", "transformer"}
-VALID_ALGORITHMS = {"ppo"}
+VALID_ARCHITECTURES = {"resnet", "mlp", "transformer", "se_resnet"}
+VALID_ALGORITHMS = {"ppo", "katago_ppo"}
 
 
 @dataclass(frozen=True)
