@@ -395,35 +395,41 @@ Add to the `mod tests` block in `katago_observation.rs`:
         let mut state = GameState::with_max_ply(500);
 
         for _ in 0..reps {
-            // Black: Gold 6i (sq 77) -> 5h (sq 67)
+            // Square indexing: row * 9 + col, where col = 9 - file.
+            // Gold 6i: file 6 -> col 3, rank i -> row 8, sq = 8*9+3 = 75
+            // Gold 5h: file 5 -> col 4, rank h -> row 7, sq = 7*9+4 = 67
+            // Gold 4a: file 4 -> col 5, rank a -> row 0, sq = 0*9+5 = 5
+            // Gold 5b: file 5 -> col 4, rank b -> row 1, sq = 1*9+4 = 13
+
+            // Black: Gold 6i (sq 75) -> 5h (sq 67)
             let moves = state.legal_moves();
             let mv_fwd = moves.iter().find(|m| matches!(m,
                 Move::Board { from, to, promote: false }
-                if from.index() == 77 && to.index() == 67
+                if from.index() == 75 && to.index() == 67
             )).expect("Gold 6i-5h should be legal");
             state.make_move(*mv_fwd);
 
-            // White: Gold 4a (sq 3) -> 5b (sq 13)
+            // White: Gold 4a (sq 5) -> 5b (sq 13)
             let moves = state.legal_moves();
             let mv_fwd = moves.iter().find(|m| matches!(m,
                 Move::Board { from, to, promote: false }
-                if from.index() == 3 && to.index() == 13
+                if from.index() == 5 && to.index() == 13
             )).expect("Gold 4a-5b should be legal");
             state.make_move(*mv_fwd);
 
-            // Black: Gold 5h (sq 67) -> 6i (sq 77)
+            // Black: Gold 5h (sq 67) -> 6i (sq 75)
             let moves = state.legal_moves();
             let mv_back = moves.iter().find(|m| matches!(m,
                 Move::Board { from, to, promote: false }
-                if from.index() == 67 && to.index() == 77
+                if from.index() == 67 && to.index() == 75
             )).expect("Gold 5h-6i should be legal");
             state.make_move(*mv_back);
 
-            // White: Gold 5b (sq 13) -> 4a (sq 3)
+            // White: Gold 5b (sq 13) -> 4a (sq 5)
             let moves = state.legal_moves();
             let mv_back = moves.iter().find(|m| matches!(m,
                 Move::Board { from, to, promote: false }
-                if from.index() == 13 && to.index() == 3
+                if from.index() == 13 && to.index() == 5
             )).expect("Gold 5b-4a should be legal");
             state.make_move(*mv_back);
         }
@@ -747,7 +753,7 @@ impl SpatialActionMapper {
         let unit_dc = if dc == 0 { 0 } else { dc / abs_dc };
 
         // Check this is actually a straight/diagonal line
-        if (dr != 0 && dc != 0 && abs_dr != abs_dc) {
+        if dr != 0 && dc != 0 && abs_dr != abs_dc {
             return None; // Knight move or invalid
         }
 
@@ -807,12 +813,7 @@ impl ActionMapper for SpatialActionMapper {
                 if let Some(knight_side) = Self::knight_slot(
                     from_row, from_col, to_row, to_col
                 ) {
-                    let slot = if promote {
-                        129 + knight_side  // 129 (left+promote), 131 (right+promote)
-                    } else {
-                        128 + knight_side  // 128 (left), 130 (right)
-                    };
-                    // Knight slots: 128=left_no_promo, 129=left_promo, 130=right_no_promo, 131=right_promo
+                        // Knight slots: 128=left_no_promo, 129=left_promo, 130=right_no_promo, 131=right_promo
                     let slot = 128 + knight_side * 2 + if promote { 1 } else { 0 };
                     return source_sq * SPATIAL_MOVE_TYPES + slot;
                 }
@@ -1448,7 +1449,27 @@ let mask_2d = mask_array
     // ...
 ```
 
-In `step`, update all references similarly. The `process_env` closure needs the cached sizes passed in (they're `usize` so they're `Copy`).
+In `step`, update all references similarly. **Critical borrow checker note:** The existing `step` method uses a rayon parallel closure (`process_env`) that can't borrow `self` mutably while also reading `self.obs_buffer_len`. The existing code uses module-level constants (`BUFFER_LEN`, `ACTION_SPACE_SIZE`) which are implicitly `Copy`. After migrating to struct fields, capture them as local variables before the closure:
+
+```rust
+let obs_buf_len = self.obs_buffer_len;
+let act_space = self.action_space;
+let num_ch = self.num_channels;
+// Use these locals inside process_env instead of self.obs_buffer_len, etc.
+```
+
+Also create local instances of the mapper and obs_gen for the closure (both `ObsMode` and `ActionMode` are stateless, so creating new instances is cheap):
+
+```rust
+let mapper = match &self.mapper {
+    ActionMode::Default(_) => ActionMode::Default(DefaultActionMapper),
+    ActionMode::Spatial(_) => ActionMode::Spatial(SpatialActionMapper),
+};
+let obs_gen = match &self.obs_gen {
+    ObsMode::Default(_) => ObsMode::Default(DefaultObservationGenerator::new()),
+    ObsMode::KataGo(_) => ObsMode::KataGo(KataGoObservationGenerator::new()),
+};
+```
 
 - [ ] **Step 4: Update property getters**
 
