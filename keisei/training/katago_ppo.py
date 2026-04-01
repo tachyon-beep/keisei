@@ -100,11 +100,23 @@ class KataGoRolloutBuffer:
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
         """
-        # Guard against unnormalized score targets (catches Plan C integration bugs)
+        # Guard against invalid value categories
+        valid_cats = {-1, 0, 1, 2}
+        unique_cats = set(value_categories.unique().tolist())
+        invalid = unique_cats - valid_cats
+        if invalid:
+            raise ValueError(
+                f"value_categories contains invalid values {invalid}. "
+                f"Expected only {{-1=ignore, 0=W, 1=D, 2=L}}."
+            )
+
+        # Guard against unnormalized score targets (catches integration bugs).
+        # Threshold is 2.0 (not 1.0) to allow headroom for edge cases, but
+        # correctly-normalized targets from score_normalization=76.0 should be << 1.0.
         if score_targets.abs().max() > 2.0:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{score_targets.abs().max().item():.1f}, expected <= 1.0. "
+                f"{score_targets.abs().max().item():.1f}, expected <= 2.0. "
                 f"Divide by score_normalization before storing."
             )
         self.observations.append(obs)
@@ -118,6 +130,10 @@ class KataGoRolloutBuffer:
         self.score_targets.append(score_targets)
 
     def flatten(self) -> dict[str, torch.Tensor]:
+        if self.size == 0:
+            raise ValueError(
+                "Cannot flatten an empty buffer. Call add() at least once before flatten()."
+            )
         return {
             "observations": torch.stack(self.observations).reshape(-1, *self.obs_shape),
             "actions": torch.stack(self.actions).reshape(-1),
@@ -138,6 +154,16 @@ class KataGoPPOAlgorithm:
         model: KataGoBaseModel,
         forward_model: torch.nn.Module | None = None,
     ) -> None:
+        """Create a KataGo PPO algorithm.
+
+        Args:
+            params: Frozen hyperparameters.
+            model: The unwrapped base model (used for optimizer and grad clipping).
+            forward_model: The model used for forward passes. Pass the DataParallel
+                wrapper here if using multi-GPU. If None, defaults to `model`.
+                Convention: ``base_model = model.module if hasattr(...) else model``,
+                then ``KataGoPPOAlgorithm(params, base_model, forward_model=model)``.
+        """
         self.params = params
         self.model = model
         self.forward_model = forward_model or model
@@ -242,6 +268,15 @@ class KataGoPPOAlgorithm:
                 if flat_logits.isnan().any():
                     raise RuntimeError("NaN in raw policy logits from model forward pass")
 
+                # Guard: no sample in the batch should have an all-False legal mask.
+                # This mirrors the guard in select_actions — an all-illegal mask
+                # would produce all-NaN from log_softmax(-inf) and silently corrupt the loss.
+                if (batch_legal_masks.sum(dim=-1) == 0).any():
+                    raise RuntimeError(
+                        "Batch contains samples with zero legal actions in update(). "
+                        "Check that terminal-state masks are not stored in the buffer."
+                    )
+
                 masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
                 log_probs_all = F.log_softmax(masked_logits, dim=-1)
                 new_log_probs = log_probs_all.gather(
@@ -259,10 +294,16 @@ class KataGoPPOAlgorithm:
                 safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
                 entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
-                # Value loss (cross-entropy on W/D/L)
-                value_loss = F.cross_entropy(
-                    output.value_logits, batch_value_cats, ignore_index=-1
-                )
+                # Value loss (cross-entropy on W/D/L).
+                # When all samples in the batch have value_cats=-1 (all non-terminal),
+                # cross_entropy returns NaN. Use 0.0 in that case — no value signal.
+                has_valid_value_targets = (batch_value_cats >= 0).any()
+                if has_valid_value_targets:
+                    value_loss = F.cross_entropy(
+                        output.value_logits, batch_value_cats, ignore_index=-1
+                    )
+                else:
+                    value_loss = torch.tensor(0.0, device=batch_obs.device, requires_grad=True)
 
                 # Score loss (MSE on normalized score)
                 score_loss = F.mse_loss(output.score_lead.squeeze(-1), batch_score_targets)
@@ -292,10 +333,30 @@ class KataGoPPOAlgorithm:
         buffer.clear()
 
         denom = max(num_updates, 1)
-        return {
+        metrics = {
             "policy_loss": total_policy_loss / denom,
             "value_loss": total_value_loss / denom,
             "score_loss": total_score_loss / denom,
             "entropy": total_entropy / denom,
             "gradient_norm": total_grad_norm / denom,
         }
+
+        # Value prediction metrics for monitoring degeneracy
+        # (e.g., model predicting WIN for every position → value_accuracy plateau)
+        valid_mask = data["value_categories"] >= 0  # exclude ignore_index=-1
+        if valid_mask.any():
+            with torch.no_grad():
+                # Re-forward a sample for metrics (use last mini-batch's data to avoid extra forward pass)
+                valid_cats = data["value_categories"][valid_mask]
+                valid_obs = data["observations"][valid_mask]
+                sample_size = min(256, valid_obs.shape[0])
+                sample_obs = valid_obs[:sample_size]
+                sample_cats = valid_cats[:sample_size]
+                self.forward_model.eval()
+                sample_output = self.forward_model(sample_obs)
+                value_metrics = compute_value_metrics(
+                    sample_output.value_logits, sample_cats
+                )
+                metrics.update(value_metrics)
+
+        return metrics

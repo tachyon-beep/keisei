@@ -2,7 +2,6 @@
 """Tests for the KataGo model architecture."""
 
 import torch
-import torch.nn.functional as F
 import pytest
 
 from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput

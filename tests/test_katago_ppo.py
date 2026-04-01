@@ -247,3 +247,105 @@ class TestKataGoPPOUpdate:
             for n, p in ppo.model.named_parameters()
         )
         assert changed, "update() should modify at least some model parameters"
+
+    def test_update_returns_value_prediction_metrics(self, ppo):
+        """update() should include value_accuracy and frac_predicted_* in metrics."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+            )
+        losses = ppo.update(buf, torch.zeros(2))
+        assert "value_accuracy" in losses, "Should include value prediction metrics"
+        assert "frac_predicted_win" in losses
+        assert "frac_predicted_draw" in losses
+        assert "frac_predicted_loss" in losses
+
+
+class TestIgnoreIndex:
+    """Test the ignore_index=-1 path for non-terminal value categories."""
+
+    def test_update_with_ignore_index_values(self, ppo):
+        """Passing value_categories=-1 should not crash and should produce finite loss."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            # All value_cats = -1 (non-terminal, should be ignored by cross_entropy)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.full((2,), -1, dtype=torch.long), torch.zeros(2),
+            )
+        losses = ppo.update(buf, torch.zeros(2))
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue  # metrics may not be present if all cats are -1
+            assert not torch.tensor(val).isnan(), f"{key} is NaN with all-ignore value_cats"
+
+
+class TestGAEUnit:
+    """Isolated unit tests for compute_gae — multi-step accumulation and episode boundaries."""
+
+    def test_multi_step_accumulation(self):
+        """Verify GAE recursive accumulation with hand-computed reference values."""
+        rewards = torch.tensor([1.0, 2.0, 3.0])
+        values = torch.tensor([0.5, 0.5, 0.5])
+        dones = torch.zeros(3, dtype=torch.bool)
+        next_value = torch.tensor(0.0)
+        advantages = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+
+        # Step 2: delta = 3.0 + 0.99*0.0 - 0.5 = 2.5, gae = 2.5
+        assert abs(advantages[2].item() - 2.5) < 1e-3
+        # Step 1: delta = 2.0 + 0.99*0.5 - 0.5 = 1.995, gae = 1.995 + 0.99*0.95*2.5 = 4.346
+        assert abs(advantages[1].item() - 4.346) < 1e-2
+        # Step 0: delta = 1.0 + 0.99*0.5 - 0.5 = 0.995, gae = 0.995 + 0.99*0.95*4.346 ≈ 5.08
+        assert abs(advantages[0].item() - 5.08) < 0.05
+
+    def test_episode_boundary_resets_gae(self):
+        """done=True at step 1 should zero out advantage propagation."""
+        rewards = torch.tensor([1.0, 2.0, 3.0])
+        values = torch.tensor([0.5, 0.5, 0.5])
+        dones = torch.tensor([False, True, False])
+        next_value = torch.tensor(0.0)
+        advantages = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+
+        # Step 1 is terminal: delta = 2.0 + 0 - 0.5 = 1.5, gae resets
+        assert abs(advantages[1].item() - 1.5) < 1e-3
+        # Step 0: delta = 1.0 + 0.99*0.5*(1-0) - 0.5 = 0.995
+        # gae = 0.995 + 0.99*0.95*(1-0)*1.5 = 0.995 + 1.41075 = 2.406
+        assert abs(advantages[0].item() - 2.406) < 0.01
+
+    def test_single_step(self):
+        """Single-step trajectory should just be the TD residual."""
+        rewards = torch.tensor([1.0])
+        values = torch.tensor([0.5])
+        dones = torch.tensor([False])
+        next_value = torch.tensor(0.3)
+        advantages = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        # delta = 1.0 + 0.99*0.3 - 0.5 = 0.797
+        assert abs(advantages[0].item() - 0.797) < 1e-3
+
+
+class TestBufferEdgeCases:
+    def test_empty_buffer_flatten_raises(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="Cannot flatten an empty buffer"):
+            buf.flatten()
+
+    def test_invalid_value_categories_rejected(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="invalid values"):
+            buf.add(
+                torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2),
+                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.tensor([5, 3], dtype=torch.long),  # invalid categories
+                torch.zeros(2),
+            )
