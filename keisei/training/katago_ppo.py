@@ -170,6 +170,18 @@ class KataGoPPOAlgorithm:
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.current_entropy_coeff = params.lambda_entropy  # mutable; Plan D warmup updates this
 
+    def get_entropy_coeff(
+        self, epoch: int, warmup_epochs: int = 0, warmup_entropy: float = 0.05,
+    ) -> float:
+        """Return the entropy coefficient for the current epoch.
+
+        During the first `warmup_epochs` epochs of RL (after SL warmup),
+        uses elevated entropy to soften the overconfident SL policy.
+        """
+        if epoch < warmup_epochs:
+            return warmup_entropy
+        return self.params.lambda_entropy
+
     @staticmethod
     def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
         """Project W/D/L logits to scalar value: P(W) - P(L).
