@@ -47,13 +47,14 @@ class SLTrainer:
         )
         self.dataset = SLDataset(Path(config.data_dir))
         is_cuda = self.device.type == "cuda"
+        has_data = len(self.dataset) > 0
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=config.batch_size,
-            shuffle=True,
-            num_workers=config.num_workers,
-            pin_memory=is_cuda and config.num_workers > 0,
-            persistent_workers=config.num_workers > 0,
+            shuffle=has_data,  # RandomSampler rejects empty datasets
+            num_workers=config.num_workers if has_data else 0,
+            pin_memory=is_cuda and config.num_workers > 0 and has_data,
+            persistent_workers=config.num_workers > 0 and has_data,
         )
 
     def train_epoch(self) -> dict[str, float]:

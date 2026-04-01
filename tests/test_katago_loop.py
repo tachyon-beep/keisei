@@ -10,29 +10,49 @@ from keisei.config import AppConfig, DisplayConfig, ModelConfig, TrainingConfig
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
-def _make_mock_katago_vecenv(num_envs: int = 2) -> MagicMock:
-    """Create a mock VecEnv that returns correct shapes for KataGo mode."""
+def _make_mock_katago_vecenv(
+    num_envs: int = 2, *, terminate_at_step: int | None = None
+) -> MagicMock:
+    """Create a mock VecEnv that returns correct shapes for KataGo mode.
+
+    Args:
+        terminate_at_step: If set, env 0 terminates with reward +1.0 at this
+            step (1-indexed). This exercises the value categorization and
+            score target branches.
+    """
+    rng = np.random.default_rng(42)
     mock = MagicMock()
     mock.observation_channels = 50
     mock.action_space_size = 11259
     mock.episodes_completed = 0
     mock.mean_episode_length = 0.0
     mock.truncation_rate = 0.0
+    step_count = [0]
 
     def make_reset_result():
         result = MagicMock()
-        result.observations = np.random.randn(num_envs, 50, 9, 9).astype(np.float32)
+        result.observations = rng.standard_normal((num_envs, 50, 9, 9)).astype(
+            np.float32
+        )
         result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
         return result
 
     def make_step_result(actions):
+        step_count[0] += 1
         result = MagicMock()
-        result.observations = np.random.randn(num_envs, 50, 9, 9).astype(np.float32)
+        result.observations = rng.standard_normal((num_envs, 50, 9, 9)).astype(
+            np.float32
+        )
         result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
         result.rewards = np.zeros(num_envs, dtype=np.float32)
         result.terminated = np.zeros(num_envs, dtype=bool)
         result.truncated = np.zeros(num_envs, dtype=bool)
         result.current_players = np.zeros(num_envs, dtype=np.uint8)
+
+        if terminate_at_step is not None and step_count[0] == terminate_at_step:
+            result.terminated[0] = True
+            result.rewards[0] = 1.0
+
         return result
 
     mock.reset.side_effect = lambda: make_reset_result()
@@ -96,6 +116,15 @@ class TestKataGoTrainingLoopInit:
         base = loop.model.module if hasattr(loop.model, "module") else loop.model
         assert isinstance(base, SEResNetModel)
 
+    def test_db_training_state_written(self, katago_config):
+        """Verify init writes training state to DB."""
+        from keisei.db import read_training_state
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        state = read_training_state(katago_config.display.db_path)
+        assert state is not None
+
 
 class TestKataGoTrainingLoopRun:
     def test_run_one_epoch(self, katago_config):
@@ -103,5 +132,27 @@ class TestKataGoTrainingLoopRun:
         mock_env = _make_mock_katago_vecenv(num_envs=2)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
+        # epoch is 0-indexed: after 1 epoch (range 0..0), epoch remains 0
         assert loop.epoch == 0
         assert loop.global_step == 4
+
+    def test_run_with_terminal_episodes(self, katago_config):
+        """Verify training completes when episodes terminate mid-epoch.
+
+        This exercises the value categorization (W/D/L) and score target
+        branches which are only active for terminal steps.
+        """
+        mock_env = _make_mock_katago_vecenv(num_envs=2, terminate_at_step=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+    def test_metrics_written_to_db(self, katago_config):
+        """Verify metrics are persisted after each epoch."""
+        from keisei.db import read_metrics_since
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=2, steps_per_epoch=4)
+        metrics = read_metrics_since(katago_config.display.db_path, since_id=0)
+        assert len(metrics) == 2  # one row per epoch

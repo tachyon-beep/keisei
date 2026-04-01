@@ -67,7 +67,17 @@ def test_invalid_architecture_rejected(tmp_path):
 def test_load_real_katago_toml():
     """Verify the shipped keisei-katago.toml parses without error."""
     toml_path = Path(__file__).parent.parent / "keisei-katago.toml"
-    if toml_path.exists():
-        config = load_config(toml_path)
-        assert config.model.architecture == "se_resnet"
-        assert config.training.algorithm == "katago_ppo"
+    if not toml_path.exists():
+        pytest.skip("keisei-katago.toml not present")
+    config = load_config(toml_path)
+    assert config.model.architecture == "se_resnet"
+    assert config.training.algorithm == "katago_ppo"
+
+
+def test_invalid_algorithm_rejected(tmp_path):
+    """Unknown algorithm should raise ValueError."""
+    toml = KATAGO_TOML.replace('algorithm = "katago_ppo"', 'algorithm = "bad_algo"')
+    toml_file = tmp_path / "bad.toml"
+    toml_file.write_text(toml)
+    with pytest.raises(ValueError, match="Unknown algorithm"):
+        load_config(toml_file)
