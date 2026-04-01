@@ -645,3 +645,28 @@ class KataGoTrainingLoop:
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
             update_training_progress(self.db_path, self.epoch, self.global_step)
+
+
+def main() -> None:
+    import argparse
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    parser = argparse.ArgumentParser(description="Keisei training")
+    parser.add_argument("config", type=Path, help="Path to TOML config file")
+    parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
+    parser.add_argument("--steps-per-epoch", type=int, default=None,
+                        help="Steps per epoch (default: max_ply from config)")
+    args = parser.parse_args()
+
+    from keisei.config import load_config
+    config = load_config(args.config)
+    steps = args.steps_per_epoch or config.training.max_ply
+    loop = KataGoTrainingLoop(config)
+    loop.run(num_epochs=args.epochs, steps_per_epoch=steps)
+
+
+if __name__ == "__main__":
+    main()
