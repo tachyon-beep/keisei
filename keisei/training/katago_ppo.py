@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
+
 
 @dataclass(frozen=True)
 class KataGoPPOParams:
@@ -20,3 +22,86 @@ class KataGoPPOParams:
     lambda_entropy: float = 0.01
     score_normalization: float = 76.0  # used by KataGoTrainingLoop to normalize targets at buffer level
     grad_clip: float = 1.0
+
+
+# NOTE: Buffer memory at scale (128 steps x 512 envs):
+# - legal_masks: 128 x 512 x 11259 x 1 byte = ~740 MB
+# - observations: 128 x 512 x 50 x 9 x 9 x 4 bytes = ~1060 MB
+# - other fields (7 x ~33 MB each): ~230 MB
+# Total: ~2 GB CPU RAM. If memory becomes the binding constraint,
+# consider sparse legal_mask storage or regenerating masks from
+# game state during update. For now, keep it simple and dense.
+
+
+class KataGoRolloutBuffer:
+    def __init__(self, num_envs: int, obs_shape: tuple[int, ...], action_space: int) -> None:
+        self.num_envs = num_envs
+        self.obs_shape = obs_shape
+        self.action_space = action_space
+        self.clear()
+
+    def clear(self) -> None:
+        self.observations: list[torch.Tensor] = []
+        self.actions: list[torch.Tensor] = []
+        self.log_probs: list[torch.Tensor] = []
+        self.values: list[torch.Tensor] = []
+        self.rewards: list[torch.Tensor] = []
+        self.dones: list[torch.Tensor] = []
+        self.legal_masks: list[torch.Tensor] = []
+        self.value_categories: list[torch.Tensor] = []
+        self.score_targets: list[torch.Tensor] = []
+
+    @property
+    def size(self) -> int:
+        return len(self.observations)
+
+    def add(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        log_probs: torch.Tensor,
+        values: torch.Tensor,
+        rewards: torch.Tensor,
+        dones: torch.Tensor,
+        legal_masks: torch.Tensor,
+        value_categories: torch.Tensor,
+        score_targets: torch.Tensor,
+    ) -> None:
+        """Add a timestep to the buffer.
+
+        Args:
+            score_targets: Pre-normalized score estimates in [-1, 1]. The caller
+                (KataGoTrainingLoop) divides raw material difference by
+                KataGoPPOParams.score_normalization before storing here.
+                Raw scores can range from -200 to +200; without normalization,
+                the MSE loss would dominate all other loss terms.
+        """
+        # Guard against unnormalized score targets (catches Plan C integration bugs)
+        if score_targets.abs().max() > 2.0:
+            raise ValueError(
+                f"score_targets appear unnormalized: max abs value = "
+                f"{score_targets.abs().max().item():.1f}, expected <= 1.0. "
+                f"Divide by score_normalization before storing."
+            )
+        self.observations.append(obs)
+        self.actions.append(actions)
+        self.log_probs.append(log_probs)
+        self.values.append(values)
+        self.rewards.append(rewards)
+        self.dones.append(dones)
+        self.legal_masks.append(legal_masks)
+        self.value_categories.append(value_categories)
+        self.score_targets.append(score_targets)
+
+    def flatten(self) -> dict[str, torch.Tensor]:
+        return {
+            "observations": torch.stack(self.observations).reshape(-1, *self.obs_shape),
+            "actions": torch.stack(self.actions).reshape(-1),
+            "log_probs": torch.stack(self.log_probs).reshape(-1),
+            "values": torch.stack(self.values).reshape(-1),
+            "rewards": torch.stack(self.rewards).reshape(-1),
+            "dones": torch.stack(self.dones).reshape(-1),
+            "legal_masks": torch.stack(self.legal_masks).reshape(-1, self.action_space),
+            "value_categories": torch.stack(self.value_categories).reshape(-1),
+            "score_targets": torch.stack(self.score_targets).reshape(-1),
+        }
