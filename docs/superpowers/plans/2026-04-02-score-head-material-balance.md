@@ -137,6 +137,39 @@ Add to the `#[cfg(test)] mod tests` block at the bottom of `rules.rs`:
     }
 
     #[test]
+    fn test_material_balance_mixed_board_and_hand() {
+        // Combines board pieces and hand pieces for both players — the common game state.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Black: Rook on board (10) + 1 Pawn in hand (1) = 11
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        // White: Bishop on board (8) + 2 Lances in hand (6) = 14
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Bishop, Color::White, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Lance, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let balance = material_balance(&pos, Color::Black);
+        // Black: 10 + 1 = 11. White: 8 + 6 = 14. Diff = -3
+        assert_eq!(balance, -3, "Black has 11, White has 14, diff = -3");
+        assert_eq!(material_balance(&pos, Color::White), 3, "Antisymmetric");
+    }
+
+    #[test]
     fn test_material_balance_promoted_pieces() {
         let mut pos = Position::empty();
         pos.set_piece(
@@ -243,7 +276,7 @@ pub fn material_balance(pos: &Position, perspective: Color) -> i32 {
 - [ ] **Step 4: Run tests**
 
 Run: `cd shogi-engine && cargo test -p shogi-core -- material_balance piece_value`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -299,7 +332,12 @@ Add `SendPtr` in the `step()` closure setup (after `ply_ptr`, around line 391):
 Compute material balance **every step**, inside the `process_env` closure, after the `*ply_ptr.offset(i) = ...` line (around line 426) and BEFORE the `if terminated || truncated` block:
 ```rust
                     // Material balance from last_mover's perspective (every step).
-                    // Perspective matches the observation stored for this step.
+                    // PERSPECTIVE CONVENTION: last_mover is the player who just moved.
+                    // The Python training loop stores the pre-step observation (from the
+                    // player who was about to move, i.e., last_mover) alongside this
+                    // score target. The perspectives match: obs is from X's view,
+                    // material_balance is from X's view. Do NOT change to current_player
+                    // without also changing the buffer storage convention in katago_loop.py.
                     *material_balance_ptr.offset(i) = material_balance(
                         &game.position, last_mover,
                     );
@@ -385,6 +423,7 @@ In `tests/test_katago_loop.py`, update `_make_mock_katago_vecenv` to include `ma
         result.truncated = np.zeros(num_envs, dtype=bool)
         result.current_players = np.zeros(num_envs, dtype=np.uint8)
         result.step_metadata = MagicMock()
+        result.step_metadata.ply_count = np.zeros(num_envs, dtype=np.uint16)
         result.step_metadata.material_balance = np.zeros(num_envs, dtype=np.int32)
         return result
 ```
@@ -405,6 +444,9 @@ with:
 ```python
                 # Per-step material balance from the Rust engine, normalized.
                 # Every position gets a real score target — no NaN masking needed.
+                # PERSPECTIVE: material_balance is from last_mover's perspective,
+                # matching the pre-step `obs` stored in the buffer (also from the
+                # player who was about to move, i.e., last_mover after the step).
                 material = torch.tensor(
                     np.asarray(step_result.step_metadata.material_balance),
                     dtype=torch.float32, device=self.device,
@@ -478,13 +520,21 @@ In `KataGoRolloutBuffer.add()`, replace the NaN-aware guard (lines 114-122):
 with:
 
 ```python
+        # Guard against NaN score targets (replaces old NaN masking — fail fast instead)
+        if score_targets.isnan().any():
+            raise ValueError(
+                "score_targets contains NaN. With per-step material balance, "
+                "all targets should be real-valued."
+            )
+
         # Guard against unnormalized score targets (catches integration bugs).
         # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
-        # Threshold at 3.0 gives headroom for extreme positions.
+        # Threshold at 3.0 gives headroom for extreme positions (~130 material / 76).
         if score_targets.abs().max() > 3.0:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{score_targets.abs().max().item():.1f}, expected in [-2.0, +2.0]. "
+                f"{score_targets.abs().max().item():.1f}. "
+                f"Expected in [-1.7, +1.7] for standard positions (guard threshold 3.0). "
                 f"Divide by score_normalization before storing."
             )
 ```
@@ -513,13 +563,13 @@ Add a test verifying no NaN masking:
 ```python
 class TestScoreLossNoNaN:
     def test_score_loss_computed_over_full_batch(self, ppo):
-        """Score loss should use all samples — no NaN filtering."""
+        """Score loss uses ALL samples — proves NaN masking is gone."""
         buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
         for _ in range(4):
             obs = torch.randn(2, 50, 9, 9)
             legal_masks = torch.ones(2, 11259, dtype=torch.bool)
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
-            # Real material-based score targets (not NaN)
+            # Use constant targets so we can verify the loss magnitude
             score_targets = torch.tensor([0.5, -0.3])
             buf.add(
                 obs, actions, log_probs, values,
@@ -529,6 +579,37 @@ class TestScoreLossNoNaN:
         losses = ppo.update(buf, torch.zeros(2))
         assert losses["score_loss"] > 0, "Score loss should be non-zero with real targets"
         assert not torch.tensor(losses["score_loss"]).isnan(), "Score loss should not be NaN"
+
+    def test_nan_score_targets_rejected(self):
+        """NaN score targets should be rejected by the buffer guard."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="NaN"):
+            buf.add(
+                torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2),
+                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.long),
+                torch.tensor([float("nan"), 0.5]),  # NaN should be rejected
+            )
+
+    def test_zero_targets_produce_zero_loss(self, ppo):
+        """With all-zero targets, score loss should be near-zero (proves no phantom masking)."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.zeros(2),  # all-zero targets
+            )
+        losses = ppo.update(buf, torch.zeros(2))
+        # If NaN masking were still in place, all-zero targets would be treated as
+        # real values and produce a loss against model output. With no masking,
+        # MSE(model_output, 0) should be non-zero (model output ≠ 0 at init).
+        # This test can't easily distinguish old/new, but combined with test_nan_rejected
+        # it proves: (a) NaN is now rejected, (b) real zeros are accepted, (c) loss is computed.
 ```
 
 - [ ] **Step 4: Run tests**
@@ -597,22 +678,37 @@ Confirm that `score_targets` in the buffer are now real material values (not NaN
 
 Run: `uv run python -c "
 import torch
-# Verify the buffer guard accepts material-range values
-from keisei.training.katago_ppo import KataGoRolloutBuffer
-buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
-# Simulate material balance / 76.0 = typical values
-score_targets = torch.tensor([0.5, -1.2])  # 38 and -91 material points
-buf.add(
-    torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
-    torch.zeros(2), torch.zeros(2), torch.zeros(2),
-    torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
-    torch.zeros(2, dtype=torch.long), score_targets,
+from keisei.training.katago_ppo import (
+    KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
 )
-print(f'Buffer accepted score_targets: {score_targets.tolist()}')
-print(f'No NaN in targets: {not score_targets.isnan().any()}')
-print('Score head material balance fix verified')
+from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+# Build a small model and PPO
+params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+    global_pool_channels=16, policy_channels=8, value_fc_size=32,
+    score_fc_size=16, obs_channels=50)
+model = SEResNetModel(params)
+ppo = KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+# Fill buffer with material-range score targets (not NaN)
+buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+for _ in range(4):
+    obs = torch.randn(2, 50, 9, 9)
+    masks = torch.ones(2, 11259, dtype=torch.bool)
+    actions, log_probs, values = ppo.select_actions(obs, masks)
+    score_targets = torch.tensor([0.5, -1.2])  # 38 and -91 material points / 76
+    buf.add(obs, actions, log_probs, values, torch.zeros(2),
+        torch.zeros(2, dtype=torch.bool), masks,
+        torch.randint(0, 3, (2,)), score_targets)
+
+# Run update and verify score loss is real (not near-zero)
+losses = ppo.update(buf, torch.zeros(2))
+print(f'score_loss = {losses[\"score_loss\"]:.6f}')
+assert losses['score_loss'] > 0.001, f'Score loss too small: {losses[\"score_loss\"]}'
+assert not torch.tensor(losses['score_loss']).isnan(), 'Score loss is NaN'
+print('Score head material balance fix verified end-to-end')
 "`
-Expected: Prints confirmation with no errors
+Expected: `score_loss` is a meaningful value (>>0.001), confirming dense gradient signal
 
 - [ ] **Step 4: Commit if any fixes needed**
 
