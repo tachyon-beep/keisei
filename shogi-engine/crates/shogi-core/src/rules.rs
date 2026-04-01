@@ -397,6 +397,69 @@ fn piece_impasse_value(pt: PieceType) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Material balance (for training score head targets)
+// ---------------------------------------------------------------------------
+
+/// Material value of a piece for training score head targets.
+/// Distinct from `piece_impasse_value()` which uses simplified counts for adjudication.
+/// Standard computer Shogi values; promoted pieces use their promoted worth.
+pub fn piece_value(pt: PieceType, promoted: bool) -> i32 {
+    match (pt, promoted) {
+        (PieceType::Pawn, false) => 1,
+        (PieceType::Pawn, true) => 7,     // Tokin
+        (PieceType::Lance, false) => 3,
+        (PieceType::Lance, true) => 6,
+        (PieceType::Knight, false) => 4,
+        (PieceType::Knight, true) => 6,
+        (PieceType::Silver, false) => 5,
+        (PieceType::Silver, true) => 6,
+        (PieceType::Gold, _) => 6,         // Gold cannot promote; defensive fallback
+        (PieceType::Bishop, false) => 8,
+        (PieceType::Bishop, true) => 10,   // Horse
+        (PieceType::Rook, false) => 10,
+        (PieceType::Rook, true) => 12,     // Dragon
+        (PieceType::King, _) => 0,         // King excluded: never captured, adds same to both
+    }
+}
+
+/// Compute material balance from `perspective`'s point of view.
+/// Positive = perspective has more material. Counts board pieces + hand pieces.
+///
+/// Takes `&Position` (not `&GameState`), matching the `compute_impasse_score` pattern.
+pub fn material_balance(pos: &Position, perspective: Color) -> i32 {
+    let opponent = perspective.opponent();
+    let mut balance: i32 = 0;
+
+    // Board pieces
+    for sq_idx in 0..Square::NUM_SQUARES {
+        let sq = Square::new_unchecked(sq_idx as u8);
+        if let Some(piece) = pos.piece_at(sq) {
+            if piece.piece_type() == PieceType::King {
+                continue;
+            }
+            let value = piece_value(piece.piece_type(), piece.is_promoted());
+            if piece.color() == perspective {
+                balance += value;
+            } else {
+                balance -= value;
+            }
+        }
+    }
+
+    // Hand pieces (never promoted)
+    for &hpt in &HandPieceType::ALL {
+        let pt = hpt.to_piece_type();
+        let value = piece_value(pt, false);
+        let own = pos.hand_count(perspective, hpt) as i32;
+        let opp = pos.hand_count(opponent, hpt) as i32;
+        balance += value * own;
+        balance -= value * opp;
+    }
+
+    balance
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1547,5 +1610,143 @@ mod tests {
         assert!(piece_attacks_square(&pos, sq, horse, Square::from_row_col(4, 5).unwrap()));
         // NOT orthogonal slide (2 squares)
         assert!(!piece_attacks_square(&pos, sq, horse, Square::from_row_col(2, 4).unwrap()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Material balance tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_piece_value_exhaustive() {
+        assert_eq!(piece_value(PieceType::Pawn, false), 1);
+        assert_eq!(piece_value(PieceType::Pawn, true), 7);
+        assert_eq!(piece_value(PieceType::Lance, false), 3);
+        assert_eq!(piece_value(PieceType::Lance, true), 6);
+        assert_eq!(piece_value(PieceType::Knight, false), 4);
+        assert_eq!(piece_value(PieceType::Knight, true), 6);
+        assert_eq!(piece_value(PieceType::Silver, false), 5);
+        assert_eq!(piece_value(PieceType::Silver, true), 6);
+        assert_eq!(piece_value(PieceType::Gold, false), 6);
+        assert_eq!(piece_value(PieceType::Gold, true), 6);
+        assert_eq!(piece_value(PieceType::Bishop, false), 8);
+        assert_eq!(piece_value(PieceType::Bishop, true), 10);
+        assert_eq!(piece_value(PieceType::Rook, false), 10);
+        assert_eq!(piece_value(PieceType::Rook, true), 12);
+        assert_eq!(piece_value(PieceType::King, false), 0);
+        assert_eq!(piece_value(PieceType::King, true), 0);
+    }
+
+    #[test]
+    fn test_material_balance_startpos() {
+        let state = GameState::new();
+        let black = material_balance(&state.position, Color::Black);
+        let white = material_balance(&state.position, Color::White);
+        assert_eq!(black, 0, "Startpos should have zero material balance");
+        assert_eq!(white, 0);
+    }
+
+    #[test]
+    fn test_material_balance_perspective_antisymmetric() {
+        let state = GameState::new();
+        let black = material_balance(&state.position, Color::Black);
+        let white = material_balance(&state.position, Color::White);
+        assert_eq!(black, -white);
+    }
+
+    #[test]
+    fn test_material_balance_after_capture() {
+        use crate::types::HandPieceType;
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        assert_eq!(material_balance(&pos, Color::Black), 10);
+        assert_eq!(material_balance(&pos, Color::White), -10);
+    }
+
+    #[test]
+    fn test_material_balance_with_hand_pieces() {
+        use crate::types::HandPieceType;
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 2);
+        pos.set_hand_count(Color::White, HandPieceType::Gold, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        assert_eq!(material_balance(&pos, Color::Black), -4); // 2 - 6
+    }
+
+    #[test]
+    fn test_material_balance_mixed_board_and_hand() {
+        use crate::types::HandPieceType;
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Bishop, Color::White, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Lance, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        assert_eq!(material_balance(&pos, Color::Black), -3); // 11 - 14
+        assert_eq!(material_balance(&pos, Color::White), 3);
+    }
+
+    #[test]
+    fn test_material_balance_promoted_pieces() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, true), // Dragon = 12
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false), // Rook = 10
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        assert_eq!(material_balance(&pos, Color::Black), 2); // 12 - 10
     }
 }
