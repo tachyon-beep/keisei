@@ -46,11 +46,14 @@ class SLTrainer:
             self.optimizer, T_max=config.total_epochs, eta_min=1e-6
         )
         self.dataset = SLDataset(Path(config.data_dir))
+        is_cuda = self.device.type == "cuda"
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=config.batch_size,
             shuffle=True,
             num_workers=config.num_workers,
+            pin_memory=is_cuda and config.num_workers > 0,
+            persistent_workers=config.num_workers > 0,
         )
 
     def train_epoch(self) -> dict[str, float]:

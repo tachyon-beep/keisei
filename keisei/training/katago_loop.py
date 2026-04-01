@@ -83,7 +83,10 @@ class KataGoTrainingLoop:
         ppo_params = validate_algorithm_params(
             config.training.algorithm, config.training.algorithm_params
         )
-        assert isinstance(ppo_params, KataGoPPOParams)
+        if not isinstance(ppo_params, KataGoPPOParams):
+            raise TypeError(
+                f"Expected KataGoPPOParams, got {type(ppo_params).__name__}"
+            )
 
         self.ppo = KataGoPPOAlgorithm(ppo_params, base_model, forward_model=self.model)
 
@@ -99,16 +102,18 @@ class KataGoTrainingLoop:
                 action_mode="spatial",
             )
 
-        # Startup assertions — fail fast on config mismatch
-        assert self.vecenv.observation_channels == config.model.params.get(
-            "obs_channels", 50
-        ), (
-            f"VecEnv produces {self.vecenv.observation_channels} channels "
-            f"but model expects {config.model.params.get('obs_channels', 50)}"
-        )
-        assert self.vecenv.action_space_size == 11259, (
-            f"Expected spatial action space 11259, got {self.vecenv.action_space_size}"
-        )
+        # Fail fast on config mismatch — these must survive python -O
+        expected_obs = config.model.params.get("obs_channels", 50)
+        if self.vecenv.observation_channels != expected_obs:
+            raise ValueError(
+                f"VecEnv produces {self.vecenv.observation_channels} observation "
+                f"channels but model expects {expected_obs}"
+            )
+        if self.vecenv.action_space_size != 11259:
+            raise ValueError(
+                f"Expected spatial action space 11259, "
+                f"got {self.vecenv.action_space_size}"
+            )
 
         self.num_envs = config.training.num_games
         obs_channels = self.vecenv.observation_channels
@@ -246,6 +251,7 @@ class KataGoTrainingLoop:
             with torch.no_grad():
                 output = self.model(obs)
                 next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
+            self.model.train()
 
             losses = self.ppo.update(self.buffer, next_values)
 
@@ -258,6 +264,7 @@ class KataGoTrainingLoop:
                 "entropy": losses["entropy"],
                 "gradient_norm": losses["gradient_norm"],
                 "episodes_completed": ep_completed,
+                "score_loss": losses["score_loss"],
             }
             write_metrics(self.db_path, metrics)
 

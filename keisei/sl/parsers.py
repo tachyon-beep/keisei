@@ -253,28 +253,26 @@ class CSAParser(GameParser):
         if not moves:
             return
 
-        # Determine outcome from result line
-        if result_line == "%TORYO":
-            # %TORYO = side-to-move resigns. last_mover is the player who
-            # made the final actual move, so the OPPONENT of last_mover is the
-            # side-to-move who resigned. last_mover's side wins.
+        # Determine outcome from result line.
+        # %TORYO, %TIME_UP, %ILLEGAL_MOVE: side-to-move loses (last_mover wins).
+        # %JISHOGI, %KACHI: impasse/declaration, last mover wins.
+        # %SENNICHITE, %HIKIWAKE: draws.
+        # %CHUDAN: interrupted game — skip (no valid outcome).
+        _last_mover_wins = {"%TORYO", "%TIME_UP", "%ILLEGAL_MOVE", "%JISHOGI", "%KACHI"}
+        _draws = {"%SENNICHITE", "%HIKIWAKE"}
+
+        if result_line in _last_mover_wins:
             outcome = (
                 GameOutcome.WIN_BLACK
                 if last_mover == "+"
                 else GameOutcome.WIN_WHITE
             )
-        elif result_line == "%SENNICHITE":
+        elif result_line in _draws:
             outcome = GameOutcome.DRAW
-        elif result_line in ("%JISHOGI", "%KACHI"):
-            # Impasse/declaration: last mover wins
-            outcome = (
-                GameOutcome.WIN_BLACK
-                if last_mover == "+"
-                else GameOutcome.WIN_WHITE
-            )
-        elif result_line == "%HIKIWAKE":
-            outcome = GameOutcome.DRAW
+        elif result_line == "%CHUDAN":
+            return  # interrupted game, skip
         else:
-            outcome = GameOutcome.DRAW  # unknown result, default to draw
+            logger.warning("Unknown CSA result '%s', skipping game", result_line)
+            return
 
         yield GameRecord(moves=moves, outcome=outcome, metadata=metadata)
