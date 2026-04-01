@@ -119,3 +119,40 @@ class TestSLDataset:
             )
         dataset = SLDataset(tmp_path)
         assert len(dataset) == 15
+
+
+class TestSLTrainer:
+    @pytest.fixture
+    def small_model(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        return SEResNetModel(params)
+
+    def test_train_one_epoch(self, small_model, tmp_path):
+        from keisei.sl.trainer import SLConfig, SLTrainer
+
+        # Create a small dataset
+        n = 16
+        write_shard(
+            tmp_path / "shard_000.bin",
+            np.random.randn(n, 50 * 81).astype(np.float32),
+            np.random.randint(0, 11259, size=n).astype(np.int64),
+            np.random.randint(0, 3, size=n).astype(np.int64),
+            np.random.randn(n).astype(np.float32),
+        )
+
+        config = SLConfig(
+            data_dir=str(tmp_path), batch_size=8, learning_rate=1e-3, total_epochs=1
+        )
+        trainer = SLTrainer(small_model, config)
+        metrics = trainer.train_epoch()
+
+        assert "policy_loss" in metrics
+        assert "value_loss" in metrics
+        assert "score_loss" in metrics
+        assert all(not np.isnan(v) for v in metrics.values()), f"NaN in metrics: {metrics}"
