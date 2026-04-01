@@ -654,7 +654,37 @@ git commit -m "perf: optimize write_shard to single I/O operation"
 
 ---
 
-### Task 5: Full Verification
+### Task 5: CSA Parser Hardening
+
+**Files:**
+- Modify: `keisei/sl/parsers.py`
+
+- [ ] **Step 1: Handle multi-game CSA files**
+
+Floodgate archives often pack multiple games per file, separated by `/` lines. The current parser treats the entire file as one game. Split on `/` separator before parsing each game block.
+
+- [ ] **Step 2: Handle Shift-JIS encoding**
+
+Older CSA files (pre-2010 Floodgate) use Shift-JIS encoding, not UTF-8. The current `errors="replace"` silently garbles player names and comments. Detect encoding with `chardet` or try UTF-8 first, fall back to Shift-JIS, and log a warning when replacement characters are produced.
+
+- [ ] **Step 3: Add AMP/mixed precision note to SLTrainer**
+
+Add a comment noting that `torch.autocast` can be added for production-scale SL training on GPU. Not implementing now — adds complexity for minimal gain during pipeline validation.
+
+- [ ] **Step 4: Document SL optimizer state discard at SL→RL boundary**
+
+The SL checkpoint includes optimizer state, but `KataGoTrainingLoop` creates a fresh Adam optimizer. This is intentional — the SL optimizer has momentum from supervised gradients that would fight the RL gradient signal. The RL warmup elevated entropy (Task 3) compensates. Add a comment in `KataGoTrainingLoop._check_resume` explaining this.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/sl/parsers.py keisei/sl/trainer.py keisei/training/katago_loop.py
+git commit -m "feat: CSA multi-game support, Shift-JIS detection, SL→RL docs"
+```
+
+---
+
+### Task 6: Full Verification
 
 **Files:** None (verification only)
 

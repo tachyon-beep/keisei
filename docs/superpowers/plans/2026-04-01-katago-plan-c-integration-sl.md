@@ -94,24 +94,31 @@ db_path = "test.db"
 """
 
 
-def test_load_katago_config():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
-        f.write(KATAGO_TOML)
-        f.flush()
-        config = load_config(Path(f.name))
+def test_load_katago_config(tmp_path):
+    toml_file = tmp_path / "katago.toml"
+    toml_file.write_text(KATAGO_TOML)
+    config = load_config(toml_file)
     assert config.model.architecture == "se_resnet"
     assert config.training.algorithm == "katago_ppo"
     assert config.model.params["num_blocks"] == 2
     assert config.model.params["channels"] == 32
 
 
-def test_invalid_architecture_rejected():
+def test_invalid_architecture_rejected(tmp_path):
     toml = KATAGO_TOML.replace('architecture = "se_resnet"', 'architecture = "invalid"')
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
-        f.write(toml)
-        f.flush()
-        with pytest.raises(ValueError, match="Unknown architecture"):
-            load_config(Path(f.name))
+    toml_file = tmp_path / "bad.toml"
+    toml_file.write_text(toml)
+    with pytest.raises(ValueError, match="Unknown architecture"):
+        load_config(toml_file)
+
+
+def test_load_real_katago_toml():
+    """Verify the shipped keisei-katago.toml parses without error."""
+    toml_path = Path(__file__).parent.parent / "keisei-katago.toml"
+    if toml_path.exists():
+        config = load_config(toml_path)
+        assert config.model.architecture == "se_resnet"
+        assert config.training.algorithm == "katago_ppo"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -602,8 +609,8 @@ class KataGoTrainingLoop:
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
         reset_result = self.vecenv.reset()
-        obs = torch.from_numpy(np.array(reset_result.observations)).to(self.device)
-        legal_masks = torch.from_numpy(np.array(reset_result.legal_masks)).to(self.device)
+        obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
+        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(self.device)
 
         start_epoch = self.epoch
         for epoch_i in range(start_epoch, start_epoch + num_epochs):
@@ -620,9 +627,9 @@ class KataGoTrainingLoop:
                 action_list = actions.tolist()
                 step_result = self.vecenv.step(action_list)
 
-                rewards = torch.from_numpy(np.array(step_result.rewards)).to(self.device)
-                terminated = torch.from_numpy(np.array(step_result.terminated)).to(self.device)
-                truncated = torch.from_numpy(np.array(step_result.truncated)).to(self.device)
+                rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
+                terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
+                truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                 dones = terminated | truncated
 
                 # Value categories: -1 (ignore) for non-terminal steps.
@@ -657,8 +664,8 @@ class KataGoTrainingLoop:
                     value_cats, score_targets,
                 )
 
-                obs = torch.from_numpy(np.array(step_result.observations)).to(self.device)
-                legal_masks = torch.from_numpy(np.array(step_result.legal_masks)).to(self.device)
+                obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
+                legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
 
                 self._maybe_update_heartbeat()
 
@@ -671,12 +678,14 @@ class KataGoTrainingLoop:
             losses = self.ppo.update(self.buffer, next_values)
 
             ep_completed = getattr(self.vecenv, "episodes_completed", 0)
+            # NOTE: write_metrics schema has no score_loss column.
+            # score_loss is logged below but not persisted to DB.
+            # To persist: add an ALTER TABLE migration or a JSON extras column.
             metrics = {
                 "epoch": epoch_i,
                 "step": self.global_step,
                 "policy_loss": losses["policy_loss"],
                 "value_loss": losses["value_loss"],
-                "score_loss": losses["score_loss"],
                 "entropy": losses["entropy"],
                 "gradient_norm": losses["gradient_norm"],
                 "episodes_completed": ep_completed,
@@ -1359,6 +1368,8 @@ class SLDataset(Dataset):
                 self._cumulative.append(total)
 
         self._total = total
+        # Cache grows to one entry per shard (typically 10-100 shards).
+        # If shard count becomes very large, add LRU eviction.
         self._mmap_cache: dict[Path, np.ndarray] = {}
 
     def __len__(self) -> int:
@@ -1373,14 +1384,10 @@ class SLDataset(Dataset):
         if idx < 0 or idx >= self._total:
             raise IndexError(f"index {idx} out of range for dataset with {self._total} positions")
 
-        # Find which shard this index belongs to
-        shard_idx = 0
-        local_idx = idx
-        for i, cum in enumerate(self._cumulative):
-            if idx < cum:
-                shard_idx = i
-                local_idx = idx - (self._cumulative[i - 1] if i > 0 else 0)
-                break
+        # Find which shard this index belongs to — O(log n) via bisect
+        import bisect
+        shard_idx = bisect.bisect_right(self._cumulative, idx)
+        local_idx = idx - (self._cumulative[shard_idx - 1] if shard_idx > 0 else 0)
 
         shard_path, _ = self.shards[shard_idx]
         mmap = self._get_mmap(shard_path)
