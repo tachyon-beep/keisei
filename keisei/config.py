@@ -22,6 +22,7 @@ class TrainingConfig:
     checkpoint_interval: int
     checkpoint_dir: str
     algorithm_params: dict[str, object]
+    use_amp: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def load_config(path: Path) -> AppConfig:
         (config_dir / t.get("checkpoint_dir", "checkpoints/")).resolve()
     )
     algorithm_params = t.get("algorithm_params", {})
+    use_amp = bool(t.get("use_amp", False))
 
     training = TrainingConfig(
         num_games=num_games,
@@ -114,6 +116,7 @@ def load_config(path: Path) -> AppConfig:
         checkpoint_interval=checkpoint_interval,
         checkpoint_dir=checkpoint_dir,
         algorithm_params=algorithm_params,
+        use_amp=use_amp,
     )
 
     d = raw.get("display", {})

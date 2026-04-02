@@ -330,6 +330,7 @@ class KataGoTrainingLoop:
                     self.ppo.optimizer,
                     expected_architecture=self.config.model.architecture,
                     scheduler=self.lr_scheduler,
+                    grad_scaler=self.ppo.scaler,
                 )
                 self.epoch = meta["epoch"]
                 self.global_step = meta["step"]
@@ -592,6 +593,7 @@ class KataGoTrainingLoop:
                         epoch_i + 1, self.global_step,
                         architecture=self.config.model.architecture,
                         scheduler=self.lr_scheduler,
+                        grad_scaler=self.ppo.scaler,
                     )
                     logger.info("Checkpoint saved: %s", ckpt_path)
                 except Exception:
