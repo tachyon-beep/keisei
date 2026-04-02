@@ -14,6 +14,7 @@
   import MetricsGrid from './lib/MetricsGrid.svelte'
   import PlayerCard from './lib/PlayerCard.svelte'
   import LeagueView from './lib/LeagueView.svelte'
+  import ShogiLegend from './lib/ShogiLegend.svelte'
   import { safeParse } from './lib/safeParse.js'
 
   onMount(() => {
@@ -127,8 +128,8 @@
               />
             </div>
 
-            <div class="league-placeholder" style="height: {boardAreaHeight}px">
-              <span class="placeholder-text">Reserved for league data</span>
+            <div class="legend-area" style="height: {boardAreaHeight}px">
+              <ShogiLegend />
             </div>
           </div>
         {:else}
@@ -206,7 +207,7 @@
 
   .player-panel {
     flex: 0 0 auto;
-    width: 350px;
+    width: 315px;
     padding: 8px;
     display: flex;
     flex-direction: column;
@@ -288,21 +289,12 @@
 
   .no-game-hint { font-size: 12px; color: var(--text-muted); }
 
-  .league-placeholder {
+  .legend-area {
     flex: 1 1 auto;
     min-width: 0;
-    border: 1px dashed var(--border);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .placeholder-text {
-    color: var(--text-muted);
-    font-size: 14px;
-    text-transform: uppercase;
-    letter-spacing: 2px;
+    overflow: hidden;
   }
 
   .metrics-panel { padding: 12px 16px; }

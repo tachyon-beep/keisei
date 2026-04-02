@@ -1,5 +1,6 @@
 <script>
   import { activeTab } from '../stores/navigation.js'
+  import { theme, toggleTheme } from '../stores/theme.js'
 
   const tabs = [
     { id: 'training', label: 'Training' },
@@ -18,6 +19,14 @@
       {tab.label}
     </button>
   {/each}
+  <button
+    class="theme-toggle"
+    on:click={toggleTheme}
+    aria-label="Toggle {$theme === 'dark' ? 'light' : 'dark'} theme"
+    title="{$theme === 'dark' ? 'Light' : 'Dark'} mode"
+  >
+    {$theme === 'dark' ? '☀' : '☾'}
+  </button>
 </div>
 
 <style>
@@ -51,6 +60,12 @@
     border-color: var(--tab-active-border);
     color: var(--tab-active-border);
     background: var(--tab-active-bg);
+  }
+
+  .theme-toggle {
+    margin-left: 8px;
+    font-size: 14px;
+    padding: 4px 8px;
   }
 
   @media (prefers-reduced-motion: reduce) {

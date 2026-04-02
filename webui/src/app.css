@@ -33,6 +33,37 @@
   background-color: var(--bg-primary);
 }
 
+:root[data-theme="light"] {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #eaeaea;
+  --bg-card: #e0e0f0;
+  --bg-board: #d4a76a;
+  --bg-selected: #c8f0d8;
+  --bg-selected-black: #d0e8d0;
+  --bg-selected-white: #d0d0e8;
+  --border: #ccc;
+  --border-board: #8B7355;
+  --border-board-inner: #b8956a;
+  --border-subtle: #ddd;
+  --border-white-piece: #aaa;
+  --text-primary: #1a1a1a;
+  --text-secondary: #555;
+  --text-muted: #777;
+  --accent-green: #16a34a;
+  --accent-blue: #2563eb;
+  --accent-amber: #d97706;
+  --accent-purple: #7c3aed;
+  --accent-pink: #db2777;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --promoted: #b00;
+  --tab-active-bg: #d0f0d8;
+  --tab-active-border: #16a34a;
+  --tab-inactive-border: #ccc;
+  --player-learner: #16a34a;
+  --player-opponent: #2563eb;
+}
+
 * {
   margin: 0;
   padding: 0;
