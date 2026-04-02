@@ -26,7 +26,7 @@
       <span class="text">{indicator.text}</span>
     </div>
     {#if alive}
-      <div class="stats">
+      <div class="stats" aria-live="polite">
         <span class="stat">Epoch {epoch}</span>
         <span class="sep">|</span>
         <span class="stat">Step {step.toLocaleString()}</span>
