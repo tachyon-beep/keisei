@@ -772,3 +772,104 @@ class TestEntropyCoeffBoundary:
         assert ppo.get_entropy_coeff(3) == 0.01
         # After warmup
         assert ppo.get_entropy_coeff(10) == 0.01
+
+
+class TestKataGoPPOUpdateWithAdapter:
+    """Test the value_adapter branch in KataGoPPOAlgorithm.update()."""
+
+    @pytest.fixture
+    def small_model(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+        params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+                                global_pool_channels=16, policy_channels=8,
+                                value_fc_size=32, score_fc_size=16, obs_channels=50)
+        return SEResNetModel(params)
+
+    @pytest.fixture
+    def ppo_with_adapter(self, small_model):
+        ppo_params = KataGoPPOParams(
+            learning_rate=1e-4,
+            lambda_policy=1.0,
+            lambda_value=1.5,
+            lambda_score=0.02,
+            lambda_entropy=0.01,
+            score_normalization=76.0,
+            grad_clip=1.0,
+        )
+        return KataGoPPOAlgorithm(ppo_params, small_model, forward_model=small_model)
+
+    def _fill_buffer(self, ppo, num_steps=4, num_envs=2):
+        """Fill a rollout buffer with synthetic transitions."""
+        buffer = KataGoRolloutBuffer(num_envs, (50, 9, 9), 11259)
+        for _ in range(num_steps):
+            obs = torch.randn(num_envs, 50, 9, 9)
+            legal_masks = torch.ones(num_envs, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buffer.add(
+                obs,
+                actions,
+                log_probs,
+                values,
+                torch.zeros(num_envs),
+                torch.zeros(num_envs),
+                legal_masks,
+                torch.randint(0, 3, (num_envs,)),
+                torch.randn(num_envs).clamp(-1.0, 1.0),
+            )
+        return buffer
+
+    def test_update_with_adapter_returns_metrics(self, ppo_with_adapter):
+        """Value adapter path should complete without error and return metrics."""
+        from keisei.training.value_adapter import MultiHeadValueAdapter
+        adapter = MultiHeadValueAdapter(lambda_value=1.5, lambda_score=0.02)
+        buffer = self._fill_buffer(ppo_with_adapter)
+        next_values = torch.zeros(2)
+        metrics = ppo_with_adapter.update(buffer, next_values, value_adapter=adapter)
+
+        assert "policy_loss" in metrics
+        assert "value_loss" in metrics
+        assert "score_loss" in metrics
+        assert "entropy" in metrics
+        assert "gradient_norm" in metrics
+        # Adapter path sets score_loss = 0.0 (combined into value_loss)
+        assert metrics["score_loss"] == pytest.approx(0.0)
+        for key, val in metrics.items():
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+
+    def test_update_with_adapter_changes_params(self, ppo_with_adapter):
+        """Value adapter update should modify model parameters (gradient flows)."""
+        from keisei.training.value_adapter import MultiHeadValueAdapter
+        adapter = MultiHeadValueAdapter(lambda_value=1.5, lambda_score=0.02)
+
+        initial_params = {
+            name: p.clone() for name, p in ppo_with_adapter.model.named_parameters()
+        }
+        buffer = self._fill_buffer(ppo_with_adapter)
+        next_values = torch.zeros(2)
+        ppo_with_adapter.update(buffer, next_values, value_adapter=adapter)
+
+        any_changed = False
+        for name, p in ppo_with_adapter.model.named_parameters():
+            if not torch.equal(initial_params[name], p):
+                any_changed = True
+                break
+        assert any_changed, "No parameters changed — gradient not flowing through adapter"
+
+    def test_update_with_adapter_all_losses_finite(self, small_model):
+        """Adapter path should produce finite losses."""
+        from keisei.training.value_adapter import MultiHeadValueAdapter
+        torch.manual_seed(42)
+
+        ppo_params = KataGoPPOParams(
+            learning_rate=1e-4, lambda_policy=1.0, lambda_value=1.5,
+            lambda_score=0.02, lambda_entropy=0.01,
+            score_normalization=76.0, grad_clip=1.0,
+        )
+        ppo = KataGoPPOAlgorithm(ppo_params, small_model, forward_model=small_model)
+        adapter = MultiHeadValueAdapter(lambda_value=1.5, lambda_score=0.02)
+        buffer = self._fill_buffer(ppo)
+        metrics = ppo.update(buffer, torch.zeros(2), value_adapter=adapter)
+
+        for key, val in metrics.items():
+            assert not torch.tensor(val).isnan(), f"Adapter path: {key} is NaN"
+            assert not torch.tensor(val).isinf(), f"Adapter path: {key} is Inf"
