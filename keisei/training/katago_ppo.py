@@ -112,14 +112,20 @@ class KataGoRolloutBuffer:
                 f"Expected only {{-1=ignore, 0=W, 1=D, 2=L}}."
             )
 
+        # Guard: NaN score targets are no longer valid — every position gets real material balance.
+        if score_targets.isnan().any():
+            raise ValueError(
+                "score_targets contains NaN. With per-step material balance, "
+                "all targets should be real-valued."
+            )
+
         # Guard against unnormalized score targets (catches integration bugs).
-        # NaN is used as sentinel for non-terminal positions — exclude from check.
-        finite_scores = score_targets[~score_targets.isnan()]
-        if finite_scores.numel() > 0 and finite_scores.abs().max() > 2.0:
+        # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
+        if score_targets.abs().max() > 3.0:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{finite_scores.abs().max().item():.1f}, expected <= 1.0. "
-                f"Divide by score_normalization before storing."
+                f"{score_targets.abs().max().item():.1f}. "
+                f"Expected in [-1.7, +1.7] for standard positions (guard threshold 3.0)."
             )
         self.observations.append(obs)
         self.actions.append(actions)
@@ -361,14 +367,11 @@ class KataGoPPOAlgorithm:
                     else:
                         value_loss = output.value_logits.sum() * 0.0
 
-                    score_valid = ~batch_score_targets.isnan()
-                    if score_valid.any():
-                        score_loss = F.mse_loss(
-                            output.score_lead.squeeze(-1)[score_valid],
-                            batch_score_targets[score_valid],
-                        )
-                    else:
-                        score_loss = output.score_lead.sum() * 0.0
+                    # Score loss (MSE on normalized material balance).
+                    # Every position has a real target — no NaN masking needed.
+                    score_loss = F.mse_loss(
+                        output.score_lead.squeeze(-1), batch_score_targets,
+                    )
 
                     value_score_loss = (
                         self.params.lambda_value * value_loss

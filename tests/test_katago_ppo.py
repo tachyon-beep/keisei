@@ -349,3 +349,58 @@ class TestBufferEdgeCases:
                 torch.tensor([5, 3], dtype=torch.long),  # invalid categories
                 torch.zeros(2),
             )
+
+
+class TestScoreLossNoNaN:
+    """Tests verifying NaN masking is removed and dense score targets work."""
+
+    @pytest.fixture
+    def ppo(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        return KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+    def test_score_loss_computed_over_full_batch(self, ppo):
+        """Score loss uses ALL samples — proves NaN masking is gone."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.tensor([0.5, -0.3]),
+            )
+        losses = ppo.update(buf, torch.zeros(2))
+        assert losses["score_loss"] > 0, "Score loss should be non-zero with real targets"
+        assert not torch.tensor(losses["score_loss"]).isnan()
+
+    def test_nan_score_targets_rejected(self):
+        """NaN score targets should be rejected by the buffer guard."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="NaN"):
+            buf.add(
+                torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2),
+                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.long),
+                torch.tensor([float("nan"), 0.5]),
+            )
+
+    def test_unnormalized_score_targets_rejected(self):
+        """Score targets above 3.0 threshold should be rejected."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        with pytest.raises(ValueError, match="unnormalized"):
+            buf.add(
+                torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2),
+                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.long),
+                torch.tensor([10.0, -5.0]),
+            )
