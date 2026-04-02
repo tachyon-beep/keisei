@@ -2,6 +2,7 @@
   import { onMount, onDestroy, afterUpdate } from 'svelte'
   import uPlot from 'uplot'
   import 'uplot/dist/uPlot.min.css'
+  import { buildChartOpts, buildChartData } from './chartHelpers.js'
 
   export let title = ''
   export let annotation = null
@@ -14,60 +15,18 @@
   let chart = null
   let resizeObserver = null
 
-  const darkTheme = {
-    background: 'var(--bg-primary)',
-    gridColor: 'var(--border-subtle)',
-    textColor: 'var(--text-secondary)',
-    axisColor: 'var(--text-muted)',
-  }
-
-  function buildOpts() {
+  function getOpts() {
     const w = container ? container.clientWidth : width
-    return {
-      width: w,
-      height,
-      padding: [8, 8, 0, 0],
-      cursor: { show: true },
-      legend: { show: true },
-      scales: { x: { time: false } },
-      axes: [
-        {
-          stroke: darkTheme.textColor,
-          grid: { stroke: darkTheme.gridColor, width: 0.5 },
-          ticks: { stroke: darkTheme.axisColor },
-          font: '12px sans-serif',
-          values: (u, vals) => vals.map(v => Number.isInteger(v) ? v : ''),
-          incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-        },
-        {
-          stroke: darkTheme.textColor,
-          grid: { stroke: darkTheme.gridColor, width: 0.5 },
-          ticks: { stroke: darkTheme.axisColor },
-          font: '12px sans-serif',
-        },
-      ],
-      series: [
-        { label: 'X' },
-        ...series.map(s => ({
-          label: s.label,
-          stroke: s.color,
-          width: 1.5,
-          fill: s.color + '20',
-        })),
-      ],
-    }
+    return buildChartOpts({ width: w, height, series })
   }
 
-  function buildData() {
-    return [
-      xData,
-      ...series.map(s => s.data),
-    ]
+  function getData() {
+    return buildChartData(xData, series)
   }
 
   onMount(() => {
     if (container && xData.length > 0) {
-      chart = new uPlot(buildOpts(), buildData(), container)
+      chart = new uPlot(getOpts(), getData(), container)
     }
 
     resizeObserver = new ResizeObserver(entries => {
@@ -86,9 +45,9 @@
     if (xData.length === 0) return
 
     if (chart) {
-      chart.setData(buildData())
+      chart.setData(getData())
     } else {
-      chart = new uPlot(buildOpts(), buildData(), container)
+      chart = new uPlot(getOpts(), getData(), container)
     }
   })
 

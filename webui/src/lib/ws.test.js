@@ -8,7 +8,7 @@ import { trainingState } from '../stores/training.js'
 
 beforeEach(() => {
   games.set([])
-  selectedGameId.set(null)
+  selectedGameId.set(0) // matches store default (writable(0) in games.js)
   metrics.set([])
   trainingState.set(null)
 })
@@ -27,7 +27,19 @@ describe('handleMessage — init', () => {
     expect(get(trainingState).display_name).toBe('Bot')
   })
 
+  it('preserves selectedGameId when games are present and ID is already set', () => {
+    selectedGameId.set(0)
+    handleMessage({
+      type: 'init',
+      games: [{ game_id: 0 }],
+      metrics: [],
+      training_state: null,
+    })
+    expect(get(selectedGameId)).toBe(0)
+  })
+
   it('sets selectedGameId to 0 when games are present and ID is null', () => {
+    selectedGameId.set(null)
     handleMessage({
       type: 'init',
       games: [{ game_id: 0 }],

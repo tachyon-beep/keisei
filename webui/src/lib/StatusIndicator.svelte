@@ -1,6 +1,7 @@
 <script>
   import { trainingState, trainingAlive } from '../stores/training.js'
   import { getIndicator } from './indicator.js'
+  import { buildConfigTooltip } from './configTooltip.js'
 
   $: status = $trainingState?.status || 'unknown'
   $: epoch = $trainingState?.current_epoch || 0
@@ -13,24 +14,7 @@
 
   $: indicator = getIndicator(alive, status)
 
-  $: configTooltip = (() => {
-    try {
-      const cfg = typeof $trainingState?.config_json === 'string'
-        ? JSON.parse($trainingState.config_json)
-        : $trainingState?.config_json
-      if (!cfg) return ''
-      const lines = []
-      lines.push(`Architecture: ${modelArch}`)
-      if (cfg.training) {
-        lines.push(`Algorithm: ${cfg.training.algorithm || '?'}`)
-        lines.push(`Games: ${cfg.training.num_games || '?'}`)
-      }
-      if (cfg.model) {
-        lines.push(`Architecture: ${cfg.model.architecture || '?'}`)
-      }
-      return lines.join('\n')
-    } catch { return modelArch }
-  })()
+  $: configTooltip = buildConfigTooltip($trainingState?.config_json, modelArch)
 </script>
 
 <header class="status-bar" role="banner">

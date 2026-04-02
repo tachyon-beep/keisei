@@ -1,18 +1,12 @@
 <script>
-  import { PIECE_KANJI, HAND_PIECE_ORDER } from './pieces.js'
+  import { getHandPieces } from './handPieces.js'
 
   export let color = 'black'
   export let hand = {}
 
   const label = color === 'black' ? '☗ Black' : '☖ White'
 
-  $: pieces = HAND_PIECE_ORDER
-    .filter(type => (hand[type] || 0) > 0)
-    .map(type => ({
-      type,
-      kanji: PIECE_KANJI[type].base,
-      count: hand[type],
-    }))
+  $: pieces = getHandPieces(hand)
 </script>
 
 <div class="tray" class:black={color === 'black'} class:white={color === 'white'}>
