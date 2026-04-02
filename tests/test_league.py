@@ -140,6 +140,24 @@ class TestOpponentPool:
         assert updated[learner_id].games_played == 5
         assert updated[opponent_id].games_played == 5
 
+    def test_load_opponent_missing_checkpoint_raises(self, league_db, league_dir):
+        """load_opponent() should raise FileNotFoundError for deleted checkpoints."""
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+        import dataclasses
+        params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+                                global_pool_channels=16, policy_channels=8,
+                                value_fc_size=32, score_fc_size=16, obs_channels=50)
+        model = SEResNetModel(params)
+        pool = OpponentPool(league_db, str(league_dir))
+        entry = pool.add_snapshot(model, "se_resnet", dataclasses.asdict(params), epoch=0)
+
+        # Delete the checkpoint file
+        import os
+        os.remove(entry.checkpoint_path)
+
+        with pytest.raises(FileNotFoundError, match="Checkpoint missing"):
+            pool.load_opponent(entry)
+
 
 class TestEloCalculation:
     def _assert_conservation(self, ra, rb, new_a, new_b):
