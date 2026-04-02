@@ -7,6 +7,7 @@
 import { games, selectedGameId } from '../stores/games.js'
 import { metrics, appendMetrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
+import { leagueEntries, leagueResults, eloHistory } from '../stores/league.js'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
 const RECONNECT_BASE_MS = 1000
@@ -63,6 +64,9 @@ export function handleMessage(msg) {
       games.set(msg.games || [])
       metrics.set(msg.metrics || [])
       trainingState.set(msg.training_state || null)
+      leagueEntries.set(msg.league_entries || [])
+      leagueResults.set(msg.league_results || [])
+      eloHistory.set(msg.elo_history || [])
       if (msg.games?.length > 0) {
         selectedGameId.update(id => id ?? 0)
       }
@@ -100,6 +104,12 @@ export function handleMessage(msg) {
         model_arch: msg.model_arch || state?.model_arch,
         system_stats: msg.system_stats || state?.system_stats,
       }))
+      break
+
+    case 'league_update':
+      leagueEntries.set(msg.entries || [])
+      leagueResults.set(msg.results || [])
+      eloHistory.set(msg.elo_history || [])
       break
 
     case 'ping':

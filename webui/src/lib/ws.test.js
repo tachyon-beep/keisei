@@ -5,12 +5,16 @@ import { handleMessage } from './ws.js'
 import { games, selectedGameId } from '../stores/games.js'
 import { metrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
+import { leagueEntries, leagueResults, eloHistory } from '../stores/league.js'
 
 beforeEach(() => {
   games.set([])
   selectedGameId.set(0) // matches store default (writable(0) in games.js)
   metrics.set([])
   trainingState.set(null)
+  leagueEntries.set([])
+  leagueResults.set([])
+  eloHistory.set([])
 })
 
 describe('handleMessage — init', () => {
@@ -125,5 +129,51 @@ describe('handleMessage — ping', () => {
 describe('handleMessage — unknown type', () => {
   it('silently ignores unknown message types', () => {
     expect(() => handleMessage({ type: 'unknown_future_type' })).not.toThrow()
+  })
+})
+
+describe('handleMessage — init with league data', () => {
+  it('populates league stores from init message', () => {
+    handleMessage({
+      type: 'init',
+      games: [],
+      metrics: [],
+      training_state: null,
+      league_entries: [{ id: 1, architecture: 'resnet', elo_rating: 1050 }],
+      league_results: [{ id: 1, epoch: 5, wins: 3, losses: 1, draws: 1 }],
+      elo_history: [{ entry_id: 1, epoch: 5, elo_rating: 1050 }],
+    })
+    expect(get(leagueEntries)).toHaveLength(1)
+    expect(get(leagueResults)).toHaveLength(1)
+    expect(get(eloHistory)).toHaveLength(1)
+  })
+
+  it('handles init with no league fields gracefully', () => {
+    handleMessage({ type: 'init', games: [], metrics: [], training_state: null })
+    expect(get(leagueEntries)).toEqual([])
+    expect(get(leagueResults)).toEqual([])
+    expect(get(eloHistory)).toEqual([])
+  })
+})
+
+describe('handleMessage — league_update', () => {
+  it('replaces all league stores', () => {
+    leagueEntries.set([{ id: 99 }])
+    handleMessage({
+      type: 'league_update',
+      entries: [{ id: 1 }, { id: 2 }],
+      results: [{ id: 10 }],
+      elo_history: [{ entry_id: 1, epoch: 5, elo_rating: 1050 }],
+    })
+    expect(get(leagueEntries)).toHaveLength(2)
+    expect(get(leagueResults)).toHaveLength(1)
+    expect(get(eloHistory)).toHaveLength(1)
+  })
+
+  it('handles missing fields gracefully', () => {
+    handleMessage({ type: 'league_update' })
+    expect(get(leagueEntries)).toEqual([])
+    expect(get(leagueResults)).toEqual([])
+    expect(get(eloHistory)).toEqual([])
   })
 })
