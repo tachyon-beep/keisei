@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast, GradScaler
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.models.katago_base import KataGoBaseModel
@@ -48,6 +49,7 @@ class KataGoPPOParams:
     lambda_entropy: float = 0.01
     score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
+    use_amp: bool = False
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
@@ -207,6 +209,7 @@ class KataGoPPOAlgorithm:
         self.model = model
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
+        self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
         self.warmup_entropy = warmup_entropy
         self.current_entropy_coeff = params.lambda_entropy
@@ -326,6 +329,14 @@ class KataGoPPOAlgorithm:
 
         batch_size = min(self.params.batch_size, total_samples)
 
+        # AMP settings: bfloat16 on CUDA if supported, else float16; fallback to cpu autocast
+        amp_dtype = (
+            torch.bfloat16
+            if (self.params.use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+            else torch.float16
+        )
+        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_score_loss = 0.0
@@ -348,87 +359,90 @@ class KataGoPPOAlgorithm:
                 batch_value_cats = data["value_categories"][idx].to(device)
                 batch_score_targets = data["score_targets"][idx].to(device)
 
-                output = self.forward_model(batch_obs)
+                with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                    output = self.forward_model(batch_obs)
 
-                # Policy loss (clipped surrogate)
-                flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
+                    # Policy loss (clipped surrogate)
+                    flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
 
-                # NaN guard: check raw model output BEFORE masking.
-                if flat_logits.isnan().any():
-                    raise RuntimeError("NaN in raw policy logits from model forward pass")
+                    # NaN guard: check raw model output BEFORE masking.
+                    if flat_logits.isnan().any():
+                        raise RuntimeError("NaN in raw policy logits from model forward pass")
 
-                # Guard: no sample in the batch should have an all-False legal mask.
-                # This mirrors the guard in select_actions — an all-illegal mask
-                # would produce all-NaN from log_softmax(-inf) and silently corrupt the loss.
-                if (batch_legal_masks.sum(dim=-1) == 0).any():
-                    raise RuntimeError(
-                        "Batch contains samples with zero legal actions in update(). "
-                        "Check that terminal-state masks are not stored in the buffer."
-                    )
-
-                masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
-                log_probs_all = F.log_softmax(masked_logits, dim=-1)
-                new_log_probs = log_probs_all.gather(
-                    1, batch_actions.unsqueeze(1)
-                ).squeeze(1)
-
-                ratio = (new_log_probs - batch_old_log_probs).exp()
-                clip = self.params.clip_epsilon
-                surr1 = ratio * batch_advantages
-                surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-
-                # Entropy over legal actions only.
-                probs = F.softmax(masked_logits, dim=-1)
-                safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
-                entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
-
-                # Value + score loss — dispatch through adapter if provided
-                if value_adapter is not None:
-                    value_score_loss = value_adapter.compute_value_loss(
-                        output.value_logits,
-                        returns=None,
-                        value_cats=batch_value_cats,
-                        score_targets=batch_score_targets,
-                        score_pred=output.score_lead,
-                    )
-                    # For metrics tracking, decompose (adapter combines them)
-                    value_loss = value_score_loss  # combined
-                    score_loss = torch.tensor(0.0, device=batch_obs.device)
-                else:
-                    # Default: inline KataGo multi-head (backward compatible)
-                    has_valid_value_targets = (batch_value_cats >= 0).any()
-                    if has_valid_value_targets:
-                        value_loss = F.cross_entropy(
-                            output.value_logits, batch_value_cats, ignore_index=-1
+                    # Guard: no sample in the batch should have an all-False legal mask.
+                    # This mirrors the guard in select_actions — an all-illegal mask
+                    # would produce all-NaN from log_softmax(-inf) and silently corrupt the loss.
+                    if (batch_legal_masks.sum(dim=-1) == 0).any():
+                        raise RuntimeError(
+                            "Batch contains samples with zero legal actions in update(). "
+                            "Check that terminal-state masks are not stored in the buffer."
                         )
+
+                    masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
+                    log_probs_all = F.log_softmax(masked_logits, dim=-1)
+                    new_log_probs = log_probs_all.gather(
+                        1, batch_actions.unsqueeze(1)
+                    ).squeeze(1)
+
+                    ratio = (new_log_probs - batch_old_log_probs).exp()
+                    clip = self.params.clip_epsilon
+                    surr1 = ratio * batch_advantages
+                    surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    # Entropy over legal actions only.
+                    probs = F.softmax(masked_logits, dim=-1)
+                    safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
+                    entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
+
+                    # Value + score loss — dispatch through adapter if provided
+                    if value_adapter is not None:
+                        value_score_loss = value_adapter.compute_value_loss(
+                            output.value_logits,
+                            returns=None,
+                            value_cats=batch_value_cats,
+                            score_targets=batch_score_targets,
+                            score_pred=output.score_lead,
+                        )
+                        # For metrics tracking, decompose (adapter combines them)
+                        value_loss = value_score_loss  # combined
+                        score_loss = torch.tensor(0.0, device=batch_obs.device)
                     else:
-                        value_loss = output.value_logits.sum() * 0.0
+                        # Default: inline KataGo multi-head (backward compatible)
+                        has_valid_value_targets = (batch_value_cats >= 0).any()
+                        if has_valid_value_targets:
+                            value_loss = F.cross_entropy(
+                                output.value_logits, batch_value_cats, ignore_index=-1
+                            )
+                        else:
+                            value_loss = output.value_logits.sum() * 0.0
 
-                    # Score loss (MSE on normalized material balance).
-                    # Every position has a real target — no NaN masking needed.
-                    score_loss = F.mse_loss(
-                        output.score_lead.squeeze(-1), batch_score_targets,
+                        # Score loss (MSE on normalized material balance).
+                        # Every position has a real target — no NaN masking needed.
+                        score_loss = F.mse_loss(
+                            output.score_lead.squeeze(-1), batch_score_targets,
+                        )
+
+                        value_score_loss = (
+                            self.params.lambda_value * value_loss
+                            + self.params.lambda_score * score_loss
+                        )
+
+                    # Combined loss
+                    loss = (
+                        self.params.lambda_policy * policy_loss
+                        + value_score_loss
+                        - self.current_entropy_coeff * entropy
                     )
-
-                    value_score_loss = (
-                        self.params.lambda_value * value_loss
-                        + self.params.lambda_score * score_loss
-                    )
-
-                # Combined loss
-                loss = (
-                    self.params.lambda_policy * policy_loss
-                    + value_score_loss
-                    - self.current_entropy_coeff * entropy
-                )
 
                 self.optimizer.zero_grad()
-                loss.backward()
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.params.grad_clip
                 )
-                self.optimizer.step()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()

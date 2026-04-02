@@ -69,3 +69,73 @@ class TestGradScalerCheckpoint:
         )
 
         assert scaler2.get_scale() == original_scale
+
+
+from keisei.training.katago_ppo import KataGoPPOParams, KataGoPPOAlgorithm, KataGoRolloutBuffer
+from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+
+def _make_ppo(use_amp: bool = False) -> KataGoPPOAlgorithm:
+    """Create a minimal PPO algorithm with a tiny SEResNet model."""
+    params = KataGoPPOParams(use_amp=use_amp, batch_size=4, epochs_per_batch=1)
+    model_params = SEResNetParams(
+        num_blocks=1, channels=16, se_reduction=4,
+        global_pool_channels=8, policy_channels=4,
+        value_fc_size=16, score_fc_size=8, obs_channels=50,
+    )
+    model = SEResNetModel(model_params)
+    return KataGoPPOAlgorithm(params, model)
+
+
+def _fill_buffer(ppo: KataGoPPOAlgorithm, num_envs: int = 2, steps: int = 4) -> KataGoRolloutBuffer:
+    """Fill a rollout buffer with random data."""
+    obs_shape = (50, 9, 9)
+    action_space = 81 * 139
+    buf = KataGoRolloutBuffer(num_envs, obs_shape, action_space)
+
+    for _ in range(steps):
+        obs = torch.randn(num_envs, *obs_shape)
+        actions = torch.randint(0, action_space, (num_envs,))
+        log_probs = torch.randn(num_envs)
+        values = torch.randn(num_envs)
+        rewards = torch.randn(num_envs)
+        dones = torch.zeros(num_envs)
+        legal_masks = torch.ones(num_envs, action_space, dtype=torch.bool)
+        value_cats = torch.randint(0, 3, (num_envs,))
+        score_targets = torch.randn(num_envs).clamp(-1.5, 1.5)
+        buf.add(obs, actions, log_probs, values, rewards, dones, legal_masks,
+                value_categories=value_cats, score_targets=score_targets)
+
+    return buf
+
+
+class TestPPOAmp:
+    def test_update_with_amp_produces_finite_loss(self) -> None:
+        """PPO update with use_amp=True runs without error and produces finite metrics."""
+        ppo = _make_ppo(use_amp=True)
+        buf = _fill_buffer(ppo)
+        next_values = torch.randn(2)
+
+        metrics = ppo.update(buf, next_values)
+
+        assert all(
+            torch.isfinite(torch.tensor(v)) for v in metrics.values() if isinstance(v, float)
+        ), f"Non-finite metrics: {metrics}"
+
+    def test_update_without_amp_still_works(self) -> None:
+        """use_amp=False (default) doesn't break anything."""
+        ppo = _make_ppo(use_amp=False)
+        buf = _fill_buffer(ppo)
+        next_values = torch.randn(2)
+
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics
+
+    def test_amp_on_cpu_uses_no_op_autocast(self) -> None:
+        """AMP on CPU should not crash — autocast('cpu') is a valid no-op."""
+        ppo = _make_ppo(use_amp=True)
+        buf = _fill_buffer(ppo)
+        next_values = torch.randn(2)
+
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics
