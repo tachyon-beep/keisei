@@ -9,8 +9,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from starlette.testclient import TestClient
 
-from keisei.server.app import _db_accessible, _get_system_stats
+from keisei.db import init_db, update_heartbeat, write_training_state
+from keisei.server.app import _db_accessible, _get_system_stats, create_app
 
 
 class TestGetSystemStatsNvidiaSmi:
@@ -84,7 +86,69 @@ class TestDbAccessibleEdgeCases:
 
     def test_db_accessible_with_valid_db(self, tmp_path: Path) -> None:
         """A properly initialized keisei DB should be accessible."""
-        from keisei.db import init_db
         db_file = str(tmp_path / "good.db")
         init_db(db_file)
         assert _db_accessible(db_file) is True
+
+
+@pytest.fixture
+def edge_db(tmp_path: Path) -> str:
+    """Initialized DB with fresh heartbeat for edge-case tests."""
+    path = str(tmp_path / "edge.db")
+    init_db(path)
+    write_training_state(path, {
+        "config_json": "{}",
+        "display_name": "TestBot",
+        "model_arch": "resnet",
+        "algorithm_name": "ppo",
+        "started_at": "2026-04-01T00:00:00Z",
+    })
+    update_heartbeat(path)
+    return path
+
+
+class TestWSDbErrorDuringPoll:
+    """The WebSocket should close cleanly when the DB fails mid-poll,
+    not crash or hang."""
+
+    @pytest.mark.skip(
+        reason=(
+            "Starlette sync TestClient cannot reliably exercise except* with TaskGroup: "
+            "the background tasks (TaskGroup + asyncio event loop) keep running inside "
+            "the sync thread, causing ws.receive_json() to block indefinitely after the "
+            "DB error triggers a disconnect. The error-handling path (ws_endpoint lines "
+            "118-131 in app.py) is only exercisable via a real async client (e.g. "
+            "httpx.AsyncClient with anyio). See test_server_gaps.py lines 279-286."
+        )
+    )
+    def test_ws_closes_on_db_read_failure(self, edge_db: str) -> None:
+        """Simulate DB failure after init by making read_metrics_since raise."""
+        app = create_app(edge_db)
+        call_count = 0
+
+        original_read_metrics = __import__(
+            "keisei.db", fromlist=["read_metrics_since"]
+        ).read_metrics_since
+
+        def failing_read_metrics(db_path, since_id, limit=500):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise sqlite3.OperationalError("database is locked")
+            return original_read_metrics(db_path, since_id, limit)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999), \
+             patch("keisei.server.app.read_metrics_since", failing_read_metrics):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                try:
+                    for _ in range(5):
+                        data = ws.receive_json(mode="text")
+                        if data.get("type") == "ping":
+                            continue
+                except Exception:
+                    pass  # Connection closed — expected outcome
