@@ -126,6 +126,10 @@
                 currentPlayer={game.current_player || 'black'}
               />
             </div>
+
+            <div class="league-placeholder" style="height: {boardAreaHeight}px">
+              <span class="placeholder-text">Reserved for league data</span>
+            </div>
           </div>
         {:else}
           <div class="no-game">
@@ -202,11 +206,11 @@
 
   .player-panel {
     flex: 0 0 auto;
-    width: 170px;
+    width: 350px;
     padding: 8px;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: stretch;
     gap: 4px;
     border-right: 1px solid var(--border);
   }
@@ -283,6 +287,23 @@
   }
 
   .no-game-hint { font-size: 12px; color: var(--text-muted); }
+
+  .league-placeholder {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .placeholder-text {
+    color: var(--text-muted);
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
 
   .metrics-panel { padding: 12px 16px; }
 
