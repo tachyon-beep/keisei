@@ -64,11 +64,14 @@ def run_evaluation(
     max_ply: int = 500,
     params_a: dict | None = None,
     params_b: dict | None = None,
+    device: str | None = None,
 ) -> EvalResult:
     """Run head-to-head evaluation between two checkpoints."""
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     return _play_evaluation_games(
         checkpoint_a, arch_a, checkpoint_b, arch_b,
-        games, max_ply, params_a or {}, params_b or {},
+        games, max_ply, params_a or {}, params_b or {}, device,
     )
 
 
@@ -77,19 +80,21 @@ def _play_evaluation_games(
     checkpoint_b: str, arch_b: str,
     games: int, max_ply: int,
     params_a: dict, params_b: dict,
+    device: str,
 ) -> EvalResult:
     """Play the actual games. Separated for testability (can be mocked)."""
     model_a = build_model(arch_a, params_a)
-    ckpt_a = torch.load(checkpoint_a, map_location="cpu", weights_only=True)
-    # Support both raw state_dict and full checkpoint dict (from save_checkpoint)
+    ckpt_a = torch.load(checkpoint_a, map_location=device, weights_only=True)
     state_a = ckpt_a.get("model_state_dict", ckpt_a) if isinstance(ckpt_a, dict) else ckpt_a
     model_a.load_state_dict(state_a)
+    model_a = model_a.to(device)
     model_a.eval()
 
     model_b = build_model(arch_b, params_b)
-    ckpt_b = torch.load(checkpoint_b, map_location="cpu", weights_only=True)
+    ckpt_b = torch.load(checkpoint_b, map_location=device, weights_only=True)
     state_b = ckpt_b.get("model_state_dict", ckpt_b) if isinstance(ckpt_b, dict) else ckpt_b
     model_b.load_state_dict(state_b)
+    model_b = model_b.to(device)
     model_b.eval()
 
     from shogi_gym import VecEnv
@@ -103,8 +108,8 @@ def _play_evaluation_games(
         models = [model_a, model_b] if a_is_black else [model_b, model_a]
 
         reset_result = env.reset()
-        obs = torch.from_numpy(np.asarray(reset_result.observations))
-        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks))
+        obs = torch.from_numpy(np.asarray(reset_result.observations)).to(device)
+        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(device)
         current_player = 0
         done = False
 
@@ -117,10 +122,10 @@ def _play_evaluation_games(
                 probs = F.softmax(masked, dim=-1)
                 action = torch.distributions.Categorical(probs).sample()
 
-            step_result = env.step(action.tolist())
+            step_result = env.step(action.cpu().tolist())
             done = bool(step_result.terminated[0] or step_result.truncated[0])
-            obs = torch.from_numpy(np.asarray(step_result.observations))
-            legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks))
+            obs = torch.from_numpy(np.asarray(step_result.observations)).to(device)
+            legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
             current_player = int(step_result.current_players[0])
 
         reward = float(step_result.rewards[0])
@@ -148,6 +153,8 @@ def main() -> None:
     parser.add_argument("--arch-b", required=True, help="Architecture name for B")
     parser.add_argument("--games", type=int, default=400)
     parser.add_argument("--max-ply", type=int, default=500)
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device for inference (default: cuda if available)")
     args = parser.parse_args()
 
     if args.games < 200:
@@ -156,7 +163,7 @@ def main() -> None:
     result = run_evaluation(
         checkpoint_a=args.checkpoint_a, arch_a=args.arch_a,
         checkpoint_b=args.checkpoint_b, arch_b=args.arch_b,
-        games=args.games, max_ply=args.max_ply,
+        games=args.games, max_ply=args.max_ply, device=args.device,
     )
 
     low, high = result.win_rate_ci()
