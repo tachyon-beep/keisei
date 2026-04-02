@@ -3,6 +3,7 @@
 import time
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import torch
 
@@ -210,6 +211,126 @@ class TestPlayGamePinUnpin:
         load_indices = [i for i, (op, _) in enumerate(call_order) if op == "load"]
         if load_indices:  # loads may not happen if shogi_gym missing, but pins must exist
             assert max(pin_indices) < min(load_indices)
+
+
+class TestPlayGameWithMockedVecEnv:
+    """MED-1: Exercise _play_game() while-loop body with a mocked shogi_gym.VecEnv."""
+
+    def _make_mock_vecenv(self, terminate_after: int = 3):
+        """Create a mock VecEnv that terminates after N steps."""
+        step_count = [0]
+        mock_env = MagicMock()
+
+        def make_reset():
+            result = MagicMock()
+            result.observations = np.zeros((1, 50, 9, 9), dtype=np.float32)
+            result.legal_masks = np.ones((1, 11259), dtype=bool)
+            return result
+
+        def make_step(actions):
+            step_count[0] += 1
+            result = MagicMock()
+            result.observations = np.zeros((1, 50, 9, 9), dtype=np.float32)
+            result.legal_masks = np.ones((1, 11259), dtype=bool)
+            result.terminated = np.array([step_count[0] >= terminate_after])
+            result.truncated = np.array([False])
+            result.current_players = np.array([step_count[0] % 2], dtype=np.uint8)
+            return result
+
+        mock_env.reset.side_effect = lambda: make_reset()
+        mock_env.step.side_effect = make_step
+        return mock_env, step_count
+
+    @staticmethod
+    def _make_real_model():
+        """Create a real (tiny) SEResNetModel for demonstrator game loop testing."""
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        params = SEResNetParams(
+            num_blocks=1, channels=16, se_reduction=4,
+            global_pool_channels=8, policy_channels=4,
+            value_fc_size=16, score_fc_size=8, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        model.eval()
+        return model
+
+    def test_play_game_runs_to_completion(self):
+        """_play_game() should run the game loop until termination with mocked VecEnv."""
+        import sys
+        import types
+
+        mock_vecenv, step_count = self._make_mock_vecenv(terminate_after=3)
+
+        fake_shogi_gym = types.ModuleType("shogi_gym")
+        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)
+
+        pool = _make_mock_pool(num_entries=2)
+        # Use real models so forward passes produce real tensors
+        real_model = self._make_real_model()
+        pool.load_opponent.return_value = real_model
+
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=600_000,  # very fast to avoid sleep
+            device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        old_module = sys.modules.get("shogi_gym")
+        sys.modules["shogi_gym"] = fake_shogi_gym
+        try:
+            runner._play_game(matchup)
+        finally:
+            if old_module is not None:
+                sys.modules["shogi_gym"] = old_module
+            else:
+                sys.modules.pop("shogi_gym", None)
+
+        # Verify the game loop actually ran
+        assert step_count[0] == 3, f"Expected 3 steps, got {step_count[0]}"
+        fake_shogi_gym.VecEnv.assert_called_once()
+        assert mock_vecenv.reset.call_count == 1
+        assert mock_vecenv.step.call_count == 3
+
+    def test_play_game_respects_stop_event(self):
+        """_play_game() should exit early when stop event is set."""
+        import sys
+        import types
+
+        mock_vecenv, step_count = self._make_mock_vecenv(terminate_after=999)
+
+        fake_shogi_gym = types.ModuleType("shogi_gym")
+        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)
+
+        pool = _make_mock_pool(num_entries=2)
+        real_model = self._make_real_model()
+        pool.load_opponent.return_value = real_model
+
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=600_000,
+            device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        # Set stop event before the game starts — it should exit after first check
+        runner._stop_event.set()
+
+        old_module = sys.modules.get("shogi_gym")
+        sys.modules["shogi_gym"] = fake_shogi_gym
+        try:
+            runner._play_game(matchup)
+        finally:
+            if old_module is not None:
+                sys.modules["shogi_gym"] = old_module
+            else:
+                sys.modules.pop("shogi_gym", None)
+
+        # Should have exited early (0 or 1 steps, not 999)
+        assert step_count[0] <= 1
 
 
 class TestMoveDelay:

@@ -86,6 +86,46 @@ def _set_updated_at(db_path: str, game_id: int, ts: str) -> None:
     conn.close()
 
 
+# ===================================================================
+# HIGH-3 — game_type and demo_slot column defaults
+# ===================================================================
+
+
+class TestGameSnapshotColumnDefaults:
+    """HIGH-3: game_type defaults to 'live', demo_slot defaults to NULL."""
+
+    def test_game_type_defaults_to_live(self, db: Path) -> None:
+        """write_game_snapshots doesn't set game_type; the schema default should be 'live'."""
+        path = str(db)
+        write_game_snapshots(path, [_make_snapshot(0)])
+        result = read_game_snapshots(path)
+        assert len(result) == 1
+        assert result[0]["game_type"] == "live"
+
+    def test_demo_slot_defaults_to_none(self, db: Path) -> None:
+        """write_game_snapshots doesn't set demo_slot; it should default to NULL."""
+        path = str(db)
+        write_game_snapshots(path, [_make_snapshot(0)])
+        result = read_game_snapshots(path)
+        assert len(result) == 1
+        assert result[0]["demo_slot"] is None
+
+    def test_defaults_preserved_on_replace(self, db: Path) -> None:
+        """INSERT OR REPLACE should preserve schema defaults for unset columns."""
+        path = str(db)
+        # Write, then replace the same game_id
+        write_game_snapshots(path, [_make_snapshot(0)])
+        snap = _make_snapshot(0)
+        snap["ply"] = 99  # change something
+        write_game_snapshots(path, [snap])
+
+        result = read_game_snapshots(path)
+        assert len(result) == 1
+        assert result[0]["ply"] == 99
+        assert result[0]["game_type"] == "live"
+        assert result[0]["demo_slot"] is None
+
+
 class TestReadGameSnapshotsSince:
     """Tests for read_game_snapshots_since() — timestamp filtering and max_ts."""
 

@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
+from keisei.db import update_training_progress
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
@@ -589,3 +590,91 @@ class TestValueCategoryNoLeague:
         # Non-terminal steps should have value_cat=-1
         nonterminal_cats = captured_value_cats[0]
         assert (nonterminal_cats == -1).all(), "Non-terminal steps should have value_cat=-1"
+
+
+class TestCheckpointWrittenToDisk:
+    """CRIT-1: run() with checkpoint_interval that triggers a .pt file write."""
+
+    def test_checkpoint_file_created_on_disk(self, katago_config, tmp_path):
+        """Run enough epochs to trigger checkpoint_interval, assert .pt file exists."""
+        # katago_config has checkpoint_interval=5, so epoch_i=4 triggers
+        # (epoch_i + 1) % 5 == 0
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=5, steps_per_epoch=2)
+
+        ckpt_dir = tmp_path / "checkpoints"
+        expected = ckpt_dir / "epoch_00004.pt"
+        assert expected.exists(), f"Checkpoint file not found at {expected}"
+
+        # Verify the checkpoint is loadable and contains expected keys
+        ckpt = torch.load(expected, weights_only=False)
+        assert "model_state_dict" in ckpt
+        assert "optimizer_state_dict" in ckpt
+        assert ckpt["epoch"] == 5
+        assert ckpt["step"] == 10  # 5 epochs * 2 steps
+
+    def test_checkpoint_path_recorded_in_db(self, katago_config, tmp_path):
+        """After checkpoint write, the path should be stored in training_state."""
+        from keisei.db import read_training_state
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=5, steps_per_epoch=2)
+
+        state = read_training_state(katago_config.display.db_path)
+        assert state is not None
+        assert state.get("checkpoint_path") is not None
+        assert "epoch_00004.pt" in state["checkpoint_path"]
+
+
+class TestSwallowedExceptions:
+    """CRIT-1: Swallowed exceptions in run() must not crash training."""
+
+    def test_write_metrics_failure_continues_training(self, katago_config):
+        """If write_metrics raises, training should continue to the next epoch."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        with patch("keisei.training.katago_loop.write_metrics",
+                   side_effect=RuntimeError("DB write failed")):
+            # Should NOT raise — the exception is caught and logged
+            loop.run(num_epochs=2, steps_per_epoch=2)
+
+        assert loop.global_step == 4  # both epochs completed
+
+    def test_update_training_progress_failure_continues(self, katago_config):
+        """If update_training_progress raises mid-epoch, training continues."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        call_count = [0]
+        original_fn = update_training_progress
+
+        def failing_update(*args, **kwargs):
+            call_count[0] += 1
+            # Fail on the post-epoch call (not heartbeat calls)
+            if len(args) >= 3 or "step" in kwargs:
+                raise RuntimeError("progress update failed")
+            return original_fn(*args, **kwargs)
+
+        with patch("keisei.training.katago_loop.update_training_progress",
+                   side_effect=RuntimeError("progress update failed")):
+            loop.run(num_epochs=2, steps_per_epoch=2)
+
+        assert loop.global_step == 4
+
+    def test_checkpoint_save_failure_continues(self, katago_config, tmp_path):
+        """If save_checkpoint raises, training should continue past the checkpoint epoch."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        with patch("keisei.training.katago_loop.save_checkpoint",
+                   side_effect=OSError("disk full")):
+            # Run 6 epochs (checkpoint at epoch 4, then continues to 5)
+            loop.run(num_epochs=6, steps_per_epoch=2)
+
+        assert loop.global_step == 12  # all 6 epochs completed
+        # No checkpoint file should exist since save was mocked to fail
+        ckpt_dir = tmp_path / "checkpoints"
+        assert not (ckpt_dir / "epoch_00004.pt").exists()

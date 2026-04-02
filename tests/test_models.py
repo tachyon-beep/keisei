@@ -141,6 +141,12 @@ class TestTransformer:
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
         _check_gradient_flow(model)
 
+    def test_nhead_must_divide_d_model(self) -> None:
+        """nhead that doesn't divide d_model should raise at construction time."""
+        # d_model=32 is not divisible by nhead=5
+        with pytest.raises((AssertionError, ValueError)):
+            TransformerModel(TransformerParams(d_model=32, nhead=5, num_layers=1))
+
     def test_positional_encoding_affects_output(self) -> None:
         """Two observations that differ only in spatial layout should get different logits."""
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))

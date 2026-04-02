@@ -138,6 +138,38 @@ class TestModelRegistry:
         assert validated.obs_channels == 50
 
 
+class TestGlobalPoolBiasBlockBatchSizeOne:
+    """MED-2: GlobalPoolBiasBlock with batch_size=1 must produce finite output.
+
+    With batch_size=1, population std (correction=0) returns 0 for constant
+    channels rather than NaN. This is the correct behavior, but needs explicit
+    verification since it's a known edge case for pooling operations.
+    """
+
+    def test_batch_size_one_finite_output(self):
+        block = GlobalPoolBiasBlock(channels=32, se_reduction=8, global_pool_channels=16)
+        x = torch.randn(1, 32, 9, 9)
+        out = block(x)
+        assert out.shape == (1, 32, 9, 9)
+        assert torch.isfinite(out).all(), "Output contains NaN/Inf with batch_size=1"
+
+    def test_batch_size_one_constant_input(self):
+        """Constant spatial input → std=0, should not produce NaN."""
+        block = GlobalPoolBiasBlock(channels=16, se_reduction=4, global_pool_channels=8)
+        x = torch.full((1, 16, 9, 9), 1.0)
+        out = block(x)
+        assert torch.isfinite(out).all(), "Constant input with batch_size=1 produced NaN/Inf"
+
+    def test_batch_size_one_gradient_flow(self):
+        """Gradients should flow through the block with batch_size=1."""
+        block = GlobalPoolBiasBlock(channels=32, se_reduction=8, global_pool_channels=16)
+        x = torch.randn(1, 32, 9, 9, requires_grad=True)
+        out = block(x)
+        out.sum().backward()
+        assert x.grad is not None
+        assert torch.isfinite(x.grad).all()
+
+
 class TestGlobalPoolFunction:
     """M3: Test _global_pool as a pure function."""
 

@@ -367,3 +367,96 @@ class TestWSTrainingStatusSystemStats:
                         break
 
                 assert found, "Expected training_status message with system_stats"
+
+
+# ===================================================================
+# HIGH-2 — _poll_and_push with pre-existing game snapshots at init
+# ===================================================================
+
+
+class TestWSInitWithPreExistingGames:
+    """HIGH-2: When games already exist in DB before WebSocket connect,
+    init message should include them and last_game_ts should be set."""
+
+    def test_init_includes_pre_existing_games(self, server_db: str) -> None:
+        """Seed DB with game snapshots before connecting; verify init message."""
+        # Write games BEFORE WebSocket connect
+        write_game_snapshots(server_db, [
+            {
+                "game_id": 0, "board_json": "[]", "hands_json": "{}",
+                "current_player": "black", "ply": 10, "is_over": 0,
+                "result": "in_progress", "sfen": "startpos",
+                "in_check": 0, "move_history_json": "[]",
+                "value_estimate": 0.5,
+            },
+            {
+                "game_id": 1, "board_json": "[]", "hands_json": "{}",
+                "current_player": "white", "ply": 20, "is_over": 0,
+                "result": "in_progress", "sfen": "startpos",
+                "in_check": 0, "move_history_json": "[]",
+                "value_estimate": -0.3,
+            },
+        ])
+
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+                # Init should include the 2 pre-existing games
+                assert len(init_msg["games"]) == 2
+                plies = {g["ply"] for g in init_msg["games"]}
+                assert plies == {10, 20}
+
+    def test_subsequent_updates_after_pre_existing_games(self, server_db: str) -> None:
+        """After init with pre-existing games, updating an existing game should push game_update.
+
+        We update an existing game_id (not create a new one) to ensure the
+        updated_at timestamp changes and the poll detects it.
+        """
+        import time as _time
+
+        write_game_snapshots(server_db, [{
+            "game_id": 0, "board_json": "[]", "hands_json": "{}",
+            "current_player": "black", "ply": 5, "is_over": 0,
+            "result": "in_progress", "sfen": "startpos",
+            "in_check": 0, "move_history_json": "[]",
+            "value_estimate": 0.0,
+        }])
+
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+                assert len(init_msg["games"]) == 1
+
+                # Wait briefly to ensure updated_at will differ
+                _time.sleep(1.1)
+
+                # Update existing game with new ply — this changes updated_at
+                write_game_snapshots(server_db, [{
+                    "game_id": 0, "board_json": "[updated]", "hands_json": "{}",
+                    "current_player": "white", "ply": 99, "is_over": 0,
+                    "result": "in_progress", "sfen": "startpos",
+                    "in_check": 0, "move_history_json": "[]",
+                    "value_estimate": 0.1,
+                }])
+
+                # Drain until game_update
+                found = False
+                for _ in range(20):
+                    msg = ws.receive_json(mode="text")
+                    if msg["type"] == "game_update":
+                        new_plies = {s["ply"] for s in msg["snapshots"]}
+                        assert 99 in new_plies
+                        found = True
+                        break
+
+                assert found, "Expected game_update with updated snapshot after init"
