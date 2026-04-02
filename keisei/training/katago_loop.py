@@ -209,6 +209,7 @@ class KataGoTrainingLoop:
 
         rl_warmup_epochs = rl_warmup_config.get("epochs", 0)
         rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
+        self._original_warmup_duration = rl_warmup_epochs  # fixed; used in _rotate_seat
 
         base_model = self.model.module if hasattr(self.model, "module") else self.model
         self.ppo = KataGoPPOAlgorithm(
@@ -632,11 +633,10 @@ class KataGoTrainingLoop:
                 min_lr=lr_config.get("min_lr", 1e-5),
             )
 
-        # B2 fix: reset warmup counter on the PPO algorithm itself so
-        # get_entropy_coeff(real_epoch) still returns warmup_entropy.
-        # The main loop calls get_entropy_coeff(epoch_i) — we need
-        # warmup_epochs to be relative to the rotation point.
-        self.ppo.warmup_epochs = epoch + 1 + self.ppo.warmup_epochs
+        # B2 fix: extend warmup relative to the rotation point.
+        # Uses the ORIGINAL warmup duration (fixed at init) to avoid
+        # unbounded accumulation across multiple rotations.
+        self.ppo.warmup_epochs = epoch + 1 + self._original_warmup_duration
 
         logger.info(
             "Seat rotation at epoch %d: optimizer reset, warmup extended to epoch %d, "

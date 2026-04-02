@@ -80,11 +80,16 @@ def _play_evaluation_games(
 ) -> EvalResult:
     """Play the actual games. Separated for testability (can be mocked)."""
     model_a = build_model(arch_a, params_a)
-    model_a.load_state_dict(torch.load(checkpoint_a, map_location="cpu", weights_only=True))
+    ckpt_a = torch.load(checkpoint_a, map_location="cpu", weights_only=True)
+    # Support both raw state_dict and full checkpoint dict (from save_checkpoint)
+    state_a = ckpt_a.get("model_state_dict", ckpt_a) if isinstance(ckpt_a, dict) else ckpt_a
+    model_a.load_state_dict(state_a)
     model_a.eval()
 
     model_b = build_model(arch_b, params_b)
-    model_b.load_state_dict(torch.load(checkpoint_b, map_location="cpu", weights_only=True))
+    ckpt_b = torch.load(checkpoint_b, map_location="cpu", weights_only=True)
+    state_b = ckpt_b.get("model_state_dict", ckpt_b) if isinstance(ckpt_b, dict) else ckpt_b
+    model_b.load_state_dict(state_b)
     model_b.eval()
 
     from shogi_gym import VecEnv

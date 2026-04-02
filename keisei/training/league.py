@@ -100,7 +100,12 @@ class OpponentPool:
         """Save a checkpoint snapshot and add it to the pool."""
         raw_model = model.module if hasattr(model, "module") else model
         ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}.pt"
-        torch.save(raw_model.state_dict(), ckpt_path)
+        # Atomic write: save to .tmp first, then rename. A crash mid-write
+        # leaves the .tmp file (harmless) instead of a corrupt .pt file
+        # with a valid DB row pointing at it.
+        tmp_path = ckpt_path.with_suffix(".pt.tmp")
+        torch.save(raw_model.state_dict(), tmp_path)
+        tmp_path.rename(ckpt_path)
 
         conn = self._connect()
         try:
