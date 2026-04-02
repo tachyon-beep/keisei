@@ -58,6 +58,7 @@ def init_db(db_path: str) -> None:
                 value_estimate    REAL NOT NULL DEFAULT 0.0,
                 game_type         TEXT NOT NULL DEFAULT 'live',
                 demo_slot         INTEGER,
+                opponent_id       INTEGER REFERENCES league_entries(id),
                 updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS training_state (
@@ -95,6 +96,14 @@ def init_db(db_path: str) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
             CREATE INDEX IF NOT EXISTS idx_league_entries_elo ON league_entries(elo_rating);
+            CREATE TABLE IF NOT EXISTS elo_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                epoch       INTEGER NOT NULL,
+                elo_rating  REAL NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_elo_history_entry ON elo_history(entry_id);
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
@@ -153,10 +162,27 @@ def write_game_snapshots(db_path: str, snapshots: list[dict[str, Any]]) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO game_snapshots
                    (game_id, board_json, hands_json, current_player, ply,
-                    is_over, result, sfen, in_check, move_history_json, value_estimate)
+                    is_over, result, sfen, in_check, move_history_json,
+                    value_estimate, game_type, demo_slot, opponent_id)
                    VALUES (:game_id, :board_json, :hands_json, :current_player,
-                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json, :value_estimate)""",
-                snap,
+                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json,
+                    :value_estimate, :game_type, :demo_slot, :opponent_id)""",
+                {
+                    "game_id": snap["game_id"],
+                    "board_json": snap["board_json"],
+                    "hands_json": snap["hands_json"],
+                    "current_player": snap["current_player"],
+                    "ply": snap["ply"],
+                    "is_over": snap["is_over"],
+                    "result": snap["result"],
+                    "sfen": snap["sfen"],
+                    "in_check": snap["in_check"],
+                    "move_history_json": snap["move_history_json"],
+                    "value_estimate": snap.get("value_estimate", 0.0),
+                    "game_type": snap.get("game_type", "live"),
+                    "demo_slot": snap.get("demo_slot"),
+                    "opponent_id": snap.get("opponent_id"),
+                },
             )
         conn.commit()
     finally:

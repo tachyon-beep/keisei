@@ -72,3 +72,29 @@ class TestSchemaV2:
         assert "opponent_id" in cols
         assert "wins" in cols
         assert "draws" in cols
+
+    def test_creates_elo_history_table(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        conn.close()
+        assert "elo_history" in tables
+
+    def test_elo_history_columns(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(elo_history)").fetchall()]
+        conn.close()
+        assert cols == ["id", "entry_id", "epoch", "elo_rating", "recorded_at"]
+
+    def test_game_snapshots_has_opponent_id(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(game_snapshots)").fetchall()]
+        conn.close()
+        assert "opponent_id" in cols
