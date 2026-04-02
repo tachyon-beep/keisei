@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from keisei.sl.dataset import SLDataset
+from keisei.sl.dataset import SCORE_NORMALIZATION, SLDataset
+from keisei.sl.parsers import GameOutcome
 from keisei.sl.prepare import prepare_sl_data
 
 
@@ -129,3 +130,132 @@ def test_prepare_handles_mixed_extensions(tmp_path):
     dataset = SLDataset(output_dir)
     # SFEN: 2 moves -> 2 positions; CSA: 2 moves -> 2 positions
     assert len(dataset) == 4
+
+
+class TestParserRegistryDuplicateExtension:
+    """M1: _build_parser_registry raises ValueError on duplicate extensions."""
+
+    def test_duplicate_extension_raises_value_error(self):
+        """Patching parser list to include a duplicate extension triggers ValueError."""
+        from unittest.mock import patch
+
+        from keisei.sl.parsers import SFENParser
+        from keisei.sl.prepare import _build_parser_registry
+
+        # Patch the parser class list so both entries are SFENParser,
+        # which means ".sfen" will be registered twice.
+        with patch(
+            "keisei.sl.prepare.SFENParser", SFENParser
+        ), patch(
+            "keisei.sl.prepare.CSAParser", SFENParser
+        ):
+            with pytest.raises(ValueError, match="Duplicate parser for extension"):
+                _build_parser_registry()
+
+
+class TestValueEncodingCorrectness:
+    """H5: Value encoding from side-to-move perspective (W/D/L)."""
+
+    def _make_game_file(self, tmp_path, outcome_str, num_moves=4):
+        """Create an SFEN game file with a given outcome and number of moves."""
+        moves = ["7g7f", "3c3d", "2g2f", "8c8d", "6g6f", "4c4d"][:num_moves]
+        content = f"result:{outcome_str}\nstartpos\n" + "\n".join(moves) + "\n"
+        games_dir = tmp_path / "games"
+        games_dir.mkdir(exist_ok=True)
+        (games_dir / "test.sfen").write_text(content)
+        return games_dir
+
+    def test_win_black_value_encoding(self, tmp_path):
+        """WIN_BLACK: black-to-move positions get value_cat=0 (W), white gets 2 (L)."""
+        games_dir = self._make_game_file(tmp_path, "win_black", num_moves=4)
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir)
+        assert len(dataset) == 4
+
+        for i in range(4):
+            item = dataset[i]
+            value_cat = item["value_target"].item()
+            if i % 2 == 0:  # black to move
+                assert value_cat == 0, f"Move {i} (black-to-move): expected W(0), got {value_cat}"
+            else:  # white to move
+                assert value_cat == 2, f"Move {i} (white-to-move): expected L(2), got {value_cat}"
+
+    def test_win_white_reverses_assignment(self, tmp_path):
+        """WIN_WHITE: black-to-move positions get value_cat=2 (L), white gets 0 (W)."""
+        games_dir = self._make_game_file(tmp_path, "win_white", num_moves=4)
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir)
+        assert len(dataset) == 4
+
+        for i in range(4):
+            item = dataset[i]
+            value_cat = item["value_target"].item()
+            if i % 2 == 0:  # black to move
+                assert value_cat == 2, f"Move {i} (black-to-move): expected L(2), got {value_cat}"
+            else:  # white to move
+                assert value_cat == 0, f"Move {i} (white-to-move): expected W(0), got {value_cat}"
+
+    def test_draw_produces_value_cat_1_for_all(self, tmp_path):
+        """DRAW: all positions get value_cat=1 regardless of side to move."""
+        games_dir = self._make_game_file(tmp_path, "draw", num_moves=4)
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir)
+        assert len(dataset) == 4
+
+        for i in range(4):
+            item = dataset[i]
+            value_cat = item["value_target"].item()
+            assert value_cat == 1, f"Move {i}: expected Draw(1), got {value_cat}"
+
+    def test_score_target_normalization(self, tmp_path):
+        """Score targets should be normalized by SCORE_NORMALIZATION."""
+        games_dir = self._make_game_file(tmp_path, "win_black", num_moves=4)
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir)
+        assert len(dataset) == 4
+
+        for i in range(4):
+            item = dataset[i]
+            score = item["score_target"].item()
+            is_black_to_move = i % 2 == 0
+            # raw_score = 1.0 for black-to-move, -1.0 for white-to-move
+            expected_raw = 1.0 if is_black_to_move else -1.0
+            expected_normalized = expected_raw / SCORE_NORMALIZATION
+            np.testing.assert_almost_equal(
+                score, expected_normalized, decimal=5,
+                err_msg=f"Move {i}: score {score} != expected {expected_normalized}"
+            )
+
+    def test_draw_score_target_is_zero(self, tmp_path):
+        """DRAW positions should have score_target = 0.0."""
+        games_dir = self._make_game_file(tmp_path, "draw", num_moves=4)
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir)
+        for i in range(4):
+            score = dataset[i]["score_target"].item()
+            assert score == 0.0, f"Move {i}: draw score should be 0.0, got {score}"

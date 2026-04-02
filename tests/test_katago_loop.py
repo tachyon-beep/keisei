@@ -2,10 +2,12 @@
 """Integration tests for KataGoTrainingLoop."""
 
 import dataclasses
-from unittest.mock import MagicMock
+import time
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
 
 from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
 from keisei.training.katago_loop import KataGoTrainingLoop
@@ -276,3 +278,314 @@ class TestSeatRotation:
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=4, steps_per_epoch=2)
         assert loop.epoch == 3  # completed epochs 0,1,2,3
+
+
+class TestCheckResume:
+    """C1: Resume-from-checkpoint branch in _check_resume()."""
+
+    def test_resume_restores_epoch_and_step(self, katago_config, tmp_path):
+        """When a checkpoint exists in the DB, _check_resume loads it and
+        restores epoch/global_step instead of starting from 0."""
+        from keisei.training.checkpoint import save_checkpoint
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+
+        # First: create a loop to initialize the DB and get a model we can save
+        loop1 = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        base_model = loop1.model.module if hasattr(loop1.model, "module") else loop1.model
+
+        # Save a checkpoint at epoch=7, step=42
+        ckpt_path = tmp_path / "checkpoints" / "resume_test.pt"
+        save_checkpoint(
+            ckpt_path, base_model, loop1.ppo.optimizer,
+            epoch=7, step=42,
+            architecture=katago_config.model.architecture,
+        )
+
+        # Write checkpoint_path into the DB so _check_resume finds it
+        from keisei.db import update_training_progress
+        update_training_progress(
+            katago_config.display.db_path, epoch=7, step=42,
+            checkpoint_path=str(ckpt_path),
+        )
+
+        # Now create a second loop — it should resume from the checkpoint
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        loop2 = KataGoTrainingLoop(katago_config, vecenv=mock_env2)
+        assert loop2.epoch == 7
+        assert loop2.global_step == 42
+
+    def test_no_resume_when_checkpoint_missing_on_disk(self, katago_config, tmp_path):
+        """If the DB points to a checkpoint file that doesn't exist on disk,
+        _check_resume should NOT crash — it falls through to fresh start."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+
+        # Create a loop to initialize the DB
+        KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        # Point DB at a non-existent file
+        from keisei.db import update_training_progress
+        update_training_progress(
+            katago_config.display.db_path, epoch=5, step=20,
+            checkpoint_path=str(tmp_path / "nonexistent.pt"),
+        )
+
+        # Second loop should start fresh (epoch=0, step=0)
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        loop2 = KataGoTrainingLoop(katago_config, vecenv=mock_env2)
+        assert loop2.epoch == 0
+        assert loop2.global_step == 0
+
+
+class TestRotateSeatIsolation:
+    """C2: _rotate_seat() isolation tests."""
+
+    def _make_loop_with_league(self, katago_config, tmp_path):
+        """Helper: create a loop with league enabled and LR scheduler."""
+        import torch
+
+        # Add lr_schedule to algorithm_params so LR scheduler is created
+        algo_params = dict(katago_config.training.algorithm_params)
+        algo_params["lr_schedule"] = {
+            "type": "plateau",
+            "factor": 0.5,
+            "patience": 10,
+            "min_lr": 1e-6,
+        }
+        algo_params["rl_warmup"] = {"epochs": 5, "entropy_bonus": 0.05}
+        training = dataclasses.replace(katago_config.training, algorithm_params=algo_params)
+        config = dataclasses.replace(katago_config, training=training)
+
+        config = _with_league(config, tmp_path, snapshot_interval=10)
+        league = dataclasses.replace(config.league, epochs_per_seat=3)
+        config = dataclasses.replace(config, league=league)
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        return loop
+
+    def test_learner_entry_id_updated(self, katago_config, tmp_path):
+        """After _rotate_seat, _learner_entry_id points to the new snapshot."""
+        loop = self._make_loop_with_league(katago_config, tmp_path)
+        old_id = loop._learner_entry_id
+        loop._rotate_seat(epoch=2)
+        assert loop._learner_entry_id != old_id
+        assert loop._learner_entry_id is not None
+
+    def test_optimizer_is_new_object(self, katago_config, tmp_path):
+        """After _rotate_seat, the optimizer is a fresh instance."""
+        loop = self._make_loop_with_league(katago_config, tmp_path)
+        old_optimizer = loop.ppo.optimizer
+        loop._rotate_seat(epoch=2)
+        assert loop.ppo.optimizer is not old_optimizer
+
+    def test_warmup_extends_correctly(self, katago_config, tmp_path):
+        """warmup_epochs = (epoch + 1) + _original_warmup_duration after rotation."""
+        loop = self._make_loop_with_league(katago_config, tmp_path)
+        original_duration = loop._original_warmup_duration
+        assert original_duration == 5  # from rl_warmup config
+
+        loop._rotate_seat(epoch=9)
+        # warmup_epochs should be (9 + 1) + 5 = 15
+        assert loop.ppo.warmup_epochs == 10 + original_duration
+
+        # Second rotation: still uses _original_ duration, not accumulated
+        loop._rotate_seat(epoch=19)
+        assert loop.ppo.warmup_epochs == 20 + original_duration
+
+    def test_lr_scheduler_references_new_optimizer(self, katago_config, tmp_path):
+        """After rotation, LR scheduler should reference the new optimizer."""
+        loop = self._make_loop_with_league(katago_config, tmp_path)
+        assert loop.lr_scheduler is not None
+
+        old_scheduler = loop.lr_scheduler
+        loop._rotate_seat(epoch=2)
+
+        # The scheduler should be a new object
+        assert loop.lr_scheduler is not old_scheduler
+        # The new scheduler's optimizer should be the new optimizer
+        assert loop.lr_scheduler.optimizer is loop.ppo.optimizer
+
+
+class TestCreateLrSchedulerUnknownType:
+    """M1: create_lr_scheduler() raises ValueError for unknown schedule type."""
+
+    def test_unknown_schedule_type_raises(self):
+        """Passing an unknown schedule_type should raise ValueError."""
+        import torch
+        from keisei.training.katago_loop import create_lr_scheduler
+
+        dummy_model = torch.nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(dummy_model.parameters(), lr=1e-3)
+
+        with pytest.raises(ValueError, match="Unknown schedule type 'cosine'"):
+            create_lr_scheduler(optimizer, schedule_type="cosine")
+
+
+class TestArchitectureAlgorithmMismatchGuard:
+    """H4: Guard that rejects incompatible architecture/algorithm combinations."""
+
+    def test_resnet_rejected_for_katago_ppo(self, tmp_path):
+        """algorithm='katago_ppo' with architecture='resnet' must raise ValueError."""
+        config = AppConfig(
+            training=TrainingConfig(
+                num_games=2,
+                max_ply=50,
+                algorithm="katago_ppo",
+                checkpoint_interval=5,
+                checkpoint_dir=str(tmp_path / "checkpoints"),
+                algorithm_params={
+                    "learning_rate": 2e-4,
+                    "gamma": 0.99,
+                    "lambda_policy": 1.0,
+                    "lambda_value": 1.5,
+                    "lambda_score": 0.02,
+                    "lambda_entropy": 0.01,
+                    "score_normalization": 76.0,
+                    "grad_clip": 1.0,
+                },
+            ),
+            display=DisplayConfig(
+                moves_per_minute=0,
+                db_path=str(tmp_path / "test.db"),
+            ),
+            model=ModelConfig(
+                display_name="Test-ResNet",
+                architecture="resnet",
+                params={
+                    "num_blocks": 2,
+                    "channels": 32,
+                    "obs_channels": 50,
+                },
+            ),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with pytest.raises(ValueError, match="algorithm='katago_ppo' requires a KataGoBaseModel"):
+            KataGoTrainingLoop(config, vecenv=mock_env)
+
+    def test_obs_channel_mismatch_raises(self, katago_config):
+        """VecEnv with wrong observation_channels must raise ValueError."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        mock_env.observation_channels = 42  # config expects 50
+        with pytest.raises(ValueError, match="observation"):
+            KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+    def test_action_space_mismatch_raises(self, katago_config):
+        """VecEnv with wrong action_space_size must raise ValueError."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        mock_env.action_space_size = 9999  # expected 11259
+        with pytest.raises(ValueError, match="action space"):
+            KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+
+class TestMaybeUpdateHeartbeat:
+    """C2: _maybe_update_heartbeat() time guard."""
+
+    def test_heartbeat_fires_after_10_seconds(self, katago_config):
+        """When >= 10s have elapsed, heartbeat should update the DB."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        with patch("keisei.training.katago_loop.update_training_progress") as mock_update:
+            # Simulate 11 seconds elapsed
+            loop._last_heartbeat = time.monotonic() - 11.0
+            old_heartbeat = loop._last_heartbeat
+            loop._maybe_update_heartbeat()
+
+            mock_update.assert_called_once()
+            # _last_heartbeat should have been refreshed
+            assert loop._last_heartbeat > old_heartbeat
+
+    def test_heartbeat_skipped_within_10_seconds(self, katago_config):
+        """When < 10s have elapsed, heartbeat should NOT fire."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+
+        with patch("keisei.training.katago_loop.update_training_progress") as mock_update:
+            # Just set heartbeat to now — well within the 10s window
+            loop._last_heartbeat = time.monotonic()
+            loop._maybe_update_heartbeat()
+
+            mock_update.assert_not_called()
+
+
+class TestValueCategoryNoLeague:
+    """C1: Value category assignment in the no-league (no opponent) path."""
+
+    def test_value_cats_win_draw_loss(self, katago_config):
+        """Verify value_cat mapping: WIN(>0)=0, DRAW(==0)=1, LOSS(<0)=2."""
+        # Create a vecenv that terminates all 3 envs at step 2 with distinct rewards
+        num_envs = 3
+        rng = np.random.default_rng(99)
+        step_count = [0]
+
+        mock_env = MagicMock()
+        mock_env.observation_channels = 50
+        mock_env.action_space_size = 11259
+        mock_env.episodes_completed = 0
+
+        def make_reset():
+            result = MagicMock()
+            result.observations = rng.standard_normal((num_envs, 50, 9, 9)).astype(np.float32)
+            result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
+            return result
+
+        def make_step(actions):
+            step_count[0] += 1
+            result = MagicMock()
+            result.observations = rng.standard_normal((num_envs, 50, 9, 9)).astype(np.float32)
+            result.legal_masks = np.ones((num_envs, 11259), dtype=bool)
+            result.rewards = np.zeros(num_envs, dtype=np.float32)
+            result.terminated = np.zeros(num_envs, dtype=bool)
+            result.truncated = np.zeros(num_envs, dtype=bool)
+            result.current_players = np.zeros(num_envs, dtype=np.uint8)
+            result.step_metadata = MagicMock()
+            result.step_metadata.material_balance = np.zeros(num_envs, dtype=np.int32)
+
+            # At step 2, terminate all envs with +1, 0, -1 rewards
+            if step_count[0] == 2:
+                result.terminated[:] = True
+                result.rewards[0] = 1.0   # WIN
+                result.rewards[1] = 0.0   # DRAW
+                result.rewards[2] = -1.0  # LOSS
+
+            return result
+
+        mock_env.reset.side_effect = lambda: make_reset()
+        mock_env.step.side_effect = make_step
+        mock_env.reset_stats = MagicMock()
+
+        # Override num_games to 3 to match our mock
+        config = dataclasses.replace(
+            katago_config,
+            training=dataclasses.replace(katago_config.training, num_games=num_envs),
+        )
+
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        # Intercept buffer.add to capture value_cats
+        captured_value_cats = []
+        original_add = loop.buffer.add
+
+        def spy_add(*args, **kwargs):
+            # value_cats is the 8th positional arg (index 7)
+            captured_value_cats.append(args[7].clone())
+            return original_add(*args, **kwargs)
+
+        loop.buffer.add = spy_add
+
+        # Run 1 epoch with 4 steps; termination at step 2
+        loop.run(num_epochs=1, steps_per_epoch=4)
+
+        # Find the step where termination occurred (step 2 -> second call)
+        assert len(captured_value_cats) >= 2, f"Expected >=2 buffer.add calls, got {len(captured_value_cats)}"
+
+        # The second add call (step 2) should have terminal value_cats
+        terminal_cats = captured_value_cats[1]
+        assert terminal_cats[0].item() == 0, "WIN (reward > 0) should map to value_cat=0"
+        assert terminal_cats[1].item() == 1, "DRAW (reward == 0) should map to value_cat=1"
+        assert terminal_cats[2].item() == 2, "LOSS (reward < 0) should map to value_cat=2"
+
+        # Non-terminal steps should have value_cat=-1
+        nonterminal_cats = captured_value_cats[0]
+        assert (nonterminal_cats == -1).all(), "Non-terminal steps should have value_cat=-1"

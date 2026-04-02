@@ -4,6 +4,8 @@
 import pytest
 import torch
 
+from unittest.mock import patch
+
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
@@ -13,6 +15,7 @@ from keisei.training.katago_ppo import (
 from keisei.training.gae import compute_gae
 from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+from keisei.training.value_adapter import MultiHeadValueAdapter
 
 
 class TestKataGoPPOParams:
@@ -404,3 +407,48 @@ class TestScoreLossNoNaN:
                 torch.zeros(2, dtype=torch.long),
                 torch.tensor([10.0, -5.0]),
             )
+
+
+class TestUpdateWithValueAdapter:
+    """Tests for the value_adapter dispatch branch in update()."""
+
+    def test_update_with_multi_head_value_adapter(self, ppo):
+        """update() with value_adapter=MultiHeadValueAdapter should use adapter path."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(4):
+            obs = torch.randn(2, 50, 9, 9)
+            legal_masks = torch.ones(2, 11259, dtype=torch.bool)
+            actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+            buf.add(
+                obs, actions, log_probs, values,
+                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+            )
+        next_values = torch.zeros(2)
+        adapter = MultiHeadValueAdapter()
+
+        with patch.object(
+            adapter, "compute_value_loss", wraps=adapter.compute_value_loss
+        ) as mock_cvl:
+            losses = ppo.update(buf, next_values, value_adapter=adapter)
+
+            # Adapter's compute_value_loss must have been called at least once
+            assert mock_cvl.call_count > 0, (
+                "value_adapter.compute_value_loss was never called"
+            )
+
+        # All returned metrics should be finite
+        for key, val in losses.items():
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+            assert not torch.tensor(val).isinf(), f"{key} is inf"
+
+        # The adapter branch sets score_loss = tensor(0.0) — metric should be 0
+        assert losses["score_loss"] == 0.0, (
+            "score_loss should be 0.0 when adapter handles combined value+score loss"
+        )
+
+        # value_loss should reflect the adapter's combined output (non-zero)
+        assert "value_loss" in losses
+        assert "policy_loss" in losses
+        assert "entropy" in losses
+        assert "gradient_norm" in losses

@@ -136,3 +136,52 @@ class TestModelRegistry:
         assert validated.channels == 32
         # Defaults should apply
         assert validated.obs_channels == 50
+
+
+class TestGlobalPoolFunction:
+    """M3: Test _global_pool as a pure function."""
+
+    def test_constant_tensor_std_is_zero(self):
+        """A constant feature map should have std=0.0 everywhere."""
+        from keisei.training.models.se_resnet import _global_pool
+
+        # Constant tensor: all values are 5.0
+        x = torch.full((2, 8, 9, 9), 5.0)
+        result = _global_pool(x)
+
+        # Shape should be (B, 3*C) = (2, 24)
+        assert result.shape == (2, 8 * 3)
+
+        # Split into mean, max, std components
+        g_mean = result[:, :8]
+        g_max = result[:, 8:16]
+        g_std = result[:, 16:]
+
+        # Mean and max should both be 5.0
+        assert torch.allclose(g_mean, torch.full_like(g_mean, 5.0))
+        assert torch.allclose(g_max, torch.full_like(g_max, 5.0))
+        # Std should be exactly 0.0 (population std of constant)
+        assert torch.allclose(g_std, torch.zeros_like(g_std))
+
+    def test_output_shape(self):
+        """_global_pool(B, C, H, W) -> (B, 3C)."""
+        from keisei.training.models.se_resnet import _global_pool
+
+        x = torch.randn(3, 16, 9, 9)
+        result = _global_pool(x)
+        assert result.shape == (3, 16 * 3)
+
+    def test_known_values(self):
+        """Verify mean/max/std with a hand-crafted input."""
+        from keisei.training.models.se_resnet import _global_pool
+
+        # Single batch, single channel, 2x2 spatial: values [1, 2, 3, 4]
+        x = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])  # (1, 1, 2, 2)
+        result = _global_pool(x)
+        # mean=2.5, max=4.0, std=sqrt(((1-2.5)^2+(2-2.5)^2+(3-2.5)^2+(4-2.5)^2)/4)=sqrt(1.25)
+        expected_mean = 2.5
+        expected_max = 4.0
+        expected_std = (1.25 ** 0.5)
+        assert abs(result[0, 0].item() - expected_mean) < 1e-5
+        assert abs(result[0, 1].item() - expected_max) < 1e-5
+        assert abs(result[0, 2].item() - expected_std) < 1e-5

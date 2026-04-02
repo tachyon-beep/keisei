@@ -251,3 +251,74 @@ class TestOpponentSampler:
         sampler = OpponentSampler(pool)
         with pytest.raises(ValueError, match="empty"):
             sampler.sample()
+
+
+class TestDeleteEntryMissingFile:
+    """H3: _delete_entry handles missing checkpoint file gracefully."""
+
+    def test_eviction_with_missing_checkpoint_file(self, league_db, league_dir):
+        """Add a snapshot, delete its file from disk, then trigger eviction.
+        Should not raise and the DB row should be cleaned up."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=2)
+        model = torch.nn.Linear(10, 10)
+
+        # Add two snapshots to fill the pool
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+        pool.add_snapshot(model, "resnet", {}, epoch=1)
+
+        # Manually delete the checkpoint file for epoch 0
+        entries = pool.list_entries()
+        epoch_0_entry = [e for e in entries if e.created_epoch == 0][0]
+        Path(epoch_0_entry.checkpoint_path).unlink()
+
+        # Adding a third should trigger eviction of epoch 0 (missing file)
+        pool.add_snapshot(model, "resnet", {}, epoch=2)
+
+        # Verify: epoch 0 should be gone from DB, no exception raised
+        remaining = pool.list_entries()
+        remaining_epochs = [e.created_epoch for e in remaining]
+        assert 0 not in remaining_epochs
+        assert len(remaining) == 2
+
+
+class TestAllPinnedEviction:
+    """H3: When all entries are pinned and pool exceeds max_pool_size,
+    a warning is logged and no crash occurs."""
+
+    def test_all_pinned_logs_warning_no_crash(self, league_db, league_dir, caplog):
+        """Pin all entries then call _evict_if_needed directly.
+        Verify warning is logged and no crash occurs."""
+        import logging
+
+        # Use max_pool_size=2 but add 3 entries and pin all of them
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=2)
+        model = torch.nn.Linear(10, 10)
+
+        # Add three entries with a large enough pool first
+        pool.max_pool_size = 10
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+        pool.add_snapshot(model, "resnet", {}, epoch=1)
+        pool.add_snapshot(model, "resnet", {}, epoch=2)
+
+        # Pin all entries
+        for entry in pool.list_entries():
+            pool.pin(entry.id)
+
+        # Now shrink pool size and trigger eviction
+        pool.max_pool_size = 2
+        with caplog.at_level(logging.WARNING, logger="keisei.training.league"):
+            pool._evict_if_needed()
+
+        # Should have logged a warning about all entries being pinned
+        assert any(
+            "All entries pinned" in record.message
+            for record in caplog.records
+        ), f"Expected 'All entries pinned' warning, got: {[r.message for r in caplog.records]}"
+
+        # All three entries should still exist (none evicted)
+        entries = pool.list_entries()
+        assert len(entries) == 3
+
+        # Cleanup pins
+        for entry in entries:
+            pool.unpin(entry.id)

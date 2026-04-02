@@ -283,3 +283,87 @@ class TestWSKeepalive:
     # doesn't translate cleanly.  The error path is exercised
     # indirectly by the _training_alive tests (which cover DB failures)
     # and by test_healthz_db_missing (which exercises _db_accessible).
+
+
+# ===================================================================
+# M3 — _get_system_stats() psutil-unavailable fallback
+# ===================================================================
+
+
+class TestGetSystemStats:
+    """Tests for _get_system_stats() psutil availability paths."""
+
+    def test_psutil_unavailable_returns_none_fields(self) -> None:
+        """When psutil import fails, CPU/RAM fields should be None."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "psutil":
+                raise ImportError("psutil not installed")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=mock_import):
+            from keisei.server.app import _get_system_stats
+            stats = _get_system_stats()
+
+        assert stats["cpu_percent"] is None
+        assert stats["ram_used_gb"] is None
+        assert stats["ram_total_gb"] is None
+
+    def test_psutil_available_returns_values(self) -> None:
+        """When psutil is available, CPU/RAM fields should be numeric."""
+        from keisei.server.app import _get_system_stats
+        stats = _get_system_stats()
+
+        # psutil is installed in this test env, so we expect real values
+        assert isinstance(stats["cpu_percent"], (int, float))
+        assert isinstance(stats["ram_used_gb"], (int, float))
+        assert isinstance(stats["ram_total_gb"], (int, float))
+
+
+# ===================================================================
+# H2 — system_stats in training_status WebSocket push
+# ===================================================================
+
+
+class TestWSTrainingStatusSystemStats:
+    """H2: training_status push includes system_stats with expected structure."""
+
+    def test_system_stats_present_in_training_status(self, server_db: str) -> None:
+        """Trigger a training_status push and verify system_stats field."""
+        app = create_app(server_db)
+
+        with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
+             patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
+            client = TestClient(app)
+            with client.websocket_connect("/ws") as ws:
+                init_msg = ws.receive_json()
+                assert init_msg["type"] == "init"
+
+                # Change epoch to trigger a training_status push
+                update_training_progress(server_db, epoch=10, step=1000)
+
+                # Drain until training_status
+                found = False
+                for _ in range(20):
+                    msg = ws.receive_json(mode="text")
+                    if msg["type"] == "training_status":
+                        # Verify system_stats is present
+                        assert "system_stats" in msg, \
+                            "training_status message must include system_stats"
+                        sys_stats = msg["system_stats"]
+                        assert isinstance(sys_stats, dict)
+
+                        # Must have CPU/RAM keys (values may be None if psutil missing)
+                        assert "cpu_percent" in sys_stats
+                        assert "ram_used_gb" in sys_stats
+                        assert "ram_total_gb" in sys_stats
+                        # Must have gpus key (list, possibly empty)
+                        assert "gpus" in sys_stats
+                        assert isinstance(sys_stats["gpus"], list)
+
+                        found = True
+                        break
+
+                assert found, "Expected training_status message with system_stats"
