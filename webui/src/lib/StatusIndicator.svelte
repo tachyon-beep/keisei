@@ -2,6 +2,7 @@
   import { trainingState, trainingAlive } from '../stores/training.js'
   import { getIndicator } from './indicator.js'
   import { buildConfigTooltip } from './configTooltip.js'
+  import TabBar from './TabBar.svelte'
 
   $: status = $trainingState?.status || 'unknown'
   $: epoch = $trainingState?.current_epoch || 0
@@ -43,7 +44,7 @@
     {/if}
   </div>
   <div class="right">
-    <span class="player-name" title={configTooltip}>☗ {displayName}</span>
+    <TabBar />
   </div>
 </header>
 
