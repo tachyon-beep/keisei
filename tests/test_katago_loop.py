@@ -230,6 +230,16 @@ class TestLeagueIntegration:
         assert loop._current_opponent is not None
         assert not loop._current_opponent.training
 
+    def test_run_with_split_merge_active(self, katago_config, tmp_path):
+        """Run 1 epoch with alternate_players=True — exercises split-merge buffer path."""
+        config = _with_league(katago_config, tmp_path, snapshot_interval=50)
+        mock_env = _make_mock_katago_vecenv(
+            num_envs=2, alternate_players=True, terminate_at_step=3,
+        )
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step > 0
+
 
 class TestSplitMergeIntegration:
     def test_run_with_league_completes(self, katago_config, tmp_path):
