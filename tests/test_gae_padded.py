@@ -65,3 +65,61 @@ class TestComputeGaePadded:
         padded = compute_gae_padded(rewards, values, dones, next_values, lengths, gamma, lam)
 
         torch.testing.assert_close(padded, ref, atol=1e-6, rtol=1e-5)
+
+    def test_single_step_env(self):
+        """Length-1 environment should produce correct advantage for single timestep."""
+        from keisei.training.gae import compute_gae, compute_gae_padded
+
+        T_max, N = 5, 2
+        lengths = torch.tensor([1, 5])
+        rewards = torch.zeros(T_max, N)
+        values = torch.zeros(T_max, N)
+        dones = torch.ones(T_max, N)  # all done (padding)
+        next_values = torch.tensor([0.5, 0.3])
+
+        # Fill valid positions
+        rewards[0, 0] = 1.0  # env 0: single step with reward 1.0
+        values[0, 0] = 0.2
+        dones[0, 0] = 0.0    # not done at step 0 for env 0
+
+        for t in range(5):
+            rewards[t, 1] = 0.1
+            values[t, 1] = 0.1
+            dones[t, 1] = 0.0
+
+        gamma, lam = 0.99, 0.95
+
+        result = compute_gae_padded(rewards, values, dones, next_values, lengths, gamma, lam)
+
+        # Verify env 0 (length=1): reference GAE with single step
+        ref_0 = compute_gae(
+            rewards[:1, 0], values[:1, 0], dones[:1, 0],
+            next_values[0], gamma, lam,
+        )
+        torch.testing.assert_close(result[0, 0], ref_0[0], atol=1e-6, rtol=1e-5)
+
+        # Verify env 1 (length=5): reference GAE with full sequence
+        ref_1 = compute_gae(
+            rewards[:5, 1], values[:5, 1], dones[:5, 1],
+            next_values[1], gamma, lam,
+        )
+        torch.testing.assert_close(result[:5, 1], ref_1, atol=1e-6, rtol=1e-5)
+
+    def test_all_envs_full_length(self):
+        """All envs at T_max length — no padding needed."""
+        from keisei.training.gae import compute_gae, compute_gae_padded
+
+        T_max, N = 4, 3
+        lengths = torch.tensor([4, 4, 4])
+        rewards = torch.randn(T_max, N)
+        values = torch.randn(T_max, N)
+        dones = torch.zeros(T_max, N)
+        next_values = torch.randn(N)
+        gamma, lam = 0.99, 0.95
+
+        result = compute_gae_padded(rewards, values, dones, next_values, lengths, gamma, lam)
+
+        for i in range(N):
+            ref = compute_gae(rewards[:, i], values[:, i], dones[:, i],
+                              next_values[i], gamma, lam)
+            torch.testing.assert_close(result[:, i], ref, atol=1e-6, rtol=1e-5)
