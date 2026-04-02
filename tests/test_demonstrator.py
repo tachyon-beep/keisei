@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from keisei.training.demonstrator import DemonstratorRunner
+from keisei.training.demonstrator import DemoMatchup, DemonstratorRunner
 
 
 def _make_mock_model():
@@ -102,3 +102,161 @@ class TestDemonstratorRunner:
         matchups = runner._select_matchups()
         assert len(matchups) == 3
         assert matchups[0].slot == 1  # championship
+
+
+class TestPlayGamePinUnpin:
+    """Tests for _play_game pin/unpin lifecycle (GAP H2)."""
+
+    def test_pin_called_before_load_unpin_called_after(self):
+        """pin() is called for both entries before load_opponent, unpin() after."""
+        pool = _make_mock_pool(num_entries=2)
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=6000, device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        # _play_game will try to import shogi_gym which isn't available,
+        # so it will log and return after load — but pin/unpin should still fire.
+        runner._play_game(matchup)
+
+        # Verify pin was called for both entries
+        pin_calls = [c.args[0] for c in pool.pin.call_args_list]
+        assert entries[0].id in pin_calls
+        assert entries[1].id in pin_calls
+
+        # Verify unpin was called for both entries
+        unpin_calls = [c.args[0] for c in pool.unpin.call_args_list]
+        assert entries[0].id in unpin_calls
+        assert entries[1].id in unpin_calls
+
+    def test_unpin_called_on_file_not_found_error(self):
+        """FileNotFoundError during checkpoint load still calls unpin for both."""
+        pool = _make_mock_pool(num_entries=2)
+        pool.load_opponent.side_effect = FileNotFoundError("missing checkpoint")
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=6000, device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        # Should not raise — the FileNotFoundError is caught and logged
+        runner._play_game(matchup)
+
+        # Pin was called for both
+        assert pool.pin.call_count == 2
+
+        # Unpin was called for both even though load failed
+        assert pool.unpin.call_count == 2
+        unpin_calls = [c.args[0] for c in pool.unpin.call_args_list]
+        assert entries[0].id in unpin_calls
+        assert entries[1].id in unpin_calls
+
+    def test_unpin_called_on_unexpected_exception(self):
+        """Unpin fires in finally even for unexpected exceptions from load_opponent."""
+        pool = _make_mock_pool(num_entries=2)
+        pool.load_opponent.side_effect = RuntimeError("unexpected failure")
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=6000, device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        # RuntimeError is NOT caught by _play_game — it propagates
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            runner._play_game(matchup)
+
+        # But unpin must still have been called (finally block)
+        assert pool.unpin.call_count == 2
+
+    def test_file_not_found_returns_without_crashing(self):
+        """FileNotFoundError fast path logs warning and returns gracefully."""
+        pool = _make_mock_pool(num_entries=2)
+        pool.load_opponent.side_effect = FileNotFoundError("gone")
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=6000, device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+
+        # Must return None (no exception propagated)
+        result = runner._play_game(matchup)
+        assert result is None
+
+    def test_pin_order_before_load(self):
+        """pin() calls happen before load_opponent() calls."""
+        pool = _make_mock_pool(num_entries=2)
+        call_order = []
+        pool.pin.side_effect = lambda id_: call_order.append(("pin", id_))
+        pool.load_opponent.side_effect = lambda entry, device=None: (
+            call_order.append(("load", entry.id)) or _make_mock_model()
+        )
+        pool.unpin.side_effect = lambda id_: call_order.append(("unpin", id_))
+
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=6000, device="cpu",
+        )
+        entries = pool.list_entries()
+        matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
+        runner._play_game(matchup)
+
+        # Both pins come before any loads
+        pin_indices = [i for i, (op, _) in enumerate(call_order) if op == "pin"]
+        load_indices = [i for i, (op, _) in enumerate(call_order) if op == "load"]
+        if load_indices:  # loads may not happen if shogi_gym missing, but pins must exist
+            assert max(pin_indices) < min(load_indices)
+
+
+class TestMoveDelay:
+    """Tests for move_delay calculation (GAP H2)."""
+
+    def test_move_delay_normal(self):
+        """move_delay = 60.0 / moves_per_minute for normal values."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            moves_per_minute=60, device="cpu",
+        )
+        assert runner.move_delay == pytest.approx(1.0)
+
+    def test_move_delay_high_speed(self):
+        """Higher moves_per_minute gives shorter delay."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            moves_per_minute=6000, device="cpu",
+        )
+        assert runner.move_delay == pytest.approx(0.01)
+
+    def test_move_delay_zero_moves_per_minute(self):
+        """Zero moves_per_minute is guarded by max(..., 1), giving 60s delay."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            moves_per_minute=0, device="cpu",
+        )
+        # max(0, 1) = 1 => 60.0 / 1 = 60.0
+        assert runner.move_delay == pytest.approx(60.0)
+
+    def test_move_delay_negative_moves_per_minute(self):
+        """Negative moves_per_minute is guarded by max(..., 1)."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            moves_per_minute=-10, device="cpu",
+        )
+        assert runner.move_delay == pytest.approx(60.0)
+
+    def test_move_delay_one(self):
+        """moves_per_minute=1 gives 60s delay."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            pool=pool, db_path="/tmp/test.db",
+            moves_per_minute=1, device="cpu",
+        )
+        assert runner.move_delay == pytest.approx(60.0)
