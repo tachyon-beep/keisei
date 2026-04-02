@@ -169,3 +169,35 @@ class TestSelectActionsAmp:
         assert values.shape == (2,)
         assert torch.isfinite(log_probs).all()
         assert torch.isfinite(values).all()
+
+
+class TestAmpIntegration:
+    def test_ppo_checkpoint_round_trip_with_amp(self, tmp_path: Path) -> None:
+        """Full cycle: PPO update with AMP → save → load → update again."""
+        ppo = _make_ppo(use_amp=True)
+        buf = _fill_buffer(ppo)
+        next_values = torch.randn(2)
+
+        metrics1 = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics1
+
+        # Save checkpoint
+        save_checkpoint(
+            tmp_path / "ckpt.pt", ppo.model, ppo.optimizer,
+            epoch=1, step=10, grad_scaler=ppo.scaler,
+        )
+
+        # Create fresh PPO and load
+        ppo2 = _make_ppo(use_amp=True)
+        load_checkpoint(
+            tmp_path / "ckpt.pt", ppo2.model, ppo2.optimizer,
+            grad_scaler=ppo2.scaler,
+        )
+
+        # Verify scaler state transferred
+        assert ppo2.scaler.get_scale() == ppo.scaler.get_scale()
+
+        # Second update should work
+        buf2 = _fill_buffer(ppo2)
+        metrics2 = ppo2.update(buf2, next_values)
+        assert "policy_loss" in metrics2
