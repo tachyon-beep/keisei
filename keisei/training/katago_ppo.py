@@ -244,9 +244,18 @@ class KataGoPPOAlgorithm:
         train mode on exit. The stored log_probs are detached (no_grad);
         PPO recomputes new_log_probs under train() in update().
         """
+        device = next(self.model.parameters()).device
+        amp_dtype = (
+            torch.bfloat16
+            if (self.params.use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+            else torch.float16
+        )
+        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+
         self.forward_model.eval()
         try:
-            output = self.forward_model(obs)
+            with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                output = self.forward_model(obs)
 
             # Guard: no env should have zero legal actions
             legal_counts = legal_masks.sum(dim=-1)

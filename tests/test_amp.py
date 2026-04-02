@@ -139,3 +139,33 @@ class TestPPOAmp:
 
         metrics = ppo.update(buf, next_values)
         assert "policy_loss" in metrics
+
+
+class TestSelectActionsAmp:
+    def test_select_actions_with_amp(self) -> None:
+        """select_actions with use_amp=True produces valid actions."""
+        ppo = _make_ppo(use_amp=True)
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.ones(2, 81 * 139, dtype=torch.bool)
+
+        actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+
+        assert actions.shape == (2,)
+        assert log_probs.shape == (2,)
+        assert values.shape == (2,)
+        assert torch.isfinite(log_probs).all()
+        assert torch.isfinite(values).all()
+
+    def test_select_actions_without_amp(self) -> None:
+        """select_actions with use_amp=False (default) still works correctly."""
+        ppo = _make_ppo(use_amp=False)
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.ones(2, 81 * 139, dtype=torch.bool)
+
+        actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+
+        assert actions.shape == (2,)
+        assert log_probs.shape == (2,)
+        assert values.shape == (2,)
+        assert torch.isfinite(log_probs).all()
+        assert torch.isfinite(values).all()
