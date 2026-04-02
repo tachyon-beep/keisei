@@ -36,6 +36,7 @@
   --danger: #e05050;
   --warning: #c8962e;
   --promoted: #8b0000;
+  --promoted-bright: #e05050;
 
   /* Tabs */
   --tab-active-bg: #0d2e28;
@@ -95,6 +96,7 @@
   --danger: #9e1f1f;
   --warning: #8c6400;
   --promoted: #660000;
+  --promoted-bright: #9e1f1f;
 
   /* Tabs */
   --tab-active-bg: #c8e8e0;

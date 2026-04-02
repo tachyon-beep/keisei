@@ -1,46 +1,51 @@
 <script>
+  import MoveDots from './MoveDots.svelte'
+  import { PATTERNS } from './movePatterns.js'
+
   const pieces = [
-    { kanji: '王', name: 'King', move: '1 step any direction', promoted: null },
-    { kanji: '飛', name: 'Rook', move: 'Any number straight', promoted: '龍', promName: 'Dragon', promMove: '+ 1 step diagonal' },
-    { kanji: '角', name: 'Bishop', move: 'Any number diagonal', promoted: '馬', promName: 'Horse', promMove: '+ 1 step straight' },
-    { kanji: '金', name: 'Gold', move: '1 step (not back-diag)', promoted: null },
-    { kanji: '銀', name: 'Silver', move: '1 step (not sides/back)', promoted: '全', promName: '→ Gold', promMove: 'Moves like Gold' },
-    { kanji: '桂', name: 'Knight', move: '2 fwd + 1 side (jump)', promoted: '圭', promName: '→ Gold', promMove: 'Moves like Gold' },
-    { kanji: '香', name: 'Lance', move: 'Any number forward', promoted: '杏', promName: '→ Gold', promMove: 'Moves like Gold' },
-    { kanji: '歩', name: 'Pawn', move: '1 step forward', promoted: 'と', promName: 'Tokin', promMove: 'Moves like Gold' },
+    { kanji: '王', name: 'King', promoted: null },
+    { kanji: '飛', name: 'Rook', promoted: '龍', promName: 'Dragon' },
+    { kanji: '角', name: 'Bishop', promoted: '馬', promName: 'Horse' },
+    { kanji: '金', name: 'Gold', promoted: null },
+    { kanji: '銀', name: 'Silver', promoted: '全', promName: 'Gold' },
+    { kanji: '桂', name: 'Knight', promoted: '圭', promName: 'Gold' },
+    { kanji: '香', name: 'Lance', promoted: '杏', promName: 'Gold' },
+    { kanji: '歩', name: 'Pawn', promoted: 'と', promName: 'Tokin' },
   ]
 </script>
 
 <div class="legend">
   <h3 class="legend-title">Shogi Piece Guide</h3>
-  <p class="legend-intro">Japanese chess — captured pieces switch sides and can be dropped back onto the board.</p>
 
   <div class="piece-grid">
     {#each pieces as p}
+      {@const pat = PATTERNS[p.name]}
       <div class="base-col">
         <span class="kanji">{p.kanji}</span>
-        <div class="piece-info">
-          <span class="piece-name">{p.name}</span>
-          <span class="piece-move">{p.move}</span>
-        </div>
+        <span class="piece-name">{p.name}</span>
+        <MoveDots pattern={pat.base} extra={pat.extra || null} />
+      </div>
+      <div class="arrow-col">
+        {#if p.promoted}<span class="arrow">→</span>{/if}
       </div>
       <div class="prom-col">
-        {#if p.promoted}
-          <span class="arrow">→</span>
+        {#if p.promoted && pat.promoted}
           <span class="kanji promoted">{p.promoted}</span>
-          <div class="piece-info">
-            <span class="piece-name prom">{p.promName}</span>
-            <span class="piece-move">{p.promMove}</span>
-          </div>
+          <span class="piece-name prom">{p.promName}</span>
+          <MoveDots pattern={pat.promoted} promoted={true} />
         {/if}
       </div>
     {/each}
   </div>
 
   <div class="legend-footer">
+    <div class="legend-key">
+      <span class="key-item"><span class="key-square">■</span> = one square</span>
+      <span class="key-item"><span class="key-arrow">→</span> = slides</span>
+    </div>
     <p>☗ Black (Sente) moves first — pieces point ↑</p>
     <p>☖ White (Gote) moves second — pieces point ↓</p>
-    <p><span class="promoted-color">Red text</span> = promoted piece</p>
+    <p><span class="promoted-color">Red</span> = promoted piece</p>
   </div>
 
   <div class="chess-diff">
@@ -87,25 +92,24 @@
     margin-bottom: 4px;
   }
 
-  .legend-intro {
-    font-size: 12px;
-    color: var(--text-muted);
-    margin-bottom: 12px;
-    line-height: 1.4;
-  }
-
   .piece-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto auto auto;
+    justify-content: space-between;
     align-content: space-evenly;
-    gap: 0 16px;
+  }
+
+  .arrow-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .base-col, .prom-col {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
 
   .kanji {
@@ -124,30 +128,20 @@
     color: var(--promoted);
   }
 
-  .piece-info {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
   .piece-name {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
+    min-width: 42px;
   }
 
   .piece-name.prom {
     color: var(--promoted);
   }
 
-  .piece-move {
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
   .arrow {
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 28px;
     flex-shrink: 0;
   }
 
@@ -158,6 +152,30 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .legend-key {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+
+  .key-item {
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .key-square {
+    color: var(--accent-teal);
+    font-size: 9px;
+  }
+
+  .key-arrow {
+    color: var(--accent-gold);
+    font-size: 11px;
   }
 
   .legend-footer p {

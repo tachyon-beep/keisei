@@ -1,11 +1,15 @@
 /**
- * Dark theme for chart rendering.
+ * Read resolved CSS custom properties from the document root.
+ * Canvas 2D context cannot use var() references, so we must
+ * resolve them to concrete color strings before passing to uPlot.
  */
-export const DARK_THEME = {
-  background: 'var(--bg-primary)',
-  gridColor: 'var(--border-subtle)',
-  textColor: 'var(--text-secondary)',
-  axisColor: 'var(--text-muted)',
+export function resolveThemeColors() {
+  const style = getComputedStyle(document.documentElement)
+  return {
+    textColor: style.getPropertyValue('--text-secondary').trim(),
+    gridColor: style.getPropertyValue('--border-subtle').trim(),
+    axisColor: style.getPropertyValue('--text-muted').trim(),
+  }
 }
 
 /**
@@ -14,9 +18,12 @@ export const DARK_THEME = {
  * @param {number} params.width
  * @param {number} params.height
  * @param {Array<{label: string, color: string}>} params.series
+ * @param {boolean} [params.compact]
+ * @param {{textColor: string, gridColor: string, axisColor: string}} [params.colors]
  * @returns {object} uPlot options
  */
-export function buildChartOpts({ width, height, series, compact = false }) {
+export function buildChartOpts({ width, height, series, compact = false, colors = null }) {
+  const c = colors || resolveThemeColors()
   return {
     width,
     height,
@@ -27,18 +34,18 @@ export function buildChartOpts({ width, height, series, compact = false }) {
     axes: [
       {
         show: !compact,
-        stroke: DARK_THEME.textColor,
-        grid: { stroke: DARK_THEME.gridColor, width: 0.5 },
-        ticks: { stroke: DARK_THEME.axisColor },
+        stroke: c.textColor,
+        grid: { stroke: c.gridColor, width: 0.5 },
+        ticks: { stroke: c.axisColor },
         font: '12px sans-serif',
         values: (u, vals) => vals.map(v => Number.isInteger(v) ? v : ''),
         incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
       },
       {
         show: !compact,
-        stroke: DARK_THEME.textColor,
-        grid: { stroke: DARK_THEME.gridColor, width: 0.5 },
-        ticks: { stroke: DARK_THEME.axisColor },
+        stroke: c.textColor,
+        grid: { stroke: c.gridColor, width: 0.5 },
+        ticks: { stroke: c.axisColor },
         font: '12px sans-serif',
       },
     ],

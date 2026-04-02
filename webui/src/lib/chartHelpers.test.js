@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DARK_THEME, buildChartOpts, buildChartData } from './chartHelpers.js'
+import { buildChartOpts, buildChartData } from './chartHelpers.js'
 
 describe('buildChartData', () => {
   it('returns array with empty xData and no series', () => {
@@ -36,6 +36,12 @@ describe('buildChartData', () => {
 })
 
 describe('buildChartOpts', () => {
+  const testColors = {
+    textColor: '#a89880',
+    gridColor: '#221e18',
+    axisColor: '#9a8878',
+  }
+
   const defaultParams = {
     width: 800,
     height: 200,
@@ -43,6 +49,7 @@ describe('buildChartOpts', () => {
       { label: 'Loss', color: '#ff0000' },
       { label: 'Accuracy', color: '#00ff00' },
     ],
+    colors: testColors,
   }
 
   it('returns correct width and height', () => {
@@ -67,7 +74,7 @@ describe('buildChartOpts', () => {
   })
 
   it('includes X label even with empty series', () => {
-    const opts = buildChartOpts({ width: 400, height: 100, series: [] })
+    const opts = buildChartOpts({ width: 400, height: 100, series: [], colors: testColors })
     expect(opts.series).toEqual([{ label: 'X' }])
   })
 
@@ -81,17 +88,17 @@ describe('buildChartOpts', () => {
     expect(opts.scales.x.time).toBe(false)
   })
 
-  it('uses DARK_THEME colors for axes', () => {
+  it('uses provided colors for axes', () => {
     const opts = buildChartOpts(defaultParams)
     const [xAxis, yAxis] = opts.axes
 
-    expect(xAxis.stroke).toBe(DARK_THEME.textColor)
-    expect(xAxis.grid.stroke).toBe(DARK_THEME.gridColor)
-    expect(xAxis.ticks.stroke).toBe(DARK_THEME.axisColor)
+    expect(xAxis.stroke).toBe(testColors.textColor)
+    expect(xAxis.grid.stroke).toBe(testColors.gridColor)
+    expect(xAxis.ticks.stroke).toBe(testColors.axisColor)
 
-    expect(yAxis.stroke).toBe(DARK_THEME.textColor)
-    expect(yAxis.grid.stroke).toBe(DARK_THEME.gridColor)
-    expect(yAxis.ticks.stroke).toBe(DARK_THEME.axisColor)
+    expect(yAxis.stroke).toBe(testColors.textColor)
+    expect(yAxis.grid.stroke).toBe(testColors.gridColor)
+    expect(yAxis.ticks.stroke).toBe(testColors.axisColor)
   })
 
   it('x-axis values filter passes integers and blanks non-integers', () => {
@@ -108,3 +115,4 @@ describe('buildChartOpts', () => {
     ])
   })
 })
+

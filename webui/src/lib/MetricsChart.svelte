@@ -2,7 +2,8 @@
   import { onMount, onDestroy, afterUpdate } from 'svelte'
   import uPlot from 'uplot'
   import 'uplot/dist/uPlot.min.css'
-  import { buildChartOpts, buildChartData } from './chartHelpers.js'
+  import { buildChartOpts, buildChartData, resolveThemeColors } from './chartHelpers.js'
+  import { theme } from '../stores/theme.js'
 
   export let title = ''
   export let annotation = null
@@ -18,12 +19,28 @@
 
   function getOpts() {
     const w = container ? container.clientWidth : width
-    return buildChartOpts({ width: w, height, series, compact })
+    const colors = resolveThemeColors()
+    return buildChartOpts({ width: w, height, series, compact, colors })
   }
 
   function getData() {
     return buildChartData(xData, series)
   }
+
+  function rebuildChart() {
+    if (!container || xData.length === 0) return
+    if (chart) { chart.destroy(); chart = null }
+    chart = new uPlot(getOpts(), getData(), container)
+  }
+
+  // Rebuild chart when theme changes so axis colors update
+  const unsubTheme = theme.subscribe(() => {
+    // Skip initial subscription (before mount)
+    if (container) {
+      // Allow DOM to apply new data-theme attribute first
+      requestAnimationFrame(rebuildChart)
+    }
+  })
 
   onMount(() => {
     if (container && xData.length > 0) {
@@ -53,6 +70,7 @@
   })
 
   onDestroy(() => {
+    unsubTheme()
     if (resizeObserver) {
       resizeObserver.disconnect()
       resizeObserver = null
@@ -98,7 +116,7 @@
   }
 
   .annotation {
-    font-size: 12px;
+    font-size: 16px;
     color: var(--text-muted);
     font-style: italic;
     margin-top: 6px;

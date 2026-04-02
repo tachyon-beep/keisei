@@ -67,7 +67,7 @@
     padding-left: 0;
     padding-right: 20px;
     font-size: 12px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-align: center;
   }
 
@@ -118,7 +118,7 @@
     flex-direction: column;
     justify-content: space-around;
     font-size: 12px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     padding: 0 2px;
   }
 </style>
