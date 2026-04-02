@@ -984,3 +984,44 @@ P9+KY+KE+GI+KI+OU+KI+GI+KE+KY
         parser = CSAParser()
         records = list(parser.parse(csa_file))
         assert len(records) == 2
+
+
+class TestSLDatasetMultiShard:
+    """Test SLDataset cross-shard boundary access."""
+
+    def test_cross_shard_boundary_access(self, tmp_path):
+        """Access positions at shard boundary — verify no off-by-one."""
+        from keisei.sl.dataset import write_shard, OBS_SIZE, SLDataset
+
+        rng = np.random.default_rng(42)
+        n_per_shard = 5
+
+        # Write 2 shards with distinct data
+        all_policy = []
+        for shard_idx in range(2):
+            obs = rng.standard_normal((n_per_shard, OBS_SIZE)).astype(np.float32)
+            policy = rng.integers(0, 11259, size=n_per_shard).astype(np.int64)
+            value = rng.integers(0, 3, size=n_per_shard).astype(np.int64)
+            score = rng.standard_normal(n_per_shard).astype(np.float32)
+            write_shard(tmp_path / f"shard_{shard_idx:03d}.bin", obs, policy, value, score)
+            all_policy.extend(policy.tolist())
+
+        ds = SLDataset(tmp_path)
+        assert len(ds) == 10
+
+        # Verify every position reads correctly
+        for i in range(10):
+            sample = ds[i]
+            assert sample["policy_target"].item() == all_policy[i]
+
+        # Access boundary positions specifically
+        sample_last_shard0 = ds[4]   # last position in shard 0
+        sample_first_shard1 = ds[5]  # first position in shard 1
+        assert sample_last_shard0["policy_target"].item() == all_policy[4]
+        assert sample_first_shard1["policy_target"].item() == all_policy[5]
+
+        # Out of range should raise
+        with pytest.raises(IndexError):
+            ds[10]
+        with pytest.raises(IndexError):
+            ds[-1]
