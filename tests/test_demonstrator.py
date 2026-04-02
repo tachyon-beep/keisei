@@ -110,6 +110,8 @@ class TestPlayGamePinUnpin:
 
     def test_pin_called_before_load_unpin_called_after(self):
         """pin() is called for both entries before load_opponent, unpin() after."""
+        import sys
+
         pool = _make_mock_pool(num_entries=2)
         runner = DemonstratorRunner(
             pool=pool, db_path="/tmp/test.db",
@@ -118,9 +120,17 @@ class TestPlayGamePinUnpin:
         entries = pool.list_entries()
         matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
 
-        # _play_game will try to import shogi_gym which isn't available,
-        # so it will log and return after load — but pin/unpin should still fire.
-        runner._play_game(matchup)
+        # Block shogi_gym import so _play_game returns after load (pin/unpin
+        # lifecycle is what we're testing, not the game loop).
+        saved = sys.modules.get("shogi_gym")
+        sys.modules["shogi_gym"] = None  # forces ImportError
+        try:
+            runner._play_game(matchup)
+        finally:
+            if saved is not None:
+                sys.modules["shogi_gym"] = saved
+            else:
+                sys.modules.pop("shogi_gym", None)
 
         # Verify pin was called for both entries
         pin_calls = [c.args[0] for c in pool.pin.call_args_list]
@@ -190,6 +200,8 @@ class TestPlayGamePinUnpin:
 
     def test_pin_order_before_load(self):
         """pin() calls happen before load_opponent() calls."""
+        import sys
+
         pool = _make_mock_pool(num_entries=2)
         call_order = []
         pool.pin.side_effect = lambda id_: call_order.append(("pin", id_))
@@ -204,13 +216,23 @@ class TestPlayGamePinUnpin:
         )
         entries = pool.list_entries()
         matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
-        runner._play_game(matchup)
+
+        # Block shogi_gym import — we're testing pin/load ordering, not game play.
+        saved = sys.modules.get("shogi_gym")
+        sys.modules["shogi_gym"] = None
+        try:
+            runner._play_game(matchup)
+        finally:
+            if saved is not None:
+                sys.modules["shogi_gym"] = saved
+            else:
+                sys.modules.pop("shogi_gym", None)
 
         # Both pins come before any loads
         pin_indices = [i for i, (op, _) in enumerate(call_order) if op == "pin"]
         load_indices = [i for i, (op, _) in enumerate(call_order) if op == "load"]
-        if load_indices:  # loads may not happen if shogi_gym missing, but pins must exist
-            assert max(pin_indices) < min(load_indices)
+        assert len(load_indices) > 0, "load_opponent should have been called"
+        assert max(pin_indices) < min(load_indices)
 
 
 class TestPlayGameWithMockedVecEnv:

@@ -32,6 +32,8 @@ from keisei.training.katago_ppo import (
     KataGoPPOParams,
     KataGoRolloutBuffer,
 )
+# scalar_value is used in split_merge_step to keep value computation
+# centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
 from keisei.training.league import OpponentEntry, OpponentPool, OpponentSampler, compute_elo_update
 from keisei.training.model_registry import build_model
 
@@ -98,8 +100,7 @@ def split_merge_step(
         if value_adapter is not None:
             learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
         else:
-            vp = F.softmax(l_output.value_logits, dim=-1)
-            learner_values = vp[:, 0] - vp[:, 2]
+            learner_values = KataGoPPOAlgorithm.scalar_value(l_output.value_logits)
 
         actions[learner_indices] = l_actions
 
@@ -328,6 +329,7 @@ class KataGoTrainingLoop:
                     self._base_model,
                     self.ppo.optimizer,
                     expected_architecture=self.config.model.architecture,
+                    scheduler=self.lr_scheduler,
                 )
                 self.epoch = meta["epoch"]
                 self.global_step = meta["step"]
@@ -589,6 +591,7 @@ class KataGoTrainingLoop:
                         ckpt_path, self._base_model, self.ppo.optimizer,
                         epoch_i + 1, self.global_step,
                         architecture=self.config.model.architecture,
+                        scheduler=self.lr_scheduler,
                     )
                     logger.info("Checkpoint saved: %s", ckpt_path)
                 except Exception:

@@ -104,9 +104,21 @@ class KataGoRolloutBuffer:
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
         """
+        # Detach and move to CPU first — all validation below runs on CPU
+        # tensors, avoiding implicit CUDA synchronization on the hot path.
+        obs_cpu = obs.detach().cpu()
+        actions_cpu = actions.detach().cpu()
+        log_probs_cpu = log_probs.detach().cpu()
+        values_cpu = values.detach().cpu()
+        rewards_cpu = rewards.detach().cpu()
+        dones_cpu = dones.detach().cpu()
+        legal_masks_cpu = legal_masks.detach().cpu()
+        value_cats_cpu = value_categories.detach().cpu()
+        score_cpu = score_targets.detach().cpu()
+
         # Guard against invalid value categories
         valid_cats = {-1, 0, 1, 2}
-        unique_cats = set(value_categories.unique().tolist())
+        unique_cats = set(value_cats_cpu.unique().tolist())
         invalid = unique_cats - valid_cats
         if invalid:
             raise ValueError(
@@ -115,7 +127,7 @@ class KataGoRolloutBuffer:
             )
 
         # Guard: NaN score targets are no longer valid — every position gets real material balance.
-        if score_targets.isnan().any():
+        if score_cpu.isnan().any():
             raise ValueError(
                 "score_targets contains NaN. With per-step material balance, "
                 "all targets should be real-valued."
@@ -125,23 +137,25 @@ class KataGoRolloutBuffer:
         # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
         # Theoretical max: fully promoted one-sided = 196/76 = 2.58. Threshold
         # at 3.5 gives 35% headroom above the theoretical maximum.
-        if score_targets.abs().max() > 3.5:
+        abs_max = score_cpu.abs().max()
+        if abs_max > 3.5:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{score_targets.abs().max().item():.1f}. "
+                f"{abs_max.item():.1f}. "
                 f"Expected in [-1.7, +1.7] typical, theoretical max 2.58 (guard 3.5)."
             )
+
         # Store on CPU to reduce GPU memory pressure during rollout collection.
         # Mini-batches are transferred back to GPU during update().
-        self.observations.append(obs.detach().cpu())
-        self.actions.append(actions.detach().cpu())
-        self.log_probs.append(log_probs.detach().cpu())
-        self.values.append(values.detach().cpu())
-        self.rewards.append(rewards.detach().cpu())
-        self.dones.append(dones.detach().cpu())
-        self.legal_masks.append(legal_masks.detach().cpu())
-        self.value_categories.append(value_categories.detach().cpu())
-        self.score_targets.append(score_targets.detach().cpu())
+        self.observations.append(obs_cpu)
+        self.actions.append(actions_cpu)
+        self.log_probs.append(log_probs_cpu)
+        self.values.append(values_cpu)
+        self.rewards.append(rewards_cpu)
+        self.dones.append(dones_cpu)
+        self.legal_masks.append(legal_masks_cpu)
+        self.value_categories.append(value_cats_cpu)
+        self.score_targets.append(score_cpu)
         if env_ids is not None:
             self.env_ids.append(env_ids.detach().cpu())
 
