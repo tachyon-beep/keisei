@@ -36,3 +36,4 @@ keisei/server/static/
 checkpoints/
 keisei.db
 keisei-katago.db
+node_modules/
