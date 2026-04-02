@@ -79,6 +79,7 @@ def load_checkpoint(
     expected_architecture: str | None = None,
     scheduler: Any | None = None,
     grad_scaler: Any | None = None,
+    skip_optimizer: bool = False,
 ) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -94,17 +95,19 @@ def load_checkpoint(
             )
 
     model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-    # Move optimizer state (Adam moment buffers) to match model device.
-    # torch.load(map_location="cpu") puts all tensors on CPU, but the model
-    # may already be on CUDA. Without this, optimizer.step() crashes with a
-    # device mismatch error.
-    device = next(model.parameters()).device
-    for state in optimizer.state.values():
-        for k, v in state.items():
-            if isinstance(v, torch.Tensor):
-                state[k] = v.to(device)
+    if not skip_optimizer:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Move optimizer state (Adam moment buffers) to match model device.
+        # torch.load(map_location="cpu") puts all tensors on CPU, but the model
+        # may already be on CUDA. Without this, optimizer.step() crashes with a
+        # device mismatch error.
+        device = next(model.parameters()).device
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
 
     # Restore LR scheduler state if present in checkpoint and caller provided one.
     if scheduler is not None and "scheduler_state_dict" in checkpoint:

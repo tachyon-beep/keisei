@@ -189,3 +189,65 @@ class TestSEResNetCheckpointRoundTrip:
         fresh_opt = torch.optim.Adam(fresh.parameters())
         with pytest.raises(ValueError, match="architecture mismatch"):
             load_checkpoint(path, fresh, fresh_opt, expected_architecture="resnet")
+
+
+# ---------------------------------------------------------------------------
+# skip_optimizer parameter
+# ---------------------------------------------------------------------------
+
+
+def test_skip_optimizer_leaves_optimizer_fresh(tmp_path: Path, model: ResNetModel) -> None:
+    """load_checkpoint(skip_optimizer=True) should NOT load optimizer state."""
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    # Run a training step to populate optimizer momentum buffers
+    obs = torch.randn(1, 46, 9, 9)
+    policy, value = model(obs)
+    loss = policy.sum() + value.sum()
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+    # Save checkpoint (now contains non-empty optimizer state)
+    path = tmp_path / "checkpoint.pt"
+    save_checkpoint(path, model, optimizer, epoch=5, step=500)
+
+    # Create fresh model and optimizer
+    fresh_model = ResNetModel(ResNetParams(hidden_size=16, num_layers=1))
+    fresh_optimizer = torch.optim.Adam(fresh_model.parameters(), lr=1e-3)
+
+    # Verify fresh optimizer has no state
+    assert len(fresh_optimizer.state) == 0
+
+    # Load with skip_optimizer=True
+    meta = load_checkpoint(path, fresh_model, fresh_optimizer, skip_optimizer=True)
+
+    # Optimizer state should still be empty
+    assert len(fresh_optimizer.state) == 0
+    assert meta["epoch"] == 5
+    assert meta["step"] == 500
+
+
+def test_skip_optimizer_still_loads_model_weights(tmp_path: Path, model: ResNetModel) -> None:
+    """skip_optimizer=True should still restore model weights correctly."""
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    obs = torch.randn(1, 46, 9, 9)
+    with torch.no_grad():
+        original_policy, original_value = model(obs)
+
+    path = tmp_path / "checkpoint.pt"
+    save_checkpoint(path, model, optimizer, epoch=1, step=100)
+
+    # Corrupt model weights
+    for p in model.parameters():
+        p.data.add_(torch.randn_like(p))
+
+    fresh_optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    load_checkpoint(path, model, fresh_optimizer, skip_optimizer=True)
+
+    with torch.no_grad():
+        restored_policy, restored_value = model(obs)
+
+    assert torch.allclose(original_policy, restored_policy, atol=1e-6)
+    assert torch.allclose(original_value, restored_value, atol=1e-6)
