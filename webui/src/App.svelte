@@ -9,16 +9,12 @@
   import MoveLog from './lib/MoveLog.svelte'
   import EvalBar from './lib/EvalBar.svelte'
   import MetricsGrid from './lib/MetricsGrid.svelte'
+  import { safeParse } from './lib/safeParse.js'
 
   onMount(() => {
     connect()
     return disconnect
   })
-
-  function safeParse(json, fallback) {
-    try { return typeof json === 'string' ? JSON.parse(json) : json }
-    catch { return fallback }
-  }
 
   $: game = $selectedGame
   $: board = game ? safeParse(game.board_json, game.board || []) : []
