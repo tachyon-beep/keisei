@@ -121,11 +121,13 @@ class KataGoRolloutBuffer:
 
         # Guard against unnormalized score targets (catches integration bugs).
         # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
-        if score_targets.abs().max() > 3.0:
+        # Theoretical max: fully promoted one-sided = 196/76 = 2.58. Threshold
+        # at 3.5 gives 35% headroom above the theoretical maximum.
+        if score_targets.abs().max() > 3.5:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
                 f"{score_targets.abs().max().item():.1f}. "
-                f"Expected in [-1.7, +1.7] for standard positions (guard threshold 3.0)."
+                f"Expected in [-1.7, +1.7] typical, theoretical max 2.58 (guard 3.5)."
             )
         self.observations.append(obs)
         self.actions.append(actions)

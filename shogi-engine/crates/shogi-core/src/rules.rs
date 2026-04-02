@@ -1647,10 +1647,30 @@ mod tests {
 
     #[test]
     fn test_material_balance_perspective_antisymmetric() {
-        let state = GameState::new();
-        let black = material_balance(&state.position, Color::Black);
-        let white = material_balance(&state.position, Color::White);
-        assert_eq!(black, -white);
+        // Test antisymmetry on a position with actual imbalance (not just zero)
+        use crate::types::HandPieceType;
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 3);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let black = material_balance(&pos, Color::Black);
+        let white = material_balance(&pos, Color::White);
+        assert_eq!(black, 7);  // Rook(10) - 3 Pawns(3) = 7
+        assert_eq!(white, -7);
+        assert_eq!(black, -white, "Antisymmetry must hold on non-zero balance");
     }
 
     #[test]
@@ -1694,6 +1714,7 @@ mod tests {
         pos.hash = pos.compute_hash();
 
         assert_eq!(material_balance(&pos, Color::Black), -4); // 2 - 6
+        assert_eq!(material_balance(&pos, Color::White), 4);  // antisymmetric
     }
 
     #[test]

@@ -88,15 +88,10 @@ class MultiHeadValueAdapter(ValueHeadAdapter):
         else:
             value_loss = value_output.sum() * 0.0
 
-        # Guard: score_targets uses NaN sentinel for non-terminal positions.
-        # Filter before MSE to avoid NaN propagation.
-        score_valid = ~score_targets.isnan()
-        if score_valid.any():
-            score_loss = F.mse_loss(
-                score_pred.squeeze(-1)[score_valid], score_targets[score_valid],
-            )
-        else:
-            score_loss = score_pred.sum() * 0.0
+        # Score loss (MSE on normalized material balance).
+        # The buffer guarantees no NaN in score_targets — every position has
+        # a real material balance value.
+        score_loss = F.mse_loss(score_pred.squeeze(-1), score_targets)
 
         return self.lambda_value * value_loss + self.lambda_score * score_loss
 

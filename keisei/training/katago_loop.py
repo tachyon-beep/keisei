@@ -424,10 +424,9 @@ class KataGoTrainingLoop:
                         li_value_cats[li_terminal & (li_rewards < 0)] = 2
 
                         # Per-step material balance for learner envs
-                        material = torch.tensor(
-                            np.asarray(step_result.step_metadata.material_balance),
-                            dtype=torch.float32, device=self.device,
-                        )
+                        material = torch.from_numpy(
+                            np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
+                        ).to(self.device)
                         li_score_targets = material[li] / self.score_norm
 
                         self.buffer.add(

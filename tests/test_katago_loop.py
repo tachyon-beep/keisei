@@ -14,6 +14,7 @@ from keisei.training.katago_loop import KataGoTrainingLoop
 def _make_mock_katago_vecenv(
     num_envs: int = 2, *, terminate_at_step: int | None = None,
     alternate_players: bool = False,
+    material_balance: int = 0,
 ) -> MagicMock:
     """Create a mock VecEnv that returns correct shapes for KataGo mode.
 
@@ -60,7 +61,7 @@ def _make_mock_katago_vecenv(
         # step_metadata with material balance (per-step, not terminal-only)
         result.step_metadata = MagicMock()
         result.step_metadata.ply_count = np.zeros(num_envs, dtype=np.uint16)
-        result.step_metadata.material_balance = np.zeros(num_envs, dtype=np.int32)
+        result.step_metadata.material_balance = np.full(num_envs, material_balance, dtype=np.int32)
 
         if terminate_at_step is not None and step_count[0] == terminate_at_step:
             result.terminated[0] = True
@@ -159,6 +160,13 @@ class TestKataGoTrainingLoopRun:
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
         assert loop.global_step == 4
+
+    def test_run_with_nonzero_material(self, katago_config):
+        """Exercise the normalization path with non-zero material balance."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, material_balance=38)
+        loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4  # 38/76 = 0.5, well within guard
 
     def test_metrics_written_to_db(self, katago_config):
         """Verify metrics are persisted after each epoch."""
