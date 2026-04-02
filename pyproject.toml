@@ -1,9 +1,26 @@
 [project]
 name = "keisei"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deep RL Shogi training system with Rust core"
 license = {text = "MIT"}
 requires-python = ">=3.12"
+readme = "README.md"
+authors = [
+    {name = "John Morrissey"},
+]
+keywords = ["shogi", "reinforcement-learning", "deep-learning", "pytorch", "rust", "ppo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Games/Entertainment :: Board Games",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "torch",
     "numpy",
@@ -12,14 +29,20 @@ dependencies = [
     "websockets",
 ]
 
+[project.urls]
+Repository = "https://github.com/tachyon-beep/keisei"
+Changelog = "https://github.com/tachyon-beep/keisei/blob/main/CHANGELOG.md"
+Issues = "https://github.com/tachyon-beep/keisei/issues"
+
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
 sl = ["chardet>=5.0"]
 
 [project.scripts]
-keisei-train = "keisei.training.loop:main"
+keisei-train = "keisei.training.katago_loop:main"
 keisei-serve = "keisei.server.app:main"
 keisei-prepare-sl = "keisei.sl.prepare:main"
+keisei-evaluate = "keisei.training.evaluate:main"
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -33,7 +56,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]
-line-length = 100
+line-length = 140
 target-version = "py312"
 
 [tool.ruff.lint]

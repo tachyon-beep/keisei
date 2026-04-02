@@ -45,16 +45,20 @@ class TransformerModel(BaseModel):
         self.value_fc1 = nn.Linear(d, d)
         self.value_fc2 = nn.Linear(d, 1)
 
+        # Pre-compute positional index tensors — embedding weights are learned
+        # but the index grids are constant. Registered as buffers so they
+        # move with the model on .to(device) calls.
+        self.register_buffer("_row_idx", torch.arange(self.BOARD_SIZE))
+        self.register_buffer("_col_idx", torch.arange(self.BOARD_SIZE))
+
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch = obs.shape[0]
 
         x = obs.permute(0, 2, 3, 1).reshape(batch, 81, self.OBS_CHANNELS)
         x = self.input_proj(x)
 
-        rows = torch.arange(self.BOARD_SIZE, device=obs.device)
-        cols = torch.arange(self.BOARD_SIZE, device=obs.device)
-        row_emb = self.row_embed(rows)
-        col_emb = self.col_embed(cols)
+        row_emb = self.row_embed(self._row_idx)
+        col_emb = self.col_embed(self._col_idx)
         pos = (row_emb.unsqueeze(1) + col_emb.unsqueeze(0)).reshape(81, -1)
         x = x + pos.unsqueeze(0)
 

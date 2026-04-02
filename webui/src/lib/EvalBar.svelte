@@ -1,17 +1,12 @@
 <script>
+  import { computeEval } from './evalCalc.js'
+
   /** Value estimate from the model's value head. Range roughly -1 to +1. */
   export let value = 0
   /** Who is currently to move. */
   export let currentPlayer = 'black'
 
-  // Clamp to [-1, 1] and convert to a percentage for black (bottom)
-  $: clamped = Math.max(-1, Math.min(1, value))
-  // value > 0 means current player is winning.
-  // Normalise so that positive = black advantage regardless of who's moving.
-  $: blackAdvantage = currentPlayer === 'black' ? clamped : -clamped
-  // Convert to percentage: 0.0 = even (50%), +1 = black winning (100%), -1 = white winning (0%)
-  $: blackPct = 50 + blackAdvantage * 50
-  $: displayValue = Math.abs(blackAdvantage) < 0.005 ? '0.00' : (blackAdvantage > 0 ? '+' : '') + blackAdvantage.toFixed(2)
+  $: ({ blackPct, displayValue } = computeEval(value, currentPlayer))
 </script>
 
 <div class="eval-bar" title="Value estimate: {displayValue}">

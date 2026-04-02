@@ -22,6 +22,7 @@ class TrainingConfig:
     checkpoint_interval: int
     checkpoint_dir: str
     algorithm_params: dict[str, object]
+    use_amp: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,10 +39,40 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class LeagueConfig:
+    max_pool_size: int = 20
+    snapshot_interval: int = 10
+    epochs_per_seat: int = 50
+    historical_ratio: float = 0.8
+    current_best_ratio: float = 0.2
+    initial_elo: float = 1000.0
+    elo_k_factor: float = 32.0
+    elo_floor: float = 500.0
+
+    def __post_init__(self) -> None:
+        ratio_sum = self.historical_ratio + self.current_best_ratio
+        if abs(ratio_sum - 1.0) > 1e-6:
+            raise ValueError(
+                f"League ratio sum must be 1.0, got "
+                f"{self.historical_ratio} + {self.current_best_ratio} = {ratio_sum}"
+            )
+
+
+@dataclass(frozen=True)
+class DemonstratorConfig:
+    num_games: int = 3
+    auto_matchup: bool = True
+    moves_per_minute: int = 60
+    device: str = "cuda"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     training: TrainingConfig
     display: DisplayConfig
     model: ModelConfig
+    league: LeagueConfig | None = None
+    demonstrator: DemonstratorConfig | None = None
 
 
 def load_config(path: Path) -> AppConfig:
@@ -76,6 +107,7 @@ def load_config(path: Path) -> AppConfig:
         (config_dir / t.get("checkpoint_dir", "checkpoints/")).resolve()
     )
     algorithm_params = t.get("algorithm_params", {})
+    use_amp = bool(t.get("use_amp", False))
 
     training = TrainingConfig(
         num_games=num_games,
@@ -84,6 +116,7 @@ def load_config(path: Path) -> AppConfig:
         checkpoint_interval=checkpoint_interval,
         checkpoint_dir=checkpoint_dir,
         algorithm_params=algorithm_params,
+        use_amp=use_amp,
     )
 
     d = raw.get("display", {})
@@ -107,4 +140,15 @@ def load_config(path: Path) -> AppConfig:
         display_name=display_name, architecture=architecture, params=model_params
     )
 
-    return AppConfig(training=training, display=display, model=model)
+    league_config = None
+    if "league" in raw:
+        league_config = LeagueConfig(**raw["league"])  # ratio validation in __post_init__
+
+    demo_config = None
+    if "demonstrator" in raw:
+        demo_config = DemonstratorConfig(**raw["demonstrator"])
+
+    return AppConfig(
+        training=training, display=display, model=model,
+        league=league_config, demonstrator=demo_config,
+    )

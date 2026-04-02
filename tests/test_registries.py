@@ -8,6 +8,8 @@ from keisei.training.algorithm_registry import (
 from keisei.training.model_registry import (
     VALID_ARCHITECTURES,
     build_model,
+    get_model_contract,
+    get_obs_channels,
     validate_model_params,
 )
 
@@ -48,6 +50,30 @@ class TestModelRegistry:
     def test_missing_params_raises(self) -> None:
         with pytest.raises((TypeError, ValueError)):
             validate_model_params("resnet", {})
+
+
+class TestModelContractTypes:
+    def test_resnet_is_scalar(self):
+        assert get_model_contract("resnet") == "scalar"
+
+    def test_mlp_is_scalar(self):
+        assert get_model_contract("mlp") == "scalar"
+
+    def test_transformer_is_scalar(self):
+        assert get_model_contract("transformer") == "scalar"
+
+    def test_se_resnet_is_multi_head(self):
+        assert get_model_contract("se_resnet") == "multi_head"
+
+    def test_unknown_architecture_raises(self):
+        with pytest.raises(ValueError):
+            get_model_contract("nonexistent")
+
+    def test_obs_channels_scalar(self):
+        assert get_obs_channels("resnet") == 46
+
+    def test_obs_channels_multi_head(self):
+        assert get_obs_channels("se_resnet") == 50
 
 
 class TestAlgorithmRegistry:

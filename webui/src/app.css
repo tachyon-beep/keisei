@@ -22,6 +22,11 @@
   --danger: #ef4444;
   --warning: #f59e0b;
   --promoted: #c00;
+  --tab-active-bg: #1a3a2a;
+  --tab-active-border: var(--accent-green);
+  --tab-inactive-border: var(--border);
+  --player-learner: var(--accent-green);
+  --player-opponent: var(--accent-blue);
 
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--text-primary);

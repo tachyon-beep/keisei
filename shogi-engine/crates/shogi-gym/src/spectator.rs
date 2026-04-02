@@ -390,4 +390,33 @@ mod tests {
         assert_eq!(hand_piece_char(HandPieceType::Bishop), 'B');
         assert_eq!(hand_piece_char(HandPieceType::Rook), 'R');
     }
+
+    #[test]
+    fn test_move_notation_boundary_squares() {
+        // Top-right corner: row=0, col=0 → "9a"
+        // Bottom-left corner: row=8, col=8 → "1i"
+        let mv_top_right = Move::Board {
+            from: Square::from_row_col(0, 0).unwrap(),
+            to: Square::from_row_col(1, 0).unwrap(),
+            promote: false,
+        };
+        let notation = move_notation(mv_top_right);
+        assert_eq!(notation, "9a→9b", "Top-right corner notation mismatch: got {}", notation);
+
+        let mv_bottom_left = Move::Board {
+            from: Square::from_row_col(8, 8).unwrap(),
+            to: Square::from_row_col(7, 8).unwrap(),
+            promote: false,
+        };
+        let notation = move_notation(mv_bottom_left);
+        assert_eq!(notation, "1i→1h", "Bottom-left corner notation mismatch: got {}", notation);
+
+        // Drop at corner
+        let mv_drop_corner = Move::Drop {
+            to: Square::from_row_col(0, 8).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let notation = move_notation(mv_drop_corner);
+        assert_eq!(notation, "P*1a", "Drop at corner notation mismatch: got {}", notation);
+    }
 }

@@ -1,25 +1,14 @@
 <script>
   import { selectedGameId } from '../stores/games.js'
   import { pieceKanji } from './pieces.js'
+  import { parseBoard, getStatusText, getAdvantage } from './gameThumbnail.js'
 
   export let game
 
   $: selected = $selectedGameId === game.game_id
-  $: board = (() => {
-    try { return typeof game.board_json === 'string' ? JSON.parse(game.board_json) : (game.board || []) }
-    catch { return [] }
-  })()
-  $: statusText = game.is_over
-    ? (game.result || '').replaceAll('_', ' ')
-    : `Ply ${game.ply}`
-
-  $: value = game.value_estimate || 0
-  $: currentPlayer = game.current_player || 'black'
-  // Normalise so positive = black advantage
-  $: blackAdv = currentPlayer === 'black' ? value : -value
-  // "Interesting" = model is confident someone is winning (|value| > 0.3)
-  $: confident = Math.abs(blackAdv) > 0.3
-  $: favours = blackAdv > 0 ? 'black' : 'white'
+  $: board = parseBoard(game)
+  $: statusText = getStatusText(game)
+  $: ({ confident, favours } = getAdvantage(game))
 
   function handleClick() {
     selectedGameId.set(game.game_id)

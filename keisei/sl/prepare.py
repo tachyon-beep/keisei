@@ -135,6 +135,11 @@ def prepare_sl_data(
                 observations.append(obs)
                 policy_targets.append(policy_target)
                 value_targets.append(value_cat)
+                # FIXME(keisei-8ad9dd8509): score_targets use game outcome (±1/76 ≈ ±0.013),
+                # not material difference. The score head will learn near-zero targets from
+                # this data. Real material scoring requires Rust replay of positions to compute
+                # material_balance() at each move. This placeholder is structurally correct
+                # (valid shard format) but semantically wrong for score head training.
                 score_targets.append(raw_score / SCORE_NORMALIZATION)
 
             # Flush shard if buffer is full

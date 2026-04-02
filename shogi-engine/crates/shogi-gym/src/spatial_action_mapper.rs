@@ -219,18 +219,12 @@ impl ActionMapper for SpatialActionMapper {
             let from_row = from_sq.row() as i8;
             let from_col = from_sq.col() as i8;
 
-            // In perspective space, Black's forward is dr=-2, White's forward is dr=+2
-            // (because Square::flip is a 180° rotation that reverses move direction).
-            let dr: i8 = match perspective {
-                Color::Black => -2,
-                Color::White => 2,
-            };
-            // Slot 0 = "left" (dc same sign as dr), slot 1 = "right" (dc opposite sign)
-            let dc: i8 = if knight_side == 0 {
-                if dr < 0 { -1 } else { 1 }  // same sign as dr
-            } else {
-                if dr < 0 { 1 } else { -1 }  // opposite sign to dr
-            };
+            // Forward is always dr=-2 in perspective space (same convention as
+            // DIRECTIONS[0]=N). The encoder applies the perspective flip to
+            // from/to squares BEFORE computing dr, so in perspective space
+            // the knight always moves toward decreasing row.
+            let dr: i8 = -2;
+            let dc: i8 = if knight_side == 0 { -1 } else { 1 };
             let to_row = from_row + dr;
             let to_col = from_col + dc;
 

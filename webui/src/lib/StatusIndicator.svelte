@@ -1,5 +1,8 @@
 <script>
   import { trainingState, trainingAlive } from '../stores/training.js'
+  import { getIndicator } from './indicator.js'
+  import { buildConfigTooltip } from './configTooltip.js'
+  import TabBar from './TabBar.svelte'
 
   $: status = $trainingState?.status || 'unknown'
   $: epoch = $trainingState?.current_epoch || 0
@@ -10,32 +13,9 @@
   $: stats = $trainingState?.system_stats || {}
   $: gpus = stats.gpus || []
 
-  $: indicator = alive
-    ? { dot: 'green', text: `Training alive` }
-    : status === 'completed'
-      ? { dot: 'red', text: 'Training completed' }
-      : status === 'paused'
-        ? { dot: 'red', text: 'Training paused' }
-        : { dot: 'yellow', text: 'Training stale' }
+  $: indicator = getIndicator(alive, status)
 
-  $: configTooltip = (() => {
-    try {
-      const cfg = typeof $trainingState?.config_json === 'string'
-        ? JSON.parse($trainingState.config_json)
-        : $trainingState?.config_json
-      if (!cfg) return ''
-      const lines = []
-      lines.push(`Architecture: ${modelArch}`)
-      if (cfg.training) {
-        lines.push(`Algorithm: ${cfg.training.algorithm || '?'}`)
-        lines.push(`Games: ${cfg.training.num_games || '?'}`)
-      }
-      if (cfg.model) {
-        lines.push(`Architecture: ${cfg.model.architecture || '?'}`)
-      }
-      return lines.join('\n')
-    } catch { return modelArch }
-  })()
+  $: configTooltip = buildConfigTooltip($trainingState?.config_json, modelArch)
 </script>
 
 <header class="status-bar" role="banner">
@@ -46,7 +26,7 @@
       <span class="text">{indicator.text}</span>
     </div>
     {#if alive}
-      <div class="stats">
+      <div class="stats" aria-live="polite">
         <span class="stat">Epoch {epoch}</span>
         <span class="sep">|</span>
         <span class="stat">Step {step.toLocaleString()}</span>
@@ -64,7 +44,7 @@
     {/if}
   </div>
   <div class="right">
-    <span class="player-name" title={configTooltip}>☗ {displayName}</span>
+    <TabBar />
   </div>
 </header>
 

@@ -1,28 +1,14 @@
 <script>
   import { afterUpdate } from 'svelte'
+  import { parseMoves, buildMoveRows } from './moveRows.js'
 
   export let moveHistoryJson = '[]'
   export let currentPlayer = 'black'
 
   let scrollContainer
 
-  $: moves = (() => {
-    try { return typeof moveHistoryJson === 'string' ? JSON.parse(moveHistoryJson) : (moveHistoryJson || []) }
-    catch { return [] }
-  })()
-
-  $: rows = (() => {
-    const result = []
-    for (let i = 0; i < moves.length; i += 2) {
-      result.push({
-        num: Math.floor(i / 2) + 1,
-        black: moves[i]?.notation || '',
-        white: moves[i + 1]?.notation || '',
-        isLatest: i >= moves.length - 2,
-      })
-    }
-    return result
-  })()
+  $: moves = parseMoves(moveHistoryJson)
+  $: rows = buildMoveRows(moves)
 
   afterUpdate(() => {
     if (scrollContainer) {

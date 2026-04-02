@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -56,6 +56,9 @@ def init_db(db_path: str) -> None:
                 in_check          INTEGER NOT NULL,
                 move_history_json TEXT NOT NULL,
                 value_estimate    REAL NOT NULL DEFAULT 0.0,
+                game_type         TEXT NOT NULL DEFAULT 'live',
+                demo_slot         INTEGER,
+                opponent_id       INTEGER REFERENCES league_entries(id),
                 updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS training_state (
@@ -71,6 +74,36 @@ def init_db(db_path: str) -> None:
                 status           TEXT NOT NULL DEFAULT 'running',
                 heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS league_entries (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                architecture    TEXT NOT NULL,
+                model_params    TEXT NOT NULL,
+                checkpoint_path TEXT NOT NULL,
+                elo_rating      REAL NOT NULL DEFAULT 1000.0,
+                created_epoch   INTEGER NOT NULL,
+                games_played    INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS league_results (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                epoch           INTEGER NOT NULL,
+                learner_id      INTEGER NOT NULL REFERENCES league_entries(id),
+                opponent_id     INTEGER NOT NULL REFERENCES league_entries(id),
+                wins            INTEGER NOT NULL,
+                losses          INTEGER NOT NULL,
+                draws           INTEGER NOT NULL,
+                recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
+            CREATE INDEX IF NOT EXISTS idx_league_entries_elo ON league_entries(elo_rating);
+            CREATE TABLE IF NOT EXISTS elo_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                epoch       INTEGER NOT NULL,
+                elo_rating  REAL NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_elo_history_entry ON elo_history(entry_id);
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
@@ -129,10 +162,27 @@ def write_game_snapshots(db_path: str, snapshots: list[dict[str, Any]]) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO game_snapshots
                    (game_id, board_json, hands_json, current_player, ply,
-                    is_over, result, sfen, in_check, move_history_json, value_estimate)
+                    is_over, result, sfen, in_check, move_history_json,
+                    value_estimate, game_type, demo_slot, opponent_id)
                    VALUES (:game_id, :board_json, :hands_json, :current_player,
-                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json, :value_estimate)""",
-                snap,
+                    :ply, :is_over, :result, :sfen, :in_check, :move_history_json,
+                    :value_estimate, :game_type, :demo_slot, :opponent_id)""",
+                {
+                    "game_id": snap["game_id"],
+                    "board_json": snap["board_json"],
+                    "hands_json": snap["hands_json"],
+                    "current_player": snap["current_player"],
+                    "ply": snap["ply"],
+                    "is_over": snap["is_over"],
+                    "result": snap["result"],
+                    "sfen": snap["sfen"],
+                    "in_check": snap["in_check"],
+                    "move_history_json": snap["move_history_json"],
+                    "value_estimate": snap.get("value_estimate", 0.0),
+                    "game_type": snap.get("game_type", "live"),
+                    "demo_slot": snap.get("demo_slot"),
+                    "opponent_id": snap.get("opponent_id"),
+                },
             )
         conn.commit()
     finally:
@@ -230,5 +280,37 @@ def update_training_progress(
                 (epoch, step),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
+    """Read all league entries and results."""
+    conn = _connect(db_path)
+    try:
+        entries = conn.execute(
+            "SELECT id, architecture, elo_rating, games_played, created_epoch, created_at "
+            "FROM league_entries ORDER BY elo_rating DESC"
+        ).fetchall()
+        results = conn.execute(
+            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, recorded_at "
+            "FROM league_results ORDER BY id DESC"
+        ).fetchall()
+        return {
+            "entries": [dict(r) for r in entries],
+            "results": [dict(r) for r in results],
+        }
+    finally:
+        conn.close()
+
+
+def read_elo_history(db_path: str) -> list[dict[str, Any]]:
+    """Read all Elo history points for charting."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT entry_id, epoch, elo_rating FROM elo_history ORDER BY epoch, entry_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()

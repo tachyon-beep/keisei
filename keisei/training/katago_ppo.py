@@ -4,12 +4,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn.functional as F
+from torch.amp import autocast, GradScaler
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.models.katago_base import KataGoBaseModel
+
+
+def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dtype, str]:
+    """Return (autocast_dtype, autocast_device_type) for AMP configuration."""
+    dtype = (
+        torch.bfloat16
+        if (use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+        else torch.float16
+    )
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    return dtype, device_type
 
 
 def compute_value_metrics(
@@ -47,15 +60,16 @@ class KataGoPPOParams:
     lambda_entropy: float = 0.01
     score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
+    use_amp: bool = False
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
 # - legal_masks: 128 x 512 x 11259 x 1 byte = ~740 MB
 # - observations: 128 x 512 x 50 x 9 x 9 x 4 bytes = ~1060 MB
 # - other fields (7 x ~33 MB each): ~230 MB
-# Total: ~2 GB CPU RAM. If memory becomes the binding constraint,
-# consider sparse legal_mask storage or regenerating masks from
-# game state during update. For now, keep it simple and dense.
+# Total: ~2 GB CPU RAM (stored on CPU; mini-batches transferred to GPU).
+# If CPU memory becomes the binding constraint, consider sparse
+# legal_mask storage or regenerating masks from game state during update.
 
 
 class KataGoRolloutBuffer:
@@ -75,6 +89,7 @@ class KataGoRolloutBuffer:
         self.legal_masks: list[torch.Tensor] = []
         self.value_categories: list[torch.Tensor] = []
         self.score_targets: list[torch.Tensor] = []
+        self.env_ids: list[torch.Tensor] = []
 
     @property
     def size(self) -> int:
@@ -91,6 +106,7 @@ class KataGoRolloutBuffer:
         legal_masks: torch.Tensor,
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
     ) -> None:
         """Add a timestep to the buffer.
 
@@ -101,9 +117,21 @@ class KataGoRolloutBuffer:
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
         """
+        # Detach and move to CPU first — all validation below runs on CPU
+        # tensors, avoiding implicit CUDA synchronization on the hot path.
+        obs_cpu = obs.detach().cpu()
+        actions_cpu = actions.detach().cpu()
+        log_probs_cpu = log_probs.detach().cpu()
+        values_cpu = values.detach().cpu()
+        rewards_cpu = rewards.detach().cpu()
+        dones_cpu = dones.detach().cpu()
+        legal_masks_cpu = legal_masks.detach().cpu()
+        value_cats_cpu = value_categories.detach().cpu()
+        score_cpu = score_targets.detach().cpu()
+
         # Guard against invalid value categories
         valid_cats = {-1, 0, 1, 2}
-        unique_cats = set(value_categories.unique().tolist())
+        unique_cats = set(value_cats_cpu.unique().tolist())
         invalid = unique_cats - valid_cats
         if invalid:
             raise ValueError(
@@ -111,41 +139,60 @@ class KataGoRolloutBuffer:
                 f"Expected only {{-1=ignore, 0=W, 1=D, 2=L}}."
             )
 
+        # Guard: NaN score targets are no longer valid — every position gets real material balance.
+        if score_cpu.isnan().any():
+            raise ValueError(
+                "score_targets contains NaN. With per-step material balance, "
+                "all targets should be real-valued."
+            )
+
         # Guard against unnormalized score targets (catches integration bugs).
-        # NaN is used as sentinel for non-terminal positions — exclude from check.
-        finite_scores = score_targets[~score_targets.isnan()]
-        if finite_scores.numel() > 0 and finite_scores.abs().max() > 2.0:
+        # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
+        # Theoretical max: fully promoted one-sided = 196/76 = 2.58. Threshold
+        # at 3.5 gives 35% headroom above the theoretical maximum.
+        abs_max = score_cpu.abs().max()
+        if abs_max > 3.5:
             raise ValueError(
                 f"score_targets appear unnormalized: max abs value = "
-                f"{finite_scores.abs().max().item():.1f}, expected <= 1.0. "
-                f"Divide by score_normalization before storing."
+                f"{abs_max.item():.1f}. "
+                f"Expected in [-1.7, +1.7] typical, theoretical max 2.58 (guard 3.5)."
             )
-        self.observations.append(obs)
-        self.actions.append(actions)
-        self.log_probs.append(log_probs)
-        self.values.append(values)
-        self.rewards.append(rewards)
-        self.dones.append(dones)
-        self.legal_masks.append(legal_masks)
-        self.value_categories.append(value_categories)
-        self.score_targets.append(score_targets)
+
+        # Store on CPU to reduce GPU memory pressure during rollout collection.
+        # Mini-batches are transferred back to GPU during update().
+        self.observations.append(obs_cpu)
+        self.actions.append(actions_cpu)
+        self.log_probs.append(log_probs_cpu)
+        self.values.append(values_cpu)
+        self.rewards.append(rewards_cpu)
+        self.dones.append(dones_cpu)
+        self.legal_masks.append(legal_masks_cpu)
+        self.value_categories.append(value_cats_cpu)
+        self.score_targets.append(score_cpu)
+        if env_ids is not None:
+            self.env_ids.append(env_ids.detach().cpu())
 
     def flatten(self) -> dict[str, torch.Tensor]:
         if self.size == 0:
             raise ValueError(
                 "Cannot flatten an empty buffer. Call add() at least once before flatten()."
             )
-        return {
-            "observations": torch.stack(self.observations).reshape(-1, *self.obs_shape),
-            "actions": torch.stack(self.actions).reshape(-1),
-            "log_probs": torch.stack(self.log_probs).reshape(-1),
-            "values": torch.stack(self.values).reshape(-1),
-            "rewards": torch.stack(self.rewards).reshape(-1),
-            "dones": torch.stack(self.dones).reshape(-1),
-            "legal_masks": torch.stack(self.legal_masks).reshape(-1, self.action_space),
-            "value_categories": torch.stack(self.value_categories).reshape(-1),
-            "score_targets": torch.stack(self.score_targets).reshape(-1),
+        # Use cat instead of stack to support variable-sized timesteps
+        # (split-merge mode stores only learner envs per step, which varies).
+        result = {
+            "observations": torch.cat(self.observations, dim=0).reshape(-1, *self.obs_shape),
+            "actions": torch.cat(self.actions, dim=0).reshape(-1),
+            "log_probs": torch.cat(self.log_probs, dim=0).reshape(-1),
+            "values": torch.cat(self.values, dim=0).reshape(-1),
+            "rewards": torch.cat(self.rewards, dim=0).reshape(-1),
+            "dones": torch.cat(self.dones, dim=0).reshape(-1),
+            "legal_masks": torch.cat(self.legal_masks, dim=0).reshape(-1, self.action_space),
+            "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
+            "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
         }
+        if self.env_ids:
+            result["env_ids"] = torch.cat(self.env_ids, dim=0).reshape(-1)
+        return result
 
 
 class KataGoPPOAlgorithm:
@@ -173,6 +220,7 @@ class KataGoPPOAlgorithm:
         self.model = model
         self.forward_model = forward_model or model
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
+        self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
         self.warmup_entropy = warmup_entropy
         self.current_entropy_coeff = params.lambda_entropy
@@ -207,9 +255,13 @@ class KataGoPPOAlgorithm:
         train mode on exit. The stored log_probs are detached (no_grad);
         PPO recomputes new_log_probs under train() in update().
         """
+        device = next(self.model.parameters()).device
+        amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
+
         self.forward_model.eval()
         try:
-            output = self.forward_model(obs)
+            with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                output = self.forward_model(obs)
 
             # Guard: no env should have zero legal actions
             legal_counts = legal_masks.sum(dim=-1)
@@ -236,33 +288,94 @@ class KataGoPPOAlgorithm:
         finally:
             self.forward_model.train()
 
-    def update(self, buffer: KataGoRolloutBuffer, next_values: torch.Tensor) -> dict[str, float]:
-        # Deferred import to avoid circular: katago_ppo -> ppo -> algorithm_registry -> katago_ppo
-        from keisei.training.ppo import compute_gae
+    def update(
+        self,
+        buffer: KataGoRolloutBuffer,
+        next_values: torch.Tensor,
+        value_adapter: Any | None = None,
+    ) -> dict[str, float]:
+        from keisei.training.gae import compute_gae
 
         self.forward_model.train()
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
+        total_samples = data["rewards"].numel()
+        device = next(self.model.parameters()).device
 
-        # GAE computation (uses scalar P(W)-P(L) values)
-        rewards_2d = data["rewards"].reshape(T, N)
-        values_2d = data["values"].reshape(T, N)
-        dones_2d = data["dones"].reshape(T, N)
+        # GAE computation — runs on CPU (buffer stores data on CPU).
+        next_values_cpu = next_values.detach().cpu()
 
-        all_advantages = torch.zeros(T, N, device=data["rewards"].device)
-        for env_i in range(N):
-            all_advantages[:, env_i] = compute_gae(
-                rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
-                next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
+        if total_samples == T * N:
+            # Vectorized path: batched GAE over (T, N) grid
+            rewards_2d = data["rewards"].reshape(T, N)
+            values_2d = data["values"].reshape(T, N)
+            dones_2d = data["dones"].reshape(T, N)
+
+            advantages = compute_gae(
+                rewards_2d, values_2d, dones_2d,
+                next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
+            ).reshape(-1)
+        elif "env_ids" in data:
+            # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
+            # compute GAE in a single vectorized pass.
+            from keisei.training.gae import compute_gae_padded
+
+            env_ids = data["env_ids"]
+            unique_envs = env_ids.unique()
+            advantages = torch.zeros(total_samples)
+
+            # Collect per-env data and pad into (T_max, N_env) tensors
+            env_rewards = []
+            env_values = []
+            env_dones = []
+            env_lengths = []
+            env_masks = []
+
+            for env_id in unique_envs:
+                mask = env_ids == env_id
+                env_rewards.append(data["rewards"][mask])
+                env_values.append(data["values"][mask])
+                env_dones.append(data["dones"][mask])
+                env_lengths.append(mask.sum().item())
+                env_masks.append(mask)
+
+            max_T = max(env_lengths)
+            N_env = len(unique_envs)
+
+            rewards_pad = torch.zeros(max_T, N_env)
+            values_pad = torch.zeros(max_T, N_env)
+            dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
+            nv = torch.zeros(N_env)
+
+            for i, L in enumerate(env_lengths):
+                rewards_pad[:L, i] = env_rewards[i]
+                values_pad[:L, i] = env_values[i]
+                dones_pad[:L, i] = env_dones[i]
+                nv[i] = next_values_cpu[unique_envs[i]]
+
+            lengths_t = torch.tensor(env_lengths)
+            padded_adv = compute_gae_padded(
+                rewards_pad, values_pad, dones_pad, nv, lengths_t,
+                gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
-        advantages = all_advantages.reshape(-1)
+            for i, L in enumerate(env_lengths):
+                advantages[env_masks[i]] = padded_adv[:L, i]
+        else:
+            # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
+            bootstrap = next_values_cpu.mean()
+            advantages = compute_gae(
+                data["rewards"], data["values"], data["dones"],
+                bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
+            )
+
         if advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        total_samples = T * N
         batch_size = min(self.params.batch_size, total_samples)
+
+        amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
         total_policy_loss = 0.0
         total_value_loss = 0.0
@@ -272,91 +385,105 @@ class KataGoPPOAlgorithm:
         num_updates = 0
 
         for _ in range(self.params.epochs_per_batch):
-            indices = torch.randperm(total_samples, device=data["rewards"].device)
+            indices = torch.randperm(total_samples)
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
                 idx = indices[start:end]
 
-                batch_obs = data["observations"][idx]
-                batch_actions = data["actions"][idx]
-                batch_old_log_probs = data["log_probs"][idx]
-                batch_advantages = advantages[idx]
-                batch_legal_masks = data["legal_masks"][idx]
-                batch_value_cats = data["value_categories"][idx]
-                batch_score_targets = data["score_targets"][idx]
+                # Transfer mini-batch from CPU to training device
+                batch_obs = data["observations"][idx].to(device)
+                batch_actions = data["actions"][idx].to(device)
+                batch_old_log_probs = data["log_probs"][idx].to(device)
+                batch_advantages = advantages[idx].to(device)
+                batch_legal_masks = data["legal_masks"][idx].to(device)
+                batch_value_cats = data["value_categories"][idx].to(device)
+                batch_score_targets = data["score_targets"][idx].to(device)
 
-                output = self.forward_model(batch_obs)
+                with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                    output = self.forward_model(batch_obs)
 
-                # Policy loss (clipped surrogate)
-                flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
+                    # Policy loss (clipped surrogate)
+                    flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
 
-                # NaN guard: check raw model output BEFORE masking.
-                if flat_logits.isnan().any():
-                    raise RuntimeError("NaN in raw policy logits from model forward pass")
+                    # NaN guard: check raw model output BEFORE masking.
+                    if flat_logits.isnan().any():
+                        raise RuntimeError("NaN in raw policy logits from model forward pass")
 
-                # Guard: no sample in the batch should have an all-False legal mask.
-                # This mirrors the guard in select_actions — an all-illegal mask
-                # would produce all-NaN from log_softmax(-inf) and silently corrupt the loss.
-                if (batch_legal_masks.sum(dim=-1) == 0).any():
-                    raise RuntimeError(
-                        "Batch contains samples with zero legal actions in update(). "
-                        "Check that terminal-state masks are not stored in the buffer."
+                    # Guard: no sample in the batch should have an all-False legal mask.
+                    # This mirrors the guard in select_actions — an all-illegal mask
+                    # would produce all-NaN from log_softmax(-inf) and silently corrupt the loss.
+                    if (batch_legal_masks.sum(dim=-1) == 0).any():
+                        raise RuntimeError(
+                            "Batch contains samples with zero legal actions in update(). "
+                            "Check that terminal-state masks are not stored in the buffer."
+                        )
+
+                    masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
+                    log_probs_all = F.log_softmax(masked_logits, dim=-1)
+                    new_log_probs = log_probs_all.gather(
+                        1, batch_actions.unsqueeze(1)
+                    ).squeeze(1)
+
+                    ratio = (new_log_probs - batch_old_log_probs).exp()
+                    clip = self.params.clip_epsilon
+                    surr1 = ratio * batch_advantages
+                    surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    # Entropy over legal actions only.
+                    # Reuse log_softmax result instead of computing softmax again.
+                    probs = log_probs_all.exp()
+                    safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
+                    entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
+
+                    # Value + score loss — dispatch through adapter if provided
+                    if value_adapter is not None:
+                        value_score_loss = value_adapter.compute_value_loss(
+                            output.value_logits,
+                            returns=None,
+                            value_cats=batch_value_cats,
+                            score_targets=batch_score_targets,
+                            score_pred=output.score_lead,
+                        )
+                        # For metrics tracking, decompose (adapter combines them)
+                        value_loss = value_score_loss  # combined
+                        score_loss = torch.tensor(0.0, device=batch_obs.device)
+                    else:
+                        # Default: inline KataGo multi-head (backward compatible)
+                        has_valid_value_targets = (batch_value_cats >= 0).any()
+                        if has_valid_value_targets:
+                            value_loss = F.cross_entropy(
+                                output.value_logits, batch_value_cats, ignore_index=-1
+                            )
+                        else:
+                            value_loss = output.value_logits.sum() * 0.0
+
+                        # Score loss (MSE on normalized material balance).
+                        # Every position has a real target — no NaN masking needed.
+                        score_loss = F.mse_loss(
+                            output.score_lead.squeeze(-1), batch_score_targets,
+                        )
+
+                        value_score_loss = (
+                            self.params.lambda_value * value_loss
+                            + self.params.lambda_score * score_loss
+                        )
+
+                    # Combined loss
+                    loss = (
+                        self.params.lambda_policy * policy_loss
+                        + value_score_loss
+                        - self.current_entropy_coeff * entropy
                     )
 
-                masked_logits = flat_logits.masked_fill(~batch_legal_masks, float("-inf"))
-                log_probs_all = F.log_softmax(masked_logits, dim=-1)
-                new_log_probs = log_probs_all.gather(
-                    1, batch_actions.unsqueeze(1)
-                ).squeeze(1)
-
-                ratio = (new_log_probs - batch_old_log_probs).exp()
-                clip = self.params.clip_epsilon
-                surr1 = ratio * batch_advantages
-                surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-
-                # Entropy over legal actions only.
-                probs = F.softmax(masked_logits, dim=-1)
-                safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
-                entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
-
-                # Value loss (cross-entropy on W/D/L).
-                # When all samples in the batch have value_cats=-1 (all non-terminal),
-                # cross_entropy returns NaN. Use 0.0 in that case — no value signal.
-                has_valid_value_targets = (batch_value_cats >= 0).any()
-                if has_valid_value_targets:
-                    value_loss = F.cross_entropy(
-                        output.value_logits, batch_value_cats, ignore_index=-1
-                    )
-                else:
-                    # Zero loss that preserves the autograd graph (not a detached leaf tensor)
-                    value_loss = output.value_logits.sum() * 0.0
-
-                # Score loss (MSE on normalized score, terminal positions only).
-                # Non-terminal positions use NaN sentinel — exclude from loss.
-                score_valid = ~batch_score_targets.isnan()
-                if score_valid.any():
-                    score_loss = F.mse_loss(
-                        output.score_lead.squeeze(-1)[score_valid],
-                        batch_score_targets[score_valid],
-                    )
-                else:
-                    score_loss = output.score_lead.sum() * 0.0  # zero loss, preserve graph
-
-                # Combined loss
-                loss = (
-                    self.params.lambda_policy * policy_loss
-                    + self.params.lambda_value * value_loss
-                    + self.params.lambda_score * score_loss
-                    - self.current_entropy_coeff * entropy
-                )
-
-                self.optimizer.zero_grad()
-                loss.backward()
+                self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.params.grad_clip
                 )
-                self.optimizer.step()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
@@ -381,14 +508,14 @@ class KataGoPPOAlgorithm:
         valid_mask = data["value_categories"] >= 0  # exclude ignore_index=-1
         if valid_mask.any():
             with torch.no_grad():
-                # Re-forward a sample for metrics (use last mini-batch's data to avoid extra forward pass)
                 valid_cats = data["value_categories"][valid_mask]
                 valid_obs = data["observations"][valid_mask]
                 sample_size = min(256, valid_obs.shape[0])
-                sample_obs = valid_obs[:sample_size]
-                sample_cats = valid_cats[:sample_size]
+                sample_obs = valid_obs[:sample_size].to(device)
+                sample_cats = valid_cats[:sample_size].to(device)
                 self.forward_model.eval()
-                sample_output = self.forward_model(sample_obs)
+                with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                    sample_output = self.forward_model(sample_obs)
                 value_metrics = compute_value_metrics(
                     sample_output.value_logits, sample_cats
                 )

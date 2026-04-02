@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from keisei.db import (
     read_game_snapshots,
     read_game_snapshots_since,
+    read_league_data,
+    read_elo_history,
     read_metrics_since,
     read_training_state,
 )
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 MAX_METRICS_IN_INIT = 500
 POLL_INTERVAL_S = 0.2
+LEAGUE_POLL_INTERVAL_S = 5.0
 POLL_BATCH_SIZE = 100
 HEARTBEAT_STALE_S = 30
 WS_SEND_TIMEOUT_S = 5.0
@@ -151,15 +154,25 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     if games:
         last_game_ts = max(g["updated_at"] for g in games)
 
+    league_data = await asyncio.to_thread(read_league_data, db_path)
+    elo_history = await asyncio.to_thread(read_elo_history, db_path)
+
     await asyncio.wait_for(
         ws.send_json({
             "type": "init",
             "games": games,
             "metrics": metrics,
             "training_state": state,
+            "league_entries": league_data["entries"],
+            "league_results": league_data["results"],
+            "elo_history": elo_history,
         }),
         timeout=WS_SEND_TIMEOUT_S,
     )
+
+    last_league_entry_count = len(league_data["entries"])
+    last_league_result_id = league_data["results"][0]["id"] if league_data["results"] else 0
+    league_poll_elapsed = 0.0
 
     # Poll loop
     while True:
@@ -213,6 +226,26 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 }),
                 timeout=WS_SEND_TIMEOUT_S,
             )
+
+        league_poll_elapsed += POLL_INTERVAL_S
+        if league_poll_elapsed >= LEAGUE_POLL_INTERVAL_S:
+            league_poll_elapsed = 0.0
+            new_league = await asyncio.to_thread(read_league_data, db_path)
+            new_elo_hist = await asyncio.to_thread(read_elo_history, db_path)
+            new_entry_count = len(new_league["entries"])
+            new_result_id = new_league["results"][0]["id"] if new_league["results"] else 0
+            if new_entry_count != last_league_entry_count or new_result_id != last_league_result_id:
+                last_league_entry_count = new_entry_count
+                last_league_result_id = new_result_id
+                await asyncio.wait_for(
+                    ws.send_json({
+                        "type": "league_update",
+                        "entries": new_league["entries"],
+                        "results": new_league["results"],
+                        "elo_history": new_elo_hist,
+                    }),
+                    timeout=WS_SEND_TIMEOUT_S,
+                )
 
 
 async def _keepalive(ws: WebSocket) -> None:

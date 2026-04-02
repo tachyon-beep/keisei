@@ -41,6 +41,10 @@ pub struct StepMetadata {
     /// Ply count at the time of this step, per environment.
     #[pyo3(get)]
     pub ply_count: Py<PyArray1<u16>>,
+    /// Material balance from last-mover's perspective, per environment.
+    /// Computed every step (not just terminal). Standard piece values.
+    #[pyo3(get)]
+    pub material_balance: Py<PyArray1<i32>>,
 }
 
 /// Output of a VecEnv `step()` call.
