@@ -140,6 +140,42 @@ class TestOpponentPool:
         assert updated[learner_id].games_played == 5
         assert updated[opponent_id].games_played == 5
 
+    def test_update_elo_writes_history(self, league_db, league_dir):
+        import sqlite3
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=5)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+        entry = pool.list_entries()[0]
+
+        pool.update_elo(entry.id, 1050.0, epoch=3)
+        pool.update_elo(entry.id, 1100.0, epoch=5)
+
+        conn = sqlite3.connect(league_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT entry_id, epoch, elo_rating FROM elo_history ORDER BY epoch"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 2
+        assert dict(rows[0]) == {"entry_id": entry.id, "epoch": 3, "elo_rating": 1050.0}
+        assert dict(rows[1]) == {"entry_id": entry.id, "epoch": 5, "elo_rating": 1100.0}
+
+    def test_delete_entry_cascades_elo_history(self, league_db, league_dir):
+        import sqlite3
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=1)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+        entry = pool.list_entries()[0]
+        pool.update_elo(entry.id, 1050.0, epoch=1)
+
+        # Adding a second snapshot triggers eviction of the first
+        pool.add_snapshot(model, "resnet", {}, epoch=1)
+
+        conn = sqlite3.connect(league_db)
+        count = conn.execute("SELECT COUNT(*) FROM elo_history WHERE entry_id = ?", (entry.id,)).fetchone()[0]
+        conn.close()
+        assert count == 0
+
     def test_load_opponent_missing_checkpoint_raises(self, league_db, league_dir):
         """load_opponent() should raise FileNotFoundError for deleted checkpoints."""
         from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams

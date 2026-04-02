@@ -179,6 +179,10 @@ class OpponentPool:
                 "DELETE FROM league_results WHERE learner_id = ? OR opponent_id = ?",
                 (entry.id, entry.id),
             )
+            conn.execute(
+                "DELETE FROM elo_history WHERE entry_id = ?",
+                (entry.id,),
+            )
             conn.execute("DELETE FROM league_entries WHERE id = ?", (entry.id,))
             conn.commit()
         finally:
@@ -208,12 +212,16 @@ class OpponentPool:
         model.eval()
         return model
 
-    def update_elo(self, entry_id: int, new_elo: float) -> None:
+    def update_elo(self, entry_id: int, new_elo: float, epoch: int = 0) -> None:
         conn = self._connect()
         try:
             conn.execute(
                 "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
                 (new_elo, entry_id),
+            )
+            conn.execute(
+                "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
+                (entry_id, epoch, new_elo),
             )
             conn.commit()
         finally:

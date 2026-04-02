@@ -529,8 +529,8 @@ class KataGoTrainingLoop:
                         self._current_opponent_entry.elo_rating,
                         result=result_score, k=k,
                     )
-                    self.pool.update_elo(learner_entry.id, new_learner_elo)
-                    self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo)
+                    self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
+                    self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
                     logger.info(
                         "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
                         learner_entry.elo_rating, new_learner_elo,
