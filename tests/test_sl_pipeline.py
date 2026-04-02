@@ -877,3 +877,110 @@ class TestSLTrainerExtended:
         metrics = trainer.train_epoch()
         for key, val in metrics.items():
             assert np.isfinite(val), f"{key} is not finite"
+
+
+class TestCSAParserEdgeCases:
+    """CSA parser edge cases: CHUDAN, JISHOGI, SENNICHITE, multi-game."""
+
+    def test_chudan_returns_none(self, tmp_path):
+        """Interrupted game (%CHUDAN) should be skipped."""
+        csa_text = """V2.2
+N+Player1
+N-Player2
+P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
+P2 * -HI *  *  *  *  * -KA *
+P3-FU-FU-FU-FU-FU-FU-FU-FU-FU
+P4 *  *  *  *  *  *  *  *  *
+P5 *  *  *  *  *  *  *  *  *
+P6 *  *  *  *  *  *  *  *  *
+P7+FU+FU+FU+FU+FU+FU+FU+FU+FU
+P8 * +KA *  *  *  *  * +HI *
+P9+KY+KE+GI+KI+OU+KI+GI+KE+KY
++
++7776FU
+-3334FU
+%CHUDAN
+"""
+        csa_file = tmp_path / "game.csa"
+        csa_file.write_text(csa_text)
+        parser = CSAParser()
+        records = list(parser.parse(csa_file))
+        assert len(records) == 0
+
+    def test_jishogi_last_mover_wins(self, tmp_path):
+        """Impasse declaration (%JISHOGI) — last mover wins."""
+        csa_text = """V2.2
+N+Player1
+N-Player2
+P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
+P2 * -HI *  *  *  *  * -KA *
+P3-FU-FU-FU-FU-FU-FU-FU-FU-FU
+P4 *  *  *  *  *  *  *  *  *
+P5 *  *  *  *  *  *  *  *  *
+P6 *  *  *  *  *  *  *  *  *
+P7+FU+FU+FU+FU+FU+FU+FU+FU+FU
+P8 * +KA *  *  *  *  * +HI *
+P9+KY+KE+GI+KI+OU+KI+GI+KE+KY
++
++7776FU
+-3334FU
++2726FU
+%JISHOGI
+"""
+        csa_file = tmp_path / "game.csa"
+        csa_file.write_text(csa_text)
+        parser = CSAParser()
+        records = list(parser.parse(csa_file))
+        assert len(records) == 1
+        # Last mover is "+" (Black made the 3rd move +2726FU)
+        assert records[0].outcome == GameOutcome.WIN_BLACK
+
+    def test_sennichite_is_draw(self, tmp_path):
+        """Repetition (%SENNICHITE) — draw."""
+        csa_text = """V2.2
+N+Player1
+N-Player2
+P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
+P2 * -HI *  *  *  *  * -KA *
+P3-FU-FU-FU-FU-FU-FU-FU-FU-FU
+P4 *  *  *  *  *  *  *  *  *
+P5 *  *  *  *  *  *  *  *  *
+P6 *  *  *  *  *  *  *  *  *
+P7+FU+FU+FU+FU+FU+FU+FU+FU+FU
+P8 * +KA *  *  *  *  * +HI *
+P9+KY+KE+GI+KI+OU+KI+GI+KE+KY
++
++7776FU
+-3334FU
+%SENNICHITE
+"""
+        csa_file = tmp_path / "game.csa"
+        csa_file.write_text(csa_text)
+        parser = CSAParser()
+        records = list(parser.parse(csa_file))
+        assert len(records) == 1
+        assert records[0].outcome == GameOutcome.DRAW
+
+    def test_multi_game_archive(self, tmp_path):
+        """Multi-game CSA file separated by / should yield multiple records."""
+        game_block = """V2.2
+N+Player1
+N-Player2
+P1-KY-KE-GI-KI-OU-KI-GI-KE-KY
+P2 * -HI *  *  *  *  * -KA *
+P3-FU-FU-FU-FU-FU-FU-FU-FU-FU
+P4 *  *  *  *  *  *  *  *  *
+P5 *  *  *  *  *  *  *  *  *
+P6 *  *  *  *  *  *  *  *  *
+P7+FU+FU+FU+FU+FU+FU+FU+FU+FU
+P8 * +KA *  *  *  *  * +HI *
+P9+KY+KE+GI+KI+OU+KI+GI+KE+KY
++
++7776FU
+-3334FU
+%TORYO"""
+        csa_file = tmp_path / "multi.csa"
+        csa_file.write_text(game_block + "\n/\n" + game_block)
+        parser = CSAParser()
+        records = list(parser.parse(csa_file))
+        assert len(records) == 2
