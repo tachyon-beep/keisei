@@ -70,6 +70,36 @@ class TestLRScheduler:
             create_lr_scheduler(optimizer, schedule_type="cosine")
 
 
+class TestLRSchedulerWarmupBoundary:
+    """Test LR scheduler behavior around warmup boundary in training loop."""
+
+    def test_plateau_scheduler_reduces_lr_on_stale_loss(self, small_model):
+        """ReduceLROnPlateau should reduce LR after patience epochs of no improvement."""
+        from keisei.training.katago_loop import create_lr_scheduler
+
+        optimizer = torch.optim.Adam(small_model.parameters(), lr=1e-3)
+        scheduler = create_lr_scheduler(optimizer, patience=3, factor=0.5)
+
+        initial_lr = optimizer.param_groups[0]["lr"]
+        for _ in range(5):
+            scheduler.step(1.0)
+
+        assert optimizer.param_groups[0]["lr"] < initial_lr
+
+    def test_plateau_scheduler_preserves_lr_on_improving_loss(self, small_model):
+        """LR should not decrease when loss keeps improving."""
+        from keisei.training.katago_loop import create_lr_scheduler
+
+        optimizer = torch.optim.Adam(small_model.parameters(), lr=1e-3)
+        scheduler = create_lr_scheduler(optimizer, patience=3, factor=0.5)
+
+        initial_lr = optimizer.param_groups[0]["lr"]
+        for i in range(10):
+            scheduler.step(1.0 / (i + 1))
+
+        assert optimizer.param_groups[0]["lr"] == pytest.approx(initial_lr)
+
+
 class TestRLWarmup:
     def test_warmup_epochs_use_elevated_entropy(self, small_model):
         """During warmup, lambda_entropy should be elevated."""
