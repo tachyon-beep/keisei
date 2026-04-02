@@ -383,6 +383,9 @@ class KataGoPPOAlgorithm:
         total_entropy = 0.0
         total_grad_norm = 0.0
         num_updates = 0
+        # Pre-allocate zero tensor used when value_adapter merges score loss
+        # internally — avoids a per-mini-batch allocation inside the AMP context.
+        _zero = torch.tensor(0.0, device=device)
 
         for _ in range(self.params.epochs_per_batch):
             indices = torch.randperm(total_samples)
@@ -447,7 +450,7 @@ class KataGoPPOAlgorithm:
                         )
                         # For metrics tracking, decompose (adapter combines them)
                         value_loss = value_score_loss  # combined
-                        score_loss = torch.tensor(0.0, device=batch_obs.device)
+                        score_loss = _zero
                     else:
                         # Default: inline KataGo multi-head (backward compatible)
                         has_valid_value_targets = (batch_value_cats >= 0).any()
@@ -513,14 +516,16 @@ class KataGoPPOAlgorithm:
                 sample_size = min(256, valid_obs.shape[0])
                 sample_obs = valid_obs[:sample_size].to(device)
                 sample_cats = valid_cats[:sample_size].to(device)
-                self.forward_model.eval()
-                with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                    sample_output = self.forward_model(sample_obs)
-                value_metrics = compute_value_metrics(
-                    sample_output.value_logits, sample_cats
-                )
-                metrics.update(value_metrics)
-                self.forward_model.train()
+                try:
+                    self.forward_model.eval()
+                    with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                        sample_output = self.forward_model(sample_obs)
+                    value_metrics = compute_value_metrics(
+                        sample_output.value_logits, sample_cats
+                    )
+                    metrics.update(value_metrics)
+                finally:
+                    self.forward_model.train()
 
         self.forward_model.train()
         return metrics

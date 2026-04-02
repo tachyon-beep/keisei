@@ -390,9 +390,9 @@ class KataGoTrainingLoop:
                 )
 
             # Per-epoch win/loss/draw counters for Elo tracking
-            win_count = 0
-            loss_count = 0
-            draw_count = 0
+            win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
 
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
@@ -421,9 +421,9 @@ class KataGoTrainingLoop:
                     terminal_mask = dones.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
-                        win_count += (t_rewards > 0).sum().item()
-                        loss_count += (t_rewards < 0).sum().item()
-                        draw_count += (t_rewards == 0).sum().item()
+                        win_acc += (t_rewards > 0).sum()
+                        loss_acc += (t_rewards < 0).sum()
+                        draw_acc += (t_rewards == 0).sum()
 
                     # Store ONLY learner transitions in the buffer
                     li = sm_result.learner_indices
@@ -523,6 +523,11 @@ class KataGoTrainingLoop:
                     if new_lr != old_lr:
                         logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
                                     old_lr, new_lr, monitor_value)
+
+            # Materialise GPU counters → CPU once per epoch (not per step).
+            win_count = win_acc.item()
+            loss_count = loss_acc.item()
+            draw_count = draw_acc.item()
 
             # Elo tracking (league mode)
             total_games = win_count + loss_count + draw_count
