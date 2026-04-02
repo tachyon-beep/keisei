@@ -23,6 +23,7 @@ class StepMetadata:
     captured_piece: NDArray[np.uint8]
     termination_reason: NDArray[np.uint8]
     ply_count: NDArray[np.uint16]
+    material_balance: NDArray[np.int32]
 
 
 class StepResult:

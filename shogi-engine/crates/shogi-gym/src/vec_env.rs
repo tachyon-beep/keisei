@@ -24,6 +24,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
+use shogi_core::rules::material_balance;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Compile-time assertion: observation generators and action mappers must be ZSTs.
@@ -186,6 +187,7 @@ pub struct VecEnv {
     captured_buffer: Vec<u8>,      // N (metadata)
     term_reason_buffer: Vec<u8>,   // N (metadata)
     ply_buffer: Vec<u16>,          // N (metadata)
+    material_balance_buffer: Vec<i32>, // N (per-step material balance)
     terminal_obs_buffer: Vec<f32>,   // N * BUFFER_LEN
     current_players_buffer: Vec<u8>, // N (0=Black, 1=White)
 
@@ -266,6 +268,7 @@ impl VecEnv {
             captured_buffer: vec![255; num_envs],
             term_reason_buffer: vec![0; num_envs],
             ply_buffer: vec![0; num_envs],
+            material_balance_buffer: vec![0; num_envs],
             terminal_obs_buffer: vec![0.0; num_envs * obs_buf_len],
             current_players_buffer: vec![0; num_envs],
             mapper: action_mode_enum,
@@ -389,6 +392,7 @@ impl VecEnv {
             let captured_ptr = SendPtr(self.captured_buffer.as_mut_ptr());
             let term_reason_ptr = SendPtr(self.term_reason_buffer.as_mut_ptr());
             let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
+            let material_balance_ptr = SendPtr(self.material_balance_buffer.as_mut_ptr());
             let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
 
             // Episode counters (atomic — safe for parallel access)
@@ -424,6 +428,15 @@ impl VecEnv {
                     *reward_ptr.offset(i) = compute_reward(&result, last_mover);
                     *term_reason_ptr.offset(i) = TerminationReason::from_game_result(result) as u8;
                     *ply_ptr.offset(i) = game.ply as u16;
+
+                    // Material balance from last_mover's perspective (every step).
+                    // PERSPECTIVE CONVENTION: last_mover is the player who just moved.
+                    // The Python training loop stores the pre-step observation (from the
+                    // player who was about to move, i.e., last_mover) alongside this
+                    // score target. The perspectives match.
+                    *material_balance_ptr.offset(i) = material_balance(
+                        &game.position, last_mover,
+                    );
 
                     // Captured piece metadata
                     if let Some(captured_piece) = undo_info.captured {
@@ -544,6 +557,7 @@ impl VecEnv {
         let captured_arr = self.captured_buffer.to_pyarray(py);
         let term_reason_arr = self.term_reason_buffer.to_pyarray(py);
         let ply_arr = self.ply_buffer.to_pyarray(py);
+        let material_arr = self.material_balance_buffer.to_pyarray(py);
 
         let metadata = Py::new(
             py,
@@ -551,6 +565,7 @@ impl VecEnv {
                 captured_piece: captured_arr.unbind(),
                 termination_reason: term_reason_arr.unbind(),
                 ply_count: ply_arr.unbind(),
+                material_balance: material_arr.unbind(),
             },
         )?;
 
@@ -704,6 +719,7 @@ mod tests {
             captured_buffer: vec![255; num_envs],
             term_reason_buffer: vec![0; num_envs],
             ply_buffer: vec![0; num_envs],
+            material_balance_buffer: vec![0; num_envs],
             terminal_obs_buffer: vec![0.0; num_envs * obs_buf_len],
             current_players_buffer: vec![0; num_envs],
             mapper: action_mode,
@@ -814,6 +830,7 @@ mod tests {
         assert_eq!(env.captured_buffer.len(), 4);
         assert_eq!(env.term_reason_buffer.len(), 4);
         assert_eq!(env.ply_buffer.len(), 4);
+        assert_eq!(env.material_balance_buffer.len(), 4);
         assert_eq!(env.terminal_obs_buffer.len(), 4 * BUFFER_LEN);
         assert_eq!(env.games.len(), 4);
     }
@@ -847,6 +864,7 @@ mod tests {
             assert_eq!(env.captured_buffer[i], 255);
             assert_eq!(env.term_reason_buffer[i], 0);
             assert_eq!(env.ply_buffer[i], 0);
+            assert_eq!(env.material_balance_buffer[i], 0);
         }
     }
 
@@ -1237,6 +1255,7 @@ mod tests {
         assert_eq!(env.truncated_buffer.len(), n);
         assert_eq!(env.terminal_obs_buffer.len(), n * BUFFER_LEN);
         assert_eq!(env.current_players_buffer.len(), n);
+        assert_eq!(env.material_balance_buffer.len(), n);
     }
 
     #[test]
