@@ -5,18 +5,18 @@
 
   $: columns = extractColumns($metrics)
 
-  let expandedIndex = null
+  let expandedIndex = 0
 
   const charts = [
     { title: 'Policy & Value Loss', xKey: 'steps', series: (c) => [
       { label: 'Policy', data: c.policyLoss, color: '#f59e0b' },
       { label: 'Value', data: c.valueLoss, color: '#60a5fa' },
-    ]},
+    ], annotation: 'Both should fall together — divergence may indicate overfitting' },
     { title: 'Win Rate', xKey: 'epochs', series: (c) => [
       { label: '☗ Black', data: c.blackWinRate, color: '#e0e0e0' },
       { label: '☖ White', data: c.whiteWinRate, color: '#60a5fa' },
       { label: 'Draw', data: c.drawRate, color: '#f59e0b' },
-    ]},
+    ], annotation: 'Black has first-move advantage — expect ~55/45 split at convergence' },
     { title: 'Avg Episode Length', xKey: 'epochs', series: (c) => [
       { label: 'Episode Length', data: c.avgEpLen, color: '#a78bfa' },
     ], annotation: 'Longer games = more strategic play' },
@@ -35,39 +35,47 @@
     Training Metrics {#if $metrics.length > 0}— Epoch {$metrics[$metrics.length - 1]?.epoch ?? '?'}{/if}
   </h2>
 
-  {#if expandedIndex != null}
-    {@const chart = charts[expandedIndex]}
-    <div class="expanded-chart">
-      <button class="collapse-btn" on:click={() => expandedIndex = null} aria-label="Collapse chart">✕</button>
-      <MetricsChart
-        title={chart.title}
-        xData={columns[chart.xKey]}
-        series={chart.series(columns)}
-        height={280}
-        annotation={chart.annotation || null}
-        compact={false}
-      />
+  <div class="layout">
+    <div class="mini-column">
+      {#each charts as chart, i}
+        <button
+          class="mini-chart-btn"
+          class:active={expandedIndex === i}
+          on:click={() => handleClick(i)}
+          aria-expanded={expandedIndex === i}
+          aria-label="{chart.title} — click to {expandedIndex === i ? 'collapse' : 'expand'}"
+        >
+          <MetricsChart
+            title={chart.title}
+            xData={columns[chart.xKey]}
+            series={chart.series(columns)}
+            height={140}
+            compact={true}
+          />
+        </button>
+      {/each}
     </div>
-  {/if}
 
-  <div class="grid">
-    {#each charts as chart, i}
-      <button
-        class="mini-chart-btn"
-        class:active={expandedIndex === i}
-        on:click={() => handleClick(i)}
-        aria-expanded={expandedIndex === i}
-        aria-label="{chart.title} — click to {expandedIndex === i ? 'collapse' : 'expand'}"
-      >
-        <MetricsChart
-          title={chart.title}
-          xData={columns[chart.xKey]}
-          series={chart.series(columns)}
-          height={100}
-          compact={true}
-        />
-      </button>
-    {/each}
+    <div class="expanded-area">
+      {#key expandedIndex}
+        {#if expandedIndex != null}
+          {@const chart = charts[expandedIndex]}
+          <div class="expanded-chart">
+            <button class="collapse-btn" on:click={() => expandedIndex = null} aria-label="Collapse chart">✕</button>
+            <MetricsChart
+              title={chart.title}
+              xData={columns[chart.xKey]}
+              series={chart.series(columns)}
+              height={280}
+              annotation={chart.annotation || null}
+              compact={false}
+            />
+          </div>
+        {:else}
+          <p class="expand-hint">Click a chart to expand</p>
+        {/if}
+      {/key}
+    </div>
   </div>
 </div>
 
@@ -87,10 +95,29 @@
     margin-bottom: 10px;
   }
 
-  .grid {
+  .layout {
+    display: flex;
+    gap: 10px;
+  }
+
+  .mini-column {
+    flex: 0 0 880px;
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
+    align-content: start;
+  }
+
+  .expanded-area {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .expand-hint {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+    padding-top: 40px;
   }
 
   .mini-chart-btn {
@@ -116,7 +143,6 @@
   }
 
   .expanded-chart {
-    margin-bottom: 10px;
     position: relative;
   }
 
@@ -140,13 +166,18 @@
   }
 
   @media (max-width: 768px) {
-    .grid {
+    .layout {
+      flex-direction: column;
+    }
+
+    .mini-column {
+      flex: 0 0 auto;
       grid-template-columns: 1fr 1fr;
     }
   }
 
   @media (max-width: 480px) {
-    .grid {
+    .mini-column {
       grid-template-columns: 1fr;
     }
   }

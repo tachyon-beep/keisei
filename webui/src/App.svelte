@@ -27,6 +27,7 @@
   $: moveHistory = game?.move_history_json || '[]'
 
   let boardAreaHeight = 0
+  let thumbPanelHeight = 0
 
   $: lastMoveIdx = (() => {
     try {
@@ -63,7 +64,7 @@
 
   {#if $activeTab === 'training'}
     <div class="main-content">
-      <aside class="thumbnail-panel" aria-label="Game list">
+      <aside class="thumbnail-panel" aria-label="Game list" bind:clientHeight={thumbPanelHeight} style="width: {thumbPanelHeight - 94}px">
         <h2 class="section-label">Games ({$games.length})</h2>
         <div class="thumb-grid">
           {#each $games.slice(0, 16) as g (g.game_id)}
@@ -161,18 +162,20 @@
   .skip-nav:focus { left: 0; }
 
   .app {
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100dvh;
+    overflow: hidden;
     background: var(--bg-primary);
   }
 
   .main-content {
     display: flex;
-    flex: 0 0 auto;
     gap: 0;
-    border-bottom: 1px solid var(--border);
     align-items: stretch;
+    overflow: hidden;
+    min-height: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .thumbnail-panel {
@@ -218,8 +221,8 @@
 
   .game-panel {
     flex: 1 1 auto;
-    padding: 16px;
-    overflow-y: auto;
+    padding: 8px;
+    overflow: hidden;
   }
 
   .game-view {

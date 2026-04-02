@@ -12,9 +12,9 @@
 <div class="eval-bar" title="Value estimate: {displayValue}">
   <div class="label top">☖</div>
   <div class="bar">
-    <div class="white-fill" style="height: {100 - blackPct}%"></div>
+    <div class="white-fill" style="flex: {100 - blackPct}"></div>
     <div class="midline"></div>
-    <div class="black-fill" style="height: {blackPct}%"></div>
+    <div class="black-fill" style="flex: {blackPct}"></div>
   </div>
   <div class="value-label">{displayValue}</div>
   <div class="label bottom">☗</div>
@@ -51,12 +51,14 @@
 
   .white-fill {
     background: #d4d4d4;
-    transition: height 0.3s ease;
+    min-height: 0;
+    transition: flex 0.3s ease;
   }
 
   .black-fill {
     background: #1a1a1a;
-    transition: height 0.3s ease;
+    min-height: 0;
+    transition: flex 0.3s ease;
   }
 
   .midline {
