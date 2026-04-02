@@ -152,7 +152,10 @@ def create_lr_scheduler(
 
 
 class KataGoTrainingLoop:
-    def __init__(self, config: AppConfig, vecenv: Any = None) -> None:
+    def __init__(self, config: AppConfig, vecenv: Any = None, resume_mode: str = "rl") -> None:
+        if resume_mode not in ("rl", "sl"):
+            raise ValueError(f"resume_mode must be 'rl' or 'sl', got '{resume_mode}'")
+        self._resume_mode = resume_mode
         self.config = config
         self.db_path = config.display.db_path
 
@@ -319,10 +322,12 @@ class KataGoTrainingLoop:
         if state is not None and state.get("checkpoint_path"):
             checkpoint_path = Path(state["checkpoint_path"])
             if checkpoint_path.exists():
+                skip_opt = self._resume_mode == "sl"
                 logger.warning(
-                    "Resuming from checkpoint: %s (epoch %d)",
+                    "Resuming from checkpoint: %s (epoch %d, skip_optimizer=%s)",
                     checkpoint_path,
                     state["current_epoch"],
+                    skip_opt,
                 )
                 meta = load_checkpoint(
                     checkpoint_path,
@@ -331,6 +336,7 @@ class KataGoTrainingLoop:
                     expected_architecture=self.config.model.architecture,
                     scheduler=self.lr_scheduler,
                     grad_scaler=self.ppo.scaler,
+                    skip_optimizer=skip_opt,
                 )
                 self.epoch = meta["epoch"]
                 self.global_step = meta["step"]

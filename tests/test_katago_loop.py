@@ -446,6 +446,42 @@ class TestCheckResume:
         assert loop2.epoch == 0
         assert loop2.global_step == 0
 
+    def test_resume_sl_mode_skips_optimizer(self, katago_config, tmp_path):
+        """When resume_mode='sl', _check_resume should call load_checkpoint with skip_optimizer=True."""
+        from keisei.training.checkpoint import save_checkpoint
+
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+
+        # First: create a loop to initialize the DB and get a model we can save
+        loop1 = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        base_model = loop1.model.module if hasattr(loop1.model, "module") else loop1.model
+
+        # Save a checkpoint at epoch=7, step=42
+        ckpt_path = tmp_path / "checkpoints" / "sl_resume_test.pt"
+        save_checkpoint(
+            ckpt_path, base_model, loop1.ppo.optimizer,
+            epoch=7, step=42,
+            architecture=katago_config.model.architecture,
+        )
+
+        # Write checkpoint_path into the DB so _check_resume finds it
+        from keisei.db import update_training_progress
+        update_training_progress(
+            katago_config.display.db_path, epoch=7, step=42,
+            checkpoint_path=str(ckpt_path),
+        )
+
+        # Now create a loop with resume_mode="sl" and verify skip_optimizer is passed
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        with patch("keisei.training.katago_loop.load_checkpoint") as mock_load:
+            mock_load.return_value = {"epoch": 7, "step": 42}
+            loop2 = KataGoTrainingLoop(katago_config, vecenv=mock_env2, resume_mode="sl")
+
+            # Verify load_checkpoint was called with skip_optimizer=True
+            mock_load.assert_called_once()
+            call_kwargs = mock_load.call_args[1]
+            assert call_kwargs.get("skip_optimizer") is True
+
 
 class TestRotateSeatIsolation:
     """C2: _rotate_seat() isolation tests."""
