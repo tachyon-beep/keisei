@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -152,3 +153,57 @@ class TestWSDbErrorDuringPoll:
                             continue
                 except Exception:
                     pass  # Connection closed — expected outcome
+
+
+class TestMainEntryPoint:
+    """Tests for the keisei-serve CLI entry point."""
+
+    def test_main_passes_config_to_create_app(self, tmp_path: Path) -> None:
+        """main() loads config and passes db_path to create_app."""
+        config_file = tmp_path / "test.toml"
+        config_file.write_text(
+            '[display]\ndb_path = "/tmp/test_keisei.db"\nmoves_per_minute = 60\n'
+        )
+
+        mock_app = MagicMock()
+
+        with patch("sys.argv", ["keisei-serve", "--config", str(config_file),
+                                "--host", "0.0.0.0", "--port", "9999"]), \
+             patch("keisei.server.app.create_app", return_value=mock_app) as mock_create, \
+             patch("uvicorn.run") as mock_uvicorn_run:
+            from keisei.server.app import main
+            main()
+
+        mock_create.assert_called_once()
+        call_args = mock_create.call_args
+        assert call_args[0][0] == "/tmp/test_keisei.db"
+
+        mock_uvicorn_run.assert_called_once_with(
+            mock_app, host="0.0.0.0", port=9999
+        )
+
+    def test_main_uses_default_host_and_port(self, tmp_path: Path) -> None:
+        """Without --host/--port, defaults to 127.0.0.1:8000."""
+        config_file = tmp_path / "test.toml"
+        config_file.write_text(
+            '[display]\ndb_path = "/tmp/test_keisei.db"\nmoves_per_minute = 60\n'
+        )
+
+        mock_app = MagicMock()
+
+        with patch("sys.argv", ["keisei-serve", "--config", str(config_file)]), \
+             patch("keisei.server.app.create_app", return_value=mock_app), \
+             patch("uvicorn.run") as mock_uvicorn_run:
+            from keisei.server.app import main
+            main()
+
+        mock_uvicorn_run.assert_called_once_with(
+            mock_app, host="127.0.0.1", port=8000
+        )
+
+    def test_main_missing_config_flag_exits(self) -> None:
+        """--config is required; omitting it should cause SystemExit."""
+        with patch("sys.argv", ["keisei-serve"]), \
+             pytest.raises(SystemExit):
+            from keisei.server.app import main
+            main()
