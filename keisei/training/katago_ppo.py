@@ -302,20 +302,51 @@ class KataGoPPOAlgorithm:
                 next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
             ).reshape(-1)
         elif "env_ids" in data:
-            # Per-env GAE for split-merge mode: compute GAE independently
-            # per environment to avoid cross-env Markov violations.
+            # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
+            # compute GAE in a single vectorized pass.
+            from keisei.training.gae import compute_gae_padded
+
             env_ids = data["env_ids"]
             unique_envs = env_ids.unique()
             advantages = torch.zeros(total_samples)
 
+            # Collect per-env data and pad into (T_max, N_env) tensors
+            env_rewards = []
+            env_values = []
+            env_dones = []
+            env_lengths = []
+            env_masks = []
+
             for env_id in unique_envs:
                 mask = env_ids == env_id
-                env_adv = compute_gae(
-                    data["rewards"][mask], data["values"][mask], data["dones"][mask],
-                    next_values_cpu[env_id],
-                    gamma=self.params.gamma, lam=self.params.gae_lambda,
-                )
-                advantages[mask] = env_adv
+                env_rewards.append(data["rewards"][mask])
+                env_values.append(data["values"][mask])
+                env_dones.append(data["dones"][mask])
+                env_lengths.append(mask.sum().item())
+                env_masks.append(mask)
+
+            max_T = max(env_lengths)
+            N_env = len(unique_envs)
+
+            rewards_pad = torch.zeros(max_T, N_env)
+            values_pad = torch.zeros(max_T, N_env)
+            dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
+            nv = torch.zeros(N_env)
+
+            for i, L in enumerate(env_lengths):
+                rewards_pad[:L, i] = env_rewards[i]
+                values_pad[:L, i] = env_values[i]
+                dones_pad[:L, i] = env_dones[i]
+                nv[i] = next_values_cpu[unique_envs[i]]
+
+            lengths_t = torch.tensor(env_lengths)
+            padded_adv = compute_gae_padded(
+                rewards_pad, values_pad, dones_pad, nv, lengths_t,
+                gamma=self.params.gamma, lam=self.params.gae_lambda,
+            )
+
+            for i, L in enumerate(env_lengths):
+                advantages[env_masks[i]] = padded_adv[:L, i]
         else:
             # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
             bootstrap = next_values_cpu.mean()
