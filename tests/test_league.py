@@ -170,6 +170,32 @@ class TestEloCalculation:
         assert abs(new_b - new_c) < 0.01
         self._assert_conservation(1000.0, 1200.0, new_a, new_b)
 
+    def test_equal_ratings_win(self):
+        """Player A wins against equal opponent — gains exactly K/2."""
+        new_a, new_b = compute_elo_update(1500.0, 1500.0, 1.0, k=32.0)
+        assert new_a == pytest.approx(1516.0)
+        assert new_b == pytest.approx(1484.0)
+
+    def test_equal_ratings_draw(self):
+        """Draw between equals — no rating change."""
+        new_a, new_b = compute_elo_update(1500.0, 1500.0, 0.5, k=32.0)
+        assert new_a == pytest.approx(1500.0)
+        assert new_b == pytest.approx(1500.0)
+
+    def test_upset_win_large_gain(self):
+        """Weak player beats strong player — gains more than K/2."""
+        new_a, new_b = compute_elo_update(1200.0, 1800.0, 1.0, k=32.0)
+        assert new_a > 1200.0 + 30.0
+        assert new_b < 1800.0 - 30.0
+
+    def test_custom_k_factor(self):
+        """K-factor scales the update magnitude."""
+        new_a_k16, _ = compute_elo_update(1500.0, 1500.0, 1.0, k=16.0)
+        new_a_k64, _ = compute_elo_update(1500.0, 1500.0, 1.0, k=64.0)
+        delta_16 = new_a_k16 - 1500.0
+        delta_64 = new_a_k64 - 1500.0
+        assert delta_64 == pytest.approx(delta_16 * 4.0)
+
 
 class TestOpponentSampler:
     def test_sample_from_pool(self, league_db, league_dir):

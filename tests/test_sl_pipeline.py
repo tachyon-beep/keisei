@@ -700,3 +700,55 @@ class TestSLTrainerSchedulerAndClipping:
         assert clipped_norm <= small_clip + 1e-5, (
             f"Clipped gradient norm {clipped_norm:.4f} exceeds clip value {small_clip}"
         )
+
+
+class TestGameFilterRatingKeys:
+    def test_black_rating_below_minimum_rejects(self):
+        from keisei.sl.parsers import GameFilter, GameRecord, ParsedMove
+        gf = GameFilter(min_ply=1, min_rating=1500)
+        record = GameRecord(
+            moves=[ParsedMove("7g7f", "startpos")] * 5,
+            outcome=GameOutcome.WIN_BLACK,
+            metadata={"black_rating": "1200", "white_rating": "1600"},
+        )
+        assert not gf.accepts(record)
+
+    def test_white_rating_below_minimum_rejects(self):
+        from keisei.sl.parsers import GameFilter, GameRecord, ParsedMove
+        gf = GameFilter(min_ply=1, min_rating=1500)
+        record = GameRecord(
+            moves=[ParsedMove("7g7f", "startpos")] * 5,
+            outcome=GameOutcome.WIN_BLACK,
+            metadata={"black_rating": "1600", "white_rating": "1200"},
+        )
+        assert not gf.accepts(record)
+
+    def test_both_ratings_above_minimum_accepts(self):
+        from keisei.sl.parsers import GameFilter, GameRecord, ParsedMove
+        gf = GameFilter(min_ply=1, min_rating=1500)
+        record = GameRecord(
+            moves=[ParsedMove("7g7f", "startpos")] * 5,
+            outcome=GameOutcome.WIN_BLACK,
+            metadata={"black_rating": "1600", "white_rating": "1700"},
+        )
+        assert gf.accepts(record)
+
+    def test_no_rating_keys_accepts(self):
+        from keisei.sl.parsers import GameFilter, GameRecord, ParsedMove
+        gf = GameFilter(min_ply=1, min_rating=1500)
+        record = GameRecord(
+            moves=[ParsedMove("7g7f", "startpos")] * 5,
+            outcome=GameOutcome.WIN_BLACK,
+            metadata={},
+        )
+        assert gf.accepts(record)
+
+    def test_non_digit_rating_ignored(self):
+        from keisei.sl.parsers import GameFilter, GameRecord, ParsedMove
+        gf = GameFilter(min_ply=1, min_rating=1500)
+        record = GameRecord(
+            moves=[ParsedMove("7g7f", "startpos")] * 5,
+            outcome=GameOutcome.WIN_BLACK,
+            metadata={"rating": "unknown"},
+        )
+        assert gf.accepts(record)

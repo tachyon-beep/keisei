@@ -62,6 +62,13 @@ class TestLRScheduler:
         final_lr = ppo.optimizer.param_groups[0]["lr"]
         assert final_lr == initial_lr, "LR should not change when loss improves"
 
+    def test_unknown_schedule_type_raises(self, small_model):
+        from keisei.training.katago_loop import create_lr_scheduler
+
+        optimizer = torch.optim.Adam(small_model.parameters(), lr=1e-3)
+        with pytest.raises(ValueError, match="Unknown schedule type"):
+            create_lr_scheduler(optimizer, schedule_type="cosine")
+
 
 class TestRLWarmup:
     def test_warmup_epochs_use_elevated_entropy(self, small_model):

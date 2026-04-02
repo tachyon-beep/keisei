@@ -142,6 +142,17 @@ class TestKataGoTrainingLoopInit:
         state = read_training_state(katago_config.display.db_path)
         assert state is not None
 
+    def test_bad_architecture_algorithm_raises(self, katago_config):
+        """katago_ppo with non-KataGo architecture should raise ValueError."""
+        bad_config = dataclasses.replace(
+            katago_config,
+            model=dataclasses.replace(katago_config.model,
+                                       architecture="resnet",
+                                       params={"hidden_size": 16, "num_layers": 1}),
+        )
+        with pytest.raises(ValueError, match="requires a KataGoBaseModel"):
+            KataGoTrainingLoop(bad_config, vecenv=_make_mock_katago_vecenv())
+
 
 class TestKataGoTrainingLoopRun:
     def test_run_one_epoch(self, katago_config):

@@ -753,3 +753,22 @@ class TestPerEnvGAE:
             for n, p in ppo.model.named_parameters()
         )
         assert changed, "Per-env GAE path should modify model parameters"
+
+
+class TestEntropyCoeffBoundary:
+    def test_entropy_at_warmup_boundary(self):
+        """Entropy should switch from warmup to normal exactly at warmup_epochs."""
+        params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+                                global_pool_channels=16, policy_channels=8,
+                                value_fc_size=32, score_fc_size=16, obs_channels=50)
+        model = SEResNetModel(params)
+        ppo_params = KataGoPPOParams(learning_rate=1e-4, lambda_entropy=0.01)
+        ppo = KataGoPPOAlgorithm(ppo_params, model, forward_model=model,
+                                  warmup_epochs=3, warmup_entropy=0.05)
+        # During warmup
+        assert ppo.get_entropy_coeff(0) == 0.05
+        assert ppo.get_entropy_coeff(2) == 0.05
+        # Exactly at boundary (epoch == warmup_epochs)
+        assert ppo.get_entropy_coeff(3) == 0.01
+        # After warmup
+        assert ppo.get_entropy_coeff(10) == 0.01

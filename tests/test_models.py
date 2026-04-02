@@ -163,3 +163,26 @@ class TestTransformer:
         assert not torch.allclose(p1, p2, atol=1e-4), (
             "Positional encoding should make spatially different inputs produce different outputs"
         )
+
+
+class TestModelRegistry:
+    def test_get_model_contract_se_resnet(self):
+        from keisei.training.model_registry import get_model_contract
+        assert get_model_contract("se_resnet") == "multi_head"
+
+    def test_get_model_contract_resnet(self):
+        from keisei.training.model_registry import get_model_contract
+        assert get_model_contract("resnet") == "scalar"
+
+    def test_get_obs_channels_se_resnet(self):
+        from keisei.training.model_registry import get_obs_channels
+        assert get_obs_channels("se_resnet") == 50
+
+    def test_get_obs_channels_resnet(self):
+        from keisei.training.model_registry import get_obs_channels
+        assert get_obs_channels("resnet") == 46
+
+    def test_unknown_architecture_raises(self):
+        from keisei.training.model_registry import get_model_contract
+        with pytest.raises(ValueError):
+            get_model_contract("nonexistent_arch")
