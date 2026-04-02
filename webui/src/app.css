@@ -1,67 +1,116 @@
+/* ── Dark theme: Sumi-ink Room ─────────────────────────── */
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #111;
-  --bg-card: #1a1a2e;
+  /* Backgrounds — warm blacks, aged wood and shadow */
+  --bg-primary: #0e0c0a;
+  --bg-secondary: #161310;
+  --bg-card: #1e1a15;
+
+  /* Board — kaya wood (kept) */
   --bg-board: #d4a76a;
-  --bg-selected: #1a3a2a;
-  --bg-selected-black: #1a2a1a;
-  --bg-selected-white: #1a1a2e;
-  --border: #333;
+  --bg-last-move: rgba(77, 184, 168, 0.22);
+
+  /* Selection — teal wash */
+  --bg-selected: #0d2e28;
+  --bg-selected-black: #0d2220;
+  --bg-selected-white: #101826;
+
+  /* Borders — warm dark */
+  --border: #2e2820;
   --border-board: #8B7355;
   --border-board-inner: #b8956a;
-  --border-subtle: #222;
-  --border-white-piece: #555;
-  --text-primary: #e0e0e0;
-  --text-secondary: #999;
-  --text-muted: #8a8a8a;
-  --accent-green: #4ade80;
-  --accent-blue: #60a5fa;
-  --accent-amber: #f59e0b;
-  --accent-purple: #a78bfa;
-  --accent-pink: #f472b6;
-  --danger: #ef4444;
-  --warning: #f59e0b;
-  --promoted: #c00;
-  --tab-active-bg: #1a3a2a;
-  --tab-active-border: var(--accent-green);
+  --border-subtle: #221e18;
+  --border-white-piece: #4a3e32;
+
+  /* Text — washi-tinted whites */
+  --text-primary: #e8e0d4;
+  --text-secondary: #a89880;
+  --text-muted: #9a8878;
+
+  /* Semantic accents */
+  --accent-teal: #4db8a8;    /* learner, active, positive — celadon */
+  --accent-ink: #7eb8d4;     /* opponent, info — pale sumi ink */
+  --accent-gold: #c8962e;    /* rank, champion, warning — warm gold */
+  --accent-moss: #6b9e6b;    /* secondary positive */
+
+  /* Status */
+  --danger: #e05050;
+  --warning: #c8962e;
+  --promoted: #8b0000;
+
+  /* Tabs */
+  --tab-active-bg: #0d2e28;
+  --tab-active-border: var(--accent-teal);
   --tab-inactive-border: var(--border);
-  --player-learner: var(--accent-green);
-  --player-opponent: var(--accent-blue);
+
+  /* Players */
+  --player-learner: var(--accent-teal);
+  --player-opponent: var(--accent-ink);
+
+  /* ELO badge fills */
+  --elo-bg-learner: #0d2e28;
+  --elo-bg-opponent: #0d1e2e;
+
+  /* Focus ring */
+  --focus-ring: var(--accent-ink);
 
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--text-primary);
   background-color: var(--bg-primary);
 }
 
+/* ── Light theme: Washi Paper ─────────────────────────── */
 :root[data-theme="light"] {
-  --bg-primary: #f5f5f5;
-  --bg-secondary: #eaeaea;
-  --bg-card: #e0e0f0;
+  /* Backgrounds — warm off-whites */
+  --bg-primary: #f7f3ec;
+  --bg-secondary: #ede7da;
+  --bg-card: #e4d9c8;
+
   --bg-board: #d4a76a;
-  --bg-selected: #c8f0d8;
-  --bg-selected-black: #d0e8d0;
-  --bg-selected-white: #d0d0e8;
-  --border: #ccc;
+  --bg-last-move: rgba(26, 110, 96, 0.18);
+
+  /* Selection — teal wash on light */
+  --bg-selected: #c8e8e0;
+  --bg-selected-black: #c4dcd8;
+  --bg-selected-white: #c4d0dc;
+
+  /* Borders — warm brown */
+  --border: #b0a090;
   --border-board: #8B7355;
   --border-board-inner: #b8956a;
-  --border-subtle: #ddd;
-  --border-white-piece: #aaa;
-  --text-primary: #1a1a1a;
-  --text-secondary: #555;
-  --text-muted: #777;
-  --accent-green: #16a34a;
-  --accent-blue: #2563eb;
-  --accent-amber: #d97706;
-  --accent-purple: #7c3aed;
-  --accent-pink: #db2777;
-  --danger: #dc2626;
-  --warning: #d97706;
-  --promoted: #b00;
-  --tab-active-bg: #d0f0d8;
-  --tab-active-border: #16a34a;
-  --tab-inactive-border: #ccc;
-  --player-learner: #16a34a;
-  --player-opponent: #2563eb;
+  --border-subtle: #c8b8a0;
+  --border-white-piece: #9a8878;
+
+  /* Text — deep ink */
+  --text-primary: #1a150e;
+  --text-secondary: #4a3e30;
+  --text-muted: #7a6e62;
+
+  /* Semantic accents — deeper for light bg contrast */
+  --accent-teal: #1a6e60;
+  --accent-ink: #1a5c80;
+  --accent-gold: #8c6400;
+  --accent-moss: #3a6e3a;
+
+  /* Status */
+  --danger: #9e1f1f;
+  --warning: #8c6400;
+  --promoted: #660000;
+
+  /* Tabs */
+  --tab-active-bg: #c8e8e0;
+  --tab-active-border: var(--accent-teal);
+  --tab-inactive-border: var(--border);
+
+  /* Players */
+  --player-learner: #1a6e60;
+  --player-opponent: #1a5c80;
+
+  /* ELO badge fills */
+  --elo-bg-learner: #c0e0d8;
+  --elo-bg-opponent: #c0d4e4;
+
+  /* Focus ring */
+  --focus-ring: var(--accent-ink);
 }
 
 * {

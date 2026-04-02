@@ -91,12 +91,12 @@
   }
 
   .player-card.learner .elo-badge {
-    background: #1a3a2a;
+    background: var(--elo-bg-learner);
     color: var(--player-learner);
   }
 
   .player-card.opponent .elo-badge {
-    background: #1a1a2e;
+    background: var(--elo-bg-opponent);
     color: var(--player-opponent);
   }
 

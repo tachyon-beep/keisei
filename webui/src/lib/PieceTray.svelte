@@ -77,7 +77,7 @@
     position: absolute;
     top: -5px;
     right: -5px;
-    background: var(--accent-green);
+    background: var(--accent-teal);
     color: #000;
     font-size: 9px;
     border-radius: 50%;
@@ -94,7 +94,7 @@
   }
 
   .tray.black .hand-piece {
-    border-color: var(--accent-green);
+    border-color: var(--accent-teal);
   }
 
   .empty {

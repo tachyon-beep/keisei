@@ -22,7 +22,7 @@
   <div class="left">
     <h1>Keisei Training Dashboard</h1>
     <div class="indicator">
-      <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-green)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
+      <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-teal)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
       <span class="text">{indicator.text}</span>
     </div>
     {#if alive}
@@ -68,6 +68,7 @@
     font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
+    font-family: 'Noto Serif', Georgia, serif;
   }
 
   .indicator {
@@ -107,7 +108,7 @@
   }
 
   .player-name {
-    color: var(--accent-green);
+    color: var(--accent-teal);
     font-weight: 600;
     cursor: help;
   }

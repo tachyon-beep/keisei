@@ -112,7 +112,7 @@
     font-size: 24px;
     width: 32px;
     text-align: center;
-    color: #1a1a1a;
+    color: #1a1210;
     background: var(--bg-board);
     border: 1px solid var(--border-board);
     border-radius: 2px;

@@ -57,12 +57,12 @@
   }
 
   .thumbnail:focus-visible {
-    outline: 2px solid var(--accent-blue);
+    outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
   }
 
   .thumbnail.selected {
-    border: 2px solid var(--accent-green);
+    border: 2px solid var(--accent-teal);
     background: var(--bg-selected);
   }
 
@@ -113,17 +113,17 @@
   }
 
   .confidence-dot.black-dot {
-    background: #1a1a1a;
+    background: #1a1210;
     border: 1px solid var(--text-muted);
   }
 
   .confidence-dot.white-dot {
-    background: #e0e0e0;
+    background: #c8c0b4;
     border: 1px solid var(--text-muted);
   }
 
   .thumbnail.selected .label {
-    color: var(--accent-green);
+    color: var(--accent-teal);
   }
 
   @media (prefers-reduced-motion: reduce) {

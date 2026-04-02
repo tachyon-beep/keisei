@@ -111,10 +111,10 @@
     transition: background 0.1s;
   }
   tbody tr:hover { background: var(--bg-secondary); }
-  tbody tr:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
+  tbody tr:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 
-  tr.top .rank { color: var(--accent-amber); font-weight: 700; }
-  tr.top .elo { color: var(--accent-green); font-weight: 700; }
+  tr.top .rank { color: var(--accent-gold); font-weight: 700; }
+  tr.top .elo { color: var(--accent-teal); font-weight: 700; }
   tr.expanded { background: var(--bg-secondary); }
 
   .history-row { cursor: default; }

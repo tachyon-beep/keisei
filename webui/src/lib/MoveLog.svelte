@@ -77,7 +77,7 @@
   }
 
   .table-container:focus-visible {
-    outline: 2px solid var(--accent-blue);
+    outline: 2px solid var(--focus-ring);
     outline-offset: -2px;
   }
 
@@ -113,11 +113,11 @@
 
   tr.latest {
     background: var(--bg-selected) !important;
-    border-left: 2px solid var(--accent-green);
+    border-left: 2px solid var(--accent-teal);
   }
 
   tr.latest td {
-    color: var(--accent-green);
+    color: var(--accent-teal);
   }
 
   .empty {

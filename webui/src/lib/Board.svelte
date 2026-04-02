@@ -94,8 +94,8 @@
   }
 
   .square.last-move {
-    background: rgba(74, 222, 128, 0.25);
-    border-color: var(--accent-green);
+    background: var(--bg-last-move);
+    border-color: var(--accent-teal);
   }
 
   .piece {
@@ -110,7 +110,7 @@
   }
 
   .piece.promoted {
-    color: #8b0000;
+    color: var(--promoted);
   }
 
   .row-labels {

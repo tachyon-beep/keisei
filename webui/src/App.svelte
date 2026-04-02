@@ -156,7 +156,7 @@
     top: 0;
     z-index: 100;
     padding: 8px 16px;
-    background: var(--accent-blue);
+    background: var(--accent-ink);
     color: #fff;
     font-size: 14px;
     font-weight: 600;
@@ -274,8 +274,8 @@
   .info-row .label { color: var(--text-secondary); }
   .info-row .value { color: var(--text-primary); }
 
-  .result.in-progress { color: var(--accent-amber); }
-  .result.terminal { color: var(--accent-green); }
+  .result.in-progress { color: var(--accent-gold); }
+  .result.terminal { color: var(--accent-teal); }
 
   .no-game {
     display: flex;
