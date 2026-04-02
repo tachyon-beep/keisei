@@ -816,3 +816,64 @@ class TestSLTrainerWithBinaryShards:
         for key, val in metrics.items():
             assert np.isfinite(val), f"{key} is not finite: {val}"
         assert metrics["policy_loss"] > 0.0
+
+
+class TestSLTrainerExtended:
+    """Extended SL trainer tests: multi-epoch, empty dataset, gradient clipping."""
+
+    @pytest.fixture
+    def small_model(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+        params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+                                global_pool_channels=16, policy_channels=8,
+                                value_fc_size=32, score_fc_size=16, obs_channels=50)
+        return SEResNetModel(params)
+
+    def _write_binary_shard(self, shard_dir, n_positions=16):
+        from keisei.sl.dataset import write_shard, OBS_SIZE
+        rng = np.random.default_rng(42)
+        observations = rng.standard_normal((n_positions, OBS_SIZE)).astype(np.float32)
+        policy_targets = rng.integers(0, 11259, size=n_positions).astype(np.int64)
+        value_targets = rng.integers(0, 3, size=n_positions).astype(np.int64)
+        score_targets = rng.standard_normal(n_positions).astype(np.float32).clip(-1.5, 1.5)
+        write_shard(shard_dir / "shard_000.bin", observations, policy_targets,
+                    value_targets, score_targets)
+
+    def test_multi_epoch_lr_decreases(self, tmp_path, small_model):
+        """CosineAnnealingLR should decrease LR over multiple epochs."""
+        from keisei.sl.trainer import SLTrainer, SLConfig
+        self._write_binary_shard(tmp_path)
+        config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-3,
+                          total_epochs=10, num_workers=0, lambda_policy=1.0,
+                          lambda_value=1.5, lambda_score=0.02, grad_clip=1.0)
+        trainer = SLTrainer(small_model, config)
+
+        lr_before = trainer.optimizer.param_groups[0]["lr"]
+        for _ in range(5):
+            trainer.train_epoch()
+        lr_after = trainer.optimizer.param_groups[0]["lr"]
+        assert lr_after < lr_before, "LR should decrease with CosineAnnealingLR"
+
+    def test_empty_dataset_returns_zero_loss(self, tmp_path, small_model):
+        """Training with no shards should return zero losses without error."""
+        from keisei.sl.trainer import SLTrainer, SLConfig
+        config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-3,
+                          total_epochs=10, num_workers=0, lambda_policy=1.0,
+                          lambda_value=1.5, lambda_score=0.02, grad_clip=1.0)
+        trainer = SLTrainer(small_model, config)
+        metrics = trainer.train_epoch()
+        assert metrics["policy_loss"] == 0.0
+        assert metrics["value_loss"] == 0.0
+        assert metrics["score_loss"] == 0.0
+
+    def test_gradient_clipping_finite_metrics(self, tmp_path, small_model):
+        """Training with tight gradient clipping should still produce finite metrics."""
+        from keisei.sl.trainer import SLTrainer, SLConfig
+        self._write_binary_shard(tmp_path)
+        config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-1,
+                          total_epochs=10, num_workers=0, lambda_policy=1.0,
+                          lambda_value=1.5, lambda_score=0.02, grad_clip=0.5)
+        trainer = SLTrainer(small_model, config)
+        metrics = trainer.train_epoch()
+        for key, val in metrics.items():
+            assert np.isfinite(val), f"{key} is not finite"
