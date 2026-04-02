@@ -351,10 +351,11 @@ class KataGoPPOAlgorithm:
             dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
             nv = torch.zeros(N_env)
 
-            assert unique_envs.max() < next_values_cpu.shape[0], (
-                f"env_id {unique_envs.max().item()} >= next_values size "
-                f"{next_values_cpu.shape[0]}"
-            )
+            if unique_envs.max() >= next_values_cpu.shape[0]:
+                raise IndexError(
+                    f"env_id {unique_envs.max().item()} >= next_values size "
+                    f"{next_values_cpu.shape[0]}"
+                )
             for i, L in enumerate(env_lengths):
                 rewards_pad[:L, i] = env_rewards[i]
                 values_pad[:L, i] = env_values[i]
