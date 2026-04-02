@@ -752,3 +752,67 @@ class TestGameFilterRatingKeys:
             metadata={"rating": "unknown"},
         )
         assert gf.accepts(record)
+
+
+class TestSLTrainerWithBinaryShards:
+    """Integration test: write_shard → SLDataset → SLTrainer → train_epoch."""
+
+    @pytest.fixture
+    def small_model(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+        params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
+                                global_pool_channels=16, policy_channels=8,
+                                value_fc_size=32, score_fc_size=16, obs_channels=50)
+        return SEResNetModel(params)
+
+    def test_train_epoch_with_binary_shards(self, tmp_path, small_model):
+        """Full pipeline using the actual binary shard format."""
+        from keisei.sl.dataset import write_shard, OBS_SIZE, SLDataset
+        from keisei.sl.trainer import SLTrainer, SLConfig
+
+        n_positions = 16
+        rng = np.random.default_rng(42)
+        observations = rng.standard_normal((n_positions, OBS_SIZE)).astype(np.float32)
+        policy_targets = rng.integers(0, 11259, size=n_positions).astype(np.int64)
+        value_targets = rng.integers(0, 3, size=n_positions).astype(np.int64)
+        score_targets = rng.standard_normal(n_positions).astype(np.float32).clip(-1.5, 1.5)
+
+        write_shard(tmp_path / "shard_000.bin", observations, policy_targets,
+                    value_targets, score_targets)
+
+        # Verify dataset reads back correct values
+        ds = SLDataset(tmp_path)
+        assert len(ds) == n_positions
+        sample = ds[0]
+        np.testing.assert_allclose(
+            sample["observation"].numpy().reshape(-1),
+            observations[0],
+            atol=1e-6,
+        )
+        assert sample["policy_target"].item() == policy_targets[0]
+        assert sample["value_target"].item() == value_targets[0]
+        np.testing.assert_allclose(
+            sample["score_target"].item(), score_targets[0], atol=1e-6
+        )
+
+        # Run a full training epoch through SLTrainer
+        config = SLConfig(
+            data_dir=str(tmp_path),
+            batch_size=4,
+            learning_rate=1e-3,
+            total_epochs=10,
+            num_workers=0,
+            lambda_policy=1.0,
+            lambda_value=1.5,
+            lambda_score=0.02,
+            grad_clip=1.0,
+        )
+        trainer = SLTrainer(small_model, config)
+        metrics = trainer.train_epoch()
+
+        assert "policy_loss" in metrics
+        assert "value_loss" in metrics
+        assert "score_loss" in metrics
+        for key, val in metrics.items():
+            assert np.isfinite(val), f"{key} is not finite: {val}"
+        assert metrics["policy_loss"] > 0.0
