@@ -279,6 +279,15 @@ class TestSplitMergeIntegration:
         assert loop.global_step == 4
 
 
+def _make_league_config(epochs_per_seat=1, snapshot_interval=1):
+    """Create a LeagueConfig with given params (no tmp_path needed)."""
+    return LeagueConfig(
+        max_pool_size=5,
+        snapshot_interval=snapshot_interval,
+        epochs_per_seat=epochs_per_seat,
+    )
+
+
 class TestSeatRotation:
     def test_rotation_after_epochs_per_seat(self, katago_config, tmp_path):
         """After epochs_per_seat, optimizer should be reset."""
@@ -290,6 +299,85 @@ class TestSeatRotation:
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=4, steps_per_epoch=2)
         assert loop.epoch == 3  # completed epochs 0,1,2,3
+
+    def test_optimizer_replaced_after_rotation(self, katago_config):
+        """Seat rotation must create a new optimizer (old momentum discarded)."""
+        config = dataclasses.replace(katago_config, league=_make_league_config(epochs_per_seat=1))
+        mock_env = _make_mock_katago_vecenv(num_envs=2, terminate_at_step=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        original_optimizer_id = id(loop.ppo.optimizer)
+        loop._rotate_seat(epoch=0)
+        assert id(loop.ppo.optimizer) != original_optimizer_id
+
+    def test_new_optimizer_references_current_params(self, katago_config):
+        """New optimizer must reference the current model's parameters."""
+        config = dataclasses.replace(katago_config, league=_make_league_config(epochs_per_seat=1))
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        loop._rotate_seat(epoch=0)
+
+        opt_params = set()
+        for group in loop.ppo.optimizer.param_groups:
+            for p in group["params"]:
+                opt_params.add(id(p))
+        model_params = {id(p) for p in loop.ppo.model.parameters()}
+        assert opt_params == model_params
+
+    def test_learner_entry_id_updated(self, katago_config):
+        """B5 fix: _learner_entry_id should change after rotation."""
+        config = dataclasses.replace(katago_config, league=_make_league_config(epochs_per_seat=1))
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        original_id = loop._learner_entry_id
+        loop._rotate_seat(epoch=0)
+        assert loop._learner_entry_id != original_id
+
+    def test_warmup_epochs_extended(self, katago_config):
+        """B2 fix: warmup_epochs = epoch + 1 + original_warmup_duration."""
+        config = dataclasses.replace(katago_config, league=_make_league_config(epochs_per_seat=1))
+        config = dataclasses.replace(
+            config,
+            training=dataclasses.replace(
+                config.training,
+                algorithm_params={
+                    **config.training.algorithm_params,
+                    "rl_warmup": {"epochs": 3, "entropy_bonus": 0.05},
+                },
+            ),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        assert loop._original_warmup_duration == 3
+        loop._rotate_seat(epoch=5)
+        # warmup_epochs = 5 + 1 + 3 = 9
+        assert loop.ppo.warmup_epochs == 9
+
+    def test_lr_scheduler_reconnected(self, katago_config):
+        """B1 fix: LR scheduler should point at the new optimizer."""
+        config = dataclasses.replace(katago_config, league=_make_league_config(epochs_per_seat=1))
+        config = dataclasses.replace(
+            config,
+            training=dataclasses.replace(
+                config.training,
+                algorithm_params={
+                    **config.training.algorithm_params,
+                    "lr_schedule": {"type": "plateau", "factor": 0.5, "patience": 10},
+                },
+            ),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        assert loop.lr_scheduler is not None
+        old_scheduler_id = id(loop.lr_scheduler)
+        loop._rotate_seat(epoch=0)
+        assert id(loop.lr_scheduler) != old_scheduler_id
+        # Scheduler's optimizer should be the new one
+        assert loop.lr_scheduler.optimizer is loop.ppo.optimizer
 
 
 class TestCheckResume:
