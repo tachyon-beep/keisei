@@ -89,6 +89,10 @@ def sl_to_rl(
     )
     logger.info("SL checkpoint saved: %s", ckpt_path)
 
+    # Free SL model and trainer before building the RL loop to avoid
+    # 2x peak GPU memory (SL model + RL model simultaneously).
+    del trainer, model
+
     # --- Phase 3: Write DB state for _check_resume() ---
     init_db(db_path)
     write_training_state(

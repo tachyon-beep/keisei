@@ -109,13 +109,16 @@ def load_checkpoint(
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device)
 
-    # Restore LR scheduler state if present in checkpoint and caller provided one.
-    if scheduler is not None and "scheduler_state_dict" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    # Restore LR scheduler and GradScaler state only when loading full
+    # training state.  When skip_optimizer=True (SL→RL transition), the SL
+    # scheduler's best/patience tracking and the SL scaler's loss-scale
+    # value would poison the fresh RL training state.
+    if not skip_optimizer:
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-    # Restore GradScaler state if present in checkpoint and caller provided one.
-    if grad_scaler is not None and "grad_scaler_state_dict" in checkpoint:
-        grad_scaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
+        if grad_scaler is not None and "grad_scaler_state_dict" in checkpoint:
+            grad_scaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
 
     # Restore RNG states for reproducible resume (backward-compatible:
     # old checkpoints without rng_states are silently skipped).

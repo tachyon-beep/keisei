@@ -338,8 +338,15 @@ class KataGoTrainingLoop:
                     grad_scaler=self.ppo.scaler,
                     skip_optimizer=skip_opt,
                 )
-                self.epoch = meta["epoch"]
-                self.global_step = meta["step"]
+                if skip_opt:
+                    # SL→RL: start RL from epoch 0 so warmup_epochs and
+                    # checkpoint numbering are RL-relative, not offset by
+                    # the SL epoch count.
+                    self.epoch = 0
+                    self.global_step = 0
+                else:
+                    self.epoch = meta["epoch"]
+                    self.global_step = meta["step"]
                 return
 
         write_training_state(
