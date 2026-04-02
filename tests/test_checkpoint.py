@@ -251,3 +251,82 @@ def test_skip_optimizer_still_loads_model_weights(tmp_path: Path, model: ResNetM
 
     assert torch.allclose(original_policy, restored_policy, atol=1e-6)
     assert torch.allclose(original_value, restored_value, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end SL→RL checkpoint transition
+# ---------------------------------------------------------------------------
+
+
+class TestSLtoRLCheckpointTransition:
+    """End-to-end: SL checkpoint loaded into RL training has fresh optimizer."""
+
+    @pytest.fixture
+    def se_model(self):
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        return SEResNetModel(params)
+
+    def test_sl_checkpoint_loaded_for_rl_has_fresh_optimizer(
+        self, tmp_path: Path, se_model
+    ) -> None:
+        """Save SL checkpoint with warm optimizer, load for RL, verify optimizer is fresh."""
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        sl_optimizer = torch.optim.Adam(se_model.parameters(), lr=1e-3)
+
+        # Train a few steps to populate Adam momentum buffers
+        for _ in range(3):
+            obs = torch.randn(2, 50, 9, 9)
+            output = se_model(obs)
+            loss = output.policy_logits.sum() + output.value_logits.sum()
+            loss.backward()
+            sl_optimizer.step()
+            sl_optimizer.zero_grad()
+
+        # Confirm SL optimizer has populated state
+        assert len(sl_optimizer.state) > 0
+
+        # Save SL checkpoint (includes optimizer state)
+        ckpt_path = tmp_path / "sl_checkpoint.pt"
+        save_checkpoint(
+            ckpt_path, se_model, sl_optimizer, epoch=30, step=9000,
+            architecture="se_resnet",
+        )
+
+        # Create fresh RL model and optimizer (simulating what KataGoTrainingLoop does)
+        rl_params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        rl_model = SEResNetModel(rl_params)
+        rl_optimizer = torch.optim.Adam(rl_model.parameters(), lr=3e-4)
+
+        # Load with skip_optimizer=True (SL→RL transition)
+        meta = load_checkpoint(
+            ckpt_path, rl_model, rl_optimizer,
+            expected_architecture="se_resnet",
+            skip_optimizer=True,
+        )
+
+        # Model weights should be loaded
+        se_model.eval()
+        rl_model.eval()
+        test_obs = torch.randn(1, 50, 9, 9)
+        with torch.no_grad():
+            sl_out = se_model(test_obs)
+            rl_out = rl_model(test_obs)
+        assert torch.allclose(sl_out.policy_logits, rl_out.policy_logits, atol=1e-6)
+
+        # Optimizer should be EMPTY (fresh) — no momentum from SL training
+        assert len(rl_optimizer.state) == 0
+
+        # Training metadata should be carried over
+        assert meta["epoch"] == 30
+        assert meta["step"] == 9000
