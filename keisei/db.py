@@ -282,3 +282,35 @@ def update_training_progress(
         conn.commit()
     finally:
         conn.close()
+
+
+def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
+    """Read all league entries and results."""
+    conn = _connect(db_path)
+    try:
+        entries = conn.execute(
+            "SELECT id, architecture, elo_rating, games_played, created_epoch, created_at "
+            "FROM league_entries ORDER BY elo_rating DESC"
+        ).fetchall()
+        results = conn.execute(
+            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, recorded_at "
+            "FROM league_results ORDER BY id DESC"
+        ).fetchall()
+        return {
+            "entries": [dict(r) for r in entries],
+            "results": [dict(r) for r in results],
+        }
+    finally:
+        conn.close()
+
+
+def read_elo_history(db_path: str) -> list[dict[str, Any]]:
+    """Read all Elo history points for charting."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT entry_id, epoch, elo_rating FROM elo_history ORDER BY epoch, entry_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()

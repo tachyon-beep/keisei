@@ -7,7 +7,9 @@ import pytest
 from keisei.db import (
     SCHEMA_VERSION,
     init_db,
+    read_elo_history,
     read_game_snapshots,
+    read_league_data,
     read_metrics_since,
     read_training_state,
     update_heartbeat,
@@ -198,3 +200,57 @@ def test_read_metrics_since_with_limit(db: Path) -> None:
     assert len(rows) == 3
     assert rows[0]["epoch"] == 0
     assert rows[2]["epoch"] == 2
+
+
+class TestLeagueDataReaders:
+    def test_read_league_data_empty(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        data = read_league_data(db_path)
+        assert data["entries"] == []
+        assert data["results"] == []
+
+    def test_read_league_data_with_entries(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES ('transformer', '{}', '/tmp/ckpt.pt', 5)"
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
+            "VALUES (5, 1, 1, 3, 1, 1)"
+        )
+        conn.commit()
+        conn.close()
+        data = read_league_data(db_path)
+        assert len(data["entries"]) == 1
+        assert data["entries"][0]["architecture"] == "transformer"
+        assert len(data["results"]) == 1
+        assert data["results"][0]["wins"] == 3
+
+    def test_read_elo_history_empty(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        history = read_elo_history(db_path)
+        assert history == []
+
+    def test_read_elo_history_with_data(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES ('transformer', '{}', '/tmp/ckpt.pt', 5)"
+        )
+        conn.execute("INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (1, 5, 1050.0)")
+        conn.execute("INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (1, 6, 1100.0)")
+        conn.commit()
+        conn.close()
+        history = read_elo_history(db_path)
+        assert len(history) == 2
+        assert history[0]["elo_rating"] == 1050.0
+        assert history[1]["epoch"] == 6
