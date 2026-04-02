@@ -59,6 +59,38 @@ def test_ws_sends_init_on_connect(db_path: str) -> None:
         assert msg["training_state"]["display_name"] == "TestBot"
 
 
+def test_ws_init_includes_league_data(db_path: str) -> None:
+    app = create_app(db_path)
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "init"
+        assert "league_entries" in msg
+        assert "league_results" in msg
+        assert "elo_history" in msg
+        assert isinstance(msg["league_entries"], list)
+
+
+def test_ws_init_league_data_populated(db_path: str) -> None:
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch) "
+        "VALUES ('transformer', '{}', '/tmp/ckpt.pt', 5)"
+    )
+    conn.execute("INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (1, 5, 1050.0)")
+    conn.commit()
+    conn.close()
+
+    app = create_app(db_path)
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        msg = ws.receive_json()
+        assert len(msg["league_entries"]) == 1
+        assert msg["league_entries"][0]["architecture"] == "transformer"
+        assert len(msg["elo_history"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_serves_index_html(db_path: str) -> None:
     """If static/ dir exists with index.html, GET / returns it."""
