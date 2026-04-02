@@ -14,6 +14,17 @@ from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
+def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dtype, str]:
+    """Return (autocast_dtype, autocast_device_type) for AMP configuration."""
+    dtype = (
+        torch.bfloat16
+        if (use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+        else torch.float16
+    )
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    return dtype, device_type
+
+
 def compute_value_metrics(
     value_logits: torch.Tensor, value_targets: torch.Tensor,
 ) -> dict[str, float]:
@@ -245,12 +256,7 @@ class KataGoPPOAlgorithm:
         PPO recomputes new_log_probs under train() in update().
         """
         device = next(self.model.parameters()).device
-        amp_dtype = (
-            torch.bfloat16
-            if (self.params.use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
-            else torch.float16
-        )
-        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+        amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
         self.forward_model.eval()
         try:
@@ -369,13 +375,7 @@ class KataGoPPOAlgorithm:
 
         batch_size = min(self.params.batch_size, total_samples)
 
-        # AMP settings: bfloat16 on CUDA if supported, else float16; fallback to cpu autocast
-        amp_dtype = (
-            torch.bfloat16
-            if (self.params.use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
-            else torch.float16
-        )
-        autocast_device = "cuda" if device.type == "cuda" else "cpu"
+        amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
         total_policy_loss = 0.0
         total_value_loss = 0.0
@@ -431,7 +431,8 @@ class KataGoPPOAlgorithm:
                     policy_loss = -torch.min(surr1, surr2).mean()
 
                     # Entropy over legal actions only.
-                    probs = F.softmax(masked_logits, dim=-1)
+                    # Reuse log_softmax result instead of computing softmax again.
+                    probs = log_probs_all.exp()
                     safe_log_probs = log_probs_all.masked_fill(~batch_legal_masks, 0.0)
                     entropy = -(probs * safe_log_probs).sum(dim=-1).mean()
 
@@ -475,7 +476,7 @@ class KataGoPPOAlgorithm:
                         - self.current_entropy_coeff * entropy
                     )
 
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -513,7 +514,8 @@ class KataGoPPOAlgorithm:
                 sample_obs = valid_obs[:sample_size].to(device)
                 sample_cats = valid_cats[:sample_size].to(device)
                 self.forward_model.eval()
-                sample_output = self.forward_model(sample_obs)
+                with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
+                    sample_output = self.forward_model(sample_obs)
                 value_metrics = compute_value_metrics(
                     sample_output.value_logits, sample_cats
                 )

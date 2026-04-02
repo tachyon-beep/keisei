@@ -107,7 +107,7 @@ class SLTrainer:
                     + self.config.lambda_score * score_loss
                 )
 
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
