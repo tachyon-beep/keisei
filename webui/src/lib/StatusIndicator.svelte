@@ -1,5 +1,6 @@
 <script>
   import { trainingState, trainingAlive } from '../stores/training.js'
+  import { getIndicator } from './indicator.js'
 
   $: status = $trainingState?.status || 'unknown'
   $: epoch = $trainingState?.current_epoch || 0
@@ -10,13 +11,7 @@
   $: stats = $trainingState?.system_stats || {}
   $: gpus = stats.gpus || []
 
-  $: indicator = alive
-    ? { dot: 'green', text: `Training alive` }
-    : status === 'completed'
-      ? { dot: 'red', text: 'Training completed' }
-      : status === 'paused'
-        ? { dot: 'red', text: 'Training paused' }
-        : { dot: 'yellow', text: 'Training stale' }
+  $: indicator = getIndicator(alive, status)
 
   $: configTooltip = (() => {
     try {
