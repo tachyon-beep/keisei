@@ -7,9 +7,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-import torch
-
-from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 
 
 class TestSLToRL:

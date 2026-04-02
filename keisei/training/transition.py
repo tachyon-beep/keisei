@@ -7,6 +7,7 @@ that automates the most important seam in the training pipeline.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -97,7 +98,7 @@ def sl_to_rl(
             "display_name": "SL→RL",
             "model_arch": architecture,
             "algorithm_name": "katago_ppo",
-            "started_at": "",
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "current_epoch": sl_epochs,
             "current_step": 0,
             "checkpoint_path": str(ckpt_path),
