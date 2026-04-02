@@ -1,5 +1,6 @@
 """Tests for the opponent league: pool, sampler, Elo."""
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
@@ -348,3 +349,75 @@ class TestAllPinnedEviction:
         # Cleanup pins
         for entry in entries:
             pool.unpin(entry.id)
+
+
+class TestOpponentSamplerEdgeCases:
+    """Edge cases for OpponentSampler.sample()."""
+
+    def _make_pool_with_entries(self, tmp_path, entries_data):
+        """Create a real OpponentPool with specific Elo ratings."""
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        db_path = str(tmp_path / "sampler_test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "sampler_league"
+        league_dir.mkdir()
+        pool = OpponentPool(db_path, str(league_dir), max_pool_size=20)
+
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8, global_pool_channels=16,
+            policy_channels=8, value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+
+        entries = []
+        for i, elo in enumerate(entries_data):
+            entry = pool.add_snapshot(model, "se_resnet", dataclasses.asdict(params), epoch=i)
+            pool.update_elo(entry.id, elo)
+            entries.append(entry)
+        return pool, entries
+
+    def test_single_entry_returns_that_entry(self, tmp_path):
+        """Pool with 1 entry — sample() should return it directly."""
+        pool, entries = self._make_pool_with_entries(tmp_path, [1500.0])
+        sampler = OpponentSampler(pool, elo_floor=500.0)
+        result = sampler.sample()
+        assert result.id == entries[0].id
+
+    def test_all_below_elo_floor_returns_current_best(self, tmp_path):
+        """When all historical entries are below floor, always return current_best."""
+        pool, entries = self._make_pool_with_entries(tmp_path, [400.0, 300.0, 450.0])
+        sampler = OpponentSampler(pool, elo_floor=500.0, current_best_ratio=0.5)
+        # All below 500 floor. Best is the one with elo 450.
+        # Historical (above floor, excluding best) → empty → always current_best
+        results = [sampler.sample() for _ in range(20)]
+        # All should be the same entry (the best one)
+        ids = {r.id for r in results}
+        assert len(ids) == 1
+
+    def test_current_best_ratio_respected(self, tmp_path):
+        """Statistical test: current_best should be sampled ~current_best_ratio of the time."""
+        import random as stdlib_random
+
+        pool, entries = self._make_pool_with_entries(tmp_path, [1000.0, 1500.0, 1200.0])
+        sampler = OpponentSampler(
+            pool, elo_floor=500.0, current_best_ratio=0.3, historical_ratio=0.7
+        )
+        stdlib_random.seed(42)
+        n_samples = 200
+        # The best entry has elo 1500
+        best_entry = max(pool.list_entries(), key=lambda e: e.elo_rating)
+        best_count = sum(1 for _ in range(n_samples) if sampler.sample().id == best_entry.id)
+        ratio = best_count / n_samples
+        assert 0.1 < ratio < 0.6, f"Current best sampled {ratio:.0%}, expected ~30%"
+
+    def test_empty_pool_raises(self, tmp_path):
+        """Empty pool should raise ValueError."""
+        db_path = str(tmp_path / "empty.db")
+        init_db(db_path)
+        league_dir = tmp_path / "empty_league"
+        league_dir.mkdir()
+        pool = OpponentPool(db_path, str(league_dir))
+        sampler = OpponentSampler(pool)
+        with pytest.raises(ValueError, match="empty opponent pool"):
+            sampler.sample()
