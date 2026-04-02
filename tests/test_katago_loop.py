@@ -57,6 +57,11 @@ def _make_mock_katago_vecenv(
         else:
             result.current_players = np.zeros(num_envs, dtype=np.uint8)
 
+        # step_metadata with material balance (per-step, not terminal-only)
+        result.step_metadata = MagicMock()
+        result.step_metadata.ply_count = np.zeros(num_envs, dtype=np.uint16)
+        result.step_metadata.material_balance = np.zeros(num_envs, dtype=np.int32)
+
         if terminate_at_step is not None and step_count[0] == terminate_at_step:
             result.terminated[0] = True
             result.rewards[0] = 1.0

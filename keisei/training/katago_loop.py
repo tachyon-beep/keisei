@@ -423,10 +423,12 @@ class KataGoTrainingLoop:
                         li_value_cats[li_terminal & (li_rewards == 0)] = 1
                         li_value_cats[li_terminal & (li_rewards < 0)] = 2
 
-                        li_score_targets = torch.full(
-                            (li.numel(),), float("nan"), device=self.device,
+                        # Per-step material balance for learner envs
+                        material = torch.tensor(
+                            np.asarray(step_result.step_metadata.material_balance),
+                            dtype=torch.float32, device=self.device,
                         )
-                        li_score_targets[li_terminal] = li_rewards[li_terminal] / self.score_norm
+                        li_score_targets = material[li] / self.score_norm
 
                         self.buffer.add(
                             obs[li], actions[li], sm_result.learner_log_probs,
@@ -452,10 +454,13 @@ class KataGoTrainingLoop:
                     value_cats[terminal_mask & (rewards == 0)] = 1
                     value_cats[terminal_mask & (rewards < 0)] = 2
 
-                    score_targets = torch.full(
-                        (self.num_envs,), float("nan"), device=self.device,
+                    # Per-step material balance from the Rust engine, normalized.
+                    # Every position gets a real score target — no NaN masking needed.
+                    material = torch.tensor(
+                        np.asarray(step_result.step_metadata.material_balance),
+                        dtype=torch.float32, device=self.device,
                     )
-                    score_targets[terminal_mask] = rewards[terminal_mask] / self.score_norm
+                    score_targets = material / self.score_norm
 
                     self.buffer.add(
                         obs, actions, log_probs, values, rewards, dones,
