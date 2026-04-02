@@ -953,3 +953,65 @@ class TestSLToRLCheckpointHandoff:
         # Epoch and step should be restored
         assert loop.epoch == 1
         assert loop.global_step == 0
+
+
+class TestCheckpointResumeRoundTrip:
+    """Test save/resume round-trip through the training loop orchestrator."""
+
+    def test_resume_restores_epoch_and_step(self, katago_config):
+        """Run 2 epochs with checkpoint_interval=1, reconstruct, verify resume."""
+        config = dataclasses.replace(
+            katago_config,
+            training=dataclasses.replace(
+                katago_config.training, checkpoint_interval=1,
+            ),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        loop.run(num_epochs=2, steps_per_epoch=4)
+
+        saved_step = loop.global_step
+        # run() stores self.epoch = epoch_i (0-indexed); the checkpoint and DB
+        # record epoch_i + 1.  After 2 epochs epoch_i reaches 1, so the
+        # checkpoint carries epoch=2 and that is what _check_resume restores.
+        expected_epoch_on_resume = loop.epoch + 1
+        assert expected_epoch_on_resume > 0
+
+        # Verify checkpoint file exists
+        from pathlib import Path
+        ckpt_dir = Path(config.training.checkpoint_dir)
+        ckpt_files = list(ckpt_dir.glob("epoch_*.pt"))
+        assert len(ckpt_files) >= 1
+
+        # Reconstruct with the same config and DB — should resume
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        loop2 = KataGoTrainingLoop(config, vecenv=mock_env2)
+        assert loop2.epoch == expected_epoch_on_resume
+        assert loop2.global_step == saved_step
+
+    def test_resume_model_weights_match(self, katago_config):
+        """Resumed model should have the same weights as the checkpoint."""
+        config = dataclasses.replace(
+            katago_config,
+            training=dataclasses.replace(
+                katago_config.training, checkpoint_interval=1,
+            ),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+
+        # Snapshot model weights after training
+        original_weights = {
+            name: p.clone() for name, p in loop._base_model.named_parameters()
+        }
+
+        # Reconstruct — should load checkpoint
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        loop2 = KataGoTrainingLoop(config, vecenv=mock_env2)
+
+        for name, p in loop2._base_model.named_parameters():
+            torch.testing.assert_close(
+                p, original_weights[name],
+                msg=f"Weight mismatch after resume: {name}",
+            )
