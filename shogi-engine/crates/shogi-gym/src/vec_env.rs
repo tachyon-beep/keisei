@@ -694,11 +694,55 @@ impl VecEnv {
 mod tests {
     use super::*;
     use shogi_core::Color;
+    use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
+    use crate::action_mapper::ActionMapper;
 
     /// Test-only constructor that builds a default-mode VecEnv without PyO3.
     fn make_env(num_envs: usize, max_ply: u32) -> VecEnv {
         let obs_mode = ObsMode::Default(DefaultObservationGenerator::new());
         let action_mode = ActionMode::Default(DefaultActionMapper);
+        let obs_buf_len = obs_mode.buffer_len();
+        let act_space = action_mode.action_space_size();
+        let channels = obs_mode.channels();
+
+        let games: Vec<GameState> = (0..num_envs)
+            .map(|_| GameState::with_max_ply(max_ply))
+            .collect();
+
+        VecEnv {
+            games,
+            num_envs,
+            max_ply,
+            obs_buffer: vec![0.0; num_envs * obs_buf_len],
+            legal_mask_buffer: vec![false; num_envs * act_space],
+            reward_buffer: vec![0.0; num_envs],
+            terminated_buffer: vec![false; num_envs],
+            truncated_buffer: vec![false; num_envs],
+            captured_buffer: vec![255; num_envs],
+            term_reason_buffer: vec![0; num_envs],
+            ply_buffer: vec![0; num_envs],
+            material_balance_buffer: vec![0; num_envs],
+            terminal_obs_buffer: vec![0.0; num_envs * obs_buf_len],
+            current_players_buffer: vec![0; num_envs],
+            mapper: action_mode,
+            obs_gen: obs_mode,
+            obs_buffer_len: obs_buf_len,
+            action_space: act_space,
+            num_channels: channels,
+            episodes_completed: AtomicU64::new(0),
+            episodes_drawn: AtomicU64::new(0),
+            episodes_truncated: AtomicU64::new(0),
+            total_episode_ply: AtomicU64::new(0),
+        }
+    }
+
+    /// Test-only constructor that builds a VecEnv with specified modes, without PyO3.
+    fn make_env_with_modes(
+        num_envs: usize,
+        max_ply: u32,
+        obs_mode: ObsMode,
+        action_mode: ActionMode,
+    ) -> VecEnv {
         let obs_buf_len = obs_mode.buffer_len();
         let act_space = action_mode.action_space_size();
         let channels = obs_mode.channels();
@@ -1335,6 +1379,186 @@ mod tests {
         assert_eq!(
             env.episodes_drawn.load(Ordering::Relaxed), 0,
             "episodes_drawn should start at 0"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test gap remediation: H5 — spatial encoder mask
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_write_legal_mask_into_spatial_startpos() {
+        let mut gs = GameState::with_max_ply(500);
+        let mapper = SpatialActionMapper;
+        let perspective = Color::Black;
+
+        // Use write_legal_mask_into with spatial encoder — the whole point of H5
+        // is to verify the debug_assert!(idx < mask.len()) doesn't fire.
+        let encode_fn = |mv: Move| -> usize {
+            <SpatialActionMapper as ActionMapper>::encode(&mapper, mv, perspective)
+        };
+
+        let mut mask = vec![false; SPATIAL_ACTION_SPACE_SIZE];
+        gs.write_legal_mask_into(&mut mask, &encode_fn);
+
+        let true_count = mask.iter().filter(|&&x| x).count();
+        assert_eq!(
+            true_count, 30,
+            "Startpos spatial mask should have exactly 30 true bits, got {}",
+            true_count
+        );
+
+        // All encoded indices must be in bounds and present in mask
+        let legal = gs.legal_moves();
+        for mv in &legal {
+            let idx = encode_fn(*mv);
+            assert!(
+                idx < SPATIAL_ACTION_SPACE_SIZE,
+                "Spatial index {} out of bounds for move {:?}",
+                idx, mv
+            );
+            assert!(mask[idx], "Legal move {:?} not set in spatial mask at index {}", mv, idx);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test gap remediation: C2 + M3 — draw_rate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_draw_rate_zero_before_any_episodes() {
+        let env = make_env(4, 500);
+        assert_eq!(
+            env.draw_rate(), 0.0,
+            "draw_rate should be 0.0 when no episodes have completed"
+        );
+    }
+
+    #[test]
+    fn test_draw_rate_after_draws() {
+        let env = make_env(4, 500);
+
+        // Simulate: 3 episodes completed, 2 of which were draws
+        env.episodes_completed.store(3, Ordering::Relaxed);
+        env.episodes_drawn.store(2, Ordering::Relaxed);
+
+        let rate = env.draw_rate();
+        assert!(
+            (rate - 2.0 / 3.0).abs() < 1e-10,
+            "draw_rate should be 2/3 ≈ 0.6667, got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_draw_rate_after_no_draws() {
+        let env = make_env(4, 500);
+
+        // Simulate: 5 episodes completed, 0 draws
+        env.episodes_completed.store(5, Ordering::Relaxed);
+        env.episodes_drawn.store(0, Ordering::Relaxed);
+
+        assert_eq!(
+            env.draw_rate(), 0.0,
+            "draw_rate should be 0.0 when no episodes were draws"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test gap remediation: H1 — KataGo and Spatial mode buffer shapes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_katago_mode_obs_shape() {
+        use crate::katago_observation::{KataGoObservationGenerator, KATAGO_NUM_CHANNELS, KATAGO_BUFFER_LEN};
+
+        let n = 2;
+        let env = make_env_with_modes(
+            n, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Default(DefaultActionMapper),
+        );
+
+        assert_eq!(env.num_channels, KATAGO_NUM_CHANNELS, "KataGo obs should have {} channels", KATAGO_NUM_CHANNELS);
+        assert_eq!(env.obs_buffer.len(), n * KATAGO_BUFFER_LEN, "obs buffer length mismatch for KataGo mode");
+        assert_eq!(env.action_space, ACTION_SPACE_SIZE, "action space should be default");
+    }
+
+    #[test]
+    fn test_spatial_mode_mask_size() {
+        let n = 2;
+        let env = make_env_with_modes(
+            n, 500,
+            ObsMode::Default(DefaultObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        assert_eq!(env.action_space, SPATIAL_ACTION_SPACE_SIZE, "action space should be spatial (11,259)");
+        assert_eq!(
+            env.legal_mask_buffer.len(), n * SPATIAL_ACTION_SPACE_SIZE,
+            "legal mask buffer length mismatch for spatial mode"
+        );
+        assert_eq!(env.num_channels, NUM_CHANNELS, "obs channels should be default");
+    }
+
+    #[test]
+    fn test_katago_spatial_obs_and_mask_write() {
+        use crate::katago_observation::{KataGoObservationGenerator, KATAGO_NUM_CHANNELS};
+
+        let n = 1;
+        let mut env = make_env_with_modes(
+            n, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        assert_eq!(env.num_channels, KATAGO_NUM_CHANNELS);
+        assert_eq!(env.action_space, SPATIAL_ACTION_SPACE_SIZE);
+
+        // Write obs and mask — should not panic
+        env.write_obs_and_mask(0);
+
+        // Observation buffer should have some non-zero values (startpos has pieces)
+        let obs_nonzero = env.obs_buffer.iter().any(|&v| v != 0.0);
+        assert!(obs_nonzero, "KataGo obs for startpos should have non-zero values");
+
+        // Mask should have exactly 30 true bits (startpos legal moves)
+        let mask_count = env.legal_mask_buffer.iter().filter(|&&x| x).count();
+        assert_eq!(mask_count, 30, "Spatial mask for startpos should have 30 true bits");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test gap remediation: H2 — material_balance value correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_material_balance_startpos_is_zero() {
+        let mut env = make_env(1, 500);
+        env.write_obs_and_mask(0);
+
+        // At startpos, both sides have equal material → balance = 0
+        assert_eq!(
+            env.material_balance_buffer[0], 0,
+            "Material balance at startpos should be 0, got {}",
+            env.material_balance_buffer[0]
+        );
+    }
+
+    #[test]
+    fn test_material_balance_sign_convention_after_move() {
+        let mut env = make_env(1, 500);
+
+        // Make a non-capture move: material balance stays 0
+        let legal = env.games[0].legal_moves();
+        let mv = legal[0]; // first legal move (a pawn push, no capture)
+        env.games[0].make_move(mv);
+        env.write_obs_and_mask(0);
+
+        // Still equal material after a non-capture move
+        assert_eq!(
+            env.material_balance_buffer[0], 0,
+            "Material balance after non-capture move should still be 0, got {}",
+            env.material_balance_buffer[0]
         );
     }
 }

@@ -1879,4 +1879,27 @@ mod tests {
         assert!(cols[Color::White as usize][7], "White should have pawn on col 7");
         assert!(!cols[Color::White as usize][0], "No pawn on col 0");
     }
+
+    #[test]
+    fn test_from_sfen_invalid_returns_error() {
+        let result = GameState::from_sfen("not a valid sfen string", 500);
+        assert!(result.is_err(), "Invalid SFEN should return Err, got Ok");
+    }
+
+    #[test]
+    fn test_from_sfen_empty_returns_error() {
+        let result = GameState::from_sfen("", 500);
+        assert!(result.is_err(), "Empty SFEN should return Err, got Ok");
+    }
+
+    #[test]
+    #[ignore] // ~2s on release, ~30s on debug — run with: cargo test --release -- --ignored
+    fn test_perft_depth_4_startpos() {
+        let mut gs = GameState::new();
+        assert_eq!(
+            perft(&mut gs, 4),
+            719_731,
+            "perft(4) from startpos must be 719,731"
+        );
+    }
 }
