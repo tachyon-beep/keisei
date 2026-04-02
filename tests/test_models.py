@@ -147,6 +147,35 @@ class TestTransformer:
         with pytest.raises((AssertionError, ValueError)):
             TransformerModel(TransformerParams(d_model=32, nhead=5, num_layers=1))
 
+    def test_eval_deterministic(self) -> None:
+        """Two forward passes in eval mode should produce identical output."""
+        model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
+        model.eval()
+        obs = torch.randn(4, 46, 9, 9)
+        p1, v1 = model(obs)
+        p2, v2 = model(obs)
+        torch.testing.assert_close(p1, p2)
+        torch.testing.assert_close(v1, v2)
+
+    def test_single_sample(self) -> None:
+        """Batch size 1 should work."""
+        model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
+        obs = torch.randn(1, 46, 9, 9)
+        policy, value = model(obs)
+        assert policy.shape == (1, 13527)
+        assert value.shape == (1, 1)
+
+    def test_spatial_sensitivity(self) -> None:
+        """Different spatial inputs should produce different outputs."""
+        model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
+        model.eval()
+        obs1 = torch.zeros(1, 46, 9, 9)
+        obs2 = torch.zeros(1, 46, 9, 9)
+        obs2[0, 0, 0, 0] = 10.0
+        p1, _ = model(obs1)
+        p2, _ = model(obs2)
+        assert not torch.allclose(p1, p2)
+
     def test_positional_encoding_affects_output(self) -> None:
         """Two observations that differ only in spatial layout should get different logits."""
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
