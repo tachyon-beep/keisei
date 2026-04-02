@@ -47,6 +47,7 @@ def save_checkpoint(
     step: int,
     architecture: str | None = None,
     scheduler: Any | None = None,
+    grad_scaler: Any | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
@@ -66,6 +67,8 @@ def save_checkpoint(
         data["architecture"] = architecture
     if scheduler is not None:
         data["scheduler_state_dict"] = scheduler.state_dict()
+    if grad_scaler is not None:
+        data["grad_scaler_state_dict"] = grad_scaler.state_dict()
     torch.save(data, path)
 
 
@@ -75,6 +78,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer,
     expected_architecture: str | None = None,
     scheduler: Any | None = None,
+    grad_scaler: Any | None = None,
 ) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -105,6 +109,10 @@ def load_checkpoint(
     # Restore LR scheduler state if present in checkpoint and caller provided one.
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    # Restore GradScaler state if present in checkpoint and caller provided one.
+    if grad_scaler is not None and "grad_scaler_state_dict" in checkpoint:
+        grad_scaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
 
     # Restore RNG states for reproducible resume (backward-compatible:
     # old checkpoints without rng_states are silently skipped).
