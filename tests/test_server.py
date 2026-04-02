@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
 from keisei.db import init_db, write_metrics, write_training_state
-from keisei.server.app import create_app
+from keisei.server.app import TEST_ALLOWED_HOSTS, create_app
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def db_path(tmp_path: Path) -> str:
 
 @pytest.mark.asyncio
 async def test_healthz_ok(db_path: str) -> None:
-    app = create_app(db_path)
+    app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/healthz")
@@ -37,7 +37,7 @@ async def test_healthz_ok(db_path: str) -> None:
 
 @pytest.mark.asyncio
 async def test_healthz_db_missing() -> None:
-    app = create_app("/tmp/nonexistent-keisei-test.db")
+    app = create_app("/tmp/nonexistent-keisei-test.db", allowed_hosts=TEST_ALLOWED_HOSTS)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/healthz")
@@ -48,7 +48,7 @@ async def test_healthz_db_missing() -> None:
 
 def test_ws_sends_init_on_connect(db_path: str) -> None:
     write_metrics(db_path, {"epoch": 0, "step": 100, "policy_loss": 1.5})
-    app = create_app(db_path)
+    app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
@@ -60,7 +60,7 @@ def test_ws_sends_init_on_connect(db_path: str) -> None:
 
 
 def test_ws_init_includes_league_data(db_path: str) -> None:
-    app = create_app(db_path)
+    app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
@@ -82,7 +82,7 @@ def test_ws_init_league_data_populated(db_path: str) -> None:
     conn.commit()
     conn.close()
 
-    app = create_app(db_path)
+    app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
         msg = ws.receive_json()
@@ -98,7 +98,7 @@ async def test_serves_index_html(db_path: str) -> None:
     if not static_dir.is_dir():
         pytest.skip("No built SPA in keisei/server/static/")
 
-    app = create_app(db_path)
+    app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/")

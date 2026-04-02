@@ -20,6 +20,7 @@ from keisei.db import (
 )
 from keisei.server.app import (
     HEARTBEAT_STALE_S,
+    TEST_ALLOWED_HOSTS,
     _training_alive,
     create_app,
 )
@@ -112,7 +113,7 @@ class TestWSMetricsUpdate:
     """After init, new metrics written to DB should be pushed as metrics_update."""
 
     def test_metrics_update_pushed(self, server_db: str) -> None:
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         # Patch poll interval to be very short
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
@@ -151,7 +152,7 @@ class TestWSGameUpdate:
     """Game snapshots written after init should be pushed as game_update."""
 
     def test_game_update_pushed(self, server_db: str) -> None:
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
@@ -190,7 +191,7 @@ class TestWSTrainingStatusDiff:
     """training_status is only pushed when epoch or status changes."""
 
     def test_status_pushed_on_epoch_change(self, server_db: str) -> None:
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
@@ -217,7 +218,7 @@ class TestWSTrainingStatusDiff:
         """When epoch and status don't change, no training_status is pushed.
         We force a metrics_update (observable) and check no training_status
         arrives before it."""
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
@@ -255,7 +256,7 @@ class TestWSKeepalive:
     """The server sends periodic ping messages."""
 
     def test_ping_received(self, server_db: str) -> None:
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         # Set ping interval very short so we get one quickly
         with patch("keisei.server.app.WS_PING_INTERVAL_S", 0.05), \
@@ -332,7 +333,7 @@ class TestWSTrainingStatusSystemStats:
 
     def test_system_stats_present_in_training_status(self, server_db: str) -> None:
         """Trigger a training_status push and verify system_stats field."""
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
@@ -398,7 +399,7 @@ class TestWSInitWithPreExistingGames:
             },
         ])
 
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
@@ -427,7 +428,7 @@ class TestWSInitWithPreExistingGames:
             "value_estimate": 0.0,
         }])
 
-        app = create_app(server_db)
+        app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):

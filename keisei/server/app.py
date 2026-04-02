@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from keisei.db import (
     read_game_snapshots,
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 MAX_METRICS_IN_INIT = 500
 POLL_INTERVAL_S = 0.2
+ALLOWED_HOSTS = frozenset({"keisei.foundryside.dev", "192.168.1.240", "127.0.0.1", "localhost"})
+# Superset for use in tests — includes synthetic hostnames from test clients
+TEST_ALLOWED_HOSTS = ALLOWED_HOSTS | {"testserver", "test"}
 LEAGUE_POLL_INTERVAL_S = 5.0
 POLL_BATCH_SIZE = 100
 HEARTBEAT_STALE_S = 30
@@ -99,7 +103,24 @@ def _training_alive(db_path: str) -> bool:
         return False
 
 
-def create_app(db_path: str) -> FastAPI:
+class HostFilterMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Host header isn't in the allowed set."""
+
+    def __init__(self, app, hosts: frozenset[str] = ALLOWED_HOSTS):
+        super().__init__(app)
+        self._hosts = hosts
+
+    async def dispatch(self, request: Request, call_next):
+        host = request.headers.get("host", "")
+        # Strip port from host header (e.g., "keisei.foundryside.dev:443" -> "keisei.foundryside.dev")
+        hostname = host.split(":")[0]
+        if hostname not in self._hosts:
+            logger.warning("Rejected request with Host: %s", host)
+            return PlainTextResponse("Forbidden", status_code=403)
+        return await call_next(request)
+
+
+def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logger.info("Server starting, db_path=%s", db_path)
@@ -107,6 +128,8 @@ def create_app(db_path: str) -> FastAPI:
         logger.info("Server shutting down")
 
     app = FastAPI(lifespan=lifespan)
+    hosts = allowed_hosts if allowed_hosts is not None else ALLOWED_HOSTS
+    app.add_middleware(HostFilterMiddleware, hosts=hosts)
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
@@ -274,7 +297,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Keisei spectator dashboard")
     parser.add_argument("--config", type=Path, required=True, help="Path to TOML config")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
-    parser.add_argument("--port", type=int, default=8000, help="Bind port")
+    parser.add_argument("--port", type=int, default=8741, help="Bind port")
     args = parser.parse_args()
 
     config = load_config(args.config)

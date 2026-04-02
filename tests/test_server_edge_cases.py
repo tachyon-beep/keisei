@@ -13,7 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from keisei.db import init_db, update_heartbeat, write_training_state
-from keisei.server.app import _db_accessible, _get_system_stats, create_app
+from keisei.server.app import TEST_ALLOWED_HOSTS, _db_accessible, _get_system_stats, create_app
 
 
 class TestGetSystemStatsNvidiaSmi:
@@ -124,7 +124,7 @@ class TestWSDbErrorDuringPoll:
     )
     def test_ws_closes_on_db_read_failure(self, edge_db: str) -> None:
         """Simulate DB failure after init by making read_metrics_since raise."""
-        app = create_app(edge_db)
+        app = create_app(edge_db, allowed_hosts=TEST_ALLOWED_HOSTS)
         call_count = 0
 
         original_read_metrics = __import__(
@@ -183,7 +183,7 @@ class TestMainEntryPoint:
         )
 
     def test_main_uses_default_host_and_port(self, tmp_path: Path) -> None:
-        """Without --host/--port, defaults to 127.0.0.1:8000."""
+        """Without --host/--port, defaults to 127.0.0.1:8741."""
         config_file = tmp_path / "test.toml"
         config_file.write_text(
             '[display]\ndb_path = "/tmp/test_keisei.db"\nmoves_per_minute = 60\n'
@@ -198,7 +198,7 @@ class TestMainEntryPoint:
             main()
 
         mock_uvicorn_run.assert_called_once_with(
-            mock_app, host="127.0.0.1", port=8000
+            mock_app, host="127.0.0.1", port=8741
         )
 
     def test_main_missing_config_flag_exits(self) -> None:
