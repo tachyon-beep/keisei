@@ -76,32 +76,32 @@ def split_merge_step(
     learner_log_probs = torch.zeros(0, device=device)
     learner_values = torch.zeros(0, device=device)
 
-    # Learner forward pass (eval mode, no_grad for rollout collection)
+    # Learner forward pass (eval mode, no_grad for rollout collection).
+    # The model stays in eval() — the caller (ppo.update) switches to train()
+    # only during the backward pass. Toggling back to train() here would
+    # corrupt BatchNorm running statistics with rollout-context updates.
     if learner_indices.numel() > 0:
         l_obs = obs[learner_indices]
         l_masks = legal_masks[learner_indices]
 
         learner_model.eval()
-        try:
-            with torch.no_grad():
-                l_output = learner_model(l_obs)
+        with torch.no_grad():
+            l_output = learner_model(l_obs)
 
-            l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
-            l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
-            l_probs = F.softmax(l_masked, dim=-1)
-            l_dist = torch.distributions.Categorical(l_probs)
-            l_actions = l_dist.sample()
-            learner_log_probs = l_dist.log_prob(l_actions)
+        l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
+        l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
+        l_probs = F.softmax(l_masked, dim=-1)
+        l_dist = torch.distributions.Categorical(l_probs)
+        l_actions = l_dist.sample()
+        learner_log_probs = l_dist.log_prob(l_actions)
 
-            if value_adapter is not None:
-                learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
-            else:
-                vp = F.softmax(l_output.value_logits, dim=-1)
-                learner_values = vp[:, 0] - vp[:, 2]
+        if value_adapter is not None:
+            learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
+        else:
+            vp = F.softmax(l_output.value_logits, dim=-1)
+            learner_values = vp[:, 0] - vp[:, 2]
 
-            actions[learner_indices] = l_actions
-        finally:
-            learner_model.train()
+        actions[learner_indices] = l_actions
 
     # Opponent forward pass (always no_grad, eval mode)
     if opponent_indices.numel() > 0:
@@ -211,9 +211,8 @@ class KataGoTrainingLoop:
         rl_warmup_entropy = rl_warmup_config.get("entropy_bonus", 0.05)
         self._original_warmup_duration = rl_warmup_epochs  # fixed; used in _rotate_seat
 
-        base_model = self.model.module if hasattr(self.model, "module") else self.model
         self.ppo = KataGoPPOAlgorithm(
-            ppo_params, base_model, forward_model=self.model,
+            ppo_params, self._base_model, forward_model=self.model,
             warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
         )
 
@@ -291,9 +290,8 @@ class KataGoTrainingLoop:
                 elo_floor=config.league.elo_floor,
             )
             # Bootstrap snapshot so pool is never empty
-            base_model = self.model.module if hasattr(self.model, "module") else self.model
             bootstrap_entry = self.pool.add_snapshot(
-                base_model, config.model.architecture,
+                self._base_model, config.model.architecture,
                 dict(config.model.params), epoch=0,
             )
             self._learner_entry_id = bootstrap_entry.id
@@ -303,6 +301,11 @@ class KataGoTrainingLoop:
             )
 
         self._check_resume()
+
+    @property
+    def _base_model(self) -> torch.nn.Module:
+        """Unwrap DataParallel/DDP wrapper if present."""
+        return self.model.module if hasattr(self.model, "module") else self.model
 
     def _check_resume(self) -> None:
         # NOTE: When resuming from an SL checkpoint into RL training, the SL
@@ -320,14 +323,9 @@ class KataGoTrainingLoop:
                     checkpoint_path,
                     state["current_epoch"],
                 )
-                base_model = (
-                    self.model.module
-                    if hasattr(self.model, "module")
-                    else self.model
-                )
                 meta = load_checkpoint(
                     checkpoint_path,
-                    base_model,
+                    self._base_model,
                     self.ppo.optimizer,
                     expected_architecture=self.config.model.architecture,
                 )
@@ -434,6 +432,7 @@ class KataGoTrainingLoop:
                             obs[li], actions[li], sm_result.learner_log_probs,
                             sm_result.learner_values, li_rewards, dones[li],
                             legal_masks[li], li_value_cats, li_score_targets,
+                            env_ids=li,
                         )
                 else:
                     # No opponent: all envs are learner (original behavior)
@@ -456,10 +455,9 @@ class KataGoTrainingLoop:
 
                     # Per-step material balance from the Rust engine, normalized.
                     # Every position gets a real score target — no NaN masking needed.
-                    material = torch.tensor(
-                        np.asarray(step_result.step_metadata.material_balance),
-                        dtype=torch.float32, device=self.device,
-                    )
+                    material = torch.from_numpy(
+                        np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
+                    ).to(self.device)
                     score_targets = material / self.score_norm
 
                     self.buffer.add(
@@ -550,9 +548,8 @@ class KataGoTrainingLoop:
             if (self.pool is not None and self.config.league is not None
                     and (epoch_i + 1) % self.config.league.snapshot_interval == 0
                     and not rotating_this_epoch):
-                base_model = self.model.module if hasattr(self.model, "module") else self.model
                 self.pool.add_snapshot(
-                    base_model, self.config.model.architecture,
+                    self._base_model, self.config.model.architecture,
                     dict(self.config.model.params), epoch=epoch_i + 1,
                 )
 
@@ -587,10 +584,9 @@ class KataGoTrainingLoop:
 
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
                 ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
-                base_model = self.model.module if hasattr(self.model, "module") else self.model
                 try:
                     save_checkpoint(
-                        ckpt_path, base_model, self.ppo.optimizer,
+                        ckpt_path, self._base_model, self.ppo.optimizer,
                         epoch_i + 1, self.global_step,
                         architecture=self.config.model.architecture,
                     )
@@ -606,10 +602,8 @@ class KataGoTrainingLoop:
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""
-        base_model = self.model.module if hasattr(self.model, "module") else self.model
-
         new_entry = self.pool.add_snapshot(
-            base_model, self.config.model.architecture,
+            self._base_model, self.config.model.architecture,
             dict(self.config.model.params), epoch=epoch + 1,
         )
 

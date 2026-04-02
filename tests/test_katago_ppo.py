@@ -452,3 +452,304 @@ class TestUpdateWithValueAdapter:
         assert "policy_loss" in losses
         assert "entropy" in losses
         assert "gradient_norm" in losses
+
+
+class TestSplitMergeGAEPath:
+    """T3: Test the flat-GAE path triggered when total_samples != T*N."""
+
+    @pytest.fixture
+    def ppo(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        return KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+    def test_variable_timestep_update_produces_finite_metrics(self, ppo):
+        """Buffer with variable learner counts per step should still produce finite losses."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        # Add steps with different numbers of learner envs to trigger split-merge path
+        for n_learner in [2, 3, 1, 4]:
+            obs = torch.randn(n_learner, 50, 9, 9)
+            legal_masks = torch.ones(n_learner, 11259, dtype=torch.bool)
+            actions = torch.randint(0, 11259, (n_learner,))
+            log_probs = torch.randn(n_learner)
+            values = torch.randn(n_learner) * 0.1
+            rewards = torch.zeros(n_learner)
+            dones = torch.zeros(n_learner, dtype=torch.bool)
+            value_cats = torch.full((n_learner,), -1, dtype=torch.long)
+            score_targets = torch.rand(n_learner) * 2 - 1
+            buf.add(obs, actions, log_probs, values, rewards, dones,
+                    legal_masks, value_cats, score_targets)
+
+        # total_samples = 2+3+1+4 = 10, T*N = 4*4 = 16, so flat GAE path triggers
+        next_values = torch.zeros(4)
+        losses = ppo.update(buf, next_values)
+
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue
+            assert not torch.tensor(val).isnan(), f"{key} is NaN in split-merge GAE path"
+            assert not torch.tensor(val).isinf(), f"{key} is inf in split-merge GAE path"
+
+    def test_variable_timestep_changes_parameters(self, ppo):
+        """Split-merge path should still update model parameters."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        for n_learner in [3, 2, 3, 2]:
+            obs = torch.randn(n_learner, 50, 9, 9)
+            legal_masks = torch.ones(n_learner, 11259, dtype=torch.bool)
+            actions = torch.randint(0, 11259, (n_learner,))
+            log_probs = torch.randn(n_learner)
+            values = torch.randn(n_learner) * 0.1
+            rewards = torch.randn(n_learner) * 0.1
+            dones = torch.zeros(n_learner, dtype=torch.bool)
+            value_cats = torch.randint(0, 3, (n_learner,))
+            score_targets = torch.rand(n_learner) * 2 - 1
+            buf.add(obs, actions, log_probs, values, rewards, dones,
+                    legal_masks, value_cats, score_targets)
+
+        params_before = {n: p.clone() for n, p in ppo.model.named_parameters()}
+        ppo.update(buf, torch.zeros(4))
+        changed = any(
+            not torch.equal(params_before[n], p)
+            for n, p in ppo.model.named_parameters()
+        )
+        assert changed, "Split-merge path should modify model parameters"
+
+
+class TestBufferVariableSizeFlatten:
+    """T10: Buffer flatten with variable-size timesteps via torch.cat."""
+
+    def test_variable_batch_sizes_flatten_correctly(self):
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        sizes = [2, 3, 1]
+        for n in sizes:
+            buf.add(
+                torch.randn(n, 50, 9, 9),
+                torch.randint(0, 11259, (n,)),
+                torch.randn(n),
+                torch.randn(n),
+                torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long),
+                torch.rand(n) * 2 - 1,
+            )
+
+        data = buf.flatten()
+        total = sum(sizes)
+        assert data["observations"].shape == (total, 50, 9, 9)
+        assert data["actions"].shape == (total,)
+        assert data["legal_masks"].shape == (total, 11259)
+        assert data["score_targets"].shape == (total,)
+
+    def test_single_env_timestep_flattens(self):
+        """Single-env steps (n=1) should still work."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        for _ in range(5):
+            buf.add(
+                torch.randn(1, 50, 9, 9),
+                torch.randint(0, 11259, (1,)),
+                torch.randn(1),
+                torch.randn(1),
+                torch.zeros(1),
+                torch.zeros(1, dtype=torch.bool),
+                torch.ones(1, 11259, dtype=torch.bool),
+                torch.full((1,), -1, dtype=torch.long),
+                torch.rand(1) * 2 - 1,
+            )
+        data = buf.flatten()
+        assert data["observations"].shape == (5, 50, 9, 9)
+
+
+class TestBufferCPUStorage:
+    """Buffer should store tensors on CPU regardless of input device."""
+
+    def test_add_stores_on_cpu(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9),
+            torch.randint(0, 11259, (2,)),
+            torch.randn(2),
+            torch.randn(2),
+            torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.randint(0, 3, (2,)),
+            torch.rand(2) * 2 - 1,
+        )
+        for tensor in buf.observations:
+            assert tensor.device == torch.device("cpu")
+        for tensor in buf.legal_masks:
+            assert tensor.device == torch.device("cpu")
+
+    def test_flatten_returns_cpu_tensors(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9),
+            torch.randint(0, 11259, (2,)),
+            torch.randn(2),
+            torch.randn(2),
+            torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.randint(0, 3, (2,)),
+            torch.rand(2) * 2 - 1,
+        )
+        data = buf.flatten()
+        for key, tensor in data.items():
+            assert tensor.device == torch.device("cpu"), f"{key} not on CPU"
+
+
+class TestEnvIdsTracking:
+    """Buffer env_ids tracking for per-env GAE."""
+
+    def test_env_ids_stored_and_flattened(self):
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        # Step 0: learner envs [0, 2]
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.randint(0, 11259, (2,)),
+            torch.randn(2), torch.randn(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+            torch.full((2,), -1, dtype=torch.long), torch.rand(2) * 2 - 1,
+            env_ids=torch.tensor([0, 2]),
+        )
+        # Step 1: learner envs [1, 2, 3]
+        buf.add(
+            torch.randn(3, 50, 9, 9), torch.randint(0, 11259, (3,)),
+            torch.randn(3), torch.randn(3), torch.zeros(3),
+            torch.zeros(3, dtype=torch.bool), torch.ones(3, 11259, dtype=torch.bool),
+            torch.full((3,), -1, dtype=torch.long), torch.rand(3) * 2 - 1,
+            env_ids=torch.tensor([1, 2, 3]),
+        )
+        data = buf.flatten()
+        assert "env_ids" in data
+        assert data["env_ids"].tolist() == [0, 2, 1, 2, 3]
+
+    def test_no_env_ids_when_not_provided(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.randint(0, 11259, (2,)),
+            torch.randn(2), torch.randn(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+            torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
+        )
+        data = buf.flatten()
+        assert "env_ids" not in data
+
+
+class TestPerEnvGAE:
+    """Per-env GAE should compute advantages independently per environment."""
+
+    @pytest.fixture
+    def ppo(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        return KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+    def test_per_env_gae_matches_individual_calls(self):
+        """Per-env GAE via env_ids should match calling compute_gae per env."""
+        torch.manual_seed(42)
+        # Simulate 3 envs with variable learner participation
+        # Step 0: envs [0, 1], Step 1: envs [0, 2], Step 2: envs [1, 2]
+        env_id_lists = [[0, 1], [0, 2], [1, 2]]
+        rewards_per_step = {0: [], 1: [], 2: []}
+        values_per_step = {0: [], 1: [], 2: []}
+        dones_per_step = {0: [], 1: [], 2: []}
+
+        all_rewards = []
+        all_values = []
+        all_dones = []
+        all_env_ids = []
+
+        for step_envs in env_id_lists:
+            n = len(step_envs)
+            r = torch.randn(n)
+            v = torch.randn(n) * 0.5
+            d = torch.zeros(n, dtype=torch.bool)
+            all_rewards.append(r)
+            all_values.append(v)
+            all_dones.append(d)
+            all_env_ids.append(torch.tensor(step_envs))
+            for i, eid in enumerate(step_envs):
+                rewards_per_step[eid].append(r[i])
+                values_per_step[eid].append(v[i])
+                dones_per_step[eid].append(d[i])
+
+        flat_rewards = torch.cat(all_rewards)
+        flat_values = torch.cat(all_values)
+        flat_dones = torch.cat(all_dones)
+        flat_env_ids = torch.cat(all_env_ids)
+        next_values = torch.randn(3)
+
+        # Compute per-env GAE the way update() does it
+        advantages = torch.zeros(flat_rewards.numel())
+        for env_id in flat_env_ids.unique():
+            mask = flat_env_ids == env_id
+            env_adv = compute_gae(
+                flat_rewards[mask], flat_values[mask], flat_dones[mask],
+                next_values[env_id], gamma=0.99, lam=0.95,
+            )
+            advantages[mask] = env_adv
+
+        # Compute reference per-env independently
+        for eid in [0, 1, 2]:
+            env_r = torch.stack(rewards_per_step[eid])
+            env_v = torch.stack(values_per_step[eid])
+            env_d = torch.stack(dones_per_step[eid])
+            ref_adv = compute_gae(env_r, env_v, env_d, next_values[eid],
+                                  gamma=0.99, lam=0.95)
+            # Check the per-env values match
+            mask = flat_env_ids == eid
+            assert torch.allclose(advantages[mask], ref_adv, atol=1e-6), \
+                f"Per-env GAE mismatch for env {eid}"
+
+    def test_per_env_gae_update_produces_finite_metrics(self, ppo):
+        """update() with env_ids should produce finite loss metrics."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        env_id_lists = [[0, 2], [1, 2, 3], [0, 1, 3], [0, 1, 2, 3]]
+        for envs in env_id_lists:
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long),
+                torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+            )
+        losses = ppo.update(buf, torch.zeros(4))
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue
+            assert not torch.tensor(val).isnan(), f"{key} is NaN in per-env GAE"
+            assert not torch.tensor(val).isinf(), f"{key} is inf in per-env GAE"
+
+    def test_per_env_gae_changes_parameters(self, ppo):
+        """Per-env GAE path should still update model parameters."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        for envs in [[0, 2], [1, 3], [0, 1, 2], [2, 3]]:
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1,
+                torch.randn(n) * 0.1, torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.randint(0, 3, (n,)),
+                torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+            )
+        params_before = {n: p.clone() for n, p in ppo.model.named_parameters()}
+        ppo.update(buf, torch.zeros(4))
+        changed = any(
+            not torch.equal(params_before[n], p)
+            for n, p in ppo.model.named_parameters()
+        )
+        assert changed, "Per-env GAE path should modify model parameters"

@@ -217,3 +217,54 @@ class TestGlobalPoolFunction:
         assert abs(result[0, 0].item() - expected_mean) < 1e-5
         assert abs(result[0, 1].item() - expected_max) < 1e-5
         assert abs(result[0, 2].item() - expected_std) < 1e-5
+
+
+class TestSEResNetNumericalStability:
+    """T8: Verify SE-ResNet produces finite outputs for extreme inputs."""
+
+    @pytest.fixture
+    def model(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        model.eval()
+        return model
+
+    def test_all_zero_input(self, model):
+        """All-zero observation should produce finite output."""
+        obs = torch.zeros(2, 50, 9, 9)
+        with torch.no_grad():
+            output = model(obs)
+        assert torch.isfinite(output.policy_logits).all(), "Policy NaN/Inf with zero input"
+        assert torch.isfinite(output.value_logits).all(), "Value NaN/Inf with zero input"
+        assert torch.isfinite(output.score_lead).all(), "Score NaN/Inf with zero input"
+
+    def test_large_input_values(self, model):
+        """Observations with large values should not produce NaN/Inf."""
+        obs = torch.full((2, 50, 9, 9), 100.0)
+        with torch.no_grad():
+            output = model(obs)
+        assert torch.isfinite(output.policy_logits).all(), "Policy NaN/Inf with large input"
+        assert torch.isfinite(output.value_logits).all(), "Value NaN/Inf with large input"
+        assert torch.isfinite(output.score_lead).all(), "Score NaN/Inf with large input"
+
+    def test_small_input_values(self, model):
+        """Very small observations should produce finite output."""
+        obs = torch.full((2, 50, 9, 9), 1e-7)
+        with torch.no_grad():
+            output = model(obs)
+        assert torch.isfinite(output.policy_logits).all(), "Policy NaN/Inf with tiny input"
+        assert torch.isfinite(output.value_logits).all(), "Value NaN/Inf with tiny input"
+        assert torch.isfinite(output.score_lead).all(), "Score NaN/Inf with tiny input"
+
+    def test_negative_large_input(self, model):
+        """Large negative values should produce finite output."""
+        obs = torch.full((2, 50, 9, 9), -50.0)
+        with torch.no_grad():
+            output = model(obs)
+        assert torch.isfinite(output.policy_logits).all()
+        assert torch.isfinite(output.value_logits).all()
+        assert torch.isfinite(output.score_lead).all()

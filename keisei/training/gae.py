@@ -13,22 +13,26 @@ def compute_gae(
     gamma: float,
     lam: float,
 ) -> torch.Tensor:
-    """Compute GAE advantages for a single environment's trajectory.
+    """Compute GAE advantages for one or many environments.
+
+    Supports both 1D (single env) and 2D (batched) inputs:
+      - 1D: rewards (T,), values (T,), dones (T,), next_value scalar
+      - 2D: rewards (T, N), values (T, N), dones (T, N), next_value (N,)
 
     Args:
-        rewards: (T,) per-step rewards
-        values: (T,) value estimates at each step
-        dones: (T,) episode termination flags
-        next_value: scalar value estimate for the state after the last step
+        rewards: per-step rewards
+        values: value estimates at each step
+        dones: episode termination flags
+        next_value: value estimate(s) for the state after the last step
         gamma: discount factor
         lam: GAE lambda (bias-variance tradeoff)
 
     Returns:
-        (T,) advantage estimates
+        Advantage estimates, same shape as rewards
     """
-    T = len(rewards)
-    advantages = torch.zeros(T, device=rewards.device)
-    last_gae = torch.tensor(0.0, device=rewards.device)
+    T = rewards.shape[0]
+    advantages = torch.zeros_like(rewards)
+    last_gae = torch.zeros_like(next_value)
 
     for t in reversed(range(T)):
         if t == T - 1:

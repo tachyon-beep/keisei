@@ -678,3 +678,179 @@ class TestSwallowedExceptions:
         # No checkpoint file should exist since save was mocked to fail
         ckpt_dir = tmp_path / "checkpoints"
         assert not (ckpt_dir / "epoch_00004.pt").exists()
+
+
+class TestRotateSeat:
+    """T6: Verify _rotate_seat() resets optimizer and recreates LR scheduler."""
+
+    @pytest.fixture
+    def league_config(self, tmp_path):
+        return AppConfig(
+            training=TrainingConfig(
+                num_games=2,
+                max_ply=50,
+                algorithm="katago_ppo",
+                checkpoint_interval=100,
+                checkpoint_dir=str(tmp_path / "checkpoints"),
+                algorithm_params={
+                    "learning_rate": 2e-4,
+                    "gamma": 0.99,
+                    "lambda_policy": 1.0,
+                    "lambda_value": 1.5,
+                    "lambda_score": 0.02,
+                    "lambda_entropy": 0.01,
+                    "score_normalization": 76.0,
+                    "grad_clip": 1.0,
+                    "lr_schedule": {
+                        "type": "plateau",
+                        "factor": 0.5,
+                        "patience": 50,
+                        "min_lr": 1e-5,
+                    },
+                },
+            ),
+            display=DisplayConfig(
+                moves_per_minute=0,
+                db_path=str(tmp_path / "test.db"),
+            ),
+            model=ModelConfig(
+                display_name="Test-KataGo",
+                architecture="se_resnet",
+                params={
+                    "num_blocks": 2,
+                    "channels": 32,
+                    "se_reduction": 8,
+                    "global_pool_channels": 16,
+                    "policy_channels": 8,
+                    "value_fc_size": 32,
+                    "score_fc_size": 16,
+                    "obs_channels": 50,
+                },
+            ),
+            league=LeagueConfig(
+                max_pool_size=5,
+                snapshot_interval=10,
+                epochs_per_seat=5,
+            ),
+        )
+
+    def test_rotate_seat_resets_optimizer(self, league_config):
+        """After rotation, optimizer should be fresh (no momentum buffers)."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        # Run a few steps to populate optimizer state
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert len(loop.ppo.optimizer.state) > 0, "Optimizer should have state after training"
+
+        # Perform seat rotation
+        old_optimizer_id = id(loop.ppo.optimizer)
+        loop._rotate_seat(epoch=1)
+
+        # Optimizer should be a new instance with empty state
+        assert id(loop.ppo.optimizer) != old_optimizer_id, "Should be a new optimizer instance"
+        assert len(loop.ppo.optimizer.state) == 0, "Fresh optimizer should have no state"
+
+    def test_rotate_seat_recreates_lr_scheduler(self, league_config):
+        """After rotation, LR scheduler should point at the new optimizer."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        old_scheduler = loop.lr_scheduler
+        assert old_scheduler is not None, "League config should create LR scheduler"
+
+        loop._rotate_seat(epoch=1)
+
+        assert loop.lr_scheduler is not old_scheduler, "Should be a new scheduler"
+        # Verify the new scheduler is connected to the new optimizer
+        assert loop.lr_scheduler.optimizer is loop.ppo.optimizer
+
+    def test_rotate_seat_extends_warmup(self, league_config):
+        """Warmup should be extended relative to the rotation epoch."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+        original_warmup = loop.ppo.warmup_epochs
+
+        loop._rotate_seat(epoch=10)
+        # warmup should be epoch+1 + original_duration
+        assert loop.ppo.warmup_epochs == 11 + loop._original_warmup_duration
+
+    def test_rotate_seat_updates_learner_entry(self, league_config):
+        """Rotation should create a new pool entry and update the learner ID."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        old_id = loop._learner_entry_id
+        loop._rotate_seat(epoch=5)
+        assert loop._learner_entry_id != old_id, "Learner entry ID should change after rotation"
+
+
+class TestSLToRLCheckpointHandoff:
+    """T7: Verify SL checkpoint loads correctly into RL training."""
+
+    def test_sl_checkpoint_loads_model_weights(self, katago_config, tmp_path):
+        """SL-trained weights should survive the handoff to RL."""
+        from keisei.training.checkpoint import save_checkpoint
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        # Create and "train" an SL model
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        sl_model = SEResNetModel(params)
+        sl_optimizer = torch.optim.Adam(sl_model.parameters(), lr=1e-3)
+
+        # Modify weights so they're not default
+        obs = torch.randn(2, 50, 9, 9)
+        output = sl_model(obs)
+        loss = output.policy_logits.sum() + output.value_logits.sum()
+        loss.backward()
+        sl_optimizer.step()
+
+        sl_model.eval()
+        with torch.no_grad():
+            sl_output = sl_model(obs)
+
+        # Save SL checkpoint
+        ckpt_path = tmp_path / "checkpoints" / "sl_checkpoint.pt"
+        save_checkpoint(ckpt_path, sl_model, sl_optimizer, epoch=1, step=0,
+                        architecture="se_resnet")
+
+        # Write training state so the RL loop finds the checkpoint
+        from keisei.db import init_db, write_training_state
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        write_training_state(db_path, {
+            "config_json": "{}",
+            "display_name": "SL-Test",
+            "model_arch": "se_resnet",
+            "algorithm_name": "sl",
+            "started_at": "2026-01-01T00:00:00Z",
+            "current_epoch": 1,
+            "current_step": 0,
+            "checkpoint_path": str(ckpt_path),
+        })
+
+        # Create RL loop — it should resume from the SL checkpoint
+        config = dataclasses.replace(katago_config,
+            display=dataclasses.replace(katago_config.display, db_path=db_path))
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        # Verify all model parameters match (compare on CPU)
+        for name, sl_param in sl_model.named_parameters():
+            rl_param = dict(loop._base_model.named_parameters())[name]
+            assert torch.allclose(sl_param, rl_param.cpu(), atol=1e-7), \
+                f"Parameter mismatch for '{name}' after SL→RL handoff"
+
+        # Also verify buffers (BatchNorm running_mean/var)
+        for name, sl_buf in sl_model.named_buffers():
+            rl_buf = dict(loop._base_model.named_buffers())[name]
+            assert torch.allclose(sl_buf, rl_buf.cpu(), atol=1e-7), \
+                f"Buffer mismatch for '{name}' after SL→RL handoff"
+
+        # Epoch and step should be restored
+        assert loop.epoch == 1
+        assert loop.global_step == 0

@@ -76,23 +76,24 @@ class TestSpatialKnightMoves:
     """Knight moves use a separate encoding path (slots 128-131) — verify via PyO3."""
 
     def test_black_knight_roundtrip(self, mapper):
-        # Black knight at sq 58 (e7, row 6 col 4) jumps to sq 49 (d6, row 5 col 3)
+        # Black knight at sq 58 (row 6, col 4) jumps to sq 39 (row 4, col 3)
         # This is a left-forward knight jump: dr=-2, dc=-1
-        idx = mapper.encode_board_move(58, 49, False, False)
+        idx = mapper.encode_board_move(58, 39, False, False)
         decoded = mapper.decode(idx, False)
         assert decoded["type"] == "board"
         assert decoded["from_sq"] == 58
-        assert decoded["to_sq"] == 49
+        assert decoded["to_sq"] == 39
         slot = idx % 139
         assert 128 <= slot <= 131, f"Knight slot {slot} out of expected range 128-131"
 
     def test_white_knight_roundtrip(self, mapper):
-        # White knight: perspective-flipped. Encode from White's view.
-        idx = mapper.encode_board_move(22, 31, False, True)
+        # White knight at absolute sq 22 (row 2, col 4) jumps to sq 41 (row 4, col 5)
+        # dr=+2, dc=+1 in absolute space; in perspective space (flipped): dr=-2, dc=-1
+        idx = mapper.encode_board_move(22, 41, False, True)
         decoded = mapper.decode(idx, True)
         assert decoded["type"] == "board"
         assert decoded["from_sq"] == 22
-        assert decoded["to_sq"] == 31
+        assert decoded["to_sq"] == 41
 
     def test_black_white_perspective_produces_different_indices(self, mapper):
         """Same physical squares must produce different flat indices for Black vs White."""
@@ -103,10 +104,11 @@ class TestSpatialKnightMoves:
 
     def test_knight_promote_roundtrip(self, mapper):
         """Knight move with promotion flag."""
-        idx = mapper.encode_board_move(58, 49, True, False)  # promote=True
+        # Black knight at sq 58 (row 6, col 4) jumps to sq 41 (row 4, col 5) with promote
+        idx = mapper.encode_board_move(58, 41, True, False)  # promote=True
         decoded = mapper.decode(idx, False)
         assert decoded["from_sq"] == 58
-        assert decoded["to_sq"] == 49
+        assert decoded["to_sq"] == 41
         assert decoded["promote"] is True
         slot = idx % 139
         assert 128 <= slot <= 131

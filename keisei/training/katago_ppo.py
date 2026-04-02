@@ -54,9 +54,9 @@ class KataGoPPOParams:
 # - legal_masks: 128 x 512 x 11259 x 1 byte = ~740 MB
 # - observations: 128 x 512 x 50 x 9 x 9 x 4 bytes = ~1060 MB
 # - other fields (7 x ~33 MB each): ~230 MB
-# Total: ~2 GB CPU RAM. If memory becomes the binding constraint,
-# consider sparse legal_mask storage or regenerating masks from
-# game state during update. For now, keep it simple and dense.
+# Total: ~2 GB CPU RAM (stored on CPU; mini-batches transferred to GPU).
+# If CPU memory becomes the binding constraint, consider sparse
+# legal_mask storage or regenerating masks from game state during update.
 
 
 class KataGoRolloutBuffer:
@@ -76,6 +76,7 @@ class KataGoRolloutBuffer:
         self.legal_masks: list[torch.Tensor] = []
         self.value_categories: list[torch.Tensor] = []
         self.score_targets: list[torch.Tensor] = []
+        self.env_ids: list[torch.Tensor] = []
 
     @property
     def size(self) -> int:
@@ -92,6 +93,7 @@ class KataGoRolloutBuffer:
         legal_masks: torch.Tensor,
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
+        env_ids: torch.Tensor | None = None,
     ) -> None:
         """Add a timestep to the buffer.
 
@@ -129,15 +131,19 @@ class KataGoRolloutBuffer:
                 f"{score_targets.abs().max().item():.1f}. "
                 f"Expected in [-1.7, +1.7] typical, theoretical max 2.58 (guard 3.5)."
             )
-        self.observations.append(obs)
-        self.actions.append(actions)
-        self.log_probs.append(log_probs)
-        self.values.append(values)
-        self.rewards.append(rewards)
-        self.dones.append(dones)
-        self.legal_masks.append(legal_masks)
-        self.value_categories.append(value_categories)
-        self.score_targets.append(score_targets)
+        # Store on CPU to reduce GPU memory pressure during rollout collection.
+        # Mini-batches are transferred back to GPU during update().
+        self.observations.append(obs.detach().cpu())
+        self.actions.append(actions.detach().cpu())
+        self.log_probs.append(log_probs.detach().cpu())
+        self.values.append(values.detach().cpu())
+        self.rewards.append(rewards.detach().cpu())
+        self.dones.append(dones.detach().cpu())
+        self.legal_masks.append(legal_masks.detach().cpu())
+        self.value_categories.append(value_categories.detach().cpu())
+        self.score_targets.append(score_targets.detach().cpu())
+        if env_ids is not None:
+            self.env_ids.append(env_ids.detach().cpu())
 
     def flatten(self) -> dict[str, torch.Tensor]:
         if self.size == 0:
@@ -146,7 +152,7 @@ class KataGoRolloutBuffer:
             )
         # Use cat instead of stack to support variable-sized timesteps
         # (split-merge mode stores only learner envs per step, which varies).
-        return {
+        result = {
             "observations": torch.cat(self.observations, dim=0).reshape(-1, *self.obs_shape),
             "actions": torch.cat(self.actions, dim=0).reshape(-1),
             "log_probs": torch.cat(self.log_probs, dim=0).reshape(-1),
@@ -157,6 +163,9 @@ class KataGoRolloutBuffer:
             "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
             "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
         }
+        if self.env_ids:
+            result["env_ids"] = torch.cat(self.env_ids, dim=0).reshape(-1)
+        return result
 
 
 class KataGoPPOAlgorithm:
@@ -260,27 +269,39 @@ class KataGoPPOAlgorithm:
         T = buffer.size
         N = buffer.num_envs
         total_samples = data["rewards"].numel()
+        device = next(self.model.parameters()).device
 
-        # GAE computation
-        # Check if buffer has uniform timesteps (T*N == total_samples).
-        # Split-merge mode stores variable learner counts per step.
+        # GAE computation — runs on CPU (buffer stores data on CPU).
+        next_values_cpu = next_values.detach().cpu()
+
         if total_samples == T * N:
-            # Standard path: per-env GAE over (T, N) grid
+            # Vectorized path: batched GAE over (T, N) grid
             rewards_2d = data["rewards"].reshape(T, N)
             values_2d = data["values"].reshape(T, N)
             dones_2d = data["dones"].reshape(T, N)
 
-            all_advantages = torch.zeros(T, N, device=data["rewards"].device)
-            for env_i in range(N):
-                all_advantages[:, env_i] = compute_gae(
-                    rewards_2d[:, env_i], values_2d[:, env_i], dones_2d[:, env_i],
-                    next_values[env_i], gamma=self.params.gamma, lam=self.params.gae_lambda,
+            advantages = compute_gae(
+                rewards_2d, values_2d, dones_2d,
+                next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
+            ).reshape(-1)
+        elif "env_ids" in data:
+            # Per-env GAE for split-merge mode: compute GAE independently
+            # per environment to avoid cross-env Markov violations.
+            env_ids = data["env_ids"]
+            unique_envs = env_ids.unique()
+            advantages = torch.zeros(total_samples)
+
+            for env_id in unique_envs:
+                mask = env_ids == env_id
+                env_adv = compute_gae(
+                    data["rewards"][mask], data["values"][mask], data["dones"][mask],
+                    next_values_cpu[env_id],
+                    gamma=self.params.gamma, lam=self.params.gae_lambda,
                 )
-            advantages = all_advantages.reshape(-1)
+                advantages[mask] = env_adv
         else:
-            # Split-merge path: flat GAE over concatenated learner transitions.
-            # next_values is for the full env array; use mean as bootstrap estimate.
-            bootstrap = next_values.mean()
+            # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
+            bootstrap = next_values_cpu.mean()
             advantages = compute_gae(
                 data["rewards"], data["values"], data["dones"],
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
@@ -299,18 +320,19 @@ class KataGoPPOAlgorithm:
         num_updates = 0
 
         for _ in range(self.params.epochs_per_batch):
-            indices = torch.randperm(total_samples, device=data["rewards"].device)
+            indices = torch.randperm(total_samples)
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
                 idx = indices[start:end]
 
-                batch_obs = data["observations"][idx]
-                batch_actions = data["actions"][idx]
-                batch_old_log_probs = data["log_probs"][idx]
-                batch_advantages = advantages[idx]
-                batch_legal_masks = data["legal_masks"][idx]
-                batch_value_cats = data["value_categories"][idx]
-                batch_score_targets = data["score_targets"][idx]
+                # Transfer mini-batch from CPU to training device
+                batch_obs = data["observations"][idx].to(device)
+                batch_actions = data["actions"][idx].to(device)
+                batch_old_log_probs = data["log_probs"][idx].to(device)
+                batch_advantages = advantages[idx].to(device)
+                batch_legal_masks = data["legal_masks"][idx].to(device)
+                batch_value_cats = data["value_categories"][idx].to(device)
+                batch_score_targets = data["score_targets"][idx].to(device)
 
                 output = self.forward_model(batch_obs)
 
@@ -417,12 +439,11 @@ class KataGoPPOAlgorithm:
         valid_mask = data["value_categories"] >= 0  # exclude ignore_index=-1
         if valid_mask.any():
             with torch.no_grad():
-                # Re-forward a sample for metrics (use last mini-batch's data to avoid extra forward pass)
                 valid_cats = data["value_categories"][valid_mask]
                 valid_obs = data["observations"][valid_mask]
                 sample_size = min(256, valid_obs.shape[0])
-                sample_obs = valid_obs[:sample_size]
-                sample_cats = valid_cats[:sample_size]
+                sample_obs = valid_obs[:sample_size].to(device)
+                sample_cats = valid_cats[:sample_size].to(device)
                 self.forward_model.eval()
                 sample_output = self.forward_model(sample_obs)
                 value_metrics = compute_value_metrics(
