@@ -16,16 +16,17 @@ export const DARK_THEME = {
  * @param {Array<{label: string, color: string}>} params.series
  * @returns {object} uPlot options
  */
-export function buildChartOpts({ width, height, series }) {
+export function buildChartOpts({ width, height, series, compact = false }) {
   return {
     width,
     height,
-    padding: [8, 8, 0, 0],
-    cursor: { show: true },
-    legend: { show: true },
+    padding: compact ? [4, 4, 0, 0] : [8, 8, 0, 0],
+    cursor: { show: !compact },
+    legend: { show: !compact },
     scales: { x: { time: false } },
     axes: [
       {
+        show: !compact,
         stroke: DARK_THEME.textColor,
         grid: { stroke: DARK_THEME.gridColor, width: 0.5 },
         ticks: { stroke: DARK_THEME.axisColor },
@@ -34,6 +35,7 @@ export function buildChartOpts({ width, height, series }) {
         incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
       },
       {
+        show: !compact,
         stroke: DARK_THEME.textColor,
         grid: { stroke: DARK_THEME.gridColor, width: 0.5 },
         ticks: { stroke: DARK_THEME.axisColor },
@@ -45,7 +47,7 @@ export function buildChartOpts({ width, height, series }) {
       ...series.map(s => ({
         label: s.label,
         stroke: s.color,
-        width: 1.5,
+        width: compact ? 1 : 1.5,
         fill: s.color + '20',
       })),
     ],

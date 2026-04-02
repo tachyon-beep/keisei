@@ -10,6 +10,7 @@
   export let series = []
   export let width = 400
   export let height = 100
+  export let compact = false
 
   let container
   let chart = null
@@ -17,7 +18,7 @@
 
   function getOpts() {
     const w = container ? container.clientWidth : width
-    return buildChartOpts({ width: w, height, series })
+    return buildChartOpts({ width: w, height, series, compact })
   }
 
   function getData() {
@@ -66,7 +67,7 @@
 <div class="chart-wrapper">
   <div class="chart-title">{title}</div>
   <div class="chart-container" bind:this={container}></div>
-  {#if annotation}
+  {#if annotation && !compact}
     <div class="annotation">{annotation}</div>
   {/if}
 </div>
