@@ -16,11 +16,14 @@ from keisei.training.models.katago_base import KataGoBaseModel
 
 def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dtype, str]:
     """Return (autocast_dtype, autocast_device_type) for AMP configuration."""
-    dtype = (
-        torch.bfloat16
-        if (use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported())
-        else torch.float16
-    )
+    if not use_amp:
+        dtype = torch.float16  # unused — autocast disabled
+    elif device.type == "cpu":
+        dtype = torch.bfloat16  # CPU autocast only supports bfloat16
+    elif torch.cuda.is_bf16_supported():
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float16
     device_type = "cuda" if device.type == "cuda" else "cpu"
     return dtype, device_type
 
@@ -348,6 +351,10 @@ class KataGoPPOAlgorithm:
             dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
             nv = torch.zeros(N_env)
 
+            assert unique_envs.max() < next_values_cpu.shape[0], (
+                f"env_id {unique_envs.max().item()} >= next_values size "
+                f"{next_values_cpu.shape[0]}"
+            )
             for i, L in enumerate(env_lengths):
                 rewards_pad[:L, i] = env_rewards[i]
                 values_pad[:L, i] = env_values[i]
