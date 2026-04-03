@@ -28,7 +28,6 @@
   $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
 
-  let boardAreaHeight = 0
   let thumbPanelHeight = 0
 
   $: lastMoveIdx = (() => {
@@ -53,10 +52,52 @@
     ? `${$trainingState.model_arch || ''} · Epoch ${$trainingState.current_epoch || 0} · ${($trainingState.current_step || 0).toLocaleString()} steps`
     : ''
 
+  // Seeded RNG for stable learner fun facts (keyed on display name)
+  function seededPick(seed, pool) {
+    let h = 0
+    for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0
+    return pool[Math.abs(h) % pool.length]
+  }
+
+  const flavourPools = {
+    'Favourite piece': ['Gold General', 'Silver General', 'Knight', 'Lance', 'Bishop', 'Rook', 'Promoted Pawn', 'Dragon Horse', 'Dragon King', 'King'],
+    'Philosophy': ['Musashi', 'Sun Tzu', 'Confucius', 'Turing', 'Shannon', 'Von Neumann', 'Bellman', 'Lao Tzu', 'Leibniz', 'Miyamoto'],
+    'Favourite snack': ['Onigiri', 'Mochi', 'Dango', 'Taiyaki', 'Gradient soup', 'Loss crumble', 'Entropy tea', 'Batch noodles', 'Tensor rolls', 'Senbei'],
+    'Training motto': ['"Loss goes down"', '"Explore everything"', '"Patience is policy"', '"Trust the gradient"', '"Variance is the enemy"', '"Clip wisely"', '"Entropy is freedom"', '"Value the position"', '"Every ply counts"', '"Promote early"'],
+    'Lucky number': ['0.0001', '0.99', '42', '3.14', '2048', '0.95', '1e-8', '256', '0.2', '7.5M'],
+  }
+
+  $: learnerFlavour = (() => {
+    const name = learnerName || 'Learner'
+    const cats = Object.keys(flavourPools)
+    const facts = []
+    for (let i = 0; i < 3 && i < cats.length; i++) {
+      const cat = cats[(Math.abs(name.length * 31 + i * 7) | 0) % cats.length]
+      // avoid picking the same category twice
+      if (!facts.find(f => f[0] === cat)) {
+        facts.push([cat, seededPick(name + cat, flavourPools[cat])])
+      }
+    }
+    return facts
+  })()
+
   // Learner stats for PlayerCard
   $: learnerStats = (() => {
     const s = []
     if ($trainingState?.model_arch) s.push(['Architecture', $trainingState.model_arch])
+    // Compact architecture summary from config
+    try {
+      const cfg = typeof $trainingState?.config_json === 'string'
+        ? JSON.parse($trainingState.config_json) : $trainingState?.config_json
+      if (cfg) {
+        const mp = cfg.model?.params || cfg.model_params || {}
+        const parts = []
+        if (mp.num_blocks && mp.channels) parts.push(`b${mp.num_blocks}c${mp.channels}`)
+        if (mp.se_reduction) parts.push(`SE-${mp.se_reduction}`)
+        if (mp.global_pool_channels) parts.push(`gp${mp.global_pool_channels}`)
+        if (parts.length) s.push(['Topology', parts.join(' · ')])
+      }
+    } catch { /* config not available yet */ }
     const m = $latestMetrics
     if (m) {
       if (m.policy_loss != null) s.push(['Policy loss', m.policy_loss.toFixed(4)])
@@ -71,6 +112,10 @@
         w: a.w + (r.wins || 0), l: a.l + (r.losses || 0), d: a.d + (r.draws || 0)
       }), { w: 0, l: 0, d: 0 })
       s.push(['Recent W/L/D', `${totals.w} / ${totals.l} / ${totals.d}`])
+    }
+    // Fun facts
+    for (const [label, value] of learnerFlavour) {
+      s.push([label, value])
     }
     return s
   })()
@@ -88,6 +133,12 @@
     if (!opp) return []
     const s = []
     s.push(['Architecture', opp.architecture])
+    const mp = opp.model_params || {}
+    const parts = []
+    if (mp.num_blocks && mp.channels) parts.push(`b${mp.num_blocks}c${mp.channels}`)
+    if (mp.se_reduction) parts.push(`SE-${mp.se_reduction}`)
+    if (mp.global_pool_channels) parts.push(`gp${mp.global_pool_channels}`)
+    if (parts.length) s.push(['Topology', parts.join(' · ')])
     s.push(['Snapshot epoch', String(opp.created_epoch)])
     s.push(['Games played', String(opp.games_played)])
     if (opp.created_at) {
@@ -128,7 +179,7 @@
       <main id="game-panel" class="game-panel" aria-label="Game viewer">
         {#if game}
           <div class="game-view">
-            <div class="board-area" bind:clientHeight={boardAreaHeight}>
+            <div class="board-area">
               <PieceTray color="white" hand={hands.white || {}} />
               <Board
                 board={board}
@@ -139,14 +190,14 @@
               <PieceTray color="black" hand={hands.black || {}} />
             </div>
 
-            <div class="eval-area" style="height: {boardAreaHeight}px">
+            <div class="eval-area">
               <EvalBar
                 value={game.value_estimate || 0}
                 currentPlayer={game.current_player || 'black'}
               />
             </div>
 
-            <div class="info-area" style="height: {boardAreaHeight}px">
+            <div class="info-area">
               <div class="game-info">
                 <div class="info-row">
                   <span class="label">Game {(game.game_id || 0) + 1}</span>
@@ -173,7 +224,7 @@
               />
             </div>
 
-            <div class="legend-area" style="height: {boardAreaHeight}px">
+            <div class="legend-area">
               <ShogiLegend />
             </div>
           </div>
@@ -274,12 +325,14 @@
     flex: 1 1 auto;
     padding: 8px;
     overflow: hidden;
+    min-height: 0;
   }
 
   .game-view {
     display: flex;
     align-items: stretch;
     gap: 16px;
+    height: 100%;
   }
 
   .board-area {
@@ -300,6 +353,7 @@
     flex-direction: column;
     gap: 8px;
     width: 40ch;
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -338,6 +392,8 @@
   .legend-area {
     flex: 1 1 auto;
     min-width: 0;
+    min-height: 0;
+    overflow: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;

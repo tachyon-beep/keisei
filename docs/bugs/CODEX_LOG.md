@@ -32,3 +32,13 @@
 | 2026-04-03T05:58:59+00:00 | ok | keisei/training/value_adapter.py | docs/bugs/generated/training/value_adapter.py.md |  | 110.93 | evidence_gate=1 |
 | 2026-04-03T05:59:12+00:00 | ok | keisei/training/model_registry.py | docs/bugs/generated/training/model_registry.py.md |  | 123.86 | evidence_gate=2 |
 | 2026-04-03T05:59:21+00:00 | ok | keisei/training/models/katago_base.py | docs/bugs/generated/training/models/katago_base.py.md |  | 132.02 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/sl/dataset.py | docs/bugs/generated/sl/dataset.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/config.py | docs/bugs/generated/config.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/sl/parsers.py | docs/bugs/generated/sl/parsers.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/db.py | docs/bugs/generated/db.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/sl/prepare.py | docs/bugs/generated/sl/prepare.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/server/app.py | docs/bugs/generated/server/app.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/server/__init__.py | docs/bugs/generated/server/__init__.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/__init__.py | docs/bugs/generated/__init__.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/sl/__init__.py | docs/bugs/generated/sl/__init__.py.md |  | 0.79 |  |
+| 2026-04-03T16:30:07+00:00 | ok | keisei/sl/trainer.py | docs/bugs/generated/sl/trainer.py.md |  | 0.79 |  |

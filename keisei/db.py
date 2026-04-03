@@ -311,7 +311,7 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
     conn = _connect(db_path)
     try:
         entries = conn.execute(
-            "SELECT id, display_name, flavour_facts, architecture, elo_rating, games_played, created_epoch, created_at "
+            "SELECT id, display_name, flavour_facts, model_params, architecture, elo_rating, games_played, created_epoch, created_at "
             "FROM league_entries ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
@@ -324,6 +324,8 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             # Parse JSON string fields for the frontend
             if isinstance(e.get("flavour_facts"), str):
                 e["flavour_facts"] = json.loads(e["flavour_facts"])
+            if isinstance(e.get("model_params"), str):
+                e["model_params"] = json.loads(e["model_params"])
             parsed_entries.append(e)
         return {
             "entries": parsed_entries,

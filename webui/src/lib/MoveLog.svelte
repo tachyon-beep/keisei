@@ -70,7 +70,7 @@
   }
 
   .table-container {
-    overflow-y: auto;
+    overflow-y: scroll;
     flex: 1;
     min-height: 0;
     padding: 4px;

@@ -609,7 +609,10 @@ class KataGoTrainingLoop:
                                 "num_games": self.config.training.num_games,
                                 "algorithm": self.config.training.algorithm,
                             },
-                            "model": {"architecture": self.config.model.architecture},
+                            "model": {
+                                "architecture": self.config.model.architecture,
+                                "params": dict(self.config.model.params),
+                            },
                         }
                     ),
                     "display_name": self.config.model.display_name,
@@ -656,11 +659,28 @@ class KataGoTrainingLoop:
             # Sample opponent for this epoch (if league enabled)
             if self.sampler is not None:
                 self._current_opponent_entry = self.sampler.sample()
-                opp_device = (
+                opp_device_cfg = (
                     self.config.league.opponent_device
                     if self.config.league and self.config.league.opponent_device
-                    else str(self.device)
+                    else None
                 )
+                # Validate the configured opponent device exists; fall back to
+                # learner device if it doesn't (e.g. single-GPU machine).
+                if opp_device_cfg and opp_device_cfg.startswith("cuda"):
+                    try:
+                        idx = int(opp_device_cfg.split(":")[-1]) if ":" in opp_device_cfg else 0
+                        if idx >= torch.cuda.device_count():
+                            if not getattr(self, "_opp_device_warned", False):
+                                logger.warning(
+                                    "opponent_device=%s not available (%d GPUs), "
+                                    "falling back to %s",
+                                    opp_device_cfg, torch.cuda.device_count(), self.device,
+                                )
+                                self._opp_device_warned = True
+                            opp_device_cfg = None
+                    except ValueError:
+                        opp_device_cfg = None
+                opp_device = opp_device_cfg or str(self.device)
                 self._current_opponent = self.pool.load_opponent(
                     self._current_opponent_entry, device=opp_device,
                 )

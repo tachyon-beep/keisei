@@ -21,6 +21,7 @@ export const selectedOpponent = derived(
       games_played: entry.games_played,
       created_epoch: entry.created_epoch,
       flavour_facts: entry.flavour_facts || [],
+      model_params: entry.model_params || {},
       created_at: entry.created_at || '',
     }
   }
