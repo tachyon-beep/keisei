@@ -1,6 +1,51 @@
-# AGENTS.md
+# Repository Guidelines
 
-No agent configuration yet.
+## Project Structure & Module Organization
+
+- `keisei/`: Python training harness (config, PPO loops, models, DB, server, SL pipeline).
+- `shogi-engine/`: Rust workspace (`shogi-core`, `shogi-gym`) powering game logic and vectorized envs.
+- `tests/`: Python test suite (`test_*.py`) including `tests/integration/` and `tests/unit/`.
+- `webui/`: Svelte/Vite spectator dashboard (`src/lib`, `src/stores`, `*.test.js`).
+- `configs/` and `*.toml`: runnable training configs; `scripts/` and `run-*.sh`: automation helpers.
+- `docs/`: design specs, plans, and bug-hunt artifacts.
+
+## Build, Test, and Development Commands
+
+- `uv pip install -e ".[dev]"`: install Python package + dev tools.
+- `cd shogi-engine && cargo build --release`: build Rust engine.
+- `uv run pytest` or `uv run pytest -m "not slow"`: run Python tests.
+- `cd shogi-engine && cargo test`: run Rust tests.
+- `uv run ruff check .` and `uv run mypy keisei/`: lint + strict type checks.
+- `cd webui && npm run dev|test|build`: run dashboard locally, execute Vitest, or create production assets.
+- `uv run keisei-train --config keisei.toml` and `uv run keisei-serve --config keisei.toml`: run trainer + API.
+
+## Coding Style & Naming Conventions
+
+- Follow `.editorconfig`: LF endings, UTF-8, final newline, 4-space indentation (Python/Rust/TOML).
+- Python: use type hints, keep modules focused, and prefer descriptive snake_case names.
+- Rust: standard `rustfmt` style; keep crate boundaries clean (`shogi-core` vs `shogi-gym`).
+- Frontend: keep Svelte components PascalCase (`LeagueTable.svelte`), helpers/stores in camelCase.
+- Run `ruff` and `mypy` before opening a PR.
+
+## Testing Guidelines
+
+- Python tests use `pytest`; async tests run with `pytest-asyncio`.
+- Name tests `test_<behavior>.py` and prefer small, behavior-focused cases.
+- Frontend tests use Vitest with `*.test.js` near related modules.
+- Add regression tests for fixes in training loops, DB schema, server APIs, and action mapping.
+
+## Commit & Pull Request Guidelines
+
+- Use Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`); scopes are encouraged (for example, `feat(shogi-gym): ...`).
+- Branch from `main`; keep PRs focused and reviewable.
+- PRs should include: clear summary, linked issue, test evidence, and UI screenshots/GIFs for `webui` changes.
+- Update `CHANGELOG.md` (`[Unreleased]`) for user-visible changes.
+
+## Agent-Specific Workflow (Filigree)
+
+- Use Filigree MCP tools for task tracking; do not track work in ad-hoc notes.
+- Session start: load context, claim a ready issue, move it to `in_progress`, then implement.
+- Record side findings as observations and promote important ones to issues.
 
 <!-- filigree:instructions:v1.6.0:84820288 -->
 ## Filigree Issue Tracker
@@ -110,6 +155,7 @@ The dashboard exposes REST endpoints for file tracking and scan result ingestion
 Use `GET /api/files/_schema` for available endpoints and valid field values.
 
 Key endpoints:
+
 - `GET /api/files/_schema` — Discovery: valid enums, endpoint catalog
 - `POST /api/v1/scan-results` — Ingest scan results (SARIF-lite format)
 - `GET /api/files` — List tracked files with filtering and sorting
@@ -117,6 +163,7 @@ Key endpoints:
 - `GET /api/files/{file_id}/findings` — Findings for a specific file
 
 ### Workflow
+
 1. `filigree ready` to find available work
 2. `filigree show <id>` to review details
 3. `filigree transitions <id>` to see valid state changes
@@ -125,11 +172,13 @@ Key endpoints:
 6. `filigree close <id>` when done
 
 ### Session Start
+
 When beginning a new session, run `filigree session-context` to load the project
 snapshot (ready work, in-progress items, critical path). This provides the
 context needed to pick up where the previous session left off.
 
 ### Priority Scale
+
 - P0: Critical (drop everything)
 - P1: High (do next)
 - P2: Medium (default)

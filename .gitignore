@@ -43,3 +43,4 @@ keisei-katago.db
 keisei-500k-league.db*
 node_modules/
 keisei-ddp.db
+keisei/server/static/index.html
