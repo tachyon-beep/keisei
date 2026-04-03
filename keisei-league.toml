@@ -1,0 +1,65 @@
+# keisei-league.toml — "Musashi" (武蔵, lone duelist) — League training (single-GPU)
+#
+# Hardware: Single GPU (RTX 4060 Ti 16GB or similar)
+# Model:    KataGo SE-ResNet b10c128 (~7.5M params) — must match checkpoint architecture
+# Purpose:  League self-play with opponent pool and Elo tracking.
+#           Seed from a DDP-trained checkpoint (e.g. from run-500k.sh).
+#
+# Launch:   ./run-league.sh checkpoints/500k/epoch_00100.pt
+#
+# League mode trains the learner against sampled historical opponents.
+# Every snapshot_interval epochs, the current model is snapshotted into the
+# opponent pool. The learner always plays Black (side 0); opponents play White.
+# Elo ratings track relative strength across the pool.
+#
+# NOTE: League mode is single-GPU only. DDP produces unequal buffer sizes
+# across ranks due to split-merge, causing NCCL allreduce deadlocks.
+
+[model]
+display_name = "Musashi"
+architecture = "se_resnet"
+
+# Must match the checkpoint architecture exactly
+[model.params]
+num_blocks = 10
+channels = 128
+se_reduction = 8
+global_pool_channels = 64
+policy_channels = 16
+value_fc_size = 128
+score_fc_size = 64
+obs_channels = 50
+
+[training]
+num_games = 64              # single-GPU, more envs to compensate
+max_ply = 512
+algorithm = "katago_ppo"
+checkpoint_interval = 50
+checkpoint_dir = "checkpoints/league/"
+use_amp = true
+
+[training.algorithm_params]
+learning_rate = 0.0001      # lower LR for fine-tuning from checkpoint
+gamma = 0.99
+gae_lambda = 0.95
+clip_epsilon = 0.2
+epochs_per_batch = 4
+batch_size = 256
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 30
+db_path = "keisei-league.db"
+
+[league]
+max_pool_size = 20          # keep up to 20 historical opponents
+snapshot_interval = 25      # snapshot model into pool every 25 epochs
+epochs_per_seat = 10        # play 10 epochs per sampled opponent
+historical_ratio = 0.8      # 80% chance of sampling a historical opponent
+current_best_ratio = 0.2    # 20% chance of playing current best
+elo_k_factor = 32.0

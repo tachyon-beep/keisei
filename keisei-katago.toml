@@ -48,9 +48,5 @@ grad_clip = 1.0
 moves_per_minute = 30
 db_path = "keisei-katago.db"
 
-# Uncomment to enable league mode (single-GPU only):
-# [league]
-# max_pool_size = 16
-# snapshot_interval = 50
-# epochs_per_seat = 10
-# elo_k_factor = 32.0
+# For league mode, use keisei-league.toml + run-league.sh instead.
+# League requires matching architecture between checkpoint and config.
