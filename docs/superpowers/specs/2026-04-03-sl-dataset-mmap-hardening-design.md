@@ -88,7 +88,7 @@ def clear_cache(self) -> None:
 
 **`trainer.py`** passes a `worker_init_fn` to `DataLoader` that clears
 inherited mmap state. The function walks the `.dataset` chain to handle
-wrapper datasets (`Subset`, `ConcatDataset`, etc.):
+wrapper datasets (e.g., `Subset`):
 
 ```python
 from torch.utils.data import get_worker_info
@@ -99,7 +99,7 @@ def _sl_worker_init(worker_id: int) -> None:
     if info is None:
         return  # called from main process (e.g., in tests)
     dataset = info.dataset
-    # Walk wrapper chain (Subset, ConcatDataset, etc.)
+    # Walk wrapper chain (e.g., Subset wraps .dataset)
     while hasattr(dataset, "dataset"):
         dataset = dataset.dataset
     if hasattr(dataset, "clear_cache"):
@@ -108,9 +108,14 @@ def _sl_worker_init(worker_id: int) -> None:
 self.dataloader = DataLoader(
     self.dataset,
     ...
-    worker_init_fn=_sl_worker_init if config.num_workers > 0 else None,
+    worker_init_fn=_sl_worker_init if config.num_workers > 0 and has_data else None,
 )
 ```
+
+Note: `worker_init_fn` is only wired when `has_data` is true, since
+`num_workers` is already forced to 0 for empty datasets. `ConcatDataset`
+is not handled (it uses `.datasets` plural); if needed in the future,
+extend the traversal.
 
 This is defensive — the cache is currently empty at fork time. But it
 guarantees correctness even if future code adds shard pre-loading or

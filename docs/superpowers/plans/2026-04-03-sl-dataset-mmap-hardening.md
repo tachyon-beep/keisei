@@ -85,7 +85,29 @@ class TestSLDatasetMmapCache:
         shard_1_path = dataset.shards[1][0]
         assert shard_0_path in dataset._mmap_cache, "Shard 0 was promoted, should survive"
         assert shard_1_path not in dataset._mmap_cache, "Shard 1 was LRU, should be evicted"
+
+    def test_lru_single_slot_boundary(self, tmp_path):
+        """max_cache_size=1: every new shard evicts the previous one."""
+        self._write_shards(tmp_path, n_shards=2)
+        dataset = SLDataset(tmp_path, max_cache_size=1)
+
+        _ = dataset[0]  # shard 0
+        assert len(dataset._mmap_cache) == 1
+
+        _ = dataset[5]  # shard 1 — should evict shard 0
+        assert len(dataset._mmap_cache) == 1
+        shard_0_path = dataset.shards[0][0]
+        assert shard_0_path not in dataset._mmap_cache
+
+    def test_warning_when_shards_exceed_cache_size(self, tmp_path, caplog):
+        """A warning should be logged when num_shards > max_cache_size."""
+        self._write_shards(tmp_path, n_shards=5)
+        with caplog.at_level(logging.WARNING, logger="keisei.sl.dataset"):
+            SLDataset(tmp_path, max_cache_size=2)
+        assert any("5 shards but max_cache_size=2" in msg for msg in caplog.messages)
 ```
+
+Note: the test file needs `import logging` at the top.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -177,8 +199,8 @@ git commit -m "feat(sl): LRU-bounded mmap cache for SLDataset
 
 Replace unbounded dict with OrderedDict LRU cache. Add max_cache_size
 parameter (default 16) with validation. Emit warning when shard count
-exceeds cache size. Three new tests cover eviction, promotion, and
-validation."
+exceeds cache size. Five new tests cover eviction, promotion, boundary,
+warning, and validation."
 ```
 
 ---
@@ -318,7 +340,7 @@ def _sl_worker_init(worker_id: int) -> None:
     if info is None:
         return  # called from main process (e.g., in tests)
     dataset = info.dataset
-    # Walk wrapper chain (Subset, ConcatDataset, etc.)
+    # Walk wrapper chain (e.g., Subset wraps .dataset)
     while hasattr(dataset, "dataset"):
         dataset = dataset.dataset
     if hasattr(dataset, "clear_cache"):
