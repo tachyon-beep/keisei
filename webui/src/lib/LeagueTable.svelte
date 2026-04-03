@@ -66,7 +66,7 @@
 </script>
 
 <div class="league-table-card">
-  <h2 class="section-header">Elo Leaderboard <span class="slot-count">{sorted.length} / {totalSlots}</span></h2>
+  <h2 class="section-header">Elo Leaderboard {#if placeholderCount > 0}<span class="slot-count">{sorted.length} / {totalSlots}</span>{/if}</h2>
     <div class="table-scroll">
       <table>
         <thead>
