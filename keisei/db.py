@@ -73,6 +73,7 @@ def init_db(db_path: str) -> None:
                 current_step     INTEGER NOT NULL DEFAULT 0,
                 checkpoint_path  TEXT,
                 status           TEXT NOT NULL DEFAULT 'running',
+                phase            TEXT NOT NULL DEFAULT 'init',
                 heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS league_entries (
@@ -263,23 +264,24 @@ def update_heartbeat(db_path: str) -> None:
 
 
 def update_training_progress(
-    db_path: str, epoch: int, step: int, checkpoint_path: str | None = None
+    db_path: str, epoch: int, step: int, checkpoint_path: str | None = None,
+    phase: str | None = None,
 ) -> None:
     conn = _connect(db_path)
     try:
+        parts = ["current_epoch = ?", "current_step = ?",
+                 "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"]
+        params: list[int | str] = [epoch, step]
         if checkpoint_path is not None:
-            conn.execute(
-                "UPDATE training_state SET current_epoch = ?, current_step = ?, "
-                "checkpoint_path = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-                "WHERE id = 1",
-                (epoch, step, checkpoint_path),
-            )
-        else:
-            conn.execute(
-                "UPDATE training_state SET current_epoch = ?, current_step = ?, "
-                "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = 1",
-                (epoch, step),
-            )
+            parts.append("checkpoint_path = ?")
+            params.append(checkpoint_path)
+        if phase is not None:
+            parts.append("phase = ?")
+            params.append(phase)
+        conn.execute(
+            f"UPDATE training_state SET {', '.join(parts)} WHERE id = 1",
+            params,
+        )
         conn.commit()
     finally:
         conn.close()

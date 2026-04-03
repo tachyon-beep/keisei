@@ -275,6 +275,7 @@ class KataGoTrainingLoop:
         self.latest_values: list[float] = [0.0] * self.num_envs
         self.epoch = 0
         self.global_step = 0
+        self._phase = "init"
         self._last_heartbeat = time.monotonic()
 
         # League setup (optional — only if [league] config is present)
@@ -396,6 +397,7 @@ class KataGoTrainingLoop:
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
 
+            self._phase = "rollout"
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
 
@@ -504,6 +506,7 @@ class KataGoTrainingLoop:
                     self.ppo.current_entropy_coeff, self.ppo.warmup_epochs, epoch_i,
                 )
 
+            self._phase = "update"
             losses = self.ppo.update(
                 self.buffer, next_values,
                 heartbeat_fn=self._maybe_update_heartbeat,
@@ -672,7 +675,9 @@ class KataGoTrainingLoop:
         now = time.monotonic()
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
-            update_training_progress(self.db_path, self.epoch, self.global_step)
+            update_training_progress(
+                self.db_path, self.epoch, self.global_step, phase=self._phase,
+            )
 
     def _maybe_write_snapshots(self) -> None:
         if self.moves_per_minute <= 0:

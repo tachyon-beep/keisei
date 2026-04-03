@@ -238,6 +238,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 ws.send_json({
                     "type": "training_status",
                     "status": new_state.get("status"),
+                    "phase": new_state.get("phase", ""),
                     "heartbeat_at": new_state.get("heartbeat_at"),
                     "epoch": new_state.get("current_epoch"),
                     "step": new_state.get("current_step"),

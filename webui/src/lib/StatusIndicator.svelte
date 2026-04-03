@@ -13,6 +13,7 @@
   $: stats = $trainingState?.system_stats || {}
   $: gpus = stats.gpus || []
 
+  $: phase = $trainingState?.phase || ''
   $: indicator = getIndicator(alive, status)
 
   $: configTooltip = buildConfigTooltip($trainingState?.config_json, modelArch)
@@ -27,6 +28,13 @@
     </div>
     {#if alive}
       <div class="stats" aria-live="polite">
+        {#if phase === 'update'}
+          <span class="phase-badge update">PPO UPDATE</span>
+          <span class="sep">|</span>
+        {:else if phase === 'rollout'}
+          <span class="phase-badge rollout">ROLLOUT</span>
+          <span class="sep">|</span>
+        {/if}
         <span class="stat">Epoch {epoch}</span>
         <span class="sep">|</span>
         <span class="stat">Step {step.toLocaleString()}</span>
@@ -101,6 +109,24 @@
 
   .sep {
     color: var(--border);
+  }
+
+  .phase-badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+
+  .phase-badge.update {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.12);
+  }
+
+  .phase-badge.rollout {
+    color: var(--accent-teal);
+    background: rgba(45, 212, 191, 0.12);
   }
 
   .right {

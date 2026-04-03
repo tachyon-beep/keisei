@@ -95,6 +95,7 @@ export function handleMessage(msg) {
       trainingState.update(state => ({
         ...state,
         status: msg.status,
+        phase: msg.phase || state?.phase,
         heartbeat_at: msg.heartbeat_at,
         current_epoch: msg.epoch,
         current_step: msg.step,
