@@ -189,39 +189,39 @@
 
   .matrix {
     border-collapse: collapse;
-    font-size: 13px;
+    font-size: 14px;
     white-space: nowrap;
   }
 
   .corner {
-    min-width: 84px;
+    min-width: 88px;
   }
 
   .col-header {
     padding: 3px 5px;
     vertical-align: bottom;
-    height: 84px;
+    height: 88px;
   }
 
   .rotated {
     display: block;
     writing-mode: vertical-rl;
     transform: rotate(180deg);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-muted);
-    max-height: 79px;
+    max-height: 83px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .row-header {
     text-align: right;
-    padding: 5px 9px;
-    font-size: 12px;
+    padding: 5px 10px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-muted);
-    max-width: 105px;
+    max-width: 110px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -234,10 +234,10 @@
 
   td {
     text-align: center;
-    padding: 5px 7px;
-    min-width: 46px;
+    padding: 5px 8px;
+    min-width: 48px;
     font-family: monospace;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     border: 1px solid var(--border-subtle);
     color: var(--text-primary);
