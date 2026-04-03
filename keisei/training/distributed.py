@@ -147,25 +147,3 @@ def seed_all_ranks(seed: int) -> None:
     random.seed(seed)
 
 
-def broadcast_string(value: str | None, src: int = 0) -> str:
-    """Broadcast a string from src rank to all ranks.
-
-    Used to share the checkpoint path from rank 0 (which reads the DB)
-    to all other ranks (which need to load the same checkpoint).
-
-    Args:
-        value: The string to broadcast. Only needs to be set on src rank.
-        src: Source rank (default 0).
-
-    Returns:
-        The broadcast string on all ranks.
-    """
-    if not dist.is_initialized():
-        assert value is not None
-        return value
-
-    obj_list = [value]
-    dist.broadcast_object_list(obj_list, src=src)
-    result = obj_list[0]
-    assert result is not None, "broadcast_string returned None"
-    return result
