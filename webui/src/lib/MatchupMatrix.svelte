@@ -182,6 +182,9 @@
     overflow: auto;
     min-height: 0;
     flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .matrix {
