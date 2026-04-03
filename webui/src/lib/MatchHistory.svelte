@@ -38,8 +38,8 @@
               <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
               <td>{opponent(m).display_name || opponent(m).architecture}</td>
               <td class="num elo">{Math.round(opponent(m).elo_rating)}</td>
-              <td class="num win">{m.wins}</td>
-              <td class="num loss">{m.losses}</td>
+              <td class="num win">{m.learner_id === entryId ? m.wins : m.losses}</td>
+              <td class="num loss">{m.learner_id === entryId ? m.losses : m.wins}</td>
               <td class="num draw">{m.draws}</td>
             </tr>
           {:else}
@@ -47,8 +47,8 @@
               <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
               <td class="unknown">#{m.learner_id === entryId ? m.opponent_id : m.learner_id}</td>
               <td class="num elo">—</td>
-              <td class="num win">{m.wins}</td>
-              <td class="num loss">{m.losses}</td>
+              <td class="num win">{m.learner_id === entryId ? m.wins : m.losses}</td>
+              <td class="num loss">{m.learner_id === entryId ? m.losses : m.wins}</td>
               <td class="num draw">{m.draws}</td>
             </tr>
           {/if}

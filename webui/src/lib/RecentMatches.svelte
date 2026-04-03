@@ -32,29 +32,40 @@
         lastEpoch = r.epoch
       }
 
-      const learner = entryMap.get(r.learner_id)
-      const opponent = entryMap.get(r.opponent_id)
-      const total = (r.wins || 0) + (r.losses || 0) + (r.draws || 0)
-      const learnerWon = (r.wins || 0) > (r.losses || 0)
-      const draw = (r.wins || 0) === (r.losses || 0)
+      const entryA = entryMap.get(r.learner_id)
+      const entryB = entryMap.get(r.opponent_id)
+      const nameA = entryA?.display_name || entryA?.architecture || `#${r.learner_id}`
+      const nameB = entryB?.display_name || entryB?.architecture || `#${r.opponent_id}`
+      const winsA = r.wins || 0
+      const winsB = r.losses || 0
+      const draws = r.draws || 0
+      const total = winsA + winsB + draws
+      const aWon = winsA > winsB
+      const draw = winsA === winsB
       const clashes = pairClashes(r.learner_id, r.opponent_id)
-      const winPct = total > 0 ? Math.round(((r.wins || 0) / total) * 100) : 0
 
-      const eloA = r.elo_delta_a || 0
-      const eloB = r.elo_delta_b || 0
+      // Always show from winner's perspective (or A's if draw)
+      const winnerName = aWon || draw ? nameA : nameB
+      const loserName = aWon || draw ? nameB : nameA
+      const w = aWon || draw ? winsA : winsB
+      const l = aWon || draw ? winsB : winsA
+      const winPct = total > 0 ? Math.round((w / total) * 100) : 0
+      const eloWinner = aWon || draw ? (r.elo_delta_a || 0) : (r.elo_delta_b || 0)
+      const eloLoser = aWon || draw ? (r.elo_delta_b || 0) : (r.elo_delta_a || 0)
 
       out.push({
         type: 'match',
         ...r,
-        learnerName: learner?.display_name || learner?.architecture || `#${r.learner_id}`,
-        opponentName: opponent?.display_name || opponent?.architecture || `#${r.opponent_id}`,
+        winnerName,
+        loserName,
+        w, l, draws,
         total,
-        learnerWon,
+        aWon,
         draw,
         clashes,
         winPct,
-        eloA,
-        eloB,
+        eloWinner,
+        eloLoser,
       })
     }
     return out
@@ -79,11 +90,11 @@
         {:else}
           <div class="match-item">
             <div class="match-top">
-              <span class="name" class:winner={item.learnerWon}>{item.learnerName}</span>
+              <span class="name winner">{item.winnerName}</span>
               <span class="vs">vs</span>
-              <span class="name" class:winner={!item.learnerWon && !item.draw}>{item.opponentName}</span>
-              <span class="match-score" class:win={item.learnerWon} class:loss={!item.learnerWon && !item.draw} class:tied={item.draw}>
-                {item.wins}W {item.losses}L {item.draws}D
+              <span class="name">{item.loserName}</span>
+              <span class="match-score" class:win={item.aWon} class:loss={!item.aWon && !item.draw} class:tied={item.draw}>
+                {item.w}W {item.l}L {item.draws}D
               </span>
             </div>
             <div class="match-detail">
@@ -92,11 +103,11 @@
               <span>{item.winPct}% win</span>
               <span class="sep">·</span>
               <span>clash #{item.clashes}</span>
-              {#if item.eloA !== 0 || item.eloB !== 0}
+              {#if item.eloWinner !== 0 || item.eloLoser !== 0}
                 <span class="sep">·</span>
-                <span class="elo-delta" class:positive={item.eloA > 0} class:negative={item.eloA < 0}>{item.eloA > 0 ? '+' : ''}{item.eloA}</span>
+                <span class="elo-delta" class:positive={item.eloWinner > 0} class:negative={item.eloWinner < 0}>{item.eloWinner > 0 ? '+' : ''}{item.eloWinner}</span>
                 <span class="elo-slash">/</span>
-                <span class="elo-delta" class:positive={item.eloB > 0} class:negative={item.eloB < 0}>{item.eloB > 0 ? '+' : ''}{item.eloB}</span>
+                <span class="elo-delta" class:positive={item.eloLoser > 0} class:negative={item.eloLoser < 0}>{item.eloLoser > 0 ? '+' : ''}{item.eloLoser}</span>
               {/if}
             </div>
           </div>
