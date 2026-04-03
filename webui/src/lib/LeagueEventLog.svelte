@@ -29,8 +29,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    flex-shrink: 0;
-    max-height: 160px;
+    flex: 1;
+    min-height: 120px;
   }
 
   .section-header {
