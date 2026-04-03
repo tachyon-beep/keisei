@@ -4,6 +4,8 @@
 
   /** Current learner's display_name (used to highlight their row) */
   export let learnerName = null
+  /** Total slots shown in leaderboard (empty ones are placeholders) */
+  export let totalSlots = 30
 
   let sortColumn = 'elo_rating'
   let sortAsc = false
@@ -58,13 +60,13 @@
   function isLearner(entry) {
     return learnerName && entry.display_name === learnerName
   }
+
+  $: placeholderCount = Math.max(0, totalSlots - sorted.length)
+  $: placeholders = Array.from({ length: placeholderCount }, (_, i) => sorted.length + i + 1)
 </script>
 
 <div class="league-table-card">
-  <h2 class="section-header">Elo Leaderboard</h2>
-  {#if sorted.length === 0}
-    <p class="empty">No league entries yet. League data appears once opponent pool training begins.</p>
-  {:else}
+  <h2 class="section-header">Elo Leaderboard <span class="slot-count">{sorted.length} / {totalSlots}</span></h2>
     <div class="table-scroll">
       <table>
         <thead>
@@ -138,10 +140,22 @@
               </tr>
             {/if}
           {/each}
+          {#each placeholders as slot}
+            <tr class="placeholder-row">
+              <td class="num rank placeholder-text">{slot}</td>
+              <td class="placeholder-text">—</td>
+              <td class="num placeholder-text">—</td>
+              <td class="num placeholder-text"></td>
+              <td class="num placeholder-text"></td>
+              <td class="num placeholder-text"></td>
+              <td class="num placeholder-text"></td>
+              <td class="num placeholder-text"></td>
+              <td class="num placeholder-text"></td>
+            </tr>
+          {/each}
         </tbody>
       </table>
     </div>
-  {/if}
 </div>
 
 <style>
@@ -248,6 +262,23 @@
   .win { color: var(--accent-teal); font-family: monospace; }
   .loss { color: var(--danger); font-family: monospace; }
   .draw { color: var(--accent-gold); font-family: monospace; }
+
+  .slot-count {
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-left: 6px;
+  }
+
+  .placeholder-row {
+    cursor: default;
+  }
+  .placeholder-row:hover { background: transparent; }
+  .placeholder-text {
+    color: var(--border);
+    font-size: 12px;
+    user-select: none;
+  }
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 24px; text-align: center; }
 
