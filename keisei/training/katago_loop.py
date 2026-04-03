@@ -386,6 +386,7 @@ class KataGoTrainingLoop:
                 scheduler=self.lr_scheduler,
                 grad_scaler=self.ppo.scaler,
                 skip_optimizer=skip_opt,
+                current_world_size=self.dist_ctx.world_size,
             )
             if skip_opt:
                 # SL→RL: start RL from epoch 0 so warmup_epochs and
@@ -693,6 +694,7 @@ class KataGoTrainingLoop:
                             architecture=self.config.model.architecture,
                             scheduler=self.lr_scheduler,
                             grad_scaler=self.ppo.scaler,
+                            world_size=self.dist_ctx.world_size,
                         )
                         logger.info("Checkpoint saved: %s", ckpt_path)
                     except Exception:
