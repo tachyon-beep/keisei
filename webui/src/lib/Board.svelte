@@ -69,6 +69,10 @@
     font-size: 12px;
     color: var(--text-secondary);
     text-align: center;
+    background: var(--bg-board-label);
+    border-radius: 4px 4px 0 0;
+    padding-top: 2px;
+    padding-bottom: 2px;
   }
 
   .board-with-rows {
@@ -77,9 +81,10 @@
   }
 
   .board {
+    --sq: min(72px, (100vw - 60px) / 9);
     display: grid;
-    grid-template-columns: repeat(9, 72px);
-    grid-template-rows: repeat(9, 72px);
+    grid-template-columns: repeat(9, var(--sq));
+    grid-template-rows: repeat(9, var(--sq));
     border: 2px solid var(--border-board);
     background: var(--bg-board);
   }
@@ -89,7 +94,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 36px;
+    font-size: min(36px, calc(var(--sq) * 0.5));
     position: relative;
   }
 
@@ -102,7 +107,7 @@
     cursor: default;
     user-select: none;
     line-height: 1;
-    color: #1a1a1a;
+    color: var(--text-piece);
   }
 
   .piece.white {
@@ -119,6 +124,8 @@
     justify-content: space-around;
     font-size: 12px;
     color: var(--text-secondary);
-    padding: 0 2px;
+    padding: 2px 4px;
+    background: var(--bg-board-label);
+    border-radius: 0 4px 4px 0;
   }
 </style>

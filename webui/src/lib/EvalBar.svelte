@@ -50,13 +50,13 @@
   }
 
   .white-fill {
-    background: #c8c0b4;
+    background: var(--eval-white);
     min-height: 0;
     transition: flex 0.3s ease;
   }
 
   .black-fill {
-    background: #1a1210;
+    background: var(--eval-black);
     min-height: 0;
     transition: flex 0.3s ease;
   }

@@ -9,7 +9,7 @@
 
 Deep Reinforcement Learning for Shogi, powered by a Rust game engine.
 
-Keisei (形成, "formation") trains neural network agents to play Shogi
+Keisei (形成, "to give form to, to mold, to shape") trains neural network agents to play Shogi
 (Japanese chess) using Proximal Policy Optimization (PPO). The game engine and
 RL environment are written in Rust for performance; the training harness is
 Python with PyTorch.

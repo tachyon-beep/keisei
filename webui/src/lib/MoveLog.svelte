@@ -90,7 +90,7 @@
 
   thead tr {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   th, td {

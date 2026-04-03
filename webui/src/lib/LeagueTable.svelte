@@ -91,18 +91,21 @@
   }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  thead { color: var(--text-muted); font-size: 12px; }
+  thead { color: var(--text-muted); font-size: 13px; }
   th, td { text-align: left; padding: 6px 10px; }
   th.num, td.num { text-align: right; }
 
   .sort-btn {
-    all: unset;
+    background: none;
+    border: none;
+    padding: 0;
     cursor: pointer;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
   }
   .sort-btn:hover { color: var(--text-primary); }
+  .sort-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
   tbody tr {
     border-bottom: 1px solid var(--border-subtle);

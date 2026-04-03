@@ -45,7 +45,6 @@
     </div>
     <p>☗ Black (Sente) moves first — pieces point ↑</p>
     <p>☖ White (Gote) moves second — pieces point ↓</p>
-    <p><span class="promoted-color">Red</span> = promoted piece</p>
   </div>
 
   <div class="chess-diff">
@@ -116,7 +115,7 @@
     font-size: 24px;
     width: 32px;
     text-align: center;
-    color: #1a1210;
+    color: var(--text-piece);
     background: var(--bg-board);
     border: 1px solid var(--border-board);
     border-radius: 2px;
@@ -129,7 +128,7 @@
   }
 
   .piece-name {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     min-width: 42px;
@@ -161,7 +160,7 @@
   }
 
   .key-item {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
     display: flex;
     align-items: center;
@@ -170,22 +169,17 @@
 
   .key-square {
     color: var(--accent-teal);
-    font-size: 9px;
+    font-size: 11px;
   }
 
   .key-arrow {
     color: var(--accent-gold);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .legend-footer p {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-muted);
-  }
-
-  .promoted-color {
-    color: var(--promoted);
-    font-weight: 600;
   }
 
   .chess-diff {
@@ -212,7 +206,7 @@
   .diff-item {
     display: flex;
     gap: 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-secondary);
     line-height: 1.4;
   }

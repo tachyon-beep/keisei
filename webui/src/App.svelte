@@ -185,6 +185,7 @@
 
   .thumbnail-panel {
     flex: 0 0 auto;
+    min-width: 200px;
     border-right: 1px solid var(--border);
     padding: 8px;
     overflow: hidden;
@@ -268,7 +269,7 @@
     display: flex;
     justify-content: space-between;
     padding: 3px 0;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .info-row .label { color: var(--text-secondary); }
@@ -287,7 +288,7 @@
     gap: 8px;
   }
 
-  .no-game-hint { font-size: 12px; color: var(--text-muted); }
+  .no-game-hint { font-size: 13px; color: var(--text-muted); }
 
   .legend-area {
     flex: 1 1 auto;

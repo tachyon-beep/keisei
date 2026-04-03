@@ -19,7 +19,7 @@
   class="thumbnail"
   class:selected
   on:click={handleClick}
-  aria-label="Game {game.game_id + 1}, {statusText}"
+  aria-label="Game {game.game_id + 1}, {statusText}{confident ? ', ' + favours + ' advantage' : ''}"
   aria-pressed={selected}
 >
   <div class="mini-board" aria-hidden="true">
@@ -113,12 +113,12 @@
   }
 
   .confidence-dot.black-dot {
-    background: #1a1210;
+    background: var(--eval-black);
     border: 1px solid var(--text-muted);
   }
 
   .confidence-dot.white-dot {
-    background: #c8c0b4;
+    background: var(--eval-white);
     border: 1px solid var(--text-muted);
   }
 

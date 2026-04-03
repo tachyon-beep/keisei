@@ -75,7 +75,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-secondary);
   }
 
@@ -90,7 +90,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-muted);
     font-family: monospace;
   }

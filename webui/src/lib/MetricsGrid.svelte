@@ -35,6 +35,9 @@
     Training Metrics {#if $metrics.length > 0}— Epoch {$metrics[$metrics.length - 1]?.epoch ?? '?'}{/if}
   </h2>
 
+  {#if $metrics.length === 0}
+    <p class="empty-state">Metrics will appear once training begins.</p>
+  {:else}
   <div class="layout">
     <div class="mini-column">
       {#each charts as chart, i}
@@ -77,6 +80,7 @@
       {/key}
     </div>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -113,20 +117,31 @@
     min-width: 0;
   }
 
+  .empty-state {
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 32px 16px;
+  }
+
   .expand-hint {
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 13px;
     text-align: center;
     padding-top: 40px;
   }
 
   .mini-chart-btn {
-    all: unset;
+    background: none;
+    color: inherit;
+    font: inherit;
+    padding: 0;
     cursor: pointer;
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
     transition: border-color 0.15s;
+    text-align: left;
   }
 
   .mini-chart-btn:hover {
@@ -148,21 +163,31 @@
 
   .collapse-btn {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 4px;
+    right: 4px;
     z-index: 1;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 4px;
     color: var(--text-secondary);
     cursor: pointer;
-    padding: 2px 6px;
-    font-size: 12px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .collapse-btn:hover {
     color: var(--text-primary);
     border-color: var(--text-secondary);
+  }
+
+  .collapse-btn:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   @media (max-width: 768px) {

@@ -55,12 +55,12 @@
     margin: 4px 0;
   }
 
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead { color: var(--text-muted); }
   th, td { text-align: left; padding: 3px 8px; }
   th.num, td.num { text-align: right; width: 40px; font-family: monospace; }
   .win { color: var(--accent-teal); }
   .loss { color: var(--danger); }
   .draw { color: var(--accent-gold); }
-  .empty { color: var(--text-muted); font-size: 12px; text-align: center; padding: 12px; }
+  .empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 12px; }
 </style>

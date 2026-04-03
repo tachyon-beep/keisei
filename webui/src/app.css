@@ -7,6 +7,10 @@
 
   /* Board — kaya wood (kept) */
   --bg-board: #d4a76a;
+  --bg-board-label: #1a1710;
+  --text-piece: #1a1a1a;
+  --eval-black: #1a1210;
+  --eval-white: #c8c0b4;
   --bg-last-move: rgba(77, 184, 168, 0.22);
 
   /* Selection — teal wash */
@@ -24,7 +28,7 @@
   /* Text — washi-tinted whites */
   --text-primary: #e8e0d4;
   --text-secondary: #a89880;
-  --text-muted: #9a8878;
+  --text-muted: #b0a090;
 
   /* Semantic accents */
   --accent-teal: #4db8a8;    /* learner, active, positive — celadon */
@@ -54,7 +58,7 @@
   /* Focus ring */
   --focus-ring: var(--accent-ink);
 
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: var(--text-primary);
   background-color: var(--bg-primary);
 }
@@ -67,6 +71,10 @@
   --bg-card: #e4d9c8;
 
   --bg-board: #d4a76a;
+  --bg-board-label: #e8dfcf;
+  --text-piece: #1a1a1a;
+  --eval-black: #1a1210;
+  --eval-white: #c8c0b4;
   --bg-last-move: rgba(26, 110, 96, 0.18);
 
   /* Selection — teal wash on light */
@@ -84,7 +92,7 @@
   /* Text — deep ink */
   --text-primary: #1a150e;
   --text-secondary: #4a3e30;
-  --text-muted: #7a6e62;
+  --text-muted: #6a5e50;
 
   /* Semantic accents — deeper for light bg contrast */
   --accent-teal: #1a6e60;
