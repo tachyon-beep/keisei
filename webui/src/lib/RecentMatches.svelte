@@ -56,9 +56,8 @@
     padding: 14px;
     display: flex;
     flex-direction: column;
-    min-height: 150px;
-    max-height: 400px;
-    flex-shrink: 0;
+    min-height: 100px;
+    flex: 1;
   }
 
   .section-header {
