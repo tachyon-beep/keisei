@@ -4,14 +4,15 @@
   /** @type {number} */
   export let entryId
 
+  $: entryMap = new Map($leagueEntries.map(e => [e.id, e]))
+
   $: matches = $leagueResults.filter(
     r => r.learner_id === entryId || r.opponent_id === entryId
   ).sort((a, b) => b.epoch - a.epoch)
 
-  function opponentName(result) {
+  function opponent(result) {
     const oppId = result.learner_id === entryId ? result.opponent_id : result.learner_id
-    const entry = $leagueEntries.find(e => e.id === oppId)
-    return entry ? entry.architecture : `#${oppId}`
+    return entryMap.get(oppId) || null
   }
 </script>
 
@@ -24,6 +25,7 @@
         <tr>
           <th>Epoch</th>
           <th>Opponent</th>
+          <th class="num">Elo</th>
           <th class="num">W</th>
           <th class="num">L</th>
           <th class="num">D</th>
@@ -31,13 +33,25 @@
       </thead>
       <tbody>
         {#each matches as m}
-          <tr>
-            <td>{m.epoch}</td>
-            <td>{opponentName(m)}</td>
-            <td class="num win">{m.wins}</td>
-            <td class="num loss">{m.losses}</td>
-            <td class="num draw">{m.draws}</td>
-          </tr>
+          {#if opponent(m)}
+            <tr>
+              <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
+              <td>{opponent(m).display_name || opponent(m).architecture}</td>
+              <td class="num elo">{Math.round(opponent(m).elo_rating)}</td>
+              <td class="num win">{m.wins}</td>
+              <td class="num loss">{m.losses}</td>
+              <td class="num draw">{m.draws}</td>
+            </tr>
+          {:else}
+            <tr>
+              <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
+              <td class="unknown">#{m.learner_id === entryId ? m.opponent_id : m.learner_id}</td>
+              <td class="num elo">—</td>
+              <td class="num win">{m.wins}</td>
+              <td class="num loss">{m.losses}</td>
+              <td class="num draw">{m.draws}</td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>
@@ -59,8 +73,10 @@
   thead { color: var(--text-muted); }
   th, td { text-align: left; padding: 3px 8px; }
   th.num, td.num { text-align: right; width: 40px; font-family: monospace; }
+  .elo { color: var(--text-secondary); }
   .win { color: var(--accent-teal); }
   .loss { color: var(--danger); }
   .draw { color: var(--accent-gold); }
+  .unknown { color: var(--text-muted); font-style: italic; }
   .empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 12px; }
 </style>
