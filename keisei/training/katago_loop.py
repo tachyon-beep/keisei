@@ -60,6 +60,50 @@ class SplitMergeResult:
     learner_indices: torch.Tensor  # (n_learner,) indices into full env array
 
 
+def _negate_where(
+    values: torch.Tensor,
+    condition: np.ndarray,
+) -> torch.Tensor:
+    """Clone a tensor and negate elements where condition is True.
+
+    Shared implementation for perspective correction functions.
+    """
+    result = values.clone()
+    if result.numel() == 0:
+        return result
+    mask = torch.tensor(condition, device=values.device, dtype=torch.bool)
+    result[mask] = -result[mask]
+    return result
+
+
+def to_learner_perspective(
+    rewards: torch.Tensor,
+    pre_players: np.ndarray,
+    learner_side: int,
+) -> torch.Tensor:
+    """Convert rewards from last-mover perspective to learner perspective.
+
+    In split-merge mode, rewards from vecenv.step() are relative to
+    whoever just moved (last_mover = pre_players). When the opponent
+    moved, the reward sign must be flipped for the learner.
+    """
+    return _negate_where(rewards, pre_players != learner_side)
+
+
+def sign_correct_bootstrap(
+    next_values: torch.Tensor,
+    current_players: np.ndarray,
+    learner_side: int,
+) -> torch.Tensor:
+    """Correct bootstrap values for learner-centric GAE.
+
+    The value network outputs from current-player perspective. When the
+    opponent is to-move, the bootstrap value represents the opponent's
+    advantage and must be negated for learner-centric GAE targets.
+    """
+    return _negate_where(next_values, current_players != learner_side)
+
+
 def split_merge_step(
     obs: torch.Tensor,
     legal_masks: torch.Tensor,
@@ -682,6 +726,12 @@ class KataGoTrainingLoop:
                     "win_rate": (
                         (win_count + 0.5 * draw_count) / total_games
                         if total_games > 0 else None
+                    ),
+                    "black_win_rate": (
+                        win_count / total_games if total_games > 0 else None
+                    ),
+                    "white_win_rate": (
+                        loss_count / total_games if total_games > 0 else None
                     ),
                 }
                 try:
