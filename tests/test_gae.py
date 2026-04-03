@@ -1,7 +1,7 @@
 """Regression tests for compute_gae — extracted from ppo.py."""
 
-import torch
 import pytest
+import torch
 
 from keisei.training.gae import compute_gae, compute_gae_gpu
 

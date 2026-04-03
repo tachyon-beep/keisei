@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
+from torch.amp import GradScaler, autocast
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.gae import compute_gae_gpu
