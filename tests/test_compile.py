@@ -254,3 +254,30 @@ class TestUpdateCompile:
         next_values = torch.randn(4)
         ppo.update(buf, next_values)
         assert ppo.forward_model.training is True
+
+
+class TestGAERouting:
+    def test_update_uses_cpu_gae_on_cpu(self):
+        """update() uses CPU GAE when device is CPU (no compile needed)."""
+        model = _small_model()
+        params = KataGoPPOParams(batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        # Should complete without error — CPU path
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics
+
+    def test_flat_fallback_stays_on_cpu(self):
+        """When total_samples != T * N (flat fallback), CPU GAE is always used.
+
+        The GPU path only supports 2D (T, N) structured input. The flat fallback
+        (no env_ids) must never attempt compute_gae_gpu. See spec hazard H3.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics

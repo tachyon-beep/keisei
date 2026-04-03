@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch.amp import autocast, GradScaler
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
+from keisei.training.gae import compute_gae_gpu
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
@@ -356,7 +357,7 @@ class KataGoPPOAlgorithm:
         next_values: torch.Tensor,
         value_adapter: Any | None = None,
     ) -> dict[str, float]:
-        from keisei.training.gae import compute_gae
+        from keisei.training.gae import compute_gae  # noqa: PLC0415 — local import for circular-import safety
 
         self.forward_model.train()
         # Safety assertion: forward_model must be in train mode before compiled_train
@@ -381,10 +382,21 @@ class KataGoPPOAlgorithm:
             values_2d = data["values"].reshape(T, N)
             dones_2d = data["dones"].reshape(T, N)
 
-            advantages = compute_gae(
-                rewards_2d, values_2d, dones_2d,
-                next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
-            ).reshape(-1)
+            if device.type == "cuda":
+                # GPU path: move buffer tensors to GPU, compute GAE there, return to CPU.
+                # next_values is already on GPU (from bootstrap forward pass).
+                # .detach() ensures no gradient graph leaks through GAE.
+                # Memory: ~3 MB for T=128, N=512 (negligible on 4060/H200).
+                advantages = compute_gae_gpu(
+                    rewards_2d.to(device), values_2d.to(device),
+                    dones_2d.to(device), next_values.detach(),
+                    gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).reshape(-1).cpu()
+            else:
+                advantages = compute_gae(
+                    rewards_2d, values_2d, dones_2d,
+                    next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).reshape(-1)
         elif "env_ids" in data:
             # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
             # compute GAE in a single vectorized pass.
