@@ -197,7 +197,8 @@ impl SpectatorEnv {
         let moves = self.game.legal_moves();
         moves
             .into_iter()
-            .map(|mv| self.mapper.encode(mv, perspective))
+            .map(|mv| self.mapper.encode(mv, perspective)
+                .expect("legal move must be encodable"))
             .collect()
     }
 
@@ -338,7 +339,7 @@ mod tests {
         let legal = game.legal_moves();
         assert!(!legal.is_empty());
         let mv = legal[0];
-        let action = mapper.encode(mv, game.position.current_player);
+        let action = mapper.encode(mv, game.position.current_player).unwrap();
 
         // Decode and apply
         let perspective = game.position.current_player;
@@ -360,7 +361,7 @@ mod tests {
         let legal = game.legal_moves();
         let actions: Vec<usize> = legal
             .iter()
-            .map(|mv| mapper.encode(*mv, perspective))
+            .map(|mv| mapper.encode(*mv, perspective).unwrap())
             .collect();
 
         assert_eq!(actions.len(), 30, "Startpos should have 30 legal actions");

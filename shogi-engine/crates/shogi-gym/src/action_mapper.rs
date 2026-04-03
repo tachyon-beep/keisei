@@ -9,7 +9,7 @@ use shogi_core::{Color, HandPieceType, Move, Square};
 /// Encode/decode moves to/from action indices with perspective support.
 #[allow(dead_code)]
 pub trait ActionMapper: Send + Sync {
-    fn encode(&self, mv: Move, perspective: Color) -> usize;
+    fn encode(&self, mv: Move, perspective: Color) -> Result<usize, String>;
     fn decode(&self, idx: usize, perspective: Color) -> Result<Move, String>;
     fn action_space_size(&self) -> usize;
 }
@@ -79,8 +79,8 @@ impl DefaultActionMapper {
 }
 
 impl ActionMapper for DefaultActionMapper {
-    fn encode(&self, mv: Move, perspective: Color) -> usize {
-        match mv {
+    fn encode(&self, mv: Move, perspective: Color) -> Result<usize, String> {
+        Ok(match mv {
             Move::Board { from, to, promote } => {
                 let from_p = Self::apply_perspective(from, perspective);
                 let to_p = Self::apply_perspective(to, perspective);
@@ -90,7 +90,7 @@ impl ActionMapper for DefaultActionMapper {
                 let to_p = Self::apply_perspective(to, perspective);
                 BOARD_MOVE_COUNT + to_p.index() * HandPieceType::COUNT + piece_type.index()
             }
-        }
+        })
     }
 
     fn decode(&self, idx: usize, perspective: Color) -> Result<Move, String> {
@@ -156,7 +156,8 @@ impl DefaultActionMapper {
         }
         let perspective = if is_white { Color::White } else { Color::Black };
         let mv = Move::Board { from, to, promote };
-        Ok(self.encode(mv, perspective))
+        self.encode(mv, perspective)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Encode a drop move to an action index.
@@ -178,7 +179,8 @@ impl DefaultActionMapper {
         let piece_type = HandPieceType::ALL[piece_type_idx];
         let perspective = if is_white { Color::White } else { Color::Black };
         let mv = Move::Drop { to, piece_type };
-        Ok(self.encode(mv, perspective))
+        self.encode(mv, perspective)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     /// Decode an action index into a move dict.
@@ -228,6 +230,10 @@ mod tests {
     }
 
     /// Convenience wrapper so tests can call the trait method without PyO3 ambiguity.
+    fn trait_encode(m: &DefaultActionMapper, mv: Move, perspective: Color) -> usize {
+        <DefaultActionMapper as ActionMapper>::encode(m, mv, perspective).unwrap()
+    }
+
     fn trait_decode(m: &DefaultActionMapper, idx: usize, perspective: Color) -> Result<Move, String> {
         <DefaultActionMapper as ActionMapper>::decode(m, idx, perspective)
     }
@@ -260,7 +266,7 @@ mod tests {
             let from = Square::new_unchecked(from_idx as u8);
             let to = Square::new_unchecked(to_idx as u8);
             let mv = Move::Board { from, to, promote };
-            let idx = m.encode(mv, perspective);
+            let idx = trait_encode(&m, mv, perspective);
             assert!(idx < BOARD_MOVE_COUNT, "idx={idx} should be in board range");
             let decoded = trait_decode(&m, idx, perspective).expect("decode failed");
             assert_eq!(
@@ -279,7 +285,7 @@ mod tests {
             for to_idx in 0u8..81 {
                 let to = Square::new_unchecked(to_idx);
                 let mv = Move::Drop { to, piece_type };
-                let idx = m.encode(mv, perspective);
+                let idx = trait_encode(&m, mv, perspective);
                 assert!(
                     idx >= BOARD_MOVE_COUNT && idx < ACTION_SPACE_SIZE,
                     "idx={idx} should be in drop range"
@@ -308,7 +314,7 @@ mod tests {
                     let from = Square::new_unchecked(from_idx);
                     let to = Square::new_unchecked(to_idx);
                     let mv = Move::Board { from, to, promote };
-                    let idx = m.encode(mv, perspective);
+                    let idx = trait_encode(&m, mv, perspective);
 
                     assert!(idx < BOARD_MOVE_COUNT, "idx={idx} out of board range");
                     assert!(seen.insert(idx), "duplicate index {idx} for from={from_idx} to={to_idx} promote={promote}");
@@ -332,7 +338,7 @@ mod tests {
             for &piece_type in &HandPieceType::ALL {
                 let to = Square::new_unchecked(to_idx);
                 let mv = Move::Drop { to, piece_type };
-                let idx = m.encode(mv, perspective);
+                let idx = trait_encode(&m, mv, perspective);
 
                 assert!(
                     idx >= BOARD_MOVE_COUNT && idx < ACTION_SPACE_SIZE,
@@ -364,8 +370,8 @@ mod tests {
         // should produce DIFFERENT indices (each sees the board from their side),
         // but encoding from White and then decoding from White should give back
         // the original move (same physical squares).
-        let idx_black = m.encode(mv, Color::Black);
-        let idx_white = m.encode(mv, Color::White);
+        let idx_black = trait_encode(&m, mv, Color::Black);
+        let idx_white = trait_encode(&m, mv, Color::White);
 
         // The indices differ because the board is flipped
         assert_ne!(
@@ -391,8 +397,8 @@ mod tests {
         let to = Square::new_unchecked(10);
         let mv = Move::Drop { to, piece_type: HandPieceType::Rook };
 
-        let idx_black = m.encode(mv, Color::Black);
-        let idx_white = m.encode(mv, Color::White);
+        let idx_black = trait_encode(&m, mv, Color::Black);
+        let idx_white = trait_encode(&m, mv, Color::White);
 
         // Different square indices due to flip(10) = 70
         assert_ne!(idx_black, idx_white);
@@ -429,7 +435,7 @@ mod tests {
                         to: Square::new_unchecked(to_idx),
                         promote,
                     };
-                    let encoded = <DefaultActionMapper as ActionMapper>::encode(&mapper, mv, perspective);
+                    let encoded = <DefaultActionMapper as ActionMapper>::encode(&mapper, mv, perspective).unwrap();
                     assert!(encoded < BOARD_MOVE_COUNT, "index {} out of board range", encoded);
                     assert!(!seen[encoded], "collision at index {} (white perspective)", encoded);
                     seen[encoded] = true;
@@ -452,7 +458,7 @@ mod tests {
             for &piece_type in &HandPieceType::ALL {
                 let to = Square::new_unchecked(to_idx);
                 let mv = Move::Drop { to, piece_type };
-                let idx = m.encode(mv, perspective);
+                let idx = trait_encode(&m, mv, perspective);
 
                 assert!(
                     idx >= BOARD_MOVE_COUNT && idx < ACTION_SPACE_SIZE,

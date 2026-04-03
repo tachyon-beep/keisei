@@ -131,8 +131,10 @@ fn compute_reward(result: &GameResult, last_mover: Color) -> f32 {
 //   2. The `ObsModeTag` / `ActionModeTag` enum — add Copy variant
 //   3. The rayon closure's `match obs_tag { ... }` / `match act_tag { ... }`
 //   4. The `VecEnv::new()` string-to-enum match in the constructor
-// The ZST compile-time assertions below guard against generators with state,
-// but they do not guard against forgetting a match arm.
+// The `From<&ObsMode> for ObsModeTag` and `From<&ActionMode> for ActionModeTag`
+// impls below enforce at compile time that the Tag enums stay in sync with the
+// payload enums — a missing Tag variant will cause an exhaustive-match error.
+// The ZST compile-time assertions guard against generators with state.
 
 enum ObsMode {
     Default(DefaultObservationGenerator),
@@ -175,7 +177,7 @@ impl ActionMode {
         }
     }
 
-    fn encode(&self, mv: Move, perspective: Color) -> usize {
+    fn encode(&self, mv: Move, perspective: Color) -> Result<usize, String> {
         match self {
             ActionMode::Default(m) => <DefaultActionMapper as ActionMapper>::encode(m, mv, perspective),
             ActionMode::Spatial(m) => <SpatialActionMapper as ActionMapper>::encode(m, mv, perspective),
@@ -198,6 +200,28 @@ impl ActionMode {
 enum ObsModeTag { Default, KataGo }
 #[derive(Copy, Clone)]
 enum ActionModeTag { Default, Spatial }
+
+/// Compile-time safety: these `From` impls create an exhaustive match over every
+/// variant of the payload enum. If a new variant is added to `ObsMode` or
+/// `ActionMode` without a corresponding `Tag` variant, the match arm here will
+/// fail to compile, forcing the developer to update the tag enum as well.
+impl From<&ObsMode> for ObsModeTag {
+    fn from(mode: &ObsMode) -> Self {
+        match mode {
+            ObsMode::Default(_) => ObsModeTag::Default,
+            ObsMode::KataGo(_) => ObsModeTag::KataGo,
+        }
+    }
+}
+
+impl From<&ActionMode> for ActionModeTag {
+    fn from(mode: &ActionMode) -> Self {
+        match mode {
+            ActionMode::Default(_) => ActionModeTag::Default,
+            ActionMode::Spatial(_) => ActionModeTag::Spatial,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // VecEnv
@@ -250,7 +274,8 @@ impl VecEnv {
         let mut move_list = MoveList::new();
         self.games[i].generate_legal_moves_into(&mut move_list);
         for mv in move_list.iter() {
-            let idx = self.mapper.encode(*mv, perspective);
+            let idx = self.mapper.encode(*mv, perspective)
+                .expect("legal move must be encodable");
             mask_slice[idx] = true;
         }
     }
@@ -269,14 +294,8 @@ impl VecEnv {
         let obs_buf_len = self.obs_buffer_len;
         let act_space = self.action_space;
 
-        let obs_tag = match &self.obs_gen {
-            ObsMode::Default(_) => ObsModeTag::Default,
-            ObsMode::KataGo(_) => ObsModeTag::KataGo,
-        };
-        let act_tag = match &self.mapper {
-            ActionMode::Default(_) => ActionModeTag::Default,
-            ActionMode::Spatial(_) => ActionModeTag::Spatial,
-        };
+        let obs_tag = ObsModeTag::from(&self.obs_gen);
+        let act_tag = ActionModeTag::from(&self.mapper);
 
         // Extract raw pointers for non-overlapping parallel access.
         // SAFETY: each index `i` in 0..num_envs accesses only its own
@@ -412,7 +431,7 @@ impl VecEnv {
                     let idx = match act_tag {
                         ActionModeTag::Default => DefaultActionMapper.encode(*legal_mv, perspective),
                         ActionModeTag::Spatial => SpatialActionMapper.encode(*legal_mv, perspective),
-                    };
+                    }.expect("legal move must be encodable");
                     mask_slice[idx] = true;
                 }
 
@@ -490,7 +509,7 @@ impl VecEnv {
                             ActionModeTag::Spatial => {
                                 SpatialActionMapper.encode(*legal_mv, perspective)
                             }
-                        };
+                        }.expect("legal move must be encodable");
                         mask_slice[idx] = true;
                     }
 
@@ -1086,7 +1105,7 @@ mod tests {
 
         // Every legal move's encoded action index should be true in the mask
         for mv in &legal_moves {
-            let idx = env.mapper.encode(*mv, perspective);
+            let idx = env.mapper.encode(*mv, perspective).unwrap();
             assert!(
                 env.legal_mask_buffer[idx],
                 "Legal move {:?} encoded to index {} but mask is false",
@@ -1519,7 +1538,7 @@ mod tests {
         // Use write_legal_mask_into with spatial encoder — the whole point of H5
         // is to verify the debug_assert!(idx < mask.len()) doesn't fire.
         let encode_fn = |mv: Move| -> usize {
-            <SpatialActionMapper as ActionMapper>::encode(&mapper, mv, perspective)
+            <SpatialActionMapper as ActionMapper>::encode(&mapper, mv, perspective).unwrap()
         };
 
         let mut mask = vec![false; SPATIAL_ACTION_SPACE_SIZE];
@@ -1780,5 +1799,141 @@ mod tests {
             env.current_players_buffer[2], 0,
             "Panicked env should be reset to Black (0)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // KataGo + Spatial integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_katago_spatial_buffer_dimensions() {
+        use crate::katago_observation::{KataGoObservationGenerator, KATAGO_NUM_CHANNELS, KATAGO_BUFFER_LEN};
+
+        let num_envs = 4;
+        let env = make_env_with_modes(
+            num_envs, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        assert_eq!(env.num_channels, KATAGO_NUM_CHANNELS);
+        assert_eq!(env.action_space, SPATIAL_ACTION_SPACE_SIZE);
+        assert_eq!(
+            env.obs_buffer.len(), num_envs * KATAGO_BUFFER_LEN,
+            "obs_buffer should be num_envs * KATAGO_BUFFER_LEN"
+        );
+        assert_eq!(
+            env.legal_mask_buffer.len(), num_envs * SPATIAL_ACTION_SPACE_SIZE,
+            "legal_mask_buffer should be num_envs * SPATIAL_ACTION_SPACE_SIZE"
+        );
+        assert_eq!(
+            env.terminal_obs_buffer.len(), num_envs * KATAGO_BUFFER_LEN,
+            "terminal_obs_buffer should be num_envs * KATAGO_BUFFER_LEN"
+        );
+    }
+
+    #[test]
+    fn test_katago_spatial_write_obs_and_mask() {
+        use crate::katago_observation::{KataGoObservationGenerator, KATAGO_BUFFER_LEN};
+
+        let num_envs = 2;
+        let mut env = make_env_with_modes(
+            num_envs, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        env.write_obs_and_mask(0);
+
+        // Obs buffer for env 0 should have non-zero values (pieces on board)
+        let obs_slice = &env.obs_buffer[..KATAGO_BUFFER_LEN];
+        let nonzero_count = obs_slice.iter().filter(|&&x| x != 0.0).count();
+        assert!(
+            nonzero_count > 0,
+            "KataGo obs buffer should have non-zero values at startpos"
+        );
+
+        // Legal mask for env 0 should span exactly SPATIAL_ACTION_SPACE_SIZE entries
+        let mask_slice = &env.legal_mask_buffer[..SPATIAL_ACTION_SPACE_SIZE];
+        let legal_count = mask_slice.iter().filter(|&&x| x).count();
+        assert_eq!(
+            legal_count, 30,
+            "Startpos should have exactly 30 legal moves in spatial mask, got {}",
+            legal_count
+        );
+
+        // Env 1 mask should still be all-false (not yet written)
+        let mask_env1 = &env.legal_mask_buffer[SPATIAL_ACTION_SPACE_SIZE..2 * SPATIAL_ACTION_SPACE_SIZE];
+        let env1_legal = mask_env1.iter().filter(|&&x| x).count();
+        assert_eq!(env1_legal, 0, "Env 1 mask should be all-false before write_obs_and_mask");
+    }
+
+    #[test]
+    fn test_katago_spatial_apply_moves_no_panics() {
+        use crate::katago_observation::KataGoObservationGenerator;
+
+        let _lock = TEST_PANIC_MUTEX.lock().unwrap();
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        let num_envs = 4;
+        let mut env = make_env_with_modes(
+            num_envs, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        // Write obs and mask for all envs
+        for i in 0..num_envs {
+            env.write_obs_and_mask(i);
+        }
+
+        // Collect first legal move for each env
+        let moves = collect_first_legal_moves(&mut env);
+
+        // apply_moves should return 0 panics
+        let panicked = env.apply_moves(&moves);
+        assert_eq!(panicked, 0, "No environments should panic with KataGo+Spatial");
+
+        // After one step, no env should be terminated or truncated
+        for i in 0..num_envs {
+            assert!(!env.terminated_buffer[i], "env {} should not be terminated after one move", i);
+            assert!(!env.truncated_buffer[i], "env {} should not be truncated after one move", i);
+        }
+    }
+
+    #[test]
+    fn test_katago_spatial_multi_step_simulation() {
+        use crate::katago_observation::{KataGoObservationGenerator, KATAGO_BUFFER_LEN};
+
+        let _lock = TEST_PANIC_MUTEX.lock().unwrap();
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        let num_envs = 2;
+        let mut env = make_env_with_modes(
+            num_envs, 500,
+            ObsMode::KataGo(KataGoObservationGenerator::new()),
+            ActionMode::Spatial(SpatialActionMapper),
+        );
+
+        // Run 10 steps
+        for step in 0..10 {
+            for i in 0..num_envs {
+                env.write_obs_and_mask(i);
+            }
+
+            let moves = collect_first_legal_moves(&mut env);
+            let panicked = env.apply_moves(&moves);
+            assert_eq!(panicked, 0, "No panics expected at step {}", step);
+
+            // Buffer dimensions should remain correct throughout
+            assert_eq!(
+                env.obs_buffer.len(), num_envs * KATAGO_BUFFER_LEN,
+                "obs_buffer size changed at step {}", step
+            );
+            assert_eq!(
+                env.legal_mask_buffer.len(), num_envs * SPATIAL_ACTION_SPACE_SIZE,
+                "legal_mask_buffer size changed at step {}", step
+            );
+        }
     }
 }

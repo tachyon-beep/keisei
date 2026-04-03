@@ -134,7 +134,7 @@ impl SpatialActionMapper {
 }
 
 impl ActionMapper for SpatialActionMapper {
-    fn encode(&self, mv: Move, perspective: Color) -> usize {
+    fn encode(&self, mv: Move, perspective: Color) -> Result<usize, String> {
         match mv {
             Move::Board { from, to, promote } => {
                 let from_p = Self::apply_perspective(from, perspective);
@@ -156,7 +156,7 @@ impl ActionMapper for SpatialActionMapper {
                     } else {
                         dir * 8 + (distance - 1)       // non-promoted: slots 0-63
                     };
-                    return source_sq * SPATIAL_MOVE_TYPES + slot;
+                    return Ok(source_sq * SPATIAL_MOVE_TYPES + slot);
                 }
 
                 // Try knight encoding
@@ -165,19 +165,19 @@ impl ActionMapper for SpatialActionMapper {
                 ) {
                     // Knight slots: 128=left_no_promo, 129=left_promo, 130=right_no_promo, 131=right_promo
                     let slot = 128 + knight_side * 2 + if promote { 1 } else { 0 };
-                    return source_sq * SPATIAL_MOVE_TYPES + slot;
+                    return Ok(source_sq * SPATIAL_MOVE_TYPES + slot);
                 }
 
-                panic!(
+                Err(format!(
                     "Cannot encode board move from ({},{}) to ({},{}) — not a valid direction, distance, or knight move",
                     from_row, from_col, to_row, to_col
-                );
+                ))
             }
             Move::Drop { to, piece_type } => {
                 let to_p = Self::apply_perspective(to, perspective);
                 let dest_sq = to_p.index();
                 let slot = 132 + piece_type.index();
-                dest_sq * SPATIAL_MOVE_TYPES + slot
+                Ok(dest_sq * SPATIAL_MOVE_TYPES + slot)
             }
         }
     }
@@ -300,7 +300,8 @@ impl SpatialActionMapper {
         }
         let perspective = if is_white { Color::White } else { Color::Black };
         let mv = Move::Board { from, to, promote };
-        Ok(<Self as ActionMapper>::encode(self, mv, perspective))
+        <Self as ActionMapper>::encode(self, mv, perspective)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     pub fn encode_drop_move(
@@ -320,7 +321,8 @@ impl SpatialActionMapper {
         let piece_type = HandPieceType::ALL[piece_type_idx];
         let perspective = if is_white { Color::White } else { Color::Black };
         let mv = Move::Drop { to, piece_type };
-        Ok(<Self as ActionMapper>::encode(self, mv, perspective))
+        <Self as ActionMapper>::encode(self, mv, perspective)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     pub fn decode(&self, py: Python<'_>, idx: usize, is_white: bool) -> PyResult<Py<PyDict>> {
@@ -361,7 +363,7 @@ mod tests {
     }
 
     fn trait_encode(m: &SpatialActionMapper, mv: Move, p: Color) -> usize {
-        <SpatialActionMapper as ActionMapper>::encode(m, mv, p)
+        <SpatialActionMapper as ActionMapper>::encode(m, mv, p).unwrap()
     }
 
     fn trait_decode(m: &SpatialActionMapper, idx: usize, p: Color) -> Result<Move, String> {
