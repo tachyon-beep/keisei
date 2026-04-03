@@ -304,3 +304,81 @@ class TestTimings:
         ppo.flush_timings()
         assert ppo.timings["update_forward_backward_ms"] == []
         assert ppo.timings["gae_ms"] == []
+
+
+class TestCompileCorrectness:
+    def test_compiled_eval_matches_eager(self):
+        """Compiled eval forward pass matches eager within tolerance.
+
+        Freezes BN running stats by switching to eval mode, which isolates
+        compile effects from BN stat divergence. This is the reliable gate —
+        both eager and compiled see identical frozen BN statistics.
+        """
+        torch.manual_seed(42)
+        model = _small_model()
+        # Run a few forward passes to populate BN running stats
+        for _ in range(5):
+            model.train()
+            model(torch.randn(4, 50, 9, 9))
+
+        # Freeze BN running stats by switching to eval
+        model.eval()
+        obs = torch.randn(4, 50, 9, 9)
+
+        # Eager forward pass
+        with torch.no_grad():
+            eager_out = model(obs)
+
+        # Compiled forward pass (same model, same frozen BN state)
+        compiled_model = torch.compile(model, mode="default")
+        with torch.no_grad():
+            compiled_out = compiled_model(obs)
+
+        assert torch.allclose(
+            eager_out.policy_logits, compiled_out.policy_logits, rtol=1e-5, atol=1e-5
+        ), f"Policy max diff: {(eager_out.policy_logits - compiled_out.policy_logits).abs().max()}"
+        assert torch.allclose(
+            eager_out.value_logits, compiled_out.value_logits, rtol=1e-5, atol=1e-5
+        ), f"Value max diff: {(eager_out.value_logits - compiled_out.value_logits).abs().max()}"
+        assert torch.allclose(
+            eager_out.score_lead, compiled_out.score_lead, rtol=1e-5, atol=1e-5
+        ), f"Score max diff: {(eager_out.score_lead - compiled_out.score_lead).abs().max()}"
+
+    def test_compiled_train_matches_eager_frozen_bn(self):
+        """Compiled train forward pass matches eager with frozen BN stats.
+
+        For train-mode comparison, we freeze BN stats by setting momentum=0
+        on all BN layers. This prevents the single forward pass from updating
+        running stats differently between eager and compiled paths.
+
+        Note: a previous version of this test used load_state_dict to copy
+        post-update BN stats, but the eager pass had already updated them
+        in-place, causing divergence. Freezing momentum avoids this entirely.
+        """
+        torch.manual_seed(42)
+        model = _small_model()
+        # Populate BN stats with a few warmup passes
+        model.train()
+        for _ in range(5):
+            model(torch.randn(4, 50, 9, 9))
+
+        # Freeze BN momentum so forward passes don't update running stats
+        for m in model.modules():
+            if isinstance(m, torch.nn.BatchNorm2d):
+                m.momentum = 0.0
+
+        obs = torch.randn(4, 50, 9, 9)
+
+        # Eager forward pass (BN stats frozen, but still in train mode)
+        eager_out = model(obs)
+
+        # Compiled forward pass (same model, same frozen BN)
+        compiled_model = torch.compile(model, mode="default")
+        compiled_out = compiled_model(obs)
+
+        assert torch.allclose(
+            eager_out.policy_logits, compiled_out.policy_logits, rtol=1e-5, atol=1e-5
+        ), f"Policy max diff: {(eager_out.policy_logits - compiled_out.policy_logits).abs().max()}"
+        assert torch.allclose(
+            eager_out.value_logits, compiled_out.value_logits, rtol=1e-5, atol=1e-5
+        ), f"Value max diff: {(eager_out.value_logits - compiled_out.value_logits).abs().max()}"
