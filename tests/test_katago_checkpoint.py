@@ -57,3 +57,37 @@ def test_load_legacy_checkpoint_no_architecture(model):
         save_checkpoint(path, model, optimizer, 5, 50)
         meta = load_checkpoint(path, model, optimizer)
         assert meta["epoch"] == 5
+
+
+class TestDDPCheckpoint:
+    def test_save_records_world_size(self, tmp_path):
+        """Checkpoint records world_size for DDP awareness."""
+        model = torch.nn.Linear(4, 2)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = tmp_path / "ckpt.pt"
+
+        save_checkpoint(path, model, optimizer, epoch=1, step=100, world_size=4)
+
+        ckpt = torch.load(path, weights_only=True)
+        assert ckpt["world_size"] == 4
+
+    def test_save_defaults_world_size_1(self, tmp_path):
+        """Without world_size arg, defaults to 1."""
+        model = torch.nn.Linear(4, 2)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = tmp_path / "ckpt.pt"
+
+        save_checkpoint(path, model, optimizer, epoch=1, step=100)
+
+        ckpt = torch.load(path, weights_only=True)
+        assert ckpt["world_size"] == 1
+
+    def test_load_warns_on_world_size_mismatch(self, tmp_path, caplog):
+        """Loading a checkpoint with different world_size logs a warning."""
+        model = torch.nn.Linear(4, 2)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = tmp_path / "ckpt.pt"
+
+        save_checkpoint(path, model, optimizer, epoch=1, step=100, world_size=4)
+        load_checkpoint(path, model, optimizer, current_world_size=2)
+        assert "world_size mismatch" in caplog.text.lower()

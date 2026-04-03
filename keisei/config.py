@@ -67,12 +67,27 @@ class DemonstratorConfig:
 
 
 @dataclass(frozen=True)
+class DistributedConfig:
+    """Configuration for PyTorch DDP multi-GPU training.
+
+    DDP activation is determined by torchrun environment variables (RANK,
+    LOCAL_RANK, WORLD_SIZE), not by this config. This config controls DDP
+    behavior only when DDP is active.
+    """
+
+    sync_batchnorm: bool = True
+    find_unused_parameters: bool = False
+    gradient_as_bucket_view: bool = True
+
+
+@dataclass(frozen=True)
 class AppConfig:
     training: TrainingConfig
     display: DisplayConfig
     model: ModelConfig
     league: LeagueConfig | None = None
     demonstrator: DemonstratorConfig | None = None
+    distributed: DistributedConfig = DistributedConfig()
 
 
 def load_config(path: Path) -> AppConfig:
@@ -148,7 +163,18 @@ def load_config(path: Path) -> AppConfig:
     if "demonstrator" in raw:
         demo_config = DemonstratorConfig(**raw["demonstrator"])
 
+    dist_raw = raw.get("distributed", {})
+    valid_dist_fields = {"sync_batchnorm", "find_unused_parameters", "gradient_as_bucket_view"}
+    unknown = set(dist_raw.keys()) - valid_dist_fields
+    if unknown:
+        raise ValueError(
+            f"Unknown [distributed] config keys: {sorted(unknown)}. "
+            f"Valid keys: {sorted(valid_dist_fields)}"
+        )
+    dist_config = DistributedConfig(**dist_raw)
+
     return AppConfig(
         training=training, display=display, model=model,
         league=league_config, demonstrator=demo_config,
+        distributed=dist_config,
     )

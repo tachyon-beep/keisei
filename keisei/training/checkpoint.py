@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 def _numpy_rng_to_safe(state: tuple) -> dict[str, Any]:
@@ -48,6 +51,7 @@ def save_checkpoint(
     architecture: str | None = None,
     scheduler: Any | None = None,
     grad_scaler: Any | None = None,
+    world_size: int = 1,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
@@ -55,14 +59,17 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": epoch,
         "step": step,
+        "world_size": world_size,
         "rng_states": {
             "python": random.getstate(),
             "numpy": _numpy_rng_to_safe(np.random.get_state()),
             "torch_cpu": torch.random.get_rng_state(),
         },
     }
+    # Save per-device CUDA RNG state (not get_rng_state_all, which saves ALL
+    # visible GPUs and crashes on resume if GPU count changes).
     if torch.cuda.is_available():
-        data["rng_states"]["torch_cuda"] = torch.cuda.get_rng_state_all()
+        data["rng_states"]["torch_cuda"] = torch.cuda.get_rng_state()
     if architecture is not None:
         data["architecture"] = architecture
     if scheduler is not None:
@@ -80,6 +87,7 @@ def load_checkpoint(
     scheduler: Any | None = None,
     grad_scaler: Any | None = None,
     skip_optimizer: bool = False,
+    current_world_size: int = 1,
 ) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
@@ -93,6 +101,15 @@ def load_checkpoint(
                 f"Checkpoint architecture mismatch: "
                 f"expected '{expected_architecture}', got '{ckpt_arch}'"
             )
+
+    ckpt_world_size = checkpoint.get("world_size", 1)
+    if ckpt_world_size != current_world_size:
+        logger.warning(
+            "World_size mismatch: checkpoint was saved with world_size=%d "
+            "but current world_size=%d. torch.compile may recompile; "
+            "CUDA RNG state from checkpoint will not match.",
+            ckpt_world_size, current_world_size,
+        )
 
     model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -130,7 +147,16 @@ def load_checkpoint(
             np.random.set_state(_safe_to_numpy_rng(rng["numpy"]))
         if "torch_cpu" in rng:
             torch.random.set_rng_state(rng["torch_cpu"])
+        # Restore per-device CUDA RNG state. Handles both old checkpoints
+        # (that saved get_rng_state_all() as a list) and new checkpoints
+        # (that save get_rng_state() as a single tensor).
         if "torch_cuda" in rng and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(rng["torch_cuda"])
+            cuda_state = rng["torch_cuda"]
+            if isinstance(cuda_state, list):
+                # Legacy checkpoint from get_rng_state_all — use first element
+                if len(cuda_state) > 0:
+                    torch.cuda.set_rng_state(cuda_state[0])
+            else:
+                torch.cuda.set_rng_state(cuda_state)
 
     return {"epoch": checkpoint["epoch"], "step": checkpoint["step"]}

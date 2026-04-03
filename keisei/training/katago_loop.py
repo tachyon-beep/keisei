@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from keisei.config import AppConfig
+from keisei.config import AppConfig, load_config
 
 if TYPE_CHECKING:
     from keisei.training.value_adapter import ValueHeadAdapter
@@ -28,6 +28,13 @@ from keisei.db import (
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from keisei.training.distributed import (
+    DistributedContext, get_distributed_context,
+    setup_distributed, cleanup_distributed, seed_all_ranks,
+)
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
@@ -153,16 +160,30 @@ def create_lr_scheduler(
 
 
 class KataGoTrainingLoop:
-    def __init__(self, config: AppConfig, vecenv: Any = None, resume_mode: str = "rl") -> None:
+    def __init__(
+        self, config: AppConfig, vecenv: Any = None,
+        resume_mode: str = "rl",
+        dist_ctx: DistributedContext | None = None,
+    ) -> None:
         if resume_mode not in ("rl", "sl"):
             raise ValueError(f"resume_mode must be 'rl' or 'sl', got '{resume_mode}'")
         self._resume_mode = resume_mode
         self.config = config
         self.db_path = config.display.db_path
 
-        init_db(self.db_path)
+        self.dist_ctx = dist_ctx or get_distributed_context()
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.dist_ctx.is_main:
+            init_db(self.db_path)
+        self.device = self.dist_ctx.device
+
+        if config.league is not None and self.dist_ctx.is_distributed:
+            raise ValueError(
+                "League mode is not yet supported with DDP. "
+                "League mode uses split-merge rollout collection where buffer sizes "
+                "can differ across ranks, causing NCCL allreduce deadlocks. "
+                "Run without torchrun or remove [league] config."
+            )
 
         # Validate architecture-algorithm compatibility BEFORE building the model.
         # build_model() allocates the full weight matrix (potentially ~1.5 GB VRAM
@@ -178,24 +199,37 @@ class KataGoTrainingLoop:
         self.model = build_model(config.model.architecture, config.model.params)
         self.model = self.model.to(self.device)
 
-        gpu_count = torch.cuda.device_count()
-        # DataParallel's gather doesn't support custom dataclass outputs
-        # (KataGoOutput). Multi-GPU for KataGo models requires DistributedDataParallel
-        # with a custom output wrapper — deferred to Plan D.
-        if gpu_count > 1:
-            logger.info(
-                "Found %d GPUs; DataParallel skipped for KataGo (use DDP instead)",
-                gpu_count,
+        if self.dist_ctx.is_distributed:
+            if config.distributed.sync_batchnorm:
+                self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
+                logger.info("Converted BatchNorm layers to SyncBatchNorm")
+            self.model = DDP(
+                self.model,
+                device_ids=[self.dist_ctx.local_rank] if self.device.type == "cuda" else None,
+                output_device=self.dist_ctx.local_rank if self.device.type == "cuda" else None,
+                find_unused_parameters=config.distributed.find_unused_parameters,
+                gradient_as_bucket_view=config.distributed.gradient_as_bucket_view,
             )
+            logger.info(
+                "DDP wrapping complete: rank=%d, world_size=%d",
+                self.dist_ctx.rank, self.dist_ctx.world_size,
+            )
+        else:
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 1:
+                logger.info(
+                    "Found %d GPUs; DataParallel skipped for KataGo (use DDP instead)",
+                    gpu_count,
+                )
 
-        param_count = sum(p.numel() for p in self.model.parameters())
+        param_count = sum(p.numel() for p in self._base_model.parameters())
         logger.info(
-            "Model: %s (%s), params: %d, device: %s, gpus: %d",
+            "Model: %s (%s), params: %d, device: %s, world_size: %d",
             config.model.display_name,
             config.model.architecture,
             param_count,
             self.device,
-            gpu_count,
+            self.dist_ctx.world_size,
         )
 
         # Extract nested config sections BEFORE validate_algorithm_params,
@@ -321,57 +355,88 @@ class KataGoTrainingLoop:
         # gradients that would fight the RL gradient signal. The RL warmup
         # elevated entropy (Plan D Task 3) compensates for the overconfident
         # SL policy by encouraging exploration in early RL epochs.
-        state = read_training_state(self.db_path)
-        if state is not None and state.get("checkpoint_path"):
-            checkpoint_path = Path(state["checkpoint_path"])
-            if checkpoint_path.exists():
-                skip_opt = self._resume_mode == "sl"
-                logger.warning(
-                    "Resuming from checkpoint: %s (epoch %d, skip_optimizer=%s)",
-                    checkpoint_path,
-                    state["current_epoch"],
-                    skip_opt,
-                )
-                meta = load_checkpoint(
-                    checkpoint_path,
-                    self._base_model,
-                    self.ppo.optimizer,
-                    expected_architecture=self.config.model.architecture,
-                    scheduler=self.lr_scheduler,
-                    grad_scaler=self.ppo.scaler,
-                    skip_optimizer=skip_opt,
-                )
-                if skip_opt:
-                    # SL→RL: start RL from epoch 0 so warmup_epochs and
-                    # checkpoint numbering are RL-relative, not offset by
-                    # the SL epoch count.
-                    self.epoch = 0
-                    self.global_step = 0
-                else:
-                    self.epoch = meta["epoch"]
-                    self.global_step = meta["step"]
-                return
 
-        write_training_state(
-            self.db_path,
-            {
-                "config_json": json.dumps(
-                    {
-                        "training": {
-                            "num_games": self.config.training.num_games,
-                            "algorithm": self.config.training.algorithm,
-                        },
-                        "model": {"architecture": self.config.model.architecture},
-                    }
-                ),
-                "display_name": self.config.model.display_name,
-                "model_arch": self.config.model.architecture,
-                "algorithm_name": self.config.training.algorithm,
-                "started_at": datetime.now(timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                ),
-            },
-        )
+        # Rank 0 reads the DB to find checkpoint path; non-main ranks get None.
+        checkpoint_path_str: str | None = None
+        current_epoch: int = 0
+        if self.dist_ctx.is_main:
+            state = read_training_state(self.db_path)
+            if state is not None and state.get("checkpoint_path"):
+                cp = Path(state["checkpoint_path"])
+                if cp.exists():
+                    checkpoint_path_str = str(cp)
+                    current_epoch = state.get("current_epoch", 0)
+
+        # Broadcast checkpoint path to all ranks so everyone loads the same checkpoint.
+        # In non-distributed mode, broadcast_object_list is not called.
+        if self.dist_ctx.is_distributed:
+            obj_list: list[object] = [checkpoint_path_str]
+            dist.broadcast_object_list(obj_list, src=0)
+            checkpoint_path_str = obj_list[0]  # type: ignore[assignment]
+
+            # Also broadcast epoch so non-main ranks know where to resume
+            meta_list: list[object] = [current_epoch]
+            dist.broadcast_object_list(meta_list, src=0)
+            current_epoch = meta_list[0]  # type: ignore[assignment]
+
+        # ALL ranks load the checkpoint (critical for DDP weight consistency).
+        # DDP does NOT re-broadcast weights after __init__() — if only rank 0
+        # loads the checkpoint, other ranks train from random weights and
+        # gradient allreduce averages nonsensical gradients.
+        if checkpoint_path_str is not None:
+            checkpoint_path = Path(checkpoint_path_str)
+            skip_opt = self._resume_mode == "sl"
+            logger.warning(
+                "[rank %d] Resuming from checkpoint: %s (skip_optimizer=%s)",
+                self.dist_ctx.rank, checkpoint_path, skip_opt,
+            )
+            meta = load_checkpoint(
+                checkpoint_path,
+                self._base_model,
+                self.ppo.optimizer,
+                expected_architecture=self.config.model.architecture,
+                scheduler=self.lr_scheduler,
+                grad_scaler=self.ppo.scaler,
+                skip_optimizer=skip_opt,
+                current_world_size=self.dist_ctx.world_size,
+            )
+            if skip_opt:
+                # SL→RL: start RL from epoch 0 so warmup_epochs and
+                # checkpoint numbering are RL-relative.
+                self.epoch = 0
+                self.global_step = 0
+            else:
+                self.epoch = meta["epoch"]
+                self.global_step = meta["step"]
+            return
+
+        # Fresh start — only rank 0 writes training state to DB
+        if self.dist_ctx.is_main:
+            write_training_state(
+                self.db_path,
+                {
+                    "config_json": json.dumps(
+                        {
+                            "training": {
+                                "num_games": self.config.training.num_games,
+                                "algorithm": self.config.training.algorithm,
+                            },
+                            "model": {"architecture": self.config.model.architecture},
+                        }
+                    ),
+                    "display_name": self.config.model.display_name,
+                    "model_arch": self.config.model.architecture,
+                    "algorithm_name": self.config.training.algorithm,
+                    "started_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        else:
+            logger.info(
+                "[rank %d] Non-main rank: skipping DB write for fresh training state",
+                self.dist_ctx.rank,
+            )
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
         reset_result = self.vecenv.reset()
@@ -518,120 +583,144 @@ class KataGoTrainingLoop:
                     "value head received no gradient this epoch)", epoch_i,
                 )
 
-            # LR scheduler logic
+            # LR scheduler logic — ALL ranks must participate with the SAME
+            # monitor value to keep LR state synchronized across ranks.
             if epoch_i == self.ppo.warmup_epochs and self.lr_scheduler is not None:
                 self.lr_scheduler.best = self.lr_scheduler.mode_worse
                 self.lr_scheduler.num_bad_epochs = 0
-                logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
+                if self.dist_ctx.is_main:
+                    logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
 
             if self.lr_scheduler is not None:
                 monitor_value = losses.get("value_loss")
                 if monitor_value is not None:
+                    # Synchronize monitor value across ranks so all schedulers
+                    # step identically and maintain the same LR state.
+                    if self.dist_ctx.is_distributed:
+                        monitor_tensor = torch.tensor(
+                            monitor_value, device=self.device,
+                        )
+                        dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
+                        monitor_value = monitor_tensor.item()
+
                     old_lr = self.ppo.optimizer.param_groups[0]["lr"]
                     self.lr_scheduler.step(monitor_value)
                     new_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    if new_lr != old_lr:
+                    if new_lr != old_lr and self.dist_ctx.is_main:
                         logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
                                     old_lr, new_lr, monitor_value)
 
-            # Materialise GPU counters → CPU once per epoch (not per step).
+            # Materialise GPU counters → CPU once per epoch (all ranks, to release GPU memory)
             win_count = win_acc.item()
             loss_count = loss_acc.item()
             draw_count = draw_acc.item()
 
-            # Elo tracking (league mode)
-            total_games = win_count + loss_count + draw_count
-            if (self.pool is not None and self._current_opponent_entry is not None
-                    and total_games > 0):
-                learner_entry = self.pool._get_entry(self._learner_entry_id)
-                if learner_entry is not None:
-                    self.pool.record_result(
-                        epoch=epoch_i, learner_id=learner_entry.id,
-                        opponent_id=self._current_opponent_entry.id,
-                        wins=win_count, losses=loss_count, draws=draw_count,
-                    )
-                    result_score = (win_count + 0.5 * draw_count) / total_games
-                    k = self.config.league.elo_k_factor if self.config.league else 32.0
-                    new_learner_elo, new_opp_elo = compute_elo_update(
-                        learner_entry.elo_rating,
-                        self._current_opponent_entry.elo_rating,
-                        result=result_score, k=k,
-                    )
-                    self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
-                    self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
-                    logger.info(
-                        "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
-                        learner_entry.elo_rating, new_learner_elo,
-                        self._current_opponent_entry.id,
-                        self._current_opponent_entry.elo_rating, new_opp_elo,
-                        win_count, loss_count, draw_count,
+            # Elo tracking (league mode, rank 0 only)
+            if self.dist_ctx.is_main:
+                total_games = win_count + loss_count + draw_count
+                if (self.pool is not None and self._current_opponent_entry is not None
+                        and total_games > 0):
+                    learner_entry = self.pool._get_entry(self._learner_entry_id)
+                    if learner_entry is not None:
+                        self.pool.record_result(
+                            epoch=epoch_i, learner_id=learner_entry.id,
+                            opponent_id=self._current_opponent_entry.id,
+                            wins=win_count, losses=loss_count, draws=draw_count,
+                        )
+                        result_score = (win_count + 0.5 * draw_count) / total_games
+                        k = self.config.league.elo_k_factor if self.config.league else 32.0
+                        new_learner_elo, new_opp_elo = compute_elo_update(
+                            learner_entry.elo_rating,
+                            self._current_opponent_entry.elo_rating,
+                            result=result_score, k=k,
+                        )
+                        self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
+                        self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
+                        logger.info(
+                            "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                            learner_entry.elo_rating, new_learner_elo,
+                            self._current_opponent_entry.id,
+                            self._current_opponent_entry.elo_rating, new_opp_elo,
+                            win_count, loss_count, draw_count,
+                        )
+
+            if self.dist_ctx.is_main:
+                # Seat rotation (takes priority — includes its own snapshot)
+                rotating_this_epoch = (
+                    self.config.league is not None and self.pool is not None
+                    and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
+                )
+                if rotating_this_epoch:
+                    self._rotate_seat(epoch_i)
+
+                # Periodic pool snapshot (skip if rotation already snapshotted)
+                if (self.pool is not None and self.config.league is not None
+                        and (epoch_i + 1) % self.config.league.snapshot_interval == 0
+                        and not rotating_this_epoch):
+                    self.pool.add_snapshot(
+                        self._base_model, self.config.model.architecture,
+                        dict(self.config.model.params), epoch=epoch_i + 1,
                     )
 
-            # Seat rotation (takes priority — includes its own snapshot)
-            rotating_this_epoch = (
-                self.config.league is not None and self.pool is not None
-                and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
-            )
-            if rotating_this_epoch:
-                self._rotate_seat(epoch_i)
+            if self.dist_ctx.is_main:
+                # Metrics and logging
+                ep_completed = getattr(self.vecenv, "episodes_completed", 0)
+                metrics = {
+                    "epoch": epoch_i, "step": self.global_step,
+                    "policy_loss": losses["policy_loss"],
+                    "value_loss": losses["value_loss"],
+                    "entropy": losses["entropy"],
+                    "gradient_norm": losses["gradient_norm"],
+                    "episodes_completed": ep_completed,
+                }
+                try:
+                    write_metrics(self.db_path, metrics)
+                except Exception:
+                    logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
 
-            # Periodic pool snapshot (skip if rotation already snapshotted)
-            if (self.pool is not None and self.config.league is not None
-                    and (epoch_i + 1) % self.config.league.snapshot_interval == 0
-                    and not rotating_this_epoch):
-                self.pool.add_snapshot(
-                    self._base_model, self.config.model.architecture,
-                    dict(self.config.model.params), epoch=epoch_i + 1,
+                if hasattr(self.vecenv, "reset_stats"):
+                    self.vecenv.reset_stats()
+
+                try:
+                    update_training_progress(self.db_path, epoch_i, self.global_step)
+                except Exception:
+                    logger.exception("Failed to update training progress — continuing")
+
+                logger.info(
+                    "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
+                    epoch_i, self.global_step, losses["policy_loss"],
+                    losses["value_loss"], losses["score_loss"], losses["entropy"],
                 )
 
-            # Metrics and logging
-            ep_completed = getattr(self.vecenv, "episodes_completed", 0)
-            metrics = {
-                "epoch": epoch_i, "step": self.global_step,
-                "policy_loss": losses["policy_loss"],
-                "value_loss": losses["value_loss"],
-                "entropy": losses["entropy"],
-                "gradient_norm": losses["gradient_norm"],
-                "episodes_completed": ep_completed,
-            }
-            try:
-                write_metrics(self.db_path, metrics)
-            except Exception:
-                logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
-
-            if hasattr(self.vecenv, "reset_stats"):
-                self.vecenv.reset_stats()
-
-            try:
-                update_training_progress(self.db_path, epoch_i, self.global_step)
-            except Exception:
-                logger.exception("Failed to update training progress — continuing")
-
-            logger.info(
-                "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
-                epoch_i, self.global_step, losses["policy_loss"],
-                losses["value_loss"], losses["score_loss"], losses["entropy"],
-            )
-
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
-                ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
-                try:
-                    save_checkpoint(
-                        ckpt_path, self._base_model, self.ppo.optimizer,
-                        epoch_i + 1, self.global_step,
-                        architecture=self.config.model.architecture,
-                        scheduler=self.lr_scheduler,
-                        grad_scaler=self.ppo.scaler,
-                    )
-                    logger.info("Checkpoint saved: %s", ckpt_path)
-                except Exception:
-                    logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
-                try:
-                    update_training_progress(
-                        self.db_path, epoch_i + 1, self.global_step, str(ckpt_path),
-                    )
-                except Exception:
-                    logger.exception("Failed to record checkpoint path in DB — continuing")
+                # Barrier ensures all ranks finish PPO update before checkpoint write
+                if self.dist_ctx.is_distributed:
+                    dist.barrier()
+
+                if self.dist_ctx.is_main:
+                    ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
+                    try:
+                        save_checkpoint(
+                            ckpt_path, self._base_model, self.ppo.optimizer,
+                            epoch_i + 1, self.global_step,
+                            architecture=self.config.model.architecture,
+                            scheduler=self.lr_scheduler,
+                            grad_scaler=self.ppo.scaler,
+                            world_size=self.dist_ctx.world_size,
+                        )
+                        logger.info("Checkpoint saved: %s", ckpt_path)
+                    except Exception:
+                        logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
+                    try:
+                        update_training_progress(
+                            self.db_path, epoch_i + 1, self.global_step, str(ckpt_path),
+                        )
+                    except Exception:
+                        logger.exception("Failed to record checkpoint path in DB — continuing")
+
+                # Barrier after save — all ranks proceed together
+                if self.dist_ctx.is_distributed:
+                    dist.barrier()
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""
@@ -672,6 +761,8 @@ class KataGoTrainingLoop:
         )
 
     def _maybe_update_heartbeat(self) -> None:
+        if not self.dist_ctx.is_main:
+            return
         now = time.monotonic()
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
@@ -680,6 +771,8 @@ class KataGoTrainingLoop:
             )
 
     def _maybe_write_snapshots(self) -> None:
+        if not self.dist_ctx.is_main:
+            return
         if self.moves_per_minute <= 0:
             return
         now = time.monotonic()
@@ -720,18 +813,30 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    parser = argparse.ArgumentParser(description="Keisei training")
-    parser.add_argument("config", type=Path, help="Path to TOML config file")
-    parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
-    parser.add_argument("--steps-per-epoch", type=int, default=None,
-                        help="Steps per epoch (default: max_ply from config)")
-    args = parser.parse_args()
 
-    from keisei.config import load_config
-    config = load_config(args.config)
-    steps = args.steps_per_epoch or config.training.max_ply
-    loop = KataGoTrainingLoop(config)
-    loop.run(num_epochs=args.epochs, steps_per_epoch=steps)
+    dist_ctx = get_distributed_context()
+    setup_distributed(dist_ctx)
+
+    try:
+        parser = argparse.ArgumentParser(description="Keisei training")
+        parser.add_argument("config", type=Path, help="Path to TOML config file")
+        parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
+        parser.add_argument("--steps-per-epoch", type=int, default=None,
+                            help="Steps per epoch (default: max_ply from config)")
+        parser.add_argument("--seed", type=int, default=42,
+                            help="Base random seed (each rank adds its rank index)")
+        args = parser.parse_args()
+
+        # Set all RNG seeds: base_seed + rank for different-but-reproducible rollouts.
+        # Seeds torch, numpy, and Python stdlib RNG.
+        seed_all_ranks(args.seed + dist_ctx.rank)
+
+        config = load_config(args.config)
+        steps = args.steps_per_epoch or config.training.max_ply
+        loop = KataGoTrainingLoop(config, dist_ctx=dist_ctx)
+        loop.run(num_epochs=args.epochs, steps_per_epoch=steps)
+    finally:
+        cleanup_distributed(dist_ctx)
 
 
 if __name__ == "__main__":
