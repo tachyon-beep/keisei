@@ -1,4 +1,4 @@
-# keisei-katago.toml — Single-GPU KataGo training (league-capable)
+# keisei-katago.toml — "Musashi" (武蔵, lone duelist) — Single-GPU KataGo training (league-capable)
 #
 # Hardware: Single GPU (RTX 4060 Ti 16GB or similar)
 # Model:    KataGo SE-ResNet b40c256 (~120M params)
@@ -9,7 +9,7 @@
 # Launch:   ./run-training.sh --config keisei-katago.toml --ngpus 1
 
 [model]
-display_name = "KataGo-SE-b40c256"
+display_name = "Musashi"
 architecture = "se_resnet"
 
 [model.params]

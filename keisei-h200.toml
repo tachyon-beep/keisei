@@ -1,4 +1,4 @@
-# keisei-h200.toml — Production training on H200 GPU cluster
+# keisei-h200.toml — "Raijin" (雷神, thunder god) — Production training on H200 GPU cluster
 #
 # Hardware: NVIDIA H200 80GB (single-GPU or multi-GPU DDP)
 # Model:    KataGo SE-ResNet b40c256 (~full-scale, ~120M params)
@@ -9,7 +9,7 @@
 # Multi-GPU:  ./run-training.sh --config keisei-h200.toml --ngpus 4
 
 [model]
-display_name = "KataGo-H200-b40c256"
+display_name = "Raijin"
 architecture = "se_resnet"
 
 [model.params]
