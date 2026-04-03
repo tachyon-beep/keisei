@@ -100,3 +100,59 @@ def compute_gae_padded(
         advantages[t] = last_gae
 
     return advantages
+
+
+def compute_gae_gpu(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    dones: torch.Tensor,
+    next_value: torch.Tensor,
+    gamma: float,
+    lam: float,
+) -> torch.Tensor:
+    """GPU GAE for structured (T, N) rollouts.
+
+    Same recurrence as compute_gae(), but keeps all computation on the input
+    device (typically CUDA). Only supports 2D (T, N) input where each column
+    is a single environment's unbroken trajectory.
+
+    The 1D flat case is NOT supported — the vectorized values[1:] trick would
+    conflate transitions across environment boundaries after flattening. Use
+    the original compute_gae() for 1D inputs. See spec hazard H3.
+
+    Args:
+        rewards: (T, N) per-step rewards
+        values: (T, N) value estimates at each step
+        dones: (T, N) episode termination flags (1.0 = done)
+        next_value: (N,) bootstrap value for the state after the last step
+        gamma: discount factor
+        lam: GAE lambda (bias-variance tradeoff)
+
+    Returns:
+        (T, N) advantage estimates on the same device as inputs
+    """
+    if rewards.ndim != 2:
+        raise ValueError(
+            f"compute_gae_gpu only supports 2D (T, N) input, got shape {rewards.shape}"
+        )
+
+    T, N = rewards.shape
+
+    # Step 1: vectorized delta and decay (no Python loop)
+    # next_values[t] = values[t+1] for t < T-1, next_value for t == T-1
+    next_values = torch.cat([values[1:], next_value.unsqueeze(0)], dim=0)
+    not_done = 1.0 - dones.float()
+    delta = rewards + gamma * next_values * not_done - values
+    decay = gamma * lam * not_done
+
+    # Step 2: sequential backward scan — each step is a fused GPU kernel over N envs.
+    # The Python loop has T iterations (~128), each launching ~2 CUDA kernels.
+    # This is faster than CPU GAE because each step operates on N envs in parallel
+    # without Python-level tensor ops or CPU-GPU round-trips.
+    advantages = torch.empty_like(rewards)
+    last_gae = torch.zeros(N, device=rewards.device, dtype=rewards.dtype)
+    for t in reversed(range(T)):
+        last_gae = delta[t] + decay[t] * last_gae
+        advantages[t] = last_gae
+
+    return advantages

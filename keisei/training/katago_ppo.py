@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.amp import autocast, GradScaler
+from torch.amp import GradScaler, autocast
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
+from keisei.training.gae import compute_gae_gpu
 from keisei.training.models.katago_base import KataGoBaseModel
 
 
@@ -64,6 +66,8 @@ class KataGoPPOParams:
     score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
     use_amp: bool = False
+    compile_mode: str | None = None    # None, "default", "reduce-overhead", "max-autotune"
+    compile_dynamic: bool = True       # dynamic shapes — True for league/split-merge safety
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
@@ -222,6 +226,67 @@ class KataGoPPOAlgorithm:
         self.params = params
         self.model = model
         self.forward_model = forward_model or model
+
+        # Compile + grad clipping requires forward_model and model to share parameters.
+        # Unwrap DataParallel/DDP if present to compare underlying modules.
+        fm_base = self.forward_model.module if hasattr(self.forward_model, "module") else self.forward_model
+        m_base = self.model.module if hasattr(self.model, "module") else self.model
+        assert fm_base is m_base, (
+            "forward_model and model must share parameters — "
+            "compile + grad clipping requires this"
+        )
+
+        # torch.compile setup — two models to avoid BN mode-switch trace baking.
+        # compiled_train: always train mode (used in update() mini-batch loop)
+        # compiled_eval: always eval mode (used in select_actions() and value metrics)
+        # Note: torch.compile() does NOT trace the graph — that happens at the
+        # first forward call. The mode set here must match the mode at first call.
+        _log = logging.getLogger(__name__)
+        if self.params.compile_mode is not None:
+            if self.params.compile_mode == "reduce-overhead" and self.params.compile_dynamic:
+                _log.warning(
+                    "compile_mode='reduce-overhead' with compile_dynamic=True disables "
+                    "CUDA graph capture (the main benefit of reduce-overhead). "
+                    "Set compile_dynamic=False for fixed-batch-size runs."
+                )
+            self.forward_model.train()
+            self.compiled_train = torch.compile(
+                self.forward_model,
+                mode=self.params.compile_mode,
+                dynamic=self.params.compile_dynamic,
+            )
+            self.forward_model.eval()
+            self.compiled_eval = torch.compile(
+                self.forward_model,
+                mode=self.params.compile_mode,
+                dynamic=self.params.compile_dynamic,
+            )
+            self.forward_model.train()  # restore default
+            _log.info(
+                "torch.compile active: mode=%s, dynamic=%s",
+                self.params.compile_mode, self.params.compile_dynamic,
+            )
+        else:
+            self.compiled_train = None
+            self.compiled_eval = None
+
+        # CUDA event timing — records event pairs during forward passes and GAE.
+        # Events are accumulated without synchronization during the hot loop.
+        # Call flush_timings() to read elapsed times (triggers one sync).
+        # Lifecycle: select_actions_forward_ms accumulates during rollout,
+        # update_forward_backward_ms and gae_ms accumulate during update().
+        # All lists are cleared at the start of each update() call.
+        self._timing_events: dict[str, list[tuple[torch.cuda.Event, torch.cuda.Event]]] = {
+            "select_actions_forward_ms": [],
+            "update_forward_backward_ms": [],
+            "gae_ms": [],
+        }
+        self.timings: dict[str, list[float]] = {
+            "select_actions_forward_ms": [],
+            "update_forward_backward_ms": [],
+            "gae_ms": [],
+        }
+
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
@@ -237,6 +302,21 @@ class KataGoPPOAlgorithm:
         if epoch < self.warmup_epochs:
             return self.warmup_entropy
         return self.params.lambda_entropy
+
+    def flush_timings(self) -> None:
+        """Convert accumulated CUDA event pairs to elapsed-time floats.
+
+        Calls elapsed_time() on each event pair, which implicitly waits for
+        both events to complete. This is the ONLY synchronization point —
+        no torch.cuda.synchronize() is called during recording.
+
+        Call this after update() returns to populate self.timings with ms values.
+        """
+        for key, event_pairs in self._timing_events.items():
+            self.timings[key] = [
+                start.elapsed_time(end) for start, end in event_pairs
+            ]
+            event_pairs.clear()
 
     @staticmethod
     def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
@@ -254,17 +334,40 @@ class KataGoPPOAlgorithm:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select actions for rollout collection.
 
-        Sets model to eval mode for BatchNorm running stats, then restores
-        train mode on exit. The stored log_probs are detached (no_grad);
-        PPO recomputes new_log_probs under train() in update().
+        When compiled, uses compiled_eval (traced in eval mode) to avoid
+        mode-switch graph breaks. Falls back to eval/train toggle in eager mode.
+
+        Note: compiled_eval is always called while forward_model is in train mode.
+        This is correct because torch.compile captures the training flag at first-call
+        time and caches it — subsequent calls reuse that cached graph regardless of
+        the module's current training flag. The compiled_eval graph was first called
+        in eval mode (during warmup or first select_actions call after __init__
+        sets eval before compiling), so it always uses eval-mode BN behavior.
         """
         device = next(self.model.parameters()).device
         amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
-        self.forward_model.eval()
+        if self.compiled_eval is not None:
+            model = self.compiled_eval
+            # Do NOT toggle forward_model.eval() — see BN invariant in spec H1
+        else:
+            model = self.forward_model
+            model.eval()
         try:
+            # Record CUDA events around forward pass only (not the legal mask guard,
+            # which includes a CPU-syncing .nonzero() call — see spec hazard H8).
+            if device.type == "cuda":
+                _sa_start = torch.cuda.Event(enable_timing=True)
+                _sa_end = torch.cuda.Event(enable_timing=True)
+                _sa_start.record()
+
             with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                output = self.forward_model(obs)
+                output = model(obs)
+
+            if device.type == "cuda":
+                _sa_end.record()
+                # Do NOT synchronize here — events are read lazily in flush_timings()
+                self._timing_events["select_actions_forward_ms"].append((_sa_start, _sa_end))
 
             # Guard: no env should have zero legal actions
             legal_counts = legal_masks.sum(dim=-1)
@@ -289,7 +392,8 @@ class KataGoPPOAlgorithm:
 
             return actions, log_probs, scalar_values
         finally:
-            self.forward_model.train()
+            if self.compiled_eval is None:
+                self.forward_model.train()
 
     def update(
         self,
@@ -297,9 +401,21 @@ class KataGoPPOAlgorithm:
         next_values: torch.Tensor,
         value_adapter: Any | None = None,
     ) -> dict[str, float]:
-        from keisei.training.gae import compute_gae
+        from keisei.training.gae import compute_gae  # noqa: PLC0415 — local import for circular-import safety
 
         self.forward_model.train()
+        # Safety assertion: forward_model must be in train mode before compiled_train
+        # is used. split_merge_step calls learner_model.eval() during rollout and
+        # relies on update() to restore train mode. See Note N3 in the plan.
+        assert self.forward_model.training, (
+            "forward_model must be in train mode at start of update() — "
+            "compiled_train graph requires this"
+        )
+
+        # Clear timing events from previous cycle
+        for event_list in self._timing_events.values():
+            event_list.clear()
+
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
@@ -315,10 +431,30 @@ class KataGoPPOAlgorithm:
             values_2d = data["values"].reshape(T, N)
             dones_2d = data["dones"].reshape(T, N)
 
-            advantages = compute_gae(
-                rewards_2d, values_2d, dones_2d,
-                next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
-            ).reshape(-1)
+            if device.type == "cuda":
+                _gae_start = torch.cuda.Event(enable_timing=True)
+                _gae_end = torch.cuda.Event(enable_timing=True)
+                _gae_start.record()
+
+            if device.type == "cuda":
+                # GPU path: move buffer tensors to GPU, compute GAE there, return to CPU.
+                # next_values is already on GPU (from bootstrap forward pass).
+                # .detach() ensures no gradient graph leaks through GAE.
+                # Memory: ~3 MB for T=128, N=512 (negligible on 4060/H200).
+                advantages = compute_gae_gpu(
+                    rewards_2d.to(device), values_2d.to(device),
+                    dones_2d.to(device), next_values.detach(),
+                    gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).reshape(-1).cpu()
+            else:
+                advantages = compute_gae(
+                    rewards_2d, values_2d, dones_2d,
+                    next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).reshape(-1)
+
+            if device.type == "cuda":
+                _gae_end.record()
+                self._timing_events["gae_ms"].append((_gae_start, _gae_end))
         elif "env_ids" in data:
             # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
             # compute GAE in a single vectorized pass.
@@ -410,8 +546,18 @@ class KataGoPPOAlgorithm:
                 batch_value_cats = data["value_categories"][idx].to(device)
                 batch_score_targets = data["score_targets"][idx].to(device)
 
+                if device.type == "cuda":
+                    _fb_start = torch.cuda.Event(enable_timing=True)
+                    _fb_end = torch.cuda.Event(enable_timing=True)
+                    _fb_start.record()
+
                 with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                    output = self.forward_model(batch_obs)
+                    # Use compiled_train if available; fall back to eager forward_model.
+                    # compiled_train was traced in train mode — BN updates running stats.
+                    if self.compiled_train is not None:
+                        output = self.compiled_train(batch_obs)
+                    else:
+                        output = self.forward_model(batch_obs)
 
                     # Policy loss (clipped surrogate)
                     flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
@@ -496,6 +642,11 @@ class KataGoPPOAlgorithm:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
 
+                if device.type == "cuda":
+                    _fb_end.record()
+                    # Do NOT synchronize — events read lazily in flush_timings()
+                    self._timing_events["update_forward_backward_ms"].append((_fb_start, _fb_end))
+
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()
                 total_score_loss += score_loss.item()
@@ -524,16 +675,23 @@ class KataGoPPOAlgorithm:
                 sample_size = min(256, valid_obs.shape[0])
                 sample_obs = valid_obs[:sample_size].to(device)
                 sample_cats = valid_cats[:sample_size].to(device)
+                if self.compiled_eval is not None:
+                    eval_model = self.compiled_eval
+                else:
+                    eval_model = self.forward_model
+                    eval_model.eval()
                 try:
-                    self.forward_model.eval()
                     with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                        sample_output = self.forward_model(sample_obs)
+                        sample_output = eval_model(sample_obs)
                     value_metrics = compute_value_metrics(
                         sample_output.value_logits, sample_cats
                     )
                     metrics.update(value_metrics)
                 finally:
-                    self.forward_model.train()
+                    if self.compiled_eval is None:
+                        self.forward_model.train()
 
+        # Always restore train mode — even when compiled. split_merge_step
+        # relies on this (see Note N3). No-op if already in train mode.
         self.forward_model.train()
         return metrics
