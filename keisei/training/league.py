@@ -57,7 +57,7 @@ _FLAVOUR_POOLS: dict[str, list[str]] = {
         "Opposing Rook", "Double Wing Attack", "Snow Roof", "Bear-in-the-Hole",
         "Right King", "Yagura",
     ],
-    "Philosophy": [
+    "Favourite philosopher": [
         "Musashi", "Sun Tzu", "Confucius", "Lao Tzu", "Miyamoto",
         "Leibniz", "Turing", "Shannon", "Von Neumann", "Bellman",
     ],

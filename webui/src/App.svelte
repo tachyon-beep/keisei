@@ -61,7 +61,7 @@
 
   const flavourPools = {
     'Favourite piece': ['Gold General', 'Silver General', 'Knight', 'Lance', 'Bishop', 'Rook', 'Promoted Pawn', 'Dragon Horse', 'Dragon King', 'King'],
-    'Philosophy': ['Musashi', 'Sun Tzu', 'Confucius', 'Turing', 'Shannon', 'Von Neumann', 'Bellman', 'Lao Tzu', 'Leibniz', 'Miyamoto'],
+    'Favourite philosopher': ['Musashi', 'Sun Tzu', 'Confucius', 'Turing', 'Shannon', 'Von Neumann', 'Bellman', 'Lao Tzu', 'Leibniz', 'Miyamoto'],
     'Favourite snack': ['Onigiri', 'Mochi', 'Dango', 'Taiyaki', 'Gradient soup', 'Loss crumble', 'Entropy tea', 'Batch noodles', 'Tensor rolls', 'Senbei'],
     'Training motto': ['"Loss goes down"', '"Explore everything"', '"Patience is policy"', '"Trust the gradient"', '"Variance is the enemy"', '"Clip wisely"', '"Entropy is freedom"', '"Value the position"', '"Every ply counts"', '"Promote early"'],
     'Lucky number': ['0.0001', '0.99', '42', '3.14', '2048', '0.95', '1e-8', '256', '0.2', '7.5M'],
