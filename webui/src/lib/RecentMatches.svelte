@@ -56,8 +56,8 @@
     padding: 14px;
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    max-height: 200px;
+    min-height: 100px;
+    max-height: 150px;
     flex-shrink: 0;
   }
 
