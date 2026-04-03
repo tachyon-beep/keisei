@@ -53,7 +53,7 @@ export function buildChartOpts({ width, height, series, compact = false, xLabel 
       },
     ],
     series: [
-      { show: false },
+      { label: '', value: '' },
       ...series.map(s => ({
         label: s.label,
         stroke: s.color,
