@@ -46,14 +46,17 @@ When a newest entry ages out of the newest queue (pushed out by a newer snapshot
 
 **Recommendation:** Option C. It keeps fresh blood flowing without discarding potentially strong models that just haven't been calibrated yet.
 
-## Static Promotion
+## Static Promotion and Retirement
 
-Periodically (every K epochs, or manually), the highest-Elo dynamic model can be "frozen" and promoted to static, replacing the weakest static benchmark. This means the static tier slowly tracks the frontier:
+The static tier is **not permanent** — it slowly marches up the skill ladder alongside training. There are no "founding statics" that stay forever; once the learner is 250k epochs in, how it performs against the epoch-50 benchmark is irrelevant.
 
-- Short-term progress: measured against recent static benchmarks.
-- Long-term progress: measured against the original static benchmarks (which are now much weaker).
+**Promotion:** When a dynamic model has held a top-3 Elo position among dynamics for 50+ consecutive epochs with >= 20 calibration matches, it's eligible for promotion to static (frozen, no further training).
 
-This should be rare and deliberate — perhaps every 200-500 epochs.
+**Retirement:** When a static is promoted in, the weakest static is retired (dropped entirely). The static tier should always span "comfortably beatable" to "genuinely challenging" relative to the *current* learner — not carry dead weight from early training.
+
+**Regression detection** still works: the statics that were recently challenging are still present. If the learner's win rate against a previously-close static drops sharply, that signals catastrophic forgetting or a bad hyperparameter change.
+
+Net effect: the static tier acts as a sliding window of calibrated benchmarks, not a museum of historical artifacts. Promotion cadence should be conservative — perhaps every 200-500 epochs at most.
 
 ## Elo Interpretation
 
