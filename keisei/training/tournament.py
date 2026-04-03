@@ -129,9 +129,10 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds * 2)
                     continue
 
-                # Wait for a new epoch before running the next round
+                # Wait for a new epoch before running the next round.
+                # Skip early epochs — pool needs multiple distinct entries.
                 epoch = self._current_epoch(conn)
-                if epoch == last_epoch:
+                if epoch < 5 or epoch == last_epoch:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
@@ -218,7 +219,9 @@ class LeagueTournament:
         pairings. The rotation is seeded by the number of entries and
         the current time to avoid repeating the same round.
         """
-        if len(entries) < 2:
+        # Need at least 2 entries with distinct IDs
+        unique_ids = {e.id for e in entries}
+        if len(unique_ids) < 2:
             return []
 
         # Shuffle to vary pairings round-to-round
@@ -230,10 +233,13 @@ class LeagueTournament:
             shuffled = shuffled[:-1]
 
         # Pair first with last, second with second-to-last, etc.
+        # Filter out self-matches (same ID) as a safety net.
         n = len(shuffled)
         pairings = []
         for i in range(n // 2):
-            pairings.append((shuffled[i], shuffled[n - 1 - i]))
+            a, b = shuffled[i], shuffled[n - 1 - i]
+            if a.id != b.id:
+                pairings.append((a, b))
 
         return pairings
 
