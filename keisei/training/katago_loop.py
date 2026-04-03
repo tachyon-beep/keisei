@@ -727,12 +727,6 @@ class KataGoTrainingLoop:
                         (win_count + 0.5 * draw_count) / total_games
                         if total_games > 0 else None
                     ),
-                    "black_win_rate": (
-                        win_count / total_games if total_games > 0 else None
-                    ),
-                    "white_win_rate": (
-                        loss_count / total_games if total_games > 0 else None
-                    ),
                 }
                 try:
                     write_metrics(self.db_path, metrics)
