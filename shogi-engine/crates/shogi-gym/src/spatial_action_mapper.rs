@@ -108,6 +108,19 @@ impl SpatialActionMapper {
             return None;
         }
 
+        // This function operates in perspective space (after apply_perspective).
+        // Legal forward knight moves always have dr=-2 in perspective space
+        // because the 180° flip normalises White's forward (dr=+2 absolute)
+        // to match Black's convention (dr=-2). A positive dr here means
+        // a backward (illegal) knight jump was passed in.
+        debug_assert!(
+            dr < 0,
+            "knight_slot received dr={} in perspective space; \
+             legal forward knights always have dr=-2 after perspective flip. \
+             This likely means an illegal backward knight move was encoded.",
+            dr,
+        );
+
         // Normalize dc relative to dr: "same sign as dr" → left, "opposite sign" → right.
         // This is invariant under the 180° perspective flip which negates both dr and dc.
         let same_sign = (dr > 0 && dc > 0) || (dr < 0 && dc < 0);
@@ -598,10 +611,17 @@ mod tests {
     #[test]
     fn test_knight_move_roundtrip_white() {
         let m = mapper();
-        // White knight at absolute (6,4) moves forward to (4,3) and (4,5)
+        // White knight at absolute (6,4) moves forward (toward row 8) to (8,5) and (8,3).
+        // In perspective space (180° flip) this becomes (2,4)→(0,3) and (2,4)→(0,5),
+        // i.e. dr=-2 just like Black's forward knight convention.
+        //
+        // "left"/"right" refer to the knight_slot convention (perspective space):
+        //   slot 0 ("left")  = dc has same sign as dr  → persp (2,4)→(0,3): dr=-2, dc=-1 → same sign
+        //   slot 1 ("right") = dc has opposite sign     → persp (2,4)→(0,5): dr=-2, dc=+1 → opposite
+        // These labels look swapped in absolute coordinates because the flip inverts both axes.
         let from = Square::from_row_col(6, 4).unwrap();
-        let to_left = Square::from_row_col(4, 3).unwrap();
-        let to_right = Square::from_row_col(4, 5).unwrap();
+        let to_left = Square::from_row_col(8, 5).unwrap();  // abs col 5, but persp dc=-1 → slot 0
+        let to_right = Square::from_row_col(8, 3).unwrap(); // abs col 3, but persp dc=+1 → slot 1
         for (to, side) in [(to_left, "left"), (to_right, "right")] {
             for promote in [false, true] {
                 let mv = Move::Board { from, to, promote };
@@ -653,5 +673,52 @@ mod tests {
                 mv, idx
             );
         }
+    }
+
+    /// Play several moves from startpos and roundtrip all legal moves at each ply
+    /// for the side-to-move. This exercises knight encoding for both colors once
+    /// knights become mobile (typically after pawns advance).
+    #[test]
+    fn test_multi_ply_legal_moves_roundtrip() {
+        let m = mapper();
+        let mut state = shogi_core::GameState::new();
+        let mut knight_moves_seen: usize = 0;
+
+        // Play 12 plies using the first legal move each turn. This is enough
+        // to advance pawns and expose knight squares for both sides.
+        for ply in 0..12 {
+            let color = state.position.current_player;
+            let legal_moves = state.legal_moves();
+            assert!(!legal_moves.is_empty(), "No legal moves at ply {}", ply);
+
+            for mv in legal_moves.iter() {
+                let idx = trait_encode(&m, *mv, color);
+                assert!(idx < SPATIAL_ACTION_SPACE_SIZE,
+                    "Index {} out of range at ply {} for {:?}", idx, ply, mv);
+
+                let slot = idx % SPATIAL_MOVE_TYPES;
+                if (128..132).contains(&slot) {
+                    knight_moves_seen += 1;
+                }
+
+                let decoded = trait_decode(&m, idx, color)
+                    .unwrap_or_else(|e| panic!(
+                        "Failed to decode {:?} at ply {} for {:?}: {}",
+                        mv, ply, color, e
+                    ));
+                assert_eq!(decoded, *mv,
+                    "Roundtrip failed at ply {} for {:?}: {:?} (encoded as {})",
+                    ply, color, mv, idx);
+            }
+
+            // Advance the game by playing the first legal move.
+            state.make_move(legal_moves[0]);
+        }
+
+        assert!(
+            knight_moves_seen > 0,
+            "Multi-ply test did not exercise any knight moves — \
+             increase ply count or change move selection to unblock knights",
+        );
     }
 }

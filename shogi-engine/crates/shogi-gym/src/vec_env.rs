@@ -52,18 +52,38 @@ const PARALLEL_THRESHOLD: usize = 64;
 
 /// Wrapper that asserts a raw pointer may be sent across threads.
 ///
+/// Carries the allocation length so that `offset()` can bounds-check in
+/// debug builds, catching buffer-sizing mistakes before they become UB.
+///
 /// # Safety
 /// The caller must guarantee that accesses through this pointer are
 /// non-overlapping across threads (e.g. each thread uses a disjoint index).
 #[derive(Copy, Clone)]
-struct SendPtr<T>(*mut T);
+struct SendPtr<T> {
+    ptr: *mut T,
+    len: usize,
+}
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
 impl<T> SendPtr<T> {
+    /// Create a `SendPtr` from a mutable slice, capturing its length.
+    #[inline]
+    fn from_slice(slice: &mut [T]) -> Self {
+        Self {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+        }
+    }
+
     #[inline]
     unsafe fn offset(&self, count: usize) -> *mut T {
-        unsafe { self.0.add(count) }
+        debug_assert!(
+            count < self.len,
+            "SendPtr::offset out of bounds: count={count}, len={}",
+            self.len,
+        );
+        unsafe { self.ptr.add(count) }
     }
 }
 
@@ -261,18 +281,18 @@ impl VecEnv {
         // Extract raw pointers for non-overlapping parallel access.
         // SAFETY: each index `i` in 0..num_envs accesses only its own
         // non-overlapping slice of each buffer and its own games[i].
-        let games_ptr = SendPtr(self.games.as_mut_ptr());
-        let obs_ptr = SendPtr(self.obs_buffer.as_mut_ptr());
-        let mask_ptr = SendPtr(self.legal_mask_buffer.as_mut_ptr());
-        let terminal_obs_ptr = SendPtr(self.terminal_obs_buffer.as_mut_ptr());
-        let reward_ptr = SendPtr(self.reward_buffer.as_mut_ptr());
-        let terminated_ptr = SendPtr(self.terminated_buffer.as_mut_ptr());
-        let truncated_ptr = SendPtr(self.truncated_buffer.as_mut_ptr());
-        let captured_ptr = SendPtr(self.captured_buffer.as_mut_ptr());
-        let term_reason_ptr = SendPtr(self.term_reason_buffer.as_mut_ptr());
-        let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
-        let material_balance_ptr = SendPtr(self.material_balance_buffer.as_mut_ptr());
-        let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
+        let games_ptr = SendPtr::from_slice(&mut self.games);
+        let obs_ptr = SendPtr::from_slice(&mut self.obs_buffer);
+        let mask_ptr = SendPtr::from_slice(&mut self.legal_mask_buffer);
+        let terminal_obs_ptr = SendPtr::from_slice(&mut self.terminal_obs_buffer);
+        let reward_ptr = SendPtr::from_slice(&mut self.reward_buffer);
+        let terminated_ptr = SendPtr::from_slice(&mut self.terminated_buffer);
+        let truncated_ptr = SendPtr::from_slice(&mut self.truncated_buffer);
+        let captured_ptr = SendPtr::from_slice(&mut self.captured_buffer);
+        let term_reason_ptr = SendPtr::from_slice(&mut self.term_reason_buffer);
+        let ply_ptr = SendPtr::from_slice(&mut self.ply_buffer);
+        let material_balance_ptr = SendPtr::from_slice(&mut self.material_balance_buffer);
+        let current_players_ptr = SendPtr::from_slice(&mut self.current_players_buffer);
 
         let ep_completed = &self.episodes_completed;
         let ep_drawn = &self.episodes_drawn;
