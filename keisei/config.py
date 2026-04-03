@@ -49,6 +49,13 @@ class LeagueConfig:
     elo_k_factor: float = 32.0
     elo_floor: float = 500.0
     opponent_device: str | None = None  # e.g. "cuda:1" — defaults to learner device
+    # Background round-robin tournament for Elo calibration
+    tournament_enabled: bool = False
+    tournament_device: str | None = None  # defaults to opponent_device
+    tournament_num_envs: int = 64
+    tournament_games_per_match: int = 64
+    tournament_k_factor: float = 16.0
+    tournament_pause_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         ratio_sum = self.historical_ratio + self.current_best_ratio

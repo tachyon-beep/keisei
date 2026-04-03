@@ -44,6 +44,7 @@ from keisei.training.katago_ppo import (
 # centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
 from keisei.training.league import OpponentEntry, OpponentPool, OpponentSampler, compute_elo_update
 from keisei.training.model_registry import build_model
+from keisei.training.tournament import LeagueTournament
 
 logger = logging.getLogger(__name__)
 
@@ -506,6 +507,7 @@ class KataGoTrainingLoop:
         self._current_opponent: torch.nn.Module | None = None
         self._current_opponent_entry: OpponentEntry | None = None
         self._learner_entry_id: int | None = None
+        self._tournament: LeagueTournament | None = None
 
         if config.league is not None:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
@@ -528,6 +530,24 @@ class KataGoTrainingLoop:
                 "League initialized: pool_size=%d, snapshot_interval=%d",
                 config.league.max_pool_size, config.league.snapshot_interval,
             )
+
+            # Background tournament for Elo calibration (optional)
+            if config.league.tournament_enabled and self.dist_ctx.is_main:
+                tournament_device = (
+                    config.league.tournament_device
+                    or config.league.opponent_device
+                    or str(self.device)
+                )
+                self._tournament = LeagueTournament(
+                    db_path=self.db_path,
+                    league_dir=league_dir,
+                    device=tournament_device,
+                    num_envs=config.league.tournament_num_envs,
+                    games_per_match=config.league.tournament_games_per_match,
+                    k_factor=config.league.tournament_k_factor,
+                    pause_seconds=config.league.tournament_pause_seconds,
+                    max_ply=config.training.max_ply,
+                )
 
         self._check_resume()
 
@@ -644,6 +664,10 @@ class KataGoTrainingLoop:
                 pass  # Column may not exist in old DBs
             finally:
                 conn.close()
+
+        # Start background tournament if configured
+        if self._tournament is not None:
+            self._tournament.start()
 
         reset_result = self.vecenv.reset()
         obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
@@ -1140,6 +1164,10 @@ class KataGoTrainingLoop:
                 # Barrier after save — all ranks proceed together
                 if self.dist_ctx.is_distributed:
                     dist.barrier()
+
+        # Stop background tournament when training ends
+        if self._tournament is not None:
+            self._tournament.stop()
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""
