@@ -1061,3 +1061,34 @@ class TestCheckpointResumeRoundTrip:
                 p, original_weights[name],
                 msg=f"Weight mismatch after resume: {name}",
             )
+
+    def test_resume_architecture_mismatch_raises(self, katago_config):
+        """Resuming from a checkpoint whose architecture tag doesn't match
+        the config should raise ValueError via load_checkpoint."""
+        config = dataclasses.replace(
+            katago_config,
+            training=dataclasses.replace(
+                katago_config.training, checkpoint_interval=1,
+            ),
+        )
+
+        # Run 1 epoch so a checkpoint is saved (architecture="se_resnet")
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=2)
+
+        # Tamper with the checkpoint file: overwrite its architecture tag
+        # so it no longer matches the config's "se_resnet".
+        from pathlib import Path
+        ckpt_dir = Path(config.training.checkpoint_dir)
+        ckpt_files = sorted(ckpt_dir.glob("epoch_*.pt"))
+        assert len(ckpt_files) >= 1
+        ckpt = torch.load(ckpt_files[-1], weights_only=False)
+        ckpt["architecture"] = "tampered_arch"
+        torch.save(ckpt, ckpt_files[-1])
+
+        # Constructing a new loop triggers _check_resume → load_checkpoint,
+        # which should detect the architecture mismatch and raise ValueError.
+        mock_env2 = _make_mock_katago_vecenv(num_envs=2)
+        with pytest.raises(ValueError, match="architecture mismatch"):
+            KataGoTrainingLoop(config, vecenv=mock_env2)
