@@ -1039,6 +1039,12 @@ class KataGoTrainingLoop:
             white_win_count = white_wins.item()
 
             # Elo tracking (league mode, rank 0 only)
+            # The main trainer is NOT a league participant — it creates
+            # snapshots that become league entries, but its live training
+            # matches are not recorded as league results. Only the
+            # background tournament produces league_results rows.
+            # We still update the opponent's Elo so the pool has signal
+            # for sampling, but no result row is written.
             if self.dist_ctx.is_main:
                 total_games = win_count + loss_count + draw_count
                 if (self.pool is not None and self._current_opponent_entry is not None
@@ -1052,14 +1058,6 @@ class KataGoTrainingLoop:
                             learner_entry.elo_rating,
                             self._current_opponent_entry.elo_rating,
                             result=result_score, k=k,
-                        )
-                        delta_a = round(new_learner_elo - learner_entry.elo_rating, 1)
-                        delta_b = round(new_opp_elo - self._current_opponent_entry.elo_rating, 1)
-                        self.pool.record_result(
-                            epoch=epoch_i, learner_id=learner_entry.id,
-                            opponent_id=self._current_opponent_entry.id,
-                            wins=win_count, losses=loss_count, draws=draw_count,
-                            elo_delta_a=delta_a, elo_delta_b=delta_b,
                         )
                         self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
                         self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
