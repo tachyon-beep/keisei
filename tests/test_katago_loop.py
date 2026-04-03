@@ -148,6 +148,63 @@ class TestDDPInit:
         assert loop.dist_ctx.world_size == 1
 
 
+class TestRankGating:
+    def test_non_main_rank_skips_checkpoint(self):
+        """Non-main rank should not write checkpoints."""
+        ctx = DistributedContext(rank=1, local_rank=1, world_size=2, is_distributed=True)
+        config = _make_config()
+        config = dataclasses.replace(
+            config,
+            training=dataclasses.replace(config.training, checkpoint_interval=1),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with patch("keisei.training.katago_loop.init_db"), \
+             patch("keisei.training.katago_loop.read_training_state", return_value=None), \
+             patch("keisei.training.katago_loop.write_training_state"), \
+             patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
+             patch("keisei.training.katago_loop.dist.barrier"):
+            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+
+        with patch("keisei.training.katago_loop.save_checkpoint") as mock_save, \
+             patch("keisei.training.katago_loop.dist.barrier"), \
+             patch("keisei.training.katago_loop.dist.all_reduce"):
+            loop.run(num_epochs=1, steps_per_epoch=2)
+            mock_save.assert_not_called()
+
+    def test_main_rank_writes_checkpoint(self):
+        """Main rank should write checkpoints normally."""
+        ctx = DistributedContext(rank=0, local_rank=0, world_size=1, is_distributed=False)
+        config = _make_config()
+        config = dataclasses.replace(
+            config,
+            training=dataclasses.replace(config.training, checkpoint_interval=1),
+        )
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+
+        with patch("keisei.training.katago_loop.save_checkpoint") as mock_save:
+            loop.run(num_epochs=1, steps_per_epoch=2)
+            assert mock_save.call_count >= 1
+
+    def test_non_main_rank_skips_metrics(self):
+        """Non-main rank should not write metrics to DB."""
+        ctx = DistributedContext(rank=1, local_rank=1, world_size=2, is_distributed=True)
+        config = _make_config()
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with patch("keisei.training.katago_loop.init_db"), \
+             patch("keisei.training.katago_loop.read_training_state", return_value=None), \
+             patch("keisei.training.katago_loop.write_training_state"), \
+             patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
+             patch("keisei.training.katago_loop.dist.barrier"):
+            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+
+        with patch("keisei.training.katago_loop.write_metrics") as mock_write, \
+             patch("keisei.training.katago_loop.dist.barrier"), \
+             patch("keisei.training.katago_loop.dist.all_reduce"):
+            loop.run(num_epochs=1, steps_per_epoch=2)
+            mock_write.assert_not_called()
+
+
 @pytest.fixture
 def katago_config(tmp_path):
     return AppConfig(

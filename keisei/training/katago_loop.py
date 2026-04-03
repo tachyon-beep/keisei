@@ -539,120 +539,143 @@ class KataGoTrainingLoop:
                     "value head received no gradient this epoch)", epoch_i,
                 )
 
-            # LR scheduler logic
+            # LR scheduler logic — ALL ranks must participate with the SAME
+            # monitor value to keep LR state synchronized across ranks.
             if epoch_i == self.ppo.warmup_epochs and self.lr_scheduler is not None:
                 self.lr_scheduler.best = self.lr_scheduler.mode_worse
                 self.lr_scheduler.num_bad_epochs = 0
-                logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
+                if self.dist_ctx.is_main:
+                    logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
 
             if self.lr_scheduler is not None:
                 monitor_value = losses.get("value_loss")
                 if monitor_value is not None:
+                    # Synchronize monitor value across ranks so all schedulers
+                    # step identically and maintain the same LR state.
+                    if self.dist_ctx.is_distributed:
+                        monitor_tensor = torch.tensor(
+                            monitor_value, device=self.device,
+                        )
+                        dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
+                        monitor_value = monitor_tensor.item()
+
                     old_lr = self.ppo.optimizer.param_groups[0]["lr"]
                     self.lr_scheduler.step(monitor_value)
                     new_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    if new_lr != old_lr:
+                    if new_lr != old_lr and self.dist_ctx.is_main:
                         logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
                                     old_lr, new_lr, monitor_value)
 
-            # Materialise GPU counters → CPU once per epoch (not per step).
+            # Materialise GPU counters → CPU once per epoch (all ranks, to release GPU memory)
             win_count = win_acc.item()
             loss_count = loss_acc.item()
             draw_count = draw_acc.item()
 
-            # Elo tracking (league mode)
-            total_games = win_count + loss_count + draw_count
-            if (self.pool is not None and self._current_opponent_entry is not None
-                    and total_games > 0):
-                learner_entry = self.pool._get_entry(self._learner_entry_id)
-                if learner_entry is not None:
-                    self.pool.record_result(
-                        epoch=epoch_i, learner_id=learner_entry.id,
-                        opponent_id=self._current_opponent_entry.id,
-                        wins=win_count, losses=loss_count, draws=draw_count,
-                    )
-                    result_score = (win_count + 0.5 * draw_count) / total_games
-                    k = self.config.league.elo_k_factor if self.config.league else 32.0
-                    new_learner_elo, new_opp_elo = compute_elo_update(
-                        learner_entry.elo_rating,
-                        self._current_opponent_entry.elo_rating,
-                        result=result_score, k=k,
-                    )
-                    self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
-                    self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
-                    logger.info(
-                        "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
-                        learner_entry.elo_rating, new_learner_elo,
-                        self._current_opponent_entry.id,
-                        self._current_opponent_entry.elo_rating, new_opp_elo,
-                        win_count, loss_count, draw_count,
+            # Elo tracking (league mode, rank 0 only)
+            if self.dist_ctx.is_main:
+                total_games = win_count + loss_count + draw_count
+                if (self.pool is not None and self._current_opponent_entry is not None
+                        and total_games > 0):
+                    learner_entry = self.pool._get_entry(self._learner_entry_id)
+                    if learner_entry is not None:
+                        self.pool.record_result(
+                            epoch=epoch_i, learner_id=learner_entry.id,
+                            opponent_id=self._current_opponent_entry.id,
+                            wins=win_count, losses=loss_count, draws=draw_count,
+                        )
+                        result_score = (win_count + 0.5 * draw_count) / total_games
+                        k = self.config.league.elo_k_factor if self.config.league else 32.0
+                        new_learner_elo, new_opp_elo = compute_elo_update(
+                            learner_entry.elo_rating,
+                            self._current_opponent_entry.elo_rating,
+                            result=result_score, k=k,
+                        )
+                        self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
+                        self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
+                        logger.info(
+                            "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                            learner_entry.elo_rating, new_learner_elo,
+                            self._current_opponent_entry.id,
+                            self._current_opponent_entry.elo_rating, new_opp_elo,
+                            win_count, loss_count, draw_count,
+                        )
+
+            if self.dist_ctx.is_main:
+                # Seat rotation (takes priority — includes its own snapshot)
+                rotating_this_epoch = (
+                    self.config.league is not None and self.pool is not None
+                    and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
+                )
+                if rotating_this_epoch:
+                    self._rotate_seat(epoch_i)
+
+                # Periodic pool snapshot (skip if rotation already snapshotted)
+                if (self.pool is not None and self.config.league is not None
+                        and (epoch_i + 1) % self.config.league.snapshot_interval == 0
+                        and not rotating_this_epoch):
+                    self.pool.add_snapshot(
+                        self._base_model, self.config.model.architecture,
+                        dict(self.config.model.params), epoch=epoch_i + 1,
                     )
 
-            # Seat rotation (takes priority — includes its own snapshot)
-            rotating_this_epoch = (
-                self.config.league is not None and self.pool is not None
-                and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
-            )
-            if rotating_this_epoch:
-                self._rotate_seat(epoch_i)
+            if self.dist_ctx.is_main:
+                # Metrics and logging
+                ep_completed = getattr(self.vecenv, "episodes_completed", 0)
+                metrics = {
+                    "epoch": epoch_i, "step": self.global_step,
+                    "policy_loss": losses["policy_loss"],
+                    "value_loss": losses["value_loss"],
+                    "entropy": losses["entropy"],
+                    "gradient_norm": losses["gradient_norm"],
+                    "episodes_completed": ep_completed,
+                }
+                try:
+                    write_metrics(self.db_path, metrics)
+                except Exception:
+                    logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
 
-            # Periodic pool snapshot (skip if rotation already snapshotted)
-            if (self.pool is not None and self.config.league is not None
-                    and (epoch_i + 1) % self.config.league.snapshot_interval == 0
-                    and not rotating_this_epoch):
-                self.pool.add_snapshot(
-                    self._base_model, self.config.model.architecture,
-                    dict(self.config.model.params), epoch=epoch_i + 1,
+                if hasattr(self.vecenv, "reset_stats"):
+                    self.vecenv.reset_stats()
+
+                try:
+                    update_training_progress(self.db_path, epoch_i, self.global_step)
+                except Exception:
+                    logger.exception("Failed to update training progress — continuing")
+
+                logger.info(
+                    "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
+                    epoch_i, self.global_step, losses["policy_loss"],
+                    losses["value_loss"], losses["score_loss"], losses["entropy"],
                 )
 
-            # Metrics and logging
-            ep_completed = getattr(self.vecenv, "episodes_completed", 0)
-            metrics = {
-                "epoch": epoch_i, "step": self.global_step,
-                "policy_loss": losses["policy_loss"],
-                "value_loss": losses["value_loss"],
-                "entropy": losses["entropy"],
-                "gradient_norm": losses["gradient_norm"],
-                "episodes_completed": ep_completed,
-            }
-            try:
-                write_metrics(self.db_path, metrics)
-            except Exception:
-                logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
-
-            if hasattr(self.vecenv, "reset_stats"):
-                self.vecenv.reset_stats()
-
-            try:
-                update_training_progress(self.db_path, epoch_i, self.global_step)
-            except Exception:
-                logger.exception("Failed to update training progress — continuing")
-
-            logger.info(
-                "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
-                epoch_i, self.global_step, losses["policy_loss"],
-                losses["value_loss"], losses["score_loss"], losses["entropy"],
-            )
-
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
-                ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
-                try:
-                    save_checkpoint(
-                        ckpt_path, self._base_model, self.ppo.optimizer,
-                        epoch_i + 1, self.global_step,
-                        architecture=self.config.model.architecture,
-                        scheduler=self.lr_scheduler,
-                        grad_scaler=self.ppo.scaler,
-                    )
-                    logger.info("Checkpoint saved: %s", ckpt_path)
-                except Exception:
-                    logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
-                try:
-                    update_training_progress(
-                        self.db_path, epoch_i + 1, self.global_step, str(ckpt_path),
-                    )
-                except Exception:
-                    logger.exception("Failed to record checkpoint path in DB — continuing")
+                # Barrier ensures all ranks finish PPO update before checkpoint write
+                if self.dist_ctx.is_distributed:
+                    dist.barrier()
+
+                if self.dist_ctx.is_main:
+                    ckpt_path = Path(self.config.training.checkpoint_dir) / f"epoch_{epoch_i:05d}.pt"
+                    try:
+                        save_checkpoint(
+                            ckpt_path, self._base_model, self.ppo.optimizer,
+                            epoch_i + 1, self.global_step,
+                            architecture=self.config.model.architecture,
+                            scheduler=self.lr_scheduler,
+                            grad_scaler=self.ppo.scaler,
+                        )
+                        logger.info("Checkpoint saved: %s", ckpt_path)
+                    except Exception:
+                        logger.exception("Failed to save checkpoint %s — continuing", ckpt_path)
+                    try:
+                        update_training_progress(
+                            self.db_path, epoch_i + 1, self.global_step, str(ckpt_path),
+                        )
+                    except Exception:
+                        logger.exception("Failed to record checkpoint path in DB — continuing")
+
+                # Barrier after save — all ranks proceed together
+                if self.dist_ctx.is_distributed:
+                    dist.barrier()
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""
@@ -693,6 +716,8 @@ class KataGoTrainingLoop:
         )
 
     def _maybe_update_heartbeat(self) -> None:
+        if not self.dist_ctx.is_main:
+            return
         now = time.monotonic()
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
@@ -701,6 +726,8 @@ class KataGoTrainingLoop:
             )
 
     def _maybe_write_snapshots(self) -> None:
+        if not self.dist_ctx.is_main:
+            return
         if self.moves_per_minute <= 0:
             return
         now = time.monotonic()
