@@ -1026,8 +1026,10 @@ class KataGoTrainingLoop:
                     # non-zero rewards. Both are included for cross-validation.
                     "draw_rate": getattr(self.vecenv, "draw_rate", None),
                     "win_rate": (
-                        (win_count + 0.5 * draw_count) / total_games
-                        if total_games > 0 else None
+                        win_count / total_games if total_games > 0 else None
+                    ),
+                    "loss_rate": (
+                        loss_count / total_games if total_games > 0 else None
                     ),
                     "black_win_rate": (
                         black_win_count / total_games if total_games > 0 else None

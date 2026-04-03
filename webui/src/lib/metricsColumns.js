@@ -8,6 +8,7 @@ export function extractColumns(rows) {
     policyLoss = [],
     valueLoss = [],
     winRate = [],
+    lossRate = [],
     blackWinRate = [],
     whiteWinRate = [],
     drawRate = [],
@@ -19,6 +20,7 @@ export function extractColumns(rows) {
     policyLoss.push(r.policy_loss ?? null)
     valueLoss.push(r.value_loss ?? null)
     winRate.push(r.win_rate ?? null)
+    lossRate.push(r.loss_rate ?? null)
     blackWinRate.push(r.black_win_rate ?? null)
     whiteWinRate.push(r.white_win_rate ?? null)
     drawRate.push(r.draw_rate ?? null)
@@ -31,6 +33,7 @@ export function extractColumns(rows) {
     policyLoss,
     valueLoss,
     winRate,
+    lossRate,
     blackWinRate,
     whiteWinRate,
     drawRate,

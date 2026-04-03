@@ -12,6 +12,7 @@
   export let width = 400
   export let height = 100
   export let compact = false
+  export let xLabel = null
 
   let container
   let chart = null
@@ -20,7 +21,7 @@
   function getOpts() {
     const w = container ? container.clientWidth : width
     const colors = resolveThemeColors()
-    return buildChartOpts({ width: w, height, series, compact, colors })
+    return buildChartOpts({ width: w, height, series, compact, xLabel, colors })
   }
 
   function getData() {

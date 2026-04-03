@@ -17,12 +17,13 @@ export function resolveThemeColors() {
  * @param {object} params
  * @param {number} params.width
  * @param {number} params.height
- * @param {Array<{label: string, color: string}>} params.series
+ * @param {Array<{label: string, color: string, dash?: number[]}>} params.series
  * @param {boolean} [params.compact]
+ * @param {string} [params.xLabel] - X-axis label (e.g. "Epoch", "Step")
  * @param {{textColor: string, gridColor: string, axisColor: string}} [params.colors]
  * @returns {object} uPlot options
  */
-export function buildChartOpts({ width, height, series, compact = false, colors = null }) {
+export function buildChartOpts({ width, height, series, compact = false, xLabel = null, colors = null }) {
   const c = colors || resolveThemeColors()
   return {
     width,
@@ -34,6 +35,8 @@ export function buildChartOpts({ width, height, series, compact = false, colors 
     axes: [
       {
         show: !compact,
+        label: !compact && xLabel ? xLabel : undefined,
+        labelFont: '11px sans-serif',
         stroke: c.textColor,
         grid: { stroke: c.gridColor, width: 0.5 },
         ticks: { stroke: c.axisColor },
@@ -55,7 +58,8 @@ export function buildChartOpts({ width, height, series, compact = false, colors 
         label: s.label,
         stroke: s.color,
         width: compact ? 1 : 1.5,
-        fill: s.color + '20',
+        fill: s.dash ? undefined : s.color + '20',
+        dash: s.dash || undefined,
       })),
     ],
   }

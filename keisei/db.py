@@ -34,6 +34,7 @@ def init_db(db_path: str) -> None:
                 value_loss         REAL,
                 entropy            REAL,
                 win_rate           REAL,
+                loss_rate          REAL,
                 black_win_rate     REAL,
                 white_win_rate     REAL,
                 draw_rate          REAL,
@@ -120,17 +121,18 @@ def write_metrics(db_path: str, metrics: dict[str, Any]) -> None:
     try:
         conn.execute(
             """INSERT INTO metrics (epoch, step, policy_loss, value_loss, entropy,
-               win_rate, black_win_rate, white_win_rate, draw_rate,
+               win_rate, loss_rate, black_win_rate, white_win_rate, draw_rate,
                truncation_rate, avg_episode_length,
                gradient_norm, episodes_completed)
                VALUES (:epoch, :step, :policy_loss, :value_loss, :entropy,
-               :win_rate, :black_win_rate, :white_win_rate, :draw_rate,
+               :win_rate, :loss_rate, :black_win_rate, :white_win_rate, :draw_rate,
                :truncation_rate, :avg_episode_length,
                :gradient_norm, :episodes_completed)""",
             {
                 "epoch": metrics.get("epoch", 0), "step": metrics.get("step", 0),
                 "policy_loss": metrics.get("policy_loss"), "value_loss": metrics.get("value_loss"),
                 "entropy": metrics.get("entropy"), "win_rate": metrics.get("win_rate"),
+                "loss_rate": metrics.get("loss_rate"),
                 "black_win_rate": metrics.get("black_win_rate"),
                 "white_win_rate": metrics.get("white_win_rate"),
                 "draw_rate": metrics.get("draw_rate"),
