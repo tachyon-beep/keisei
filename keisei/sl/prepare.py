@@ -178,7 +178,9 @@ def prepare_sl_data(
         "num_shards": shard_idx,
         "num_games": games_parsed,
     }
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp_meta = meta_path.with_suffix(".json.tmp")
+    tmp_meta.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp_meta.rename(meta_path)
     logger.info("Wrote %s (placeholder=%s)", meta_path, meta["placeholder"])
 
     logger.info(

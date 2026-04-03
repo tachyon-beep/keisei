@@ -295,6 +295,10 @@ class KataGoPPOAlgorithm:
             model.configure_amp(
                 enabled=params.use_amp, dtype=amp_dtype, device_type=amp_device_type,
             )
+            # Freeze AMP config after compile + configure — changing _amp_*
+            # attributes after torch.compile triggers silent recompilation.
+            if self.compiled_train is not None:
+                model._amp_frozen = True
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)

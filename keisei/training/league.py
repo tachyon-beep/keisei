@@ -17,7 +17,7 @@ from keisei.training.model_registry import build_model
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class OpponentEntry:
     """A snapshot in the opponent pool."""
 
@@ -84,7 +84,9 @@ class OpponentPool:
         self._conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # Single-thread-only: the held connection is not protected by a lock.
+        # Do not share an OpponentPool instance across threads.
+        conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")

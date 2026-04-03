@@ -83,7 +83,12 @@ class SLDataset(Dataset):
         # Guard: refuse to load placeholder shards unless explicitly allowed.
         meta_path = data_dir / "shard_meta.json"
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
+            try:
+                meta = json.loads(meta_path.read_bytes())
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Corrupt shard_meta.json at {meta_path}: {exc}"
+                ) from exc
             if meta.get("placeholder", False) and not allow_placeholder:
                 raise ValueError(
                     f"Shard directory {data_dir} contains placeholder data "
