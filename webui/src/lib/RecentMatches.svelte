@@ -57,6 +57,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    max-height: 200px;
+    flex-shrink: 0;
   }
 
   .section-header {

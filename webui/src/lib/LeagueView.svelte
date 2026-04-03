@@ -37,9 +37,9 @@
 
   <div class="league-columns">
     <div class="left-column">
-      <LeagueTable {learnerName} />
-    </div>
-    <div class="right-column">
+      <div class="table-wrapper">
+        <LeagueTable {learnerName} />
+      </div>
       <div class="chart-card">
         <h2 class="section-header">Elo Over Time</h2>
         {#if chartData.xData.length > 0}
@@ -47,7 +47,7 @@
             title=""
             xData={chartData.xData}
             series={chartData.series}
-            height={280}
+            height={200}
             xLabel="Epoch"
             legendPosition="right"
           />
@@ -55,10 +55,10 @@
           <p class="empty">Elo history will appear after league matches are played.</p>
         {/if}
       </div>
-      <div class="bottom-panels">
-        <MatchupMatrix {learnerName} />
-        <RecentMatches />
-      </div>
+    </div>
+    <div class="right-column">
+      <MatchupMatrix {learnerName} />
+      <RecentMatches />
     </div>
   </div>
 
@@ -120,7 +120,7 @@
 
   .league-columns {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 2fr 3fr;
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -129,14 +129,15 @@
 
   .left-column {
     min-height: 0;
-    overflow: hidden;
-  }
-
-  .right-column {
-    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    overflow: hidden;
+  }
+
+  .table-wrapper {
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -148,12 +149,11 @@
     flex-shrink: 0;
   }
 
-  .bottom-panels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    flex: 1;
+  .right-column {
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     overflow: hidden;
   }
 
