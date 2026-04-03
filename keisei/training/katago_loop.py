@@ -1042,7 +1042,8 @@ class KataGoTrainingLoop:
             if self.dist_ctx.is_main:
                 total_games = win_count + loss_count + draw_count
                 if (self.pool is not None and self._current_opponent_entry is not None
-                        and total_games > 0):
+                        and total_games > 0
+                        and self._learner_entry_id != self._current_opponent_entry.id):
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         result_score = (win_count + 0.5 * draw_count) / total_games
