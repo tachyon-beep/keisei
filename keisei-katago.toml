@@ -1,4 +1,12 @@
-# keisei-katago.toml — KataGo SE-ResNet b40c256 training config
+# keisei-katago.toml — Single-GPU KataGo training (league-capable)
+#
+# Hardware: Single GPU (RTX 4060 Ti 16GB or similar)
+# Model:    KataGo SE-ResNet b40c256 (~120M params)
+# Purpose:  Single-GPU training with optional league mode.
+#           League mode (opponent pool, Elo tracking) requires single-GPU
+#           because split-merge produces unequal buffer sizes across ranks.
+#
+# Launch:   ./run-training.sh --config keisei-katago.toml --ngpus 1
 
 [model]
 display_name = "KataGo-SE-b40c256"
@@ -20,6 +28,7 @@ max_ply = 512
 algorithm = "katago_ppo"
 checkpoint_interval = 50
 checkpoint_dir = "checkpoints/katago/"
+use_amp = true
 
 [training.algorithm_params]
 learning_rate = 0.0002
@@ -38,3 +47,10 @@ grad_clip = 1.0
 [display]
 moves_per_minute = 30
 db_path = "keisei-katago.db"
+
+# Uncomment to enable league mode (single-GPU only):
+# [league]
+# max_pool_size = 16
+# snapshot_interval = 50
+# epochs_per_seat = 10
+# elo_k_factor = 32.0

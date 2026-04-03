@@ -1,25 +1,53 @@
+# keisei-h200.toml — Production training on H200 GPU cluster
+#
+# Hardware: NVIDIA H200 80GB (single-GPU or multi-GPU DDP)
+# Model:    KataGo SE-ResNet b40c256 (~full-scale, ~120M params)
+# Purpose:  Production-scale training with large batch size and more envs.
+#           Migrate here once burn-in on 4060 Ti shows stable curves.
+#
+# Single GPU: ./run-training.sh --config keisei-h200.toml --ngpus 1
+# Multi-GPU:  ./run-training.sh --config keisei-h200.toml --ngpus 4
+
+[model]
+display_name = "KataGo-H200-b40c256"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 40
+channels = 256
+se_reduction = 16
+global_pool_channels = 128
+policy_channels = 32
+value_fc_size = 256
+score_fc_size = 128
+obs_channels = 50
+
 [training]
-num_games = 512
-max_ply = 500
-algorithm = "ppo"
-checkpoint_interval = 5000
-checkpoint_dir = "checkpoints/"
+num_games = 512             # per-rank — H200 has headroom for large env count
+max_ply = 512
+algorithm = "katago_ppo"
+checkpoint_interval = 500
+checkpoint_dir = "checkpoints/h200/"
+use_amp = true
 
 [training.algorithm_params]
-learning_rate = 3e-4
+learning_rate = 0.0002
 gamma = 0.99
+gae_lambda = 0.95
 clip_epsilon = 0.2
 epochs_per_batch = 4
-batch_size = 4096
+batch_size = 4096           # large batch — H200 has 80GB VRAM
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
 
 [display]
 moves_per_minute = 60
 db_path = "keisei.db"
 
-[model]
-display_name = "Hikaru"
-architecture = "resnet"
-
-[model.params]
-hidden_size = 256
-num_layers = 16
+[distributed]
+sync_batchnorm = true
+gradient_as_bucket_view = true

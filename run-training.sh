@@ -1,29 +1,41 @@
 #!/usr/bin/env bash
-# run-training.sh — Launch DDP training + web dashboard as one command.
+# ============================================================================
+# run-training.sh — General-purpose training launcher with web dashboard
+# ============================================================================
+#
+# What this does:
+#   1. Launches DDP training across available GPUs (or single-GPU)
+#   2. Launches the web dashboard reading the same DB as the trainer
+#   3. Both run in the background with PID tracking for clean shutdown
+#
+# The trainer and dashboard share the same config file, so the DB path
+# is always consistent. This avoids the stale-UI bug where the dashboard
+# reads a different database than the trainer.
 #
 # Usage:
-#   ./run-training.sh                    # 500k epochs, default config
-#   ./run-training.sh --epochs 1000      # custom epoch count
-#   ./run-training.sh --config my.toml   # custom config
+#   ./run-training.sh                              # defaults: ddp_example, 1000 epochs
+#   ./run-training.sh --config keisei-ddp.toml     # custom config
+#   ./run-training.sh --epochs 5000                # custom epoch count
+#   ./run-training.sh --ngpus 1                    # single-GPU (for league mode)
+#   ./run-training.sh --port 9000                  # custom dashboard port
+#   ./run-training.sh --stop                       # kill running processes
 #
-# Logs:
-#   training.log  — training output (both ranks)
-#   webui.log     — web dashboard output
-#
-# Stop:
-#   ./run-training.sh --stop             # kills both processes
+# For the overnight 500K run, use ./run-500k.sh instead — it has
+# foreground monitoring, server auto-restart, and clean-slate support.
+# ============================================================================
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
 CONFIG="configs/ddp_example.toml"
-EPOCHS=500000
+EPOCHS=1000
 NGPUS=2
 WEB_HOST="0.0.0.0"
 WEB_PORT=8741
 PIDFILE=".training.pids"
 
-# --- Parse args ---
+# ---- Stop mode ----
+
 if [[ "${1:-}" == "--stop" ]]; then
     if [[ -f "$PIDFILE" ]]; then
         echo "Stopping training and web server..."
@@ -39,6 +51,8 @@ if [[ "${1:-}" == "--stop" ]]; then
     exit 0
 fi
 
+# ---- Parse args ----
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config) CONFIG="$2"; shift 2 ;;
@@ -49,7 +63,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Preflight checks ---
+# ---- Preflight checks ----
+
 if ! command -v uv &>/dev/null; then
     echo "Error: uv not found in PATH"
     exit 1
@@ -66,14 +81,14 @@ if [[ "$GPU_COUNT" -lt "$NGPUS" ]]; then
     NGPUS=$GPU_COUNT
 fi
 
-# --- Check for existing runs ---
 if [[ -f "$PIDFILE" ]]; then
     echo "Error: PID file exists — a run may already be active."
     echo "  Use './run-training.sh --stop' first, or delete $PIDFILE if stale."
     exit 1
 fi
 
-# --- Launch web dashboard ---
+# ---- Launch web dashboard ----
+
 echo "Starting web dashboard on $WEB_HOST:$WEB_PORT ..."
 nohup uv run keisei-serve --config "$CONFIG" --host "$WEB_HOST" --port "$WEB_PORT" \
     > webui.log 2>&1 &
@@ -81,10 +96,10 @@ WEB_PID=$!
 echo "$WEB_PID" > "$PIDFILE"
 echo "  Web PID: $WEB_PID (log: webui.log)"
 
-# Brief pause so the DB is initialized before training starts
 sleep 1
 
-# --- Launch training ---
+# ---- Launch training ----
+
 echo "Starting DDP training ($NGPUS GPUs, $EPOCHS epochs) ..."
 if [[ "$NGPUS" -gt 1 ]]; then
     nohup uv run torchrun --nproc_per_node="$NGPUS" \

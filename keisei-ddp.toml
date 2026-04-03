@@ -1,5 +1,11 @@
-# keisei-ddp.toml — DDP test run on 2x RTX 4060 Ti
-# Launch: torchrun --nproc_per_node=2 -m keisei.training.katago_loop keisei-ddp.toml
+# keisei-ddp.toml — Short DDP test run on 2x RTX 4060 Ti
+#
+# Hardware: 2x NVIDIA RTX 4060 Ti 16GB (DDP)
+# Model:    KataGo SE-ResNet b10c128 (~7.5M params)
+# Purpose:  Quick validation of DDP training (minutes, not hours).
+#           Use keisei-500k.toml for extended runs.
+#
+# Launch:   ./run-training.sh --config keisei-ddp.toml --epochs 100
 
 [model]
 display_name = "KataGo-DDP-b10c128"
