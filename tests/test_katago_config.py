@@ -81,3 +81,23 @@ def test_invalid_algorithm_rejected(tmp_path):
     toml_file.write_text(toml)
     with pytest.raises(ValueError, match="Unknown algorithm"):
         load_config(toml_file)
+
+
+from keisei.config import DistributedConfig
+
+
+class TestDistributedConfig:
+    def test_defaults(self):
+        cfg = DistributedConfig()
+        assert cfg.sync_batchnorm is True
+        assert cfg.find_unused_parameters is False
+        assert cfg.gradient_as_bucket_view is True
+
+    def test_custom_values(self):
+        cfg = DistributedConfig(sync_batchnorm=False)
+        assert cfg.sync_batchnorm is False
+
+    def test_rejects_unknown_keys(self):
+        """Typos in config keys should fail loudly."""
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            DistributedConfig(sycn_batchnorm=True)
