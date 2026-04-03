@@ -61,7 +61,7 @@ SERVER_LOG="$LOG_DIR/league500k_server_${TIMESTAMP}.log"
 
 if [[ "${1:-}" != "resume" ]]; then
     echo "Fresh start — wiping DB and checkpoints"
-    rm -f "$DB_PATH"
+    rm -f "$DB_PATH" "${DB_PATH}-wal" "${DB_PATH}-shm"
     rm -rf "$CKPT_DIR/"
     mkdir -p "$CKPT_DIR"
 else
