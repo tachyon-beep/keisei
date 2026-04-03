@@ -28,6 +28,9 @@ from keisei.db import (
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
+from keisei.training.distributed import DistributedContext, get_distributed_context, broadcast_string
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
@@ -153,7 +156,11 @@ def create_lr_scheduler(
 
 
 class KataGoTrainingLoop:
-    def __init__(self, config: AppConfig, vecenv: Any = None, resume_mode: str = "rl") -> None:
+    def __init__(
+        self, config: AppConfig, vecenv: Any = None,
+        resume_mode: str = "rl",
+        dist_ctx: DistributedContext | None = None,
+    ) -> None:
         if resume_mode not in ("rl", "sl"):
             raise ValueError(f"resume_mode must be 'rl' or 'sl', got '{resume_mode}'")
         self._resume_mode = resume_mode
@@ -162,7 +169,8 @@ class KataGoTrainingLoop:
 
         init_db(self.db_path)
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dist_ctx = dist_ctx or get_distributed_context()
+        self.device = self.dist_ctx.device
 
         # Validate architecture-algorithm compatibility BEFORE building the model.
         # build_model() allocates the full weight matrix (potentially ~1.5 GB VRAM
@@ -178,24 +186,37 @@ class KataGoTrainingLoop:
         self.model = build_model(config.model.architecture, config.model.params)
         self.model = self.model.to(self.device)
 
-        gpu_count = torch.cuda.device_count()
-        # DataParallel's gather doesn't support custom dataclass outputs
-        # (KataGoOutput). Multi-GPU for KataGo models requires DistributedDataParallel
-        # with a custom output wrapper — deferred to Plan D.
-        if gpu_count > 1:
-            logger.info(
-                "Found %d GPUs; DataParallel skipped for KataGo (use DDP instead)",
-                gpu_count,
+        if self.dist_ctx.is_distributed:
+            if config.distributed.sync_batchnorm:
+                self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
+                logger.info("Converted BatchNorm layers to SyncBatchNorm")
+            self.model = DDP(
+                self.model,
+                device_ids=[self.dist_ctx.local_rank] if self.device.type == "cuda" else None,
+                output_device=self.dist_ctx.local_rank if self.device.type == "cuda" else None,
+                find_unused_parameters=config.distributed.find_unused_parameters,
+                gradient_as_bucket_view=config.distributed.gradient_as_bucket_view,
             )
+            logger.info(
+                "DDP wrapping complete: rank=%d, world_size=%d",
+                self.dist_ctx.rank, self.dist_ctx.world_size,
+            )
+        else:
+            gpu_count = torch.cuda.device_count()
+            if gpu_count > 1:
+                logger.info(
+                    "Found %d GPUs; DataParallel skipped for KataGo (use DDP instead)",
+                    gpu_count,
+                )
 
-        param_count = sum(p.numel() for p in self.model.parameters())
+        param_count = sum(p.numel() for p in self._base_model.parameters())
         logger.info(
-            "Model: %s (%s), params: %d, device: %s, gpus: %d",
+            "Model: %s (%s), params: %d, device: %s, world_size: %d",
             config.model.display_name,
             config.model.architecture,
             param_count,
             self.device,
-            gpu_count,
+            self.dist_ctx.world_size,
         )
 
         # Extract nested config sections BEFORE validate_algorithm_params,

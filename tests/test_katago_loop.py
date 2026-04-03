@@ -3,6 +3,7 @@
 
 import dataclasses
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,6 +12,7 @@ import torch
 
 from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
 from keisei.db import update_training_progress
+from keisei.training.distributed import DistributedContext
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
@@ -76,6 +78,74 @@ def _make_mock_katago_vecenv(
     mock.step.side_effect = make_step_result
     mock.reset_stats = MagicMock()
     return mock
+
+
+def _make_config(tmp_path: Path | None = None) -> AppConfig:
+    """Create a minimal AppConfig for testing.
+
+    Uses a temp directory for checkpoint_dir and db_path. If tmp_path is
+    None, uses /tmp with a unique suffix.
+    """
+    import tempfile
+
+    if tmp_path is None:
+        tmp_path = Path(tempfile.mkdtemp())
+    return AppConfig(
+        training=TrainingConfig(
+            num_games=2,
+            max_ply=50,
+            algorithm="katago_ppo",
+            checkpoint_interval=5,
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            algorithm_params={
+                "learning_rate": 2e-4,
+                "gamma": 0.99,
+                "lambda_policy": 1.0,
+                "lambda_value": 1.5,
+                "lambda_score": 0.02,
+                "lambda_entropy": 0.01,
+                "score_normalization": 76.0,
+                "grad_clip": 1.0,
+            },
+        ),
+        display=DisplayConfig(
+            moves_per_minute=0,
+            db_path=str(tmp_path / "test.db"),
+        ),
+        model=ModelConfig(
+            display_name="Test-KataGo",
+            architecture="se_resnet",
+            params={
+                "num_blocks": 2,
+                "channels": 32,
+                "se_reduction": 8,
+                "global_pool_channels": 16,
+                "policy_channels": 8,
+                "value_fc_size": 32,
+                "score_fc_size": 16,
+                "obs_channels": 50,
+            },
+        ),
+    )
+
+
+class TestDDPInit:
+    def test_training_loop_accepts_dist_context(self):
+        """KataGoTrainingLoop accepts a DistributedContext."""
+        ctx = DistributedContext(rank=0, local_rank=0, world_size=1, is_distributed=False)
+        config = _make_config()
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+        assert loop.dist_ctx is ctx
+        assert loop.dist_ctx.is_main is True
+
+    def test_non_distributed_backward_compatible(self):
+        """Omitting dist_ctx gives a non-distributed context."""
+        config = _make_config()
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        assert loop.dist_ctx.is_distributed is False
+        assert loop.dist_ctx.world_size == 1
 
 
 @pytest.fixture
