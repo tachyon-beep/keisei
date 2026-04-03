@@ -77,10 +77,8 @@ impl ObservationGenerator for KataGoObservationGenerator {
         // prior_reps == 0: all repetition channels stay 0.0 (first occurrence)
 
         // --- Channel 48: Check indicator ---
-        // Note: is_in_check() checks the *current player's* king, not the perspective's.
-        // In normal self-play, perspective == state.position.current_player, so this is
-        // correct. If they ever differ, channel 48 reflects the side-to-move's check status.
-        if state.is_in_check() {
+        // 1.0 if the perspective player's king is in check.
+        if state.is_color_in_check(perspective) {
             let start = 48 * KATAGO_NUM_SQUARES;
             buffer[start..start + KATAGO_NUM_SQUARES].fill(1.0);
         }
@@ -491,8 +489,8 @@ mod tests {
         let obs_gen = make_gen();
 
         // White is in check (current_player=White), but we request Black's perspective.
-        // Channel 48 should be 1.0 because is_in_check() checks current_player (White),
-        // regardless of the requested perspective.
+        // Channel 48 should be 0.0 because it reflects the perspective player's check
+        // status, and Black is NOT in check.
         let mut pos = Position::empty();
         pos.set_piece(
             Square::from_row_col(0, 4).unwrap(),
@@ -516,13 +514,53 @@ mod tests {
         // Request Black's perspective even though White is to move
         obs_gen.generate(&state, Color::Black, &mut buf);
 
-        // Channel 48 reflects current_player's check status (White is in check),
-        // NOT the perspective's (Black is NOT in check).
-        // This documents the current behavior: ch48 = side-to-move check status.
+        // Channel 48 reflects the PERSPECTIVE player's check status.
+        // Black is not in check, so ch48 should be 0.0.
+        let start48 = 48 * 81;
+        assert_eq!(
+            buf[start48], 0.0,
+            "ch48 should be 0.0 (perspective=Black is not in check, even though current_player=White is)"
+        );
+    }
+
+    #[test]
+    fn test_check_channel_perspective_player_in_check() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+
+        // Black is in check (attacked by White rook), but current_player=White.
+        // Request Black's perspective — ch48 should be 1.0 because Black IS in check.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(4, 4).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        assert!(!state.is_in_check(), "White should not be in check");
+        assert!(
+            state.is_color_in_check(Color::Black),
+            "Black should be in check"
+        );
+
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
         let start48 = 48 * 81;
         assert_eq!(
             buf[start48], 1.0,
-            "ch48 should be 1.0 (reflects current_player=White in check, not perspective=Black)"
+            "ch48 should be 1.0 (perspective=Black IS in check)"
         );
     }
 }

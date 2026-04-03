@@ -110,13 +110,16 @@ impl GameState {
 
     /// O(1) check detection: is the current player's king attacked by the opponent?
     pub fn is_in_check(&self) -> bool {
-        let color = self.position.current_player;
+        self.is_color_in_check(self.position.current_player)
+    }
+
+    /// Is the given player's king attacked by their opponent?
+    /// Unlike `is_in_check()`, this checks a specific player regardless of whose turn it is.
+    pub fn is_color_in_check(&self, color: Color) -> bool {
         let opponent = color.opponent();
         if let Some(king_sq) = self.position.find_king(color) {
             self.attack_map[opponent as usize][king_sq.index()] > 0
         } else {
-            // No king on board — shouldn't happen in a valid game, but treat as
-            // not in check to avoid panics.
             false
         }
     }
