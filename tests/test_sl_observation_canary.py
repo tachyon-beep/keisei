@@ -28,7 +28,7 @@ def canary_dataset(tmp_path):
         output_dir=str(output_dir),
         min_ply=1,
     )
-    return SLDataset(output_dir)
+    return SLDataset(output_dir, allow_placeholder=True)
 
 
 class TestSLObservationCanary:

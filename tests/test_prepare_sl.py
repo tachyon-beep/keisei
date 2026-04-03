@@ -1,5 +1,7 @@
 """Tests for the SL data preparation CLI."""
 
+import json
+
 import numpy as np
 import pytest
 
@@ -32,7 +34,7 @@ def test_prepare_creates_shards(sample_sfen_dir, tmp_path):
         output_dir=str(output_dir),
         min_ply=2,
     )
-    dataset = SLDataset(output_dir)
+    dataset = SLDataset(output_dir, allow_placeholder=True)
     # 4 moves in the game -> 4 positions encoded
     assert len(dataset) == 4
 
@@ -50,7 +52,7 @@ def test_prepare_filters_short_games(tmp_path):
         output_dir=str(output_dir),
         min_ply=2,
     )
-    dataset = SLDataset(output_dir)
+    dataset = SLDataset(output_dir, allow_placeholder=True)
     assert len(dataset) == 0
 
 
@@ -71,7 +73,7 @@ def test_prepare_filters_by_min_rating(tmp_path):
         min_ply=1,
         min_rating=1500,
     )
-    dataset = SLDataset(output_dir)
+    dataset = SLDataset(output_dir, allow_placeholder=True)
     assert len(dataset) == 0
 
 
@@ -93,7 +95,7 @@ def test_prepare_skips_corrupted_files(tmp_path):
         output_dir=str(output_dir),
         min_ply=1,
     )
-    dataset = SLDataset(output_dir)
+    dataset = SLDataset(output_dir, allow_placeholder=True)
     # Good file has 2 moves -> 2 positions; bad file skipped
     assert len(dataset) == 2
 
@@ -127,7 +129,7 @@ def test_prepare_handles_mixed_extensions(tmp_path):
         output_dir=str(output_dir),
         min_ply=1,
     )
-    dataset = SLDataset(output_dir)
+    dataset = SLDataset(output_dir, allow_placeholder=True)
     # SFEN: 2 moves -> 2 positions; CSA: 2 moves -> 2 positions
     assert len(dataset) == 4
 
@@ -164,7 +166,7 @@ class TestCSASourceIntegration:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         # CSA game has 2 moves → 2 positions
         assert len(dataset) == 2
 
@@ -185,7 +187,7 @@ class TestCSASourceIntegration:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         # WIN_WHITE: black-to-move positions get value_cat=2 (L)
         assert dataset[0]["value_target"].item() == 2
         # WIN_WHITE: white-to-move positions get value_cat=0 (W)
@@ -218,7 +220,7 @@ class TestShardSizeBoundary:
         shard_files = sorted(output_dir.glob("shard_*.bin"))
         assert len(shard_files) == 2, f"Expected 2 shards, got {len(shard_files)}"
 
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
     def test_single_game_exceeding_shard_size(self, tmp_path):
@@ -240,7 +242,7 @@ class TestShardSizeBoundary:
         shard_files = sorted(output_dir.glob("shard_*.bin"))
         # Could be 1 shard (all 4 flushed together) — the current implementation
         # flushes when buffer >= shard_size, putting all accumulated positions in one shard
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
     def test_remainder_flushed(self, tmp_path):
@@ -259,7 +261,7 @@ class TestShardSizeBoundary:
         )
         shard_files = sorted(output_dir.glob("shard_*.bin"))
         assert len(shard_files) == 1, "Remainder should be flushed even if < shard_size"
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 1
 
 
@@ -320,7 +322,7 @@ class TestValueEncodingCorrectness:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
         for i in range(4):
@@ -340,7 +342,7 @@ class TestValueEncodingCorrectness:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
         for i in range(4):
@@ -360,7 +362,7 @@ class TestValueEncodingCorrectness:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
         for i in range(4):
@@ -377,7 +379,7 @@ class TestValueEncodingCorrectness:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 
         for i in range(4):
@@ -401,7 +403,51 @@ class TestValueEncodingCorrectness:
             output_dir=str(output_dir),
             min_ply=1,
         )
-        dataset = SLDataset(output_dir)
+        dataset = SLDataset(output_dir, allow_placeholder=True)
         for i in range(4):
             score = dataset[i]["score_target"].item()
             assert score == 0.0, f"Move {i}: draw score should be 0.0, got {score}"
+
+
+class TestShardMetadataGuard:
+    """Tests for shard_meta.json placeholder guard."""
+
+    def test_prepare_writes_shard_meta_json(self, sample_sfen_dir, tmp_path):
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(sample_sfen_dir)],
+            output_dir=str(output_dir),
+            min_ply=2,
+        )
+        meta_path = output_dir / "shard_meta.json"
+        assert meta_path.exists()
+        meta = json.loads(meta_path.read_text())
+        assert meta["placeholder"] is True
+        assert meta["num_shards"] >= 1
+        assert meta["num_games"] >= 1
+
+    def test_placeholder_guard_rejects_without_flag(self, sample_sfen_dir, tmp_path):
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(sample_sfen_dir)],
+            output_dir=str(output_dir),
+            min_ply=2,
+        )
+        with pytest.raises(ValueError, match="placeholder"):
+            SLDataset(output_dir)
+
+    def test_placeholder_guard_allows_with_flag(self, sample_sfen_dir, tmp_path):
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(sample_sfen_dir)],
+            output_dir=str(output_dir),
+            min_ply=2,
+        )
+        dataset = SLDataset(output_dir, allow_placeholder=True)
+        assert len(dataset) > 0
+
+    def test_no_metadata_file_allows_loading(self, tmp_path):
+        """SLDataset loads normally when shard_meta.json is absent."""
+        # Empty dir with no shards and no meta — should not raise
+        dataset = SLDataset(tmp_path)
+        assert len(dataset) == 0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -169,6 +170,16 @@ def prepare_sl_data(
             score_targets,
         )
         shard_idx += 1
+
+    # Write shard metadata so downstream consumers can detect placeholder data.
+    meta_path = output_path / "shard_meta.json"
+    meta = {
+        "placeholder": True,
+        "num_shards": shard_idx,
+        "num_games": games_parsed,
+    }
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    logger.info("Wrote %s (placeholder=%s)", meta_path, meta["placeholder"])
 
     logger.info(
         "Prepared %d shards from %d games (%d skipped by filter, %d parse errors)",

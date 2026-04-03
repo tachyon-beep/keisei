@@ -89,7 +89,7 @@ class SEResNetModel(KataGoBaseModel):
     """SE-ResNet with global pooling bias, 3-head output."""
 
     def __init__(self, params: SEResNetParams) -> None:
-        super().__init__()
+        super().__init__()  # KataGoBaseModel.__init__ — sets AMP defaults
         self.params = params
         ch = params.channels
 
@@ -116,7 +116,7 @@ class SEResNetModel(KataGoBaseModel):
         self.score_fc1 = nn.Linear(ch * 3, params.score_fc_size)
         self.score_fc2 = nn.Linear(params.score_fc_size, 1)
 
-    def forward(self, obs: torch.Tensor) -> KataGoOutput:
+    def _forward_impl(self, obs: torch.Tensor) -> KataGoOutput:
         if obs.shape[1] != self.params.obs_channels:
             raise ValueError(
                 f"Expected {self.params.obs_channels} input channels, "

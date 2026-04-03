@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+from torch.amp import autocast
 
 
 @dataclass
@@ -31,11 +32,40 @@ class KataGoBaseModel(ABC, nn.Module):
     Contract:
     - Input: observation tensor (batch, obs_channels, 9, 9)
     - Output: KataGoOutput
+
+    AMP: call ``configure_amp()`` once after construction.  ``forward()``
+    then applies ``torch.amp.autocast`` internally so that inductor can
+    fuse the dtype casts with the first conv/BN ops.
     """
 
     BOARD_SIZE = 9
     SPATIAL_MOVE_TYPES = 139
     SPATIAL_ACTION_SPACE = 81 * 139  # 11,259
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._amp_enabled: bool = False
+        self._amp_dtype: torch.dtype = torch.float16
+        self._amp_device_type: str = "cpu"
+
+    def configure_amp(
+        self,
+        enabled: bool,
+        dtype: torch.dtype = torch.float16,
+        device_type: str = "cuda",
+    ) -> None:
+        """Set AMP parameters used by forward()'s internal autocast."""
+        self._amp_enabled = enabled
+        self._amp_dtype = dtype
+        self._amp_device_type = device_type
+
+    def forward(self, obs: torch.Tensor) -> KataGoOutput:
+        with autocast(
+            device_type=self._amp_device_type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            return self._forward_impl(obs)
+
     @abstractmethod
-    def forward(self, obs: torch.Tensor) -> KataGoOutput: ...
+    def _forward_impl(self, obs: torch.Tensor) -> KataGoOutput: ...

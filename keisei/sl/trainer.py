@@ -27,6 +27,7 @@ class SLConfig:
     lambda_score: float = 0.02
     grad_clip: float = 0.5
     use_amp: bool = False
+    allow_placeholder: bool = False
 
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,26 @@ class SLTrainer:
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=config.total_epochs, eta_min=1e-6
         )
-        self.dataset = SLDataset(Path(config.data_dir))
+        # Compute AMP dtype once; used by both model.configure_amp() and
+        # train_epoch()'s loss-computation autocast.
+        self._amp_dtype = (
+            torch.bfloat16
+            if (
+                config.use_amp
+                and torch.cuda.is_available()
+                and torch.cuda.is_bf16_supported()
+            )
+            else torch.float16
+        )
+        self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
+        model.configure_amp(
+            enabled=config.use_amp, dtype=self._amp_dtype,
+            device_type=self._amp_device_type,
+        )
+
+        self.dataset = SLDataset(
+            Path(config.data_dir), allow_placeholder=config.allow_placeholder,
+        )
         is_cuda = self.device.type == "cuda"
         has_data = len(self.dataset) > 0
         self.dataloader = DataLoader(
@@ -85,30 +105,21 @@ class SLTrainer:
         total_score = 0.0
         num_batches = 0
 
-        amp_dtype = (
-            torch.bfloat16
-            if (
-                self.config.use_amp
-                and torch.cuda.is_available()
-                and torch.cuda.is_bf16_supported()
-            )
-            else torch.float16
-        )
-        autocast_device = "cuda" if self.device.type == "cuda" else "cpu"
-
         for batch in self.dataloader:
             obs = batch["observation"].to(self.device)
             policy_targets = batch["policy_target"].to(self.device)
             value_targets = batch["value_target"].to(self.device)
             score_targets = batch["score_target"].to(self.device)
 
+            # Model's forward() handles its own autocast for inductor fusion.
+            # Loss computation uses autocast separately.
+            output = self.model(obs)
+
             with autocast(
-                device_type=autocast_device,
-                dtype=amp_dtype,
+                device_type=self._amp_device_type,
+                dtype=self._amp_dtype,
                 enabled=self.config.use_amp,
             ):
-                output = self.model(obs)
-
                 policy_loss = F.cross_entropy(
                     output.policy_logits.reshape(obs.shape[0], -1), policy_targets
                 )

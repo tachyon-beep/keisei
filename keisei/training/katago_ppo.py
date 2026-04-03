@@ -287,6 +287,15 @@ class KataGoPPOAlgorithm:
             "gae_ms": [],
         }
 
+        # Configure AMP inside the model's forward() so inductor can fuse
+        # dtype casts with the first conv/BN ops.
+        if hasattr(model, "configure_amp"):
+            device = next(model.parameters()).device
+            amp_dtype, amp_device_type = _amp_dtype_and_device(params.use_amp, device)
+            model.configure_amp(
+                enabled=params.use_amp, dtype=amp_dtype, device_type=amp_device_type,
+            )
+
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
@@ -345,7 +354,6 @@ class KataGoPPOAlgorithm:
         sets eval before compiling), so it always uses eval-mode BN behavior.
         """
         device = next(self.model.parameters()).device
-        amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
         if self.compiled_eval is not None:
             model = self.compiled_eval
@@ -361,8 +369,7 @@ class KataGoPPOAlgorithm:
                 _sa_end = torch.cuda.Event(enable_timing=True)
                 _sa_start.record()
 
-            with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                output = model(obs)
+            output = model(obs)
 
             if device.type == "cuda":
                 _sa_end.record()
@@ -683,8 +690,7 @@ class KataGoPPOAlgorithm:
                     eval_model = self.forward_model
                     eval_model.eval()
                 try:
-                    with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                        sample_output = eval_model(sample_obs)
+                    sample_output = eval_model(sample_obs)
                     value_metrics = compute_value_metrics(
                         sample_output.value_logits, sample_cats
                     )

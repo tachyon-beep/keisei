@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import json
 import logging
 from collections import OrderedDict
 from pathlib import Path
@@ -70,9 +71,26 @@ def write_shard(
 class SLDataset(Dataset):
     """Memory-mapped dataset reading from binary shard files."""
 
-    def __init__(self, data_dir: Path, max_cache_size: int = 16) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        max_cache_size: int = 16,
+        allow_placeholder: bool = False,
+    ) -> None:
         if max_cache_size < 1:
             raise ValueError(f"max_cache_size must be >= 1, got {max_cache_size}")
+
+        # Guard: refuse to load placeholder shards unless explicitly allowed.
+        meta_path = data_dir / "shard_meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            if meta.get("placeholder", False) and not allow_placeholder:
+                raise ValueError(
+                    f"Shard directory {data_dir} contains placeholder data "
+                    f"(shard_meta.json has placeholder=true). These shards have "
+                    f"all-zero observations and are not suitable for training. "
+                    f"Pass allow_placeholder=True to override for pipeline testing."
+                )
 
         self.data_dir = data_dir
         self.shards: list[tuple[Path, int]] = []
