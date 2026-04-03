@@ -200,7 +200,6 @@
   .col-header {
     padding: 3px 6px;
     vertical-align: bottom;
-    height: 92px;
   }
 
   .rotated {
@@ -210,7 +209,6 @@
     font-size: 14px;
     font-weight: 600;
     color: var(--text-muted);
-    max-height: 87px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
