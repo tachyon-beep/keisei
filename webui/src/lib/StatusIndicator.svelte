@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { trainingState, trainingAlive } from '../stores/training.js'
   import { getIndicator } from './indicator.js'
   import { buildConfigTooltip } from './configTooltip.js'
@@ -18,6 +19,52 @@
   $: indicator = getIndicator(alive, status)
 
   $: configTooltip = buildConfigTooltip($trainingState?.config_json, modelArch)
+
+  // Wall clock: real time since training started (ticks every second)
+  // Train clock: time the trainer has been active (heartbeat_at - started_at, freezes when stopped)
+  function parseUTC(s) {
+    if (!s) return null
+    return new Date(s + (s.endsWith('Z') ? '' : 'Z'))
+  }
+
+  $: startedAt = parseUTC($trainingState?.started_at)
+  $: heartbeatAt = parseUTC($trainingState?.heartbeat_at)
+  let wallTime = ''
+  let trainTime = ''
+  let wallTimer = null
+
+  function formatElapsed(ms) {
+    if (ms < 0) ms = 0
+    const s = Math.floor(ms / 1000)
+    const days = Math.floor(s / 86400)
+    const hrs = Math.floor((s % 86400) / 3600)
+    const mins = Math.floor((s % 3600) / 60)
+    const secs = s % 60
+    const pad = (n) => String(n).padStart(2, '0')
+    if (days > 0) return `${days}d ${pad(hrs)}h ${pad(mins)}m ${pad(secs)}s`
+    if (hrs > 0) return `${pad(hrs)}h ${pad(mins)}m ${pad(secs)}s`
+    return `${pad(mins)}m ${pad(secs)}s`
+  }
+
+  function tick() {
+    if (startedAt) {
+      wallTime = formatElapsed(Date.now() - startedAt.getTime())
+    }
+    if (startedAt && heartbeatAt) {
+      trainTime = formatElapsed(heartbeatAt.getTime() - startedAt.getTime())
+    }
+  }
+
+  $: if (startedAt && !wallTimer) {
+    tick()
+    wallTimer = setInterval(tick, 1000)
+  }
+  // Update train clock when heartbeat changes
+  $: if (heartbeatAt) tick()
+
+  onDestroy(() => {
+    if (wallTimer) clearInterval(wallTimer)
+  })
 </script>
 
 <header class="status-bar" role="banner">
@@ -47,6 +94,14 @@
         <span class="stat">Step {step.toLocaleString()}</span>
         <span class="sep">|</span>
         <span class="stat">Games {($trainingState?.episodes || 0).toLocaleString()}</span>
+        {#if wallTime}
+          <span class="sep">|</span>
+          <span class="stat" title="Wall clock: real time since training started">Wall {wallTime}</span>
+        {/if}
+        {#if trainTime}
+          <span class="sep">|</span>
+          <span class="stat" title="Train clock: active training time (freezes when stopped)">Train {trainTime}</span>
+        {/if}
         {#if stats.cpu_percent != null}
           <span class="sep">|</span>
           <span class="stat">CPU {stats.cpu_percent}%</span>
