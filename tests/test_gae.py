@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from keisei.training.gae import compute_gae
+from keisei.training.gae import compute_gae, compute_gae_gpu
 
 
 class TestComputeGAE:
@@ -131,3 +131,125 @@ class TestGAEBatched:
             gamma=0.99, lam=0.95,
         )
         assert adv.shape == (T, N)
+
+
+class TestComputeGAEGPU:
+    """Test GPU GAE against CPU reference implementation.
+
+    These tests run on CPU tensors to validate numerical equivalence.
+    compute_gae_gpu() operates on whatever device its inputs are on —
+    on CPU-only CI, this tests the algorithm; on CUDA machines, actual
+    GPU execution is tested via the integration path in update().
+    """
+
+    def test_gpu_matches_cpu_basic(self):
+        """GPU GAE matches CPU GAE within tolerance for basic 2D input."""
+        T, N = 8, 4
+        torch.manual_seed(42)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N) * 0.5
+        dones = torch.zeros(T, N)
+        dones[3, 0] = 1.0  # episode boundary
+        dones[5, 2] = 1.0
+        next_value = torch.randn(N)
+
+        cpu_result = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        gpu_result = compute_gae_gpu(
+            rewards.clone(), values.clone(), dones.clone(), next_value.clone(),
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(cpu_result, gpu_result, rtol=1e-5, atol=1e-5), (
+            f"Max diff: {(cpu_result - gpu_result).abs().max().item()}"
+        )
+
+    def test_gpu_matches_cpu_large(self):
+        """GPU GAE matches CPU for realistic rollout dimensions."""
+        T, N = 128, 64
+        torch.manual_seed(123)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        dones = (torch.rand(T, N) < 0.05).float()
+        next_value = torch.randn(N)
+
+        cpu_result = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        gpu_result = compute_gae_gpu(
+            rewards.clone(), values.clone(), dones.clone(), next_value.clone(),
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(cpu_result, gpu_result, rtol=1e-5, atol=1e-5), (
+            f"Max diff: {(cpu_result - gpu_result).abs().max().item()}"
+        )
+
+    def test_gpu_all_done(self):
+        """All-done trajectory: every step is terminal, advantages = pure TD residuals."""
+        T, N = 5, 3
+        torch.manual_seed(7)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        dones = torch.ones(T, N)
+        next_value = torch.randn(N)
+
+        cpu_result = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        gpu_result = compute_gae_gpu(
+            rewards.clone(), values.clone(), dones.clone(), next_value.clone(),
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(cpu_result, gpu_result, rtol=1e-5, atol=1e-5)
+
+    def test_gpu_single_timestep(self):
+        """T=1 boundary case: values[1:] is empty, cat produces only bootstrap."""
+        T, N = 1, 4
+        torch.manual_seed(99)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        dones = torch.zeros(T, N)
+        next_value = torch.randn(N)
+
+        cpu_result = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        gpu_result = compute_gae_gpu(
+            rewards.clone(), values.clone(), dones.clone(), next_value.clone(),
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(cpu_result, gpu_result, rtol=1e-5, atol=1e-5)
+
+    def test_gpu_single_env(self):
+        """N=1 boundary case: single environment column."""
+        T, N = 10, 1
+        torch.manual_seed(55)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        dones = torch.zeros(T, N)
+        dones[5, 0] = 1.0
+        next_value = torch.randn(N)
+
+        cpu_result = compute_gae(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        gpu_result = compute_gae_gpu(
+            rewards.clone(), values.clone(), dones.clone(), next_value.clone(),
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(cpu_result, gpu_result, rtol=1e-5, atol=1e-5)
+
+    def test_gpu_rejects_1d_input(self):
+        """compute_gae_gpu must reject 1D input — only 2D (T, N) is supported.
+
+        The 1D flat fallback conflates transitions across environment boundaries
+        after flattening. See spec hazard H3.
+        """
+        rewards = torch.randn(10)
+        values = torch.randn(10)
+        dones = torch.zeros(10)
+        next_value = torch.tensor(0.5)
+        with pytest.raises(ValueError, match="only supports 2D"):
+            compute_gae_gpu(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+
+    def test_gpu_output_shape_and_dtype(self):
+        """GPU GAE output has correct shape and dtype."""
+        T, N = 10, 8
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        dones = torch.zeros(T, N)
+        next_value = torch.randn(N)
+
+        result = compute_gae_gpu(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
+        assert result.shape == (T, N)
+        assert result.dtype == torch.float32
