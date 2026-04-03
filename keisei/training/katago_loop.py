@@ -176,6 +176,14 @@ class KataGoTrainingLoop:
             init_db(self.db_path)
         self.device = self.dist_ctx.device
 
+        if config.league is not None and self.dist_ctx.is_distributed:
+            raise ValueError(
+                "League mode is not yet supported with DDP. "
+                "League mode uses split-merge rollout collection where buffer sizes "
+                "can differ across ranks, causing NCCL allreduce deadlocks. "
+                "Run without torchrun or remove [league] config."
+            )
+
         # Validate architecture-algorithm compatibility BEFORE building the model.
         # build_model() allocates the full weight matrix (potentially ~1.5 GB VRAM
         # for a 40-block model). Catching the mismatch here avoids wasting VRAM

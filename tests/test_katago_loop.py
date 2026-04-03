@@ -1308,3 +1308,23 @@ class TestMainEntryPoint:
             mock_setup.assert_called_once()
             mock_cleanup.assert_called_once()
             mock_seed.assert_called_once_with(42)  # base_seed(42) + rank(0)
+
+
+class TestDDPLeagueGuard:
+    def test_league_with_ddp_raises(self):
+        """League mode is not yet supported with DDP."""
+        ctx = DistributedContext(rank=0, local_rank=0, world_size=2, is_distributed=True)
+        config = _make_config()
+        config = dataclasses.replace(config, league=LeagueConfig())
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with pytest.raises(ValueError, match="League mode.*not.*supported.*DDP"):
+            KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+
+    def test_league_without_ddp_ok(self):
+        """League mode works fine without DDP."""
+        ctx = DistributedContext(rank=0, local_rank=0, world_size=1, is_distributed=False)
+        config = _make_config()
+        config = dataclasses.replace(config, league=LeagueConfig())
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+        assert loop.pool is not None
