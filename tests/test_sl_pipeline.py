@@ -1,6 +1,8 @@
 # tests/test_sl_pipeline.py
 """Tests for the supervised learning pipeline."""
 
+import logging
+
 import numpy as np
 import pytest
 import torch
@@ -1025,3 +1027,75 @@ class TestSLDatasetMultiShard:
             ds[10]
         with pytest.raises(IndexError):
             ds[-1]
+
+
+class TestSLDatasetMmapCache:
+    """Tests for LRU-bounded mmap cache (keisei-ed9dbc77d7)."""
+
+    def _write_shards(self, tmp_path, n_shards=3, n_positions=5):
+        """Helper: write n_shards shard files with n_positions each."""
+        rng = np.random.default_rng(42)
+        for i in range(n_shards):
+            write_shard(
+                tmp_path / f"shard_{i:03d}.bin",
+                rng.standard_normal((n_positions, 50 * 81)).astype(np.float32),
+                rng.integers(0, 11259, size=n_positions).astype(np.int64),
+                rng.integers(0, 3, size=n_positions).astype(np.int64),
+                rng.standard_normal(n_positions).astype(np.float32),
+            )
+
+    def test_max_cache_size_zero_raises(self, tmp_path):
+        """max_cache_size < 1 must raise ValueError."""
+        self._write_shards(tmp_path, n_shards=1)
+        with pytest.raises(ValueError, match="max_cache_size must be >= 1"):
+            SLDataset(tmp_path, max_cache_size=0)
+
+    def test_lru_eviction_bounds_cache_size(self, tmp_path):
+        """With max_cache_size=2 and 3 shards, cache never exceeds 2 entries."""
+        self._write_shards(tmp_path, n_shards=3)
+        dataset = SLDataset(tmp_path, max_cache_size=2)
+
+        _ = dataset[0]   # shard 0
+        _ = dataset[5]   # shard 1
+        assert len(dataset._mmap_cache) == 2
+
+        _ = dataset[10]  # shard 2 — should evict shard 0
+        assert len(dataset._mmap_cache) == 2
+
+        shard_0_path = dataset.shards[0][0]
+        assert shard_0_path not in dataset._mmap_cache, "LRU should have evicted shard 0"
+
+    def test_lru_promotion_on_reaccess(self, tmp_path):
+        """Re-accessing a shard promotes it; the non-promoted shard is evicted."""
+        self._write_shards(tmp_path, n_shards=3)
+        dataset = SLDataset(tmp_path, max_cache_size=2)
+
+        _ = dataset[0]   # shard 0 (LRU)
+        _ = dataset[5]   # shard 1 (MRU)
+        _ = dataset[0]   # re-access shard 0 — promotes to MRU
+
+        _ = dataset[10]  # shard 2 — should evict shard 1 (now LRU), not shard 0
+        shard_0_path = dataset.shards[0][0]
+        shard_1_path = dataset.shards[1][0]
+        assert shard_0_path in dataset._mmap_cache, "Shard 0 was promoted, should survive"
+        assert shard_1_path not in dataset._mmap_cache, "Shard 1 was LRU, should be evicted"
+
+    def test_lru_single_slot_boundary(self, tmp_path):
+        """max_cache_size=1: every new shard evicts the previous one."""
+        self._write_shards(tmp_path, n_shards=2)
+        dataset = SLDataset(tmp_path, max_cache_size=1)
+
+        _ = dataset[0]  # shard 0
+        assert len(dataset._mmap_cache) == 1
+
+        _ = dataset[5]  # shard 1 — should evict shard 0
+        assert len(dataset._mmap_cache) == 1
+        shard_0_path = dataset.shards[0][0]
+        assert shard_0_path not in dataset._mmap_cache
+
+    def test_warning_when_shards_exceed_cache_size(self, tmp_path, caplog):
+        """A warning should be logged when num_shards > max_cache_size."""
+        self._write_shards(tmp_path, n_shards=5)
+        with caplog.at_level(logging.WARNING, logger="keisei.sl.dataset"):
+            SLDataset(tmp_path, max_cache_size=2)
+        assert any("5 shards but max_cache_size=2" in msg for msg in caplog.messages)

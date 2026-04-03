@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import bisect
+import logging
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +17,8 @@ from torch.utils.data import Dataset
 # value_target: int64          = 8 bytes
 # score_target: float32        = 4 bytes
 # Total: 16220 bytes per position
+
+logger = logging.getLogger(__name__)
 
 OBS_SIZE = 50 * 81
 OBS_BYTES = OBS_SIZE * 4  # float32
@@ -66,9 +70,12 @@ def write_shard(
 class SLDataset(Dataset):
     """Memory-mapped dataset reading from binary shard files."""
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, max_cache_size: int = 16) -> None:
+        if max_cache_size < 1:
+            raise ValueError(f"max_cache_size must be >= 1, got {max_cache_size}")
+
         self.data_dir = data_dir
-        self.shards: list[tuple[Path, int]] = []  # (path, num_positions)
+        self.shards: list[tuple[Path, int]] = []
         self._cumulative: list[int] = []
 
         shard_files = sorted(data_dir.glob("shard_*.bin"))
@@ -82,15 +89,30 @@ class SLDataset(Dataset):
                 self._cumulative.append(total)
 
         self._total = total
-        self._mmap_cache: dict[Path, np.ndarray] = {}
+        self._mmap_cache: OrderedDict[Path, np.ndarray] = OrderedDict()
+        self._max_cache_size = max_cache_size
+
+        if len(self.shards) > max_cache_size:
+            logger.warning(
+                "SLDataset has %d shards but max_cache_size=%d; "
+                "consider increasing max_cache_size to reduce mmap re-opens",
+                len(self.shards), max_cache_size,
+            )
 
     def __len__(self) -> int:
         return self._total
 
     def _get_mmap(self, path: Path) -> np.ndarray:
-        if path not in self._mmap_cache:
-            self._mmap_cache[path] = np.memmap(path, dtype=np.uint8, mode="r")
-        return self._mmap_cache[path]
+        if path in self._mmap_cache:
+            self._mmap_cache.move_to_end(path)
+            return self._mmap_cache[path]
+        mmap = np.memmap(path, dtype=np.uint8, mode="r")
+        self._mmap_cache[path] = mmap
+        if len(self._mmap_cache) > self._max_cache_size:
+            # Evict LRU entry. Safe because __getitem__ calls .copy() on all
+            # np.frombuffer views — no caller retains a live view into the mmap.
+            self._mmap_cache.popitem(last=False)
+        return mmap
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if idx < 0 or idx >= self._total:
