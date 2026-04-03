@@ -30,7 +30,8 @@ EPOCHS=500000
 WEB_HOST="0.0.0.0"
 WEB_PORT="${WEB_PORT:-8741}"
 LOG_DIR="logs"
-DB_PATH="keisei-500k-league.db"
+DB_DIR="data"
+DB_PATH="$DB_DIR/keisei-500k-league.db"
 CKPT_DIR="checkpoints/500k-league"
 
 # ---- Preflight checks ----
@@ -51,7 +52,7 @@ if [[ "$GPU_COUNT" -lt 2 ]]; then
     echo "  Opponent will share GPU with learner (slower but functional)."
 fi
 
-mkdir -p "$LOG_DIR" "$CKPT_DIR"
+mkdir -p "$LOG_DIR" "$CKPT_DIR" "$DB_DIR"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 TRAIN_LOG="$LOG_DIR/league500k_train_${TIMESTAMP}.log"

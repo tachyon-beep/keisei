@@ -37,7 +37,9 @@ logs/
 # Svelte build output (served by FastAPI, rebuilt from webui/)
 keisei/server/static/
 checkpoints/
+data/
 keisei.db
 keisei-katago.db
+keisei-500k-league.db*
 node_modules/
 keisei-ddp.db

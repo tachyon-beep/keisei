@@ -49,7 +49,7 @@ grad_clip = 1.0
 
 [display]
 moves_per_minute = 30
-db_path = "keisei-500k-league.db"
+db_path = "data/keisei-500k-league.db"
 
 [league]
 max_pool_size = 20          # keep up to 20 historical opponents
