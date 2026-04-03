@@ -52,7 +52,7 @@
             legendPosition="right"
           />
         {:else}
-          <p class="empty">Elo history will appear after league matches are played.</p>
+          <p class="empty">No matches yet.</p>
         {/if}
       </div>
       <LeagueEventLog />

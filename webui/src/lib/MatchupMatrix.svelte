@@ -113,7 +113,7 @@
 <div class="matrix-card">
   <h2 class="section-header">Head-to-Head</h2>
   {#if participants.length < 2}
-    <p class="empty">Matchup data will appear after multiple opponents have played.</p>
+    <p class="empty">No matches yet.</p>
   {:else}
     <div class="matrix-scroll">
       <table class="matrix" role="grid" aria-label="Head-to-head win rate matrix">
