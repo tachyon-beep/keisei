@@ -79,3 +79,74 @@ class TestParameterIdentity:
         params = KataGoPPOParams()
         with pytest.raises(AssertionError, match="forward_model and model must share parameters"):
             KataGoPPOAlgorithm(params, model, forward_model=other_model)
+
+
+class TestCompileSetup:
+    def test_no_compile_by_default(self):
+        """compile_mode=None means no compiled models are created."""
+        model = _small_model()
+        params = KataGoPPOParams()
+        ppo = KataGoPPOAlgorithm(params, model)
+        assert ppo.compiled_train is None
+        assert ppo.compiled_eval is None
+
+    def test_compile_creates_both_models(self):
+        """compile_mode set creates compiled_train and compiled_eval.
+
+        Both wrappers should be callable without manual eval()/train() toggles —
+        the __init__ sets mode before compiling each (see Note N2: tracing happens
+        at first call, not at compile() time, but the mode must be correct at
+        first call time).
+        """
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default")
+        ppo = KataGoPPOAlgorithm(params, model)
+        assert ppo.compiled_train is not None
+        assert ppo.compiled_eval is not None
+        # Both should be callable without mode toggle
+        obs = torch.randn(2, 50, 9, 9)
+        out_eval = ppo.compiled_eval(obs)
+        out_train = ppo.compiled_train(obs)
+        assert out_eval.policy_logits.shape == (2, 9, 9, 139)
+        assert out_train.policy_logits.shape == (2, 9, 9, 139)
+
+    def test_compiled_wrappers_share_underlying_module(self):
+        """compiled_train and compiled_eval wrap the same module, sharing parameters.
+
+        Verify via _orig_mod (the OptimizedModule's reference to the wrapped module).
+        Both must resolve to the same object as ppo.forward_model.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default")
+        ppo = KataGoPPOAlgorithm(params, model)
+        # torch.compile returns an OptimizedModule with _orig_mod pointing to
+        # the original module. Both wrappers should point to the same module.
+        assert hasattr(ppo.compiled_train, "_orig_mod"), (
+            "compiled_train should be an OptimizedModule with _orig_mod"
+        )
+        assert ppo.compiled_train._orig_mod is ppo.forward_model
+        assert ppo.compiled_eval._orig_mod is ppo.forward_model
+        # And the underlying parameters should be the same objects
+        train_params = list(ppo.compiled_train._orig_mod.parameters())
+        model_params = list(ppo.model.parameters())
+        assert len(train_params) == len(model_params)
+        for tp, mp in zip(train_params, model_params):
+            assert tp.data_ptr() == mp.data_ptr(), (
+                "compiled wrapper parameter should share storage with base model"
+            )
+
+    def test_reduce_overhead_dynamic_warns(self, caplog):
+        """reduce-overhead + compile_dynamic=True should log a warning.
+
+        CUDA graphs (the mechanism behind reduce-overhead) are incompatible with
+        dynamic shapes. See Note N5.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(
+            compile_mode="reduce-overhead", compile_dynamic=True,
+        )
+        with caplog.at_level(logging.WARNING):
+            KataGoPPOAlgorithm(params, model)
+        assert any("reduce-overhead" in msg and "dynamic" in msg for msg in caplog.messages), (
+            "Should warn when reduce-overhead is combined with compile_dynamic=True"
+        )

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -233,6 +234,40 @@ class KataGoPPOAlgorithm:
             "forward_model and model must share parameters — "
             "compile + grad clipping requires this"
         )
+
+        # torch.compile setup — two models to avoid BN mode-switch trace baking.
+        # compiled_train: always train mode (used in update() mini-batch loop)
+        # compiled_eval: always eval mode (used in select_actions() and value metrics)
+        # Note: torch.compile() does NOT trace the graph — that happens at the
+        # first forward call. The mode set here must match the mode at first call.
+        _log = logging.getLogger(__name__)
+        if self.params.compile_mode is not None:
+            if self.params.compile_mode == "reduce-overhead" and self.params.compile_dynamic:
+                _log.warning(
+                    "compile_mode='reduce-overhead' with compile_dynamic=True disables "
+                    "CUDA graph capture (the main benefit of reduce-overhead). "
+                    "Set compile_dynamic=False for fixed-batch-size runs."
+                )
+            self.forward_model.train()
+            self.compiled_train = torch.compile(
+                self.forward_model,
+                mode=self.params.compile_mode,
+                dynamic=self.params.compile_dynamic,
+            )
+            self.forward_model.eval()
+            self.compiled_eval = torch.compile(
+                self.forward_model,
+                mode=self.params.compile_mode,
+                dynamic=self.params.compile_dynamic,
+            )
+            self.forward_model.train()  # restore default
+            _log.info(
+                "torch.compile active: mode=%s, dynamic=%s",
+                self.params.compile_mode, self.params.compile_dynamic,
+            )
+        else:
+            self.compiled_train = None
+            self.compiled_eval = None
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)
