@@ -62,7 +62,7 @@
 </script>
 
 <div class="recent-card">
-  <h2 class="section-header">Recent Matches {#if items.find(i => i.type === 'match')}(Bo{items.find(i => i.type === 'match').total}){/if}</h2>
+  <h2 class="section-header">Recent Matches</h2>
   {#if items.length === 0}
     <p class="empty">No matches yet.</p>
   {:else}
