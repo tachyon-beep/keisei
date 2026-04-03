@@ -150,3 +150,46 @@ class TestCompileSetup:
         assert any("reduce-overhead" in msg and "dynamic" in msg for msg in caplog.messages), (
             "Should warn when reduce-overhead is combined with compile_dynamic=True"
         )
+
+
+class TestSelectActionsCompile:
+    def test_select_actions_runs_with_compile(self):
+        """select_actions() works with compiled_eval model."""
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default")
+        ppo = KataGoPPOAlgorithm(params, model)
+        obs = torch.randn(4, 50, 9, 9)
+        legal_masks = torch.ones(4, 11259, dtype=torch.bool)
+        actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+        assert actions.shape == (4,)
+        assert log_probs.shape == (4,)
+        assert values.shape == (4,)
+
+    def test_select_actions_eager_still_works(self):
+        """select_actions() still works without compile (compile_mode=None)."""
+        model = _small_model()
+        params = KataGoPPOParams()
+        ppo = KataGoPPOAlgorithm(params, model)
+        obs = torch.randn(4, 50, 9, 9)
+        legal_masks = torch.ones(4, 11259, dtype=torch.bool)
+        actions, log_probs, values = ppo.select_actions(obs, legal_masks)
+        assert actions.shape == (4,)
+
+    def test_select_actions_no_mode_switch_when_compiled(self):
+        """When compiled, select_actions must NOT toggle eval/train on forward_model.
+
+        This is the core BN mode-switch invariant (spec hazard H1). The compiled_eval
+        wrapper handles eval mode internally via its traced graph. Toggling the
+        underlying module would corrupt compiled_train's trace.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default")
+        ppo = KataGoPPOAlgorithm(params, model)
+        # Model should be in train mode before and after select_actions
+        assert ppo.forward_model.training is True
+        obs = torch.randn(4, 50, 9, 9)
+        legal_masks = torch.ones(4, 11259, dtype=torch.bool)
+        ppo.select_actions(obs, legal_masks)
+        assert ppo.forward_model.training is True, (
+            "select_actions must not leave forward_model in eval mode when compiled"
+        )

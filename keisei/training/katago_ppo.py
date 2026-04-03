@@ -301,17 +301,28 @@ class KataGoPPOAlgorithm:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select actions for rollout collection.
 
-        Sets model to eval mode for BatchNorm running stats, then restores
-        train mode on exit. The stored log_probs are detached (no_grad);
-        PPO recomputes new_log_probs under train() in update().
+        When compiled, uses compiled_eval (traced in eval mode) to avoid
+        mode-switch graph breaks. Falls back to eval/train toggle in eager mode.
+
+        Note: compiled_eval is always called while forward_model is in train mode.
+        This is correct because torch.compile captures the training flag at first-call
+        time and caches it — subsequent calls reuse that cached graph regardless of
+        the module's current training flag. The compiled_eval graph was first called
+        in eval mode (during warmup or first select_actions call after __init__
+        sets eval before compiling), so it always uses eval-mode BN behavior.
         """
         device = next(self.model.parameters()).device
         amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
-        self.forward_model.eval()
+        if self.compiled_eval is not None:
+            model = self.compiled_eval
+            # Do NOT toggle forward_model.eval() — see BN invariant in spec H1
+        else:
+            model = self.forward_model
+            model.eval()
         try:
             with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                output = self.forward_model(obs)
+                output = model(obs)
 
             # Guard: no env should have zero legal actions
             legal_counts = legal_masks.sum(dim=-1)
@@ -336,7 +347,8 @@ class KataGoPPOAlgorithm:
 
             return actions, log_probs, scalar_values
         finally:
-            self.forward_model.train()
+            if self.compiled_eval is None:
+                self.forward_model.train()
 
     def update(
         self,
