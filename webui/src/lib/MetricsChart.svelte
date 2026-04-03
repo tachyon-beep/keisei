@@ -24,8 +24,9 @@
 
   function getOpts() {
     const w = container ? container.clientWidth : width
+    const h = sideLegend && container?.clientHeight > 0 ? container.clientHeight : height
     const colors = resolveThemeColors()
-    const opts = buildChartOpts({ width: w, height, series, compact, xLabel, colors })
+    const opts = buildChartOpts({ width: w, height: h, series, compact, xLabel, colors })
     if (sideLegend) {
       opts.legend = { show: false }
     }
@@ -58,9 +59,10 @@
 
     resizeObserver = new ResizeObserver(entries => {
       if (chart && entries[0]) {
-        const { width: w } = entries[0].contentRect
+        const { width: w, height: h } = entries[0].contentRect
         if (w > 0) {
-          chart.setSize({ width: Math.floor(w), height })
+          const chartH = sideLegend && h > 0 ? Math.floor(h) : height
+          chart.setSize({ width: Math.floor(w), height: chartH })
         }
       }
     })
@@ -128,6 +130,13 @@
   .chart-body {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .has-side-legend .chart-container {
+    flex: 1;
+    min-height: 0;
   }
 
   .chart-title {
