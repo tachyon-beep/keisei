@@ -164,7 +164,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    flex: 1;
+    max-height: 90%;
     overflow: hidden;
   }
 
