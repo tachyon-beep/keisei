@@ -412,9 +412,11 @@ class KataGoPPOAlgorithm:
             "compiled_train graph requires this"
         )
 
-        # Clear timing events from previous cycle
-        for event_list in self._timing_events.values():
-            event_list.clear()
+        # Clear update-phase timing events from previous cycle.
+        # Do NOT clear select_actions_forward_ms — those accumulate during rollout
+        # and must survive until flush_timings() is called after update() returns.
+        self._timing_events["update_forward_backward_ms"].clear()
+        self._timing_events["gae_ms"].clear()
 
         data = buffer.flatten()
         T = buffer.size
