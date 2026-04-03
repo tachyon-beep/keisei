@@ -568,6 +568,43 @@ class TestCreateLrSchedulerUnknownType:
             create_lr_scheduler(optimizer, schedule_type="cosine")
 
 
+class TestLrSchedulerPrivateInternals:
+    """Guard: ReduceLROnPlateau private attrs used by warmup-boundary reset.
+
+    katago_loop.py resets the scheduler at the warmup boundary by writing
+    to `best`, `mode_worse`, and `num_bad_epochs`. These are undocumented
+    PyTorch internals. If a PyTorch upgrade removes or renames them, this
+    test fails in CI before the training loop silently breaks at runtime.
+    """
+
+    def test_reduce_lr_on_plateau_has_required_attrs(self):
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            torch.optim.Adam([torch.zeros(1)], lr=1e-3), mode="min",
+        )
+        assert hasattr(scheduler, "best"), "ReduceLROnPlateau missing 'best'"
+        assert hasattr(scheduler, "mode_worse"), "ReduceLROnPlateau missing 'mode_worse'"
+        assert hasattr(scheduler, "num_bad_epochs"), "ReduceLROnPlateau missing 'num_bad_epochs'"
+
+    def test_warmup_boundary_reset_works(self):
+        """Simulate the warmup-boundary reset and verify it actually resets tracking."""
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            torch.optim.Adam([torch.zeros(1)], lr=1e-3), mode="min", patience=2,
+        )
+        # Feed a good metric then worse ones to build up state
+        scheduler.step(1.0)
+        scheduler.step(2.0)
+        assert scheduler.num_bad_epochs > 0
+
+        # Apply the same reset that katago_loop.py does at the warmup boundary
+        scheduler.best = scheduler.mode_worse
+        scheduler.num_bad_epochs = 0
+
+        assert scheduler.num_bad_epochs == 0
+        # After reset, the next metric should become the new 'best'
+        scheduler.step(5.0)
+        assert scheduler.best == 5.0
+
+
 class TestArchitectureAlgorithmMismatchGuard:
     """H4: Guard that rejects incompatible architecture/algorithm combinations."""
 
