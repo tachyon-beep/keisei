@@ -234,3 +234,294 @@ class TestPendingTransitions:
         dones = torch.tensor([True, True])
         result = pt.finalize(finalize_mask, dones)
         assert result is None
+
+
+class TestSplitMergeCollection:
+    """Integration test: verify buffer receives correct transitions for
+    known game sequences in split-merge mode."""
+
+    def test_opponent_terminal_reaches_buffer(self):
+        """When the opponent checkmates, the learner's last transition must
+        appear in the buffer with done=True and a negative reward."""
+        num_envs = 1
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # --- Step 1: Learner moves, game continues ---
+        pre_players_1 = np.array([0], dtype=np.uint8)  # learner to move
+        obs_1 = torch.randn(1, *obs_shape)
+        actions_1 = torch.tensor([42])
+        log_probs_full = torch.tensor([-0.5])
+        values_full = torch.tensor([0.3])
+        legal_masks_1 = torch.ones(1, action_space, dtype=torch.bool)
+        rewards_1 = torch.tensor([0.0])  # non-terminal
+        dones_1 = torch.tensor([False])
+        score_targets_1 = torch.tensor([0.1])
+        current_players_after_1 = np.array([1], dtype=np.uint8)  # opponent next
+
+        learner_rewards_1 = to_learner_perspective(rewards_1, pre_players_1, learner_side)
+
+        # Accumulate (no pending yet, so no-op)
+        pt.accumulate_reward(learner_rewards_1)
+        # Finalize (nothing to finalize)
+        finalize_mask = pt.valid & (
+            dones_1.bool()
+            | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_1)
+        assert result is None
+
+        # Create pending for learner's move
+        learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs_1, actions_1, log_probs_full, values_full,
+                  legal_masks_1, learner_rewards_1, score_targets_1)
+        assert pt.valid[0]
+
+        # Check immediate terminal (learner moved + terminal)
+        imm_terminal = learner_moved & dones_1.bool()
+        assert not imm_terminal.any()
+
+        # --- Step 2: Opponent moves, checkmates learner ---
+        pre_players_2 = np.array([1], dtype=np.uint8)  # opponent to move
+        rewards_2 = torch.tensor([1.0])  # opponent won, from opponent POV
+        dones_2 = torch.tensor([True])   # game over
+        current_players_after_2 = np.array([0], dtype=np.uint8)  # reset to start
+
+        learner_rewards_2 = to_learner_perspective(rewards_2, pre_players_2, learner_side)
+        assert learner_rewards_2[0].item() == -1.0  # negated for learner
+
+        # Accumulate
+        pt.accumulate_reward(learner_rewards_2)
+        assert pt.rewards[0].item() == pytest.approx(-1.0)
+
+        # Finalize (terminal)
+        finalize_mask = pt.valid & (
+            dones_2.bool()
+            | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_2)
+
+        assert result is not None
+        assert result["env_ids"].tolist() == [0]
+        assert result["rewards"][0].item() == pytest.approx(-1.0)
+        assert result["dones"][0].item() == 1.0
+        assert result["actions"][0].item() == 42
+        assert result["values"][0].item() == pytest.approx(0.3)
+        assert not pt.valid[0]
+
+    def test_learner_terminal_finalized_immediately(self):
+        """When the learner checkmates, the pending transition is created
+        and immediately finalized in the same step."""
+        num_envs = 1
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        pre_players = np.array([0], dtype=np.uint8)
+        obs = torch.randn(1, *obs_shape)
+        actions = torch.tensor([99])
+        log_probs_full = torch.tensor([-0.1])
+        values_full = torch.tensor([0.8])
+        legal_masks = torch.ones(1, action_space, dtype=torch.bool)
+        rewards = torch.tensor([1.0])  # learner won, from learner POV
+        dones = torch.tensor([True])
+        score_targets = torch.tensor([0.5])
+        current_players_after = np.array([0], dtype=np.uint8)  # reset
+
+        learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
+
+        # Accumulate (no pending yet)
+        pt.accumulate_reward(learner_rewards)
+
+        # Finalize existing (none)
+        finalize_mask = pt.valid & (
+            dones.bool()
+            | torch.tensor(current_players_after == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones)
+        assert result is None
+
+        # Create pending
+        learner_moved = torch.tensor(pre_players == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs, actions, log_probs_full, values_full,
+                  legal_masks, learner_rewards, score_targets)
+        assert pt.valid[0]
+
+        # Immediate terminal finalize
+        imm_terminal = learner_moved & dones.bool()
+        result = pt.finalize(imm_terminal, dones)
+
+        assert result is not None
+        assert result["rewards"][0].item() == pytest.approx(1.0)
+        assert result["dones"][0].item() == 1.0
+        assert not pt.valid[0]
+
+    def test_nonterminal_finalized_when_turn_returns(self):
+        """Non-terminal transitions are finalized when the turn returns
+        to the learner (opponent moved, game continues)."""
+        num_envs = 1
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Step 1: Learner moves
+        pre_players_1 = np.array([0], dtype=np.uint8)
+        obs_1 = torch.randn(1, *obs_shape)
+        actions_1 = torch.tensor([7])
+        log_probs_1 = torch.tensor([-0.3])
+        values_1 = torch.tensor([0.2])
+        legal_masks_1 = torch.ones(1, action_space, dtype=torch.bool)
+        rewards_1 = torch.tensor([0.0])
+        dones_1 = torch.tensor([False])
+        score_targets_1 = torch.tensor([0.0])
+        current_players_after_1 = np.array([1], dtype=np.uint8)
+
+        learner_rewards_1 = to_learner_perspective(rewards_1, pre_players_1, learner_side)
+        pt.accumulate_reward(learner_rewards_1)
+        pt.finalize(
+            pt.valid & (
+                dones_1.bool()
+                | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
+            ),
+            dones_1,
+        )
+        learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
+                  legal_masks_1, learner_rewards_1, score_targets_1)
+
+        # Step 2: Opponent moves, game continues
+        pre_players_2 = np.array([1], dtype=np.uint8)
+        rewards_2 = torch.tensor([0.0])
+        dones_2 = torch.tensor([False])
+        current_players_after_2 = np.array([0], dtype=np.uint8)  # back to learner
+
+        learner_rewards_2 = to_learner_perspective(rewards_2, pre_players_2, learner_side)
+        pt.accumulate_reward(learner_rewards_2)
+
+        # Finalize: non-terminal, turn returns to learner
+        finalize_mask = pt.valid & (
+            dones_2.bool()
+            | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_2)
+
+        assert result is not None
+        assert result["dones"][0].item() == 0.0
+        assert result["rewards"][0].item() == pytest.approx(0.0)
+        assert not pt.valid[0]
+
+    def test_multi_env_heterogeneous_terminal(self):
+        """In the same step, env 0 has an opponent-turn terminal while
+        env 1 has a non-terminal opponent move. Both must be handled correctly."""
+        num_envs = 2
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Step 1: Both envs have learner to move
+        pre_players_1 = np.array([0, 0], dtype=np.uint8)
+        obs_1 = torch.randn(2, *obs_shape)
+        actions_1 = torch.tensor([10, 20])
+        log_probs_1 = torch.tensor([-0.1, -0.2])
+        values_1 = torch.tensor([0.5, 0.6])
+        legal_masks_1 = torch.ones(2, action_space, dtype=torch.bool)
+        rewards_1 = torch.tensor([0.0, 0.0])
+        dones_1 = torch.tensor([False, False])
+        score_targets_1 = torch.tensor([0.1, 0.2])
+        current_players_after_1 = np.array([1, 1], dtype=np.uint8)
+
+        learner_rewards_1 = to_learner_perspective(rewards_1, pre_players_1, learner_side)
+        pt.accumulate_reward(learner_rewards_1)
+        pt.finalize(
+            pt.valid & (
+                dones_1.bool()
+                | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
+            ),
+            dones_1,
+        )
+        learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
+                  legal_masks_1, learner_rewards_1, score_targets_1)
+
+        # Step 2: Both envs have opponent to move
+        # Env 0: opponent checkmates (terminal)
+        # Env 1: opponent moves, game continues
+        pre_players_2 = np.array([1, 1], dtype=np.uint8)
+        rewards_2 = torch.tensor([1.0, 0.0])  # env 0: opponent won; env 1: non-terminal
+        dones_2 = torch.tensor([True, False])
+        current_players_after_2 = np.array([0, 0], dtype=np.uint8)  # env 0: reset; env 1: back to learner
+
+        learner_rewards_2 = to_learner_perspective(rewards_2, pre_players_2, learner_side)
+        pt.accumulate_reward(learner_rewards_2)
+
+        finalize_mask = pt.valid & (
+            dones_2.bool()
+            | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_2)
+
+        assert result is not None
+        assert result["env_ids"].tolist() == [0, 1]
+        # Env 0: terminal loss — reward = -1.0, done = 1.0
+        assert result["rewards"][0].item() == pytest.approx(-1.0)
+        assert result["dones"][0].item() == 1.0
+        assert result["actions"][0].item() == 10
+        # Env 1: non-terminal — reward = 0.0, done = 0.0
+        assert result["rewards"][1].item() == pytest.approx(0.0)
+        assert result["dones"][1].item() == 0.0
+        assert result["actions"][1].item() == 20
+
+        # Both cleared
+        assert not pt.valid.any()
+
+    def test_epoch_end_flush(self):
+        """Pending transitions remaining at epoch end are finalized with
+        done=False and value_cat=-1 (non-terminal bootstrap)."""
+        num_envs = 2
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Step 1: Both envs have learner to move
+        pre_players = np.array([0, 0], dtype=np.uint8)
+        obs = torch.randn(2, *obs_shape)
+        actions = torch.tensor([5, 6])
+        log_probs = torch.tensor([-0.1, -0.2])
+        values = torch.tensor([0.4, 0.5])
+        legal_masks = torch.ones(2, action_space, dtype=torch.bool)
+        rewards = torch.tensor([0.0, 0.0])
+        score_targets = torch.tensor([0.0, 0.0])
+
+        learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
+        learner_moved = torch.tensor(pre_players == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs, actions, log_probs, values,
+                  legal_masks, learner_rewards, score_targets)
+
+        # Epoch ends — no more steps. Flush remaining pending.
+        remaining_mask = pt.valid.clone()
+        remaining_dones = torch.zeros(num_envs)
+        result = pt.finalize(remaining_mask, remaining_dones)
+
+        assert result is not None
+        assert result["env_ids"].tolist() == [0, 1]
+        # All flushed as non-terminal
+        assert result["dones"][0].item() == 0.0
+        assert result["dones"][1].item() == 0.0
+        assert result["values"][0].item() == pytest.approx(0.4)
+        assert not pt.valid.any()
