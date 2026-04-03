@@ -25,7 +25,18 @@ use pyo3::types::PyDict;
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 use shogi_core::rules::material_balance;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Sentinel value meaning "no env should panic" in test builds.
+/// Guarded by TEST_PANIC_MUTEX to prevent parallel test interference.
+#[cfg(test)]
+static TEST_PANIC_AT_ENV: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Mutex that serializes tests using TEST_PANIC_AT_ENV.
+#[cfg(test)]
+static TEST_PANIC_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // Compile-time assertion: observation generators and action mappers must be ZSTs.
 // The rayon closure reconstructs these per-thread via ::new(). If a future generator
@@ -224,6 +235,263 @@ impl VecEnv {
         }
     }
 
+    /// Apply decoded moves to all environments, with panic isolation.
+    ///
+    /// Each environment's step is wrapped in `catch_unwind`. If an individual
+    /// environment panics (logic bug, OOB, etc.) it is auto-reset to startpos
+    /// with sentinel buffer values (terminated=true, reward=0.0) and the batch
+    /// continues. Returns the number of environments that panicked.
+    ///
+    /// This method contains no Python/PyO3 calls and can be tested from Rust.
+    fn apply_moves(&mut self, decoded_moves: &[Move]) -> usize {
+        let num_envs = self.num_envs;
+        let max_ply = self.max_ply;
+        let obs_buf_len = self.obs_buffer_len;
+        let act_space = self.action_space;
+
+        let obs_tag = match &self.obs_gen {
+            ObsMode::Default(_) => ObsModeTag::Default,
+            ObsMode::KataGo(_) => ObsModeTag::KataGo,
+        };
+        let act_tag = match &self.mapper {
+            ActionMode::Default(_) => ActionModeTag::Default,
+            ActionMode::Spatial(_) => ActionModeTag::Spatial,
+        };
+
+        // Extract raw pointers for non-overlapping parallel access.
+        // SAFETY: each index `i` in 0..num_envs accesses only its own
+        // non-overlapping slice of each buffer and its own games[i].
+        let games_ptr = SendPtr(self.games.as_mut_ptr());
+        let obs_ptr = SendPtr(self.obs_buffer.as_mut_ptr());
+        let mask_ptr = SendPtr(self.legal_mask_buffer.as_mut_ptr());
+        let terminal_obs_ptr = SendPtr(self.terminal_obs_buffer.as_mut_ptr());
+        let reward_ptr = SendPtr(self.reward_buffer.as_mut_ptr());
+        let terminated_ptr = SendPtr(self.terminated_buffer.as_mut_ptr());
+        let truncated_ptr = SendPtr(self.truncated_buffer.as_mut_ptr());
+        let captured_ptr = SendPtr(self.captured_buffer.as_mut_ptr());
+        let term_reason_ptr = SendPtr(self.term_reason_buffer.as_mut_ptr());
+        let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
+        let material_balance_ptr = SendPtr(self.material_balance_buffer.as_mut_ptr());
+        let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
+
+        let ep_completed = &self.episodes_completed;
+        let ep_drawn = &self.episodes_drawn;
+        let ep_truncated = &self.episodes_truncated;
+        let ep_total_ply = &self.total_episode_ply;
+
+        let decoded = decoded_moves;
+
+        // Count of panicked environments (atomic for parallel safety).
+        let panic_count = AtomicU64::new(0);
+
+        let process_env = |i: usize| {
+            // In test builds, allow injecting a panic at a specific env index.
+            #[cfg(test)]
+            {
+                let target = TEST_PANIC_AT_ENV.load(Ordering::SeqCst);
+                if target == i {
+                    panic!("Injected test panic for env {}", i);
+                }
+            }
+
+            // SAFETY: each `i` accesses non-overlapping memory regions.
+            unsafe {
+                let game = &mut *games_ptr.offset(i);
+                let mv = decoded[i];
+
+                // Apply move
+                let undo_info = game.make_move(mv);
+
+                // last_mover is the player who just moved (current_player has flipped)
+                let last_mover = game.position.current_player.opponent();
+
+                // Check termination
+                game.check_termination();
+
+                let result = game.result;
+                let terminated = result.is_terminal() && !result.is_truncation();
+                let truncated = result.is_truncation();
+
+                // Set scalar metadata buffers
+                *terminated_ptr.offset(i) = terminated;
+                *truncated_ptr.offset(i) = truncated;
+                *reward_ptr.offset(i) = compute_reward(&result, last_mover);
+                *term_reason_ptr.offset(i) = TerminationReason::from_game_result(result) as u8;
+                *ply_ptr.offset(i) = game.ply as u16;
+
+                // Material balance from last_mover's perspective (every step).
+                *material_balance_ptr.offset(i) = material_balance(
+                    &game.position, last_mover,
+                );
+
+                // Captured piece metadata
+                if let Some(captured_piece) = undo_info.captured {
+                    let pt = captured_piece.piece_type();
+                    match HandPieceType::from_piece_type(pt) {
+                        Some(hpt) => *captured_ptr.offset(i) = hpt.index() as u8,
+                        None => *captured_ptr.offset(i) = 255,
+                    }
+                } else {
+                    *captured_ptr.offset(i) = 255;
+                }
+
+                if terminated || truncated {
+                    // Update episode counters
+                    ep_completed.fetch_add(1, Ordering::Relaxed);
+                    ep_total_ply.fetch_add(game.ply as u64, Ordering::Relaxed);
+                    match result {
+                        GameResult::Repetition
+                        | GameResult::Impasse { winner: None } => {
+                            ep_drawn.fetch_add(1, Ordering::Relaxed);
+                        }
+                        GameResult::MaxMoves => {
+                            ep_truncated.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {}
+                    }
+
+                    // Save terminal observation.
+                    let term_obs_slice = std::slice::from_raw_parts_mut(
+                        terminal_obs_ptr.offset(i * obs_buf_len),
+                        obs_buf_len,
+                    );
+                    let perspective = game.position.current_player;
+                    match obs_tag {
+                        ObsModeTag::Default => DefaultObservationGenerator::new()
+                            .generate(game, perspective, term_obs_slice),
+                        ObsModeTag::KataGo => KataGoObservationGenerator::new()
+                            .generate(game, perspective, term_obs_slice),
+                    }
+
+                    // Auto-reset
+                    *game = GameState::with_max_ply(max_ply);
+                }
+
+                // Write obs+mask for current game state (reset or continuing)
+                let perspective = game.position.current_player;
+
+                let obs_slice = std::slice::from_raw_parts_mut(
+                    obs_ptr.offset(i * obs_buf_len),
+                    obs_buf_len,
+                );
+                match obs_tag {
+                    ObsModeTag::Default => DefaultObservationGenerator::new()
+                        .generate(game, perspective, obs_slice),
+                    ObsModeTag::KataGo => KataGoObservationGenerator::new()
+                        .generate(game, perspective, obs_slice),
+                }
+
+                let mask_slice = std::slice::from_raw_parts_mut(
+                    mask_ptr.offset(i * act_space),
+                    act_space,
+                );
+                mask_slice.fill(false);
+                let mut move_list = MoveList::new();
+                game.generate_legal_moves_into(&mut move_list);
+                for legal_mv in move_list.iter() {
+                    let idx = match act_tag {
+                        ActionModeTag::Default => DefaultActionMapper.encode(*legal_mv, perspective),
+                        ActionModeTag::Spatial => SpatialActionMapper.encode(*legal_mv, perspective),
+                    };
+                    mask_slice[idx] = true;
+                }
+
+                // Record current player (after potential reset)
+                *current_players_ptr.offset(i) = match game.position.current_player {
+                    Color::Black => 0,
+                    Color::White => 1,
+                };
+            }
+        };
+
+        // Wrap each env step in catch_unwind to isolate panics.
+        let guarded_env = |i: usize| {
+            let result = catch_unwind(AssertUnwindSafe(|| process_env(i)));
+            if let Err(payload) = result {
+                // Extract panic message for logging.
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                eprintln!(
+                    "[VecEnv] PANIC in env {}: {} — auto-resetting",
+                    i, msg
+                );
+
+                // Recovery: reset the game and write safe sentinel values.
+                // SAFETY: index `i` is still exclusively ours.
+                unsafe {
+                    let game = &mut *games_ptr.offset(i);
+                    *game = GameState::with_max_ply(max_ply);
+
+                    *terminated_ptr.offset(i) = true;
+                    *truncated_ptr.offset(i) = false;
+                    *reward_ptr.offset(i) = 0.0;
+                    *captured_ptr.offset(i) = 255;
+                    *term_reason_ptr.offset(i) = 0;
+                    *ply_ptr.offset(i) = 0;
+                    *material_balance_ptr.offset(i) = 0;
+
+                    // Write fresh startpos obs + mask so downstream sees valid data.
+                    let perspective = game.position.current_player;
+
+                    let obs_slice = std::slice::from_raw_parts_mut(
+                        obs_ptr.offset(i * obs_buf_len),
+                        obs_buf_len,
+                    );
+                    match obs_tag {
+                        ObsModeTag::Default => DefaultObservationGenerator::new()
+                            .generate(game, perspective, obs_slice),
+                        ObsModeTag::KataGo => KataGoObservationGenerator::new()
+                            .generate(game, perspective, obs_slice),
+                    }
+
+                    let term_obs_slice = std::slice::from_raw_parts_mut(
+                        terminal_obs_ptr.offset(i * obs_buf_len),
+                        obs_buf_len,
+                    );
+                    term_obs_slice.fill(0.0);
+
+                    let mask_slice = std::slice::from_raw_parts_mut(
+                        mask_ptr.offset(i * act_space),
+                        act_space,
+                    );
+                    mask_slice.fill(false);
+                    let mut move_list = MoveList::new();
+                    game.generate_legal_moves_into(&mut move_list);
+                    for legal_mv in move_list.iter() {
+                        let idx = match act_tag {
+                            ActionModeTag::Default => {
+                                DefaultActionMapper.encode(*legal_mv, perspective)
+                            }
+                            ActionModeTag::Spatial => {
+                                SpatialActionMapper.encode(*legal_mv, perspective)
+                            }
+                        };
+                        mask_slice[idx] = true;
+                    }
+
+                    *current_players_ptr.offset(i) = match game.position.current_player {
+                        Color::Black => 0,
+                        Color::White => 1,
+                    };
+                }
+
+                panic_count.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+
+        if num_envs >= PARALLEL_THRESHOLD {
+            (0..num_envs).into_par_iter().for_each(guarded_env);
+        } else {
+            (0..num_envs).for_each(guarded_env);
+        }
+
+        panic_count.load(Ordering::Relaxed) as usize
+    }
 }
 
 #[pymethods]
@@ -361,174 +629,10 @@ impl VecEnv {
             decoded_moves.push(mv);
         }
 
-        // --- Phase 2: Apply (GIL released) ---
+        // --- Phase 2: Apply (GIL released, with per-env panic isolation) ---
 
         py.allow_threads(|| {
-            let num_envs = self.num_envs;
-            let max_ply = self.max_ply;
-            let obs_buf_len = self.obs_buffer_len;
-            let act_space = self.action_space;
-
-            // Tag enums for static dispatch inside the closure (Copy + Send safe)
-            let obs_tag = match &self.obs_gen {
-                ObsMode::Default(_) => ObsModeTag::Default,
-                ObsMode::KataGo(_) => ObsModeTag::KataGo,
-            };
-            let act_tag = match &self.mapper {
-                ActionMode::Default(_) => ActionModeTag::Default,
-                ActionMode::Spatial(_) => ActionModeTag::Spatial,
-            };
-
-            // Extract raw pointers for non-overlapping parallel access.
-            // SAFETY: each index `i` in 0..num_envs accesses only its own
-            // non-overlapping slice of each buffer and its own games[i].
-            let games_ptr = SendPtr(self.games.as_mut_ptr());
-            let obs_ptr = SendPtr(self.obs_buffer.as_mut_ptr());
-            let mask_ptr = SendPtr(self.legal_mask_buffer.as_mut_ptr());
-            let terminal_obs_ptr = SendPtr(self.terminal_obs_buffer.as_mut_ptr());
-            let reward_ptr = SendPtr(self.reward_buffer.as_mut_ptr());
-            let terminated_ptr = SendPtr(self.terminated_buffer.as_mut_ptr());
-            let truncated_ptr = SendPtr(self.truncated_buffer.as_mut_ptr());
-            let captured_ptr = SendPtr(self.captured_buffer.as_mut_ptr());
-            let term_reason_ptr = SendPtr(self.term_reason_buffer.as_mut_ptr());
-            let ply_ptr = SendPtr(self.ply_buffer.as_mut_ptr());
-            let material_balance_ptr = SendPtr(self.material_balance_buffer.as_mut_ptr());
-            let current_players_ptr = SendPtr(self.current_players_buffer.as_mut_ptr());
-
-            // Episode counters (atomic — safe for parallel access)
-            let ep_completed = &self.episodes_completed;
-            let ep_drawn = &self.episodes_drawn;
-            let ep_truncated = &self.episodes_truncated;
-            let ep_total_ply = &self.total_episode_ply;
-
-            let decoded = &decoded_moves;
-
-            let process_env = move |i: usize| {
-                // SAFETY: each `i` accesses non-overlapping memory regions.
-                unsafe {
-                    let game = &mut *games_ptr.offset(i);
-                    let mv = decoded[i];
-
-                    // Apply move
-                    let undo_info = game.make_move(mv);
-
-                    // last_mover is the player who just moved (current_player has flipped)
-                    let last_mover = game.position.current_player.opponent();
-
-                    // Check termination
-                    game.check_termination();
-
-                    let result = game.result;
-                    let terminated = result.is_terminal() && !result.is_truncation();
-                    let truncated = result.is_truncation();
-
-                    // Set scalar metadata buffers
-                    *terminated_ptr.offset(i) = terminated;
-                    *truncated_ptr.offset(i) = truncated;
-                    *reward_ptr.offset(i) = compute_reward(&result, last_mover);
-                    *term_reason_ptr.offset(i) = TerminationReason::from_game_result(result) as u8;
-                    *ply_ptr.offset(i) = game.ply as u16;
-
-                    // Material balance from last_mover's perspective (every step).
-                    // PERSPECTIVE CONVENTION: last_mover is the player who just moved.
-                    // The Python training loop stores the pre-step observation (from the
-                    // player who was about to move, i.e., last_mover) alongside this
-                    // score target. The perspectives match.
-                    *material_balance_ptr.offset(i) = material_balance(
-                        &game.position, last_mover,
-                    );
-
-                    // Captured piece metadata
-                    if let Some(captured_piece) = undo_info.captured {
-                        let pt = captured_piece.piece_type();
-                        match HandPieceType::from_piece_type(pt) {
-                            Some(hpt) => *captured_ptr.offset(i) = hpt.index() as u8,
-                            None => *captured_ptr.offset(i) = 255,
-                        }
-                    } else {
-                        *captured_ptr.offset(i) = 255;
-                    }
-
-                    if terminated || truncated {
-                        // Update episode counters
-                        ep_completed.fetch_add(1, Ordering::Relaxed);
-                        ep_total_ply.fetch_add(game.ply as u64, Ordering::Relaxed);
-                        match result {
-                            GameResult::Repetition
-                            | GameResult::Impasse { winner: None } => {
-                                ep_drawn.fetch_add(1, Ordering::Relaxed);
-                            }
-                            GameResult::MaxMoves => {
-                                ep_truncated.fetch_add(1, Ordering::Relaxed);
-                            }
-                            _ => {}
-                        }
-
-                        // Save terminal observation.
-                        // NOTE: perspective is current_player AFTER the terminal move,
-                        // which is the OPPONENT of the player who caused termination.
-                        // This is correct for RL value bootstrapping (the "next state"
-                        // perspective), but training code that indexes terminal_observations
-                        // by the player who received rewards[i] must be aware they are
-                        // seeing the opposite player's frame of reference.
-                        let term_obs_slice = std::slice::from_raw_parts_mut(
-                            terminal_obs_ptr.offset(i * obs_buf_len),
-                            obs_buf_len,
-                        );
-                        let perspective = game.position.current_player;
-                        match obs_tag {
-                            ObsModeTag::Default => DefaultObservationGenerator::new()
-                                .generate(game, perspective, term_obs_slice),
-                            ObsModeTag::KataGo => KataGoObservationGenerator::new()
-                                .generate(game, perspective, term_obs_slice),
-                        }
-
-                        // Auto-reset
-                        *game = GameState::with_max_ply(max_ply);
-                    }
-
-                    // Write obs+mask for current game state (reset or continuing)
-                    let perspective = game.position.current_player;
-
-                    let obs_slice = std::slice::from_raw_parts_mut(
-                        obs_ptr.offset(i * obs_buf_len),
-                        obs_buf_len,
-                    );
-                    match obs_tag {
-                        ObsModeTag::Default => DefaultObservationGenerator::new()
-                            .generate(game, perspective, obs_slice),
-                        ObsModeTag::KataGo => KataGoObservationGenerator::new()
-                            .generate(game, perspective, obs_slice),
-                    }
-
-                    let mask_slice = std::slice::from_raw_parts_mut(
-                        mask_ptr.offset(i * act_space),
-                        act_space,
-                    );
-                    mask_slice.fill(false);
-                    let mut move_list = MoveList::new();
-                    game.generate_legal_moves_into(&mut move_list);
-                    for legal_mv in move_list.iter() {
-                        let idx = match act_tag {
-                            ActionModeTag::Default => DefaultActionMapper.encode(*legal_mv, perspective),
-                            ActionModeTag::Spatial => SpatialActionMapper.encode(*legal_mv, perspective),
-                        };
-                        mask_slice[idx] = true;
-                    }
-
-                    // Record current player (after potential reset)
-                    *current_players_ptr.offset(i) = match game.position.current_player {
-                        Color::Black => 0,
-                        Color::White => 1,
-                    };
-                }
-            };
-
-            if num_envs >= PARALLEL_THRESHOLD {
-                (0..num_envs).into_par_iter().for_each(process_env);
-            } else {
-                (0..num_envs).for_each(process_env);
-            }
+            self.apply_moves(&decoded_moves);
         });
 
         // --- Build Python result (GIL held) ---
@@ -1559,6 +1663,102 @@ mod tests {
             env.material_balance_buffer[0], 0,
             "Material balance after non-capture move should still be 0, got {}",
             env.material_balance_buffer[0]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // catch_unwind panic isolation tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: get the first legal move for env `i`.
+    fn first_legal_move(env: &mut VecEnv, i: usize) -> Move {
+        let legal = env.games[i].legal_moves();
+        legal[0]
+    }
+
+    /// Helper: collect the first legal move for each env.
+    fn collect_first_legal_moves(env: &mut VecEnv) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(env.num_envs);
+        for i in 0..env.num_envs {
+            moves.push(first_legal_move(env, i));
+        }
+        moves
+    }
+
+    #[test]
+    fn test_apply_moves_returns_zero_panics_normally() {
+        let _lock = TEST_PANIC_MUTEX.lock().unwrap();
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        let mut env = make_env(4, 500);
+        for i in 0..4 {
+            env.write_obs_and_mask(i);
+        }
+        let moves = collect_first_legal_moves(&mut env);
+
+        let panicked = env.apply_moves(&moves);
+        assert_eq!(panicked, 0, "No environments should panic in normal operation");
+        for i in 0..4 {
+            assert!(!env.terminated_buffer[i], "env {} should not be terminated", i);
+            assert!(!env.truncated_buffer[i], "env {} should not be truncated", i);
+        }
+    }
+
+    #[test]
+    fn test_apply_moves_isolates_panic_to_single_env() {
+        let _lock = TEST_PANIC_MUTEX.lock().unwrap();
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        let mut env = make_env(4, 500);
+        for i in 0..4 {
+            env.write_obs_and_mask(i);
+        }
+        let moves = collect_first_legal_moves(&mut env);
+
+        TEST_PANIC_AT_ENV.store(2, Ordering::SeqCst);
+        let panicked = env.apply_moves(&moves);
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        assert_eq!(panicked, 1, "Exactly one environment should have panicked");
+        assert!(env.terminated_buffer[2], "Panicked env should be marked terminated");
+        assert_eq!(env.reward_buffer[2], 0.0, "Panicked env should have zero reward");
+
+        for i in [0, 1, 3] {
+            assert!(
+                !env.terminated_buffer[i],
+                "env {} should NOT be terminated (it didn't panic)",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_moves_resets_panicked_env_game_state() {
+        let _lock = TEST_PANIC_MUTEX.lock().unwrap();
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        let mut env = make_env(4, 500);
+        for i in 0..4 {
+            env.write_obs_and_mask(i);
+        }
+
+        // Advance env 2 by making a move, so ply > 0
+        let mv = first_legal_move(&mut env, 2);
+        env.games[2].make_move(mv);
+        env.write_obs_and_mask(2);
+        assert!(env.games[2].ply > 0, "env 2 should have advanced");
+
+        let moves = collect_first_legal_moves(&mut env);
+
+        TEST_PANIC_AT_ENV.store(2, Ordering::SeqCst);
+        let panicked = env.apply_moves(&moves);
+        TEST_PANIC_AT_ENV.store(usize::MAX, Ordering::SeqCst);
+
+        assert_eq!(panicked, 1);
+        assert_eq!(env.games[2].ply, 0, "Panicked env should be reset to ply 0");
+        assert_eq!(
+            env.current_players_buffer[2], 0,
+            "Panicked env should be reset to Black (0)"
         );
     }
 }
