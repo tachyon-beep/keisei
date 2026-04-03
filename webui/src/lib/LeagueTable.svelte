@@ -275,7 +275,8 @@
   }
   .placeholder-row:hover { background: transparent; }
   .placeholder-text {
-    color: var(--border);
+    color: var(--text-muted);
+    opacity: 0.35;
     font-size: 12px;
     user-select: none;
   }
