@@ -13,6 +13,7 @@
   $: stats = $trainingState?.system_stats || {}
   $: gpus = stats.gpus || []
 
+  $: totalEpochs = $trainingState?.total_epochs || null
   $: phase = $trainingState?.phase || ''
   $: indicator = getIndicator(alive, status)
 
@@ -21,7 +22,13 @@
 
 <header class="status-bar" role="banner">
   <div class="left">
-    <h1>Keisei Training Dashboard</h1>
+    <h1>
+      {#if displayName && displayName !== 'Player'}
+        {displayName}
+      {:else}
+        Keisei
+      {/if}
+    </h1>
     <div class="indicator">
       <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-teal)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
       <span class="text">{indicator.text}</span>
@@ -35,7 +42,7 @@
           <span class="phase-badge rollout">ROLLOUT</span>
           <span class="sep">|</span>
         {/if}
-        <span class="stat">Epoch {epoch}</span>
+        <span class="stat">Epoch {epoch.toLocaleString()}{#if totalEpochs} / {totalEpochs.toLocaleString()}{/if}</span>
         <span class="sep">|</span>
         <span class="stat">Step {step.toLocaleString()}</span>
         <span class="sep">|</span>

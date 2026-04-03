@@ -73,6 +73,7 @@ def init_db(db_path: str) -> None:
                 current_epoch    INTEGER NOT NULL DEFAULT 0,
                 current_step     INTEGER NOT NULL DEFAULT 0,
                 checkpoint_path  TEXT,
+                total_epochs     INTEGER,
                 status           TEXT NOT NULL DEFAULT 'running',
                 phase            TEXT NOT NULL DEFAULT 'init',
                 heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -226,9 +227,11 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
         conn.execute(
             """INSERT OR REPLACE INTO training_state
                (id, config_json, display_name, model_arch, algorithm_name,
-                started_at, current_epoch, current_step, checkpoint_path, status)
+                started_at, current_epoch, current_step, checkpoint_path,
+                total_epochs, status)
                VALUES (1, :config_json, :display_name, :model_arch, :algorithm_name,
-                :started_at, :current_epoch, :current_step, :checkpoint_path, :status)""",
+                :started_at, :current_epoch, :current_step, :checkpoint_path,
+                :total_epochs, :status)""",
             {
                 "config_json": state["config_json"], "display_name": state["display_name"],
                 "model_arch": state["model_arch"], "algorithm_name": state["algorithm_name"],
@@ -236,6 +239,7 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
                 "current_epoch": state.get("current_epoch", 0),
                 "current_step": state.get("current_step", 0),
                 "checkpoint_path": state.get("checkpoint_path"),
+                "total_epochs": state.get("total_epochs"),
                 "status": state.get("status", "running"),
             },
         )

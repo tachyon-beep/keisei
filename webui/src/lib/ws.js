@@ -103,6 +103,7 @@ export function handleMessage(msg) {
         config_json: msg.config_json || state?.config_json,
         display_name: msg.display_name || state?.display_name,
         model_arch: msg.model_arch || state?.model_arch,
+        total_epochs: msg.total_epochs ?? state?.total_epochs,
         system_stats: msg.system_stats || state?.system_stats,
       }))
       break

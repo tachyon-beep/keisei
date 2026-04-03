@@ -613,6 +613,21 @@ class KataGoTrainingLoop:
             )
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
+        # Store total planned epochs in DB so the dashboard can show progress
+        if self.dist_ctx.is_main:
+            from keisei.db import _connect
+            conn = _connect(self.db_path)
+            try:
+                conn.execute(
+                    "UPDATE training_state SET total_epochs = ? WHERE id = 1",
+                    (self.epoch + num_epochs,),
+                )
+                conn.commit()
+            except Exception:
+                pass  # Column may not exist in old DBs
+            finally:
+                conn.close()
+
         reset_result = self.vecenv.reset()
         obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
         legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(
