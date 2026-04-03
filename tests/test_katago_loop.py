@@ -162,7 +162,8 @@ class TestRankGating:
              patch("keisei.training.katago_loop.read_training_state", return_value=None), \
              patch("keisei.training.katago_loop.write_training_state"), \
              patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
-             patch("keisei.training.katago_loop.dist.barrier"):
+             patch("keisei.training.katago_loop.dist.barrier"), \
+             patch("keisei.training.katago_loop.dist.broadcast_object_list"):
             loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
 
         with patch("keisei.training.katago_loop.save_checkpoint") as mock_save, \
@@ -195,7 +196,8 @@ class TestRankGating:
              patch("keisei.training.katago_loop.read_training_state", return_value=None), \
              patch("keisei.training.katago_loop.write_training_state"), \
              patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
-             patch("keisei.training.katago_loop.dist.barrier"):
+             patch("keisei.training.katago_loop.dist.barrier"), \
+             patch("keisei.training.katago_loop.dist.broadcast_object_list"):
             loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
 
         with patch("keisei.training.katago_loop.write_metrics") as mock_write, \
@@ -1256,3 +1258,30 @@ class TestCheckpointResumeRoundTrip:
         mock_env2 = _make_mock_katago_vecenv(num_envs=2)
         with pytest.raises(ValueError, match="architecture mismatch"):
             KataGoTrainingLoop(config, vecenv=mock_env2)
+
+
+class TestDDPDBInit:
+    def test_non_main_rank_skips_db_init(self):
+        """Non-main rank should not call init_db."""
+        ctx = DistributedContext(rank=1, local_rank=1, world_size=2, is_distributed=True)
+        config = _make_config()
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with patch("keisei.training.katago_loop.init_db") as mock_init, \
+             patch("keisei.training.katago_loop.read_training_state", return_value=None), \
+             patch("keisei.training.katago_loop.write_training_state"), \
+             patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
+             patch("keisei.training.katago_loop.dist.barrier"), \
+             patch("keisei.training.katago_loop.dist.broadcast_object_list"):
+            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+            mock_init.assert_not_called()
+
+    def test_main_rank_calls_db_init(self):
+        """Main rank should call init_db normally."""
+        ctx = DistributedContext(rank=0, local_rank=0, world_size=1, is_distributed=False)
+        config = _make_config()
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        with patch("keisei.training.katago_loop.init_db") as mock_init, \
+             patch("keisei.training.katago_loop.read_training_state", return_value=None), \
+             patch("keisei.training.katago_loop.write_training_state"):
+            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+            mock_init.assert_called_once()

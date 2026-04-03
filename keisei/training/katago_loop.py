@@ -167,9 +167,10 @@ class KataGoTrainingLoop:
         self.config = config
         self.db_path = config.display.db_path
 
-        init_db(self.db_path)
-
         self.dist_ctx = dist_ctx or get_distributed_context()
+
+        if self.dist_ctx.is_main:
+            init_db(self.db_path)
         self.device = self.dist_ctx.device
 
         # Validate architecture-algorithm compatibility BEFORE building the model.
@@ -342,57 +343,87 @@ class KataGoTrainingLoop:
         # gradients that would fight the RL gradient signal. The RL warmup
         # elevated entropy (Plan D Task 3) compensates for the overconfident
         # SL policy by encouraging exploration in early RL epochs.
-        state = read_training_state(self.db_path)
-        if state is not None and state.get("checkpoint_path"):
-            checkpoint_path = Path(state["checkpoint_path"])
-            if checkpoint_path.exists():
-                skip_opt = self._resume_mode == "sl"
-                logger.warning(
-                    "Resuming from checkpoint: %s (epoch %d, skip_optimizer=%s)",
-                    checkpoint_path,
-                    state["current_epoch"],
-                    skip_opt,
-                )
-                meta = load_checkpoint(
-                    checkpoint_path,
-                    self._base_model,
-                    self.ppo.optimizer,
-                    expected_architecture=self.config.model.architecture,
-                    scheduler=self.lr_scheduler,
-                    grad_scaler=self.ppo.scaler,
-                    skip_optimizer=skip_opt,
-                )
-                if skip_opt:
-                    # SL→RL: start RL from epoch 0 so warmup_epochs and
-                    # checkpoint numbering are RL-relative, not offset by
-                    # the SL epoch count.
-                    self.epoch = 0
-                    self.global_step = 0
-                else:
-                    self.epoch = meta["epoch"]
-                    self.global_step = meta["step"]
-                return
 
-        write_training_state(
-            self.db_path,
-            {
-                "config_json": json.dumps(
-                    {
-                        "training": {
-                            "num_games": self.config.training.num_games,
-                            "algorithm": self.config.training.algorithm,
-                        },
-                        "model": {"architecture": self.config.model.architecture},
-                    }
-                ),
-                "display_name": self.config.model.display_name,
-                "model_arch": self.config.model.architecture,
-                "algorithm_name": self.config.training.algorithm,
-                "started_at": datetime.now(timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                ),
-            },
-        )
+        # Rank 0 reads the DB to find checkpoint path; non-main ranks get None.
+        checkpoint_path_str: str | None = None
+        current_epoch: int = 0
+        if self.dist_ctx.is_main:
+            state = read_training_state(self.db_path)
+            if state is not None and state.get("checkpoint_path"):
+                cp = Path(state["checkpoint_path"])
+                if cp.exists():
+                    checkpoint_path_str = str(cp)
+                    current_epoch = state.get("current_epoch", 0)
+
+        # Broadcast checkpoint path to all ranks so everyone loads the same checkpoint.
+        # In non-distributed mode, broadcast_object_list is not called.
+        if self.dist_ctx.is_distributed:
+            obj_list: list[object] = [checkpoint_path_str]
+            dist.broadcast_object_list(obj_list, src=0)
+            checkpoint_path_str = obj_list[0]  # type: ignore[assignment]
+
+            # Also broadcast epoch so non-main ranks know where to resume
+            meta_list: list[object] = [current_epoch]
+            dist.broadcast_object_list(meta_list, src=0)
+            current_epoch = meta_list[0]  # type: ignore[assignment]
+
+        # ALL ranks load the checkpoint (critical for DDP weight consistency).
+        # DDP does NOT re-broadcast weights after __init__() — if only rank 0
+        # loads the checkpoint, other ranks train from random weights and
+        # gradient allreduce averages nonsensical gradients.
+        if checkpoint_path_str is not None:
+            checkpoint_path = Path(checkpoint_path_str)
+            skip_opt = self._resume_mode == "sl"
+            logger.warning(
+                "[rank %d] Resuming from checkpoint: %s (skip_optimizer=%s)",
+                self.dist_ctx.rank, checkpoint_path, skip_opt,
+            )
+            meta = load_checkpoint(
+                checkpoint_path,
+                self._base_model,
+                self.ppo.optimizer,
+                expected_architecture=self.config.model.architecture,
+                scheduler=self.lr_scheduler,
+                grad_scaler=self.ppo.scaler,
+                skip_optimizer=skip_opt,
+            )
+            if skip_opt:
+                # SL→RL: start RL from epoch 0 so warmup_epochs and
+                # checkpoint numbering are RL-relative.
+                self.epoch = 0
+                self.global_step = 0
+            else:
+                self.epoch = meta["epoch"]
+                self.global_step = meta["step"]
+            return
+
+        # Fresh start — only rank 0 writes training state to DB
+        if self.dist_ctx.is_main:
+            write_training_state(
+                self.db_path,
+                {
+                    "config_json": json.dumps(
+                        {
+                            "training": {
+                                "num_games": self.config.training.num_games,
+                                "algorithm": self.config.training.algorithm,
+                            },
+                            "model": {"architecture": self.config.model.architecture},
+                        }
+                    ),
+                    "display_name": self.config.model.display_name,
+                    "model_arch": self.config.model.architecture,
+                    "algorithm_name": self.config.training.algorithm,
+                    "started_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                },
+            )
+        else:
+            logger.info(
+                "[rank %d] Non-main rank: skipping DB write for fresh training state",
+                self.dist_ctx.rank,
+            )
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
         reset_result = self.vecenv.reset()
