@@ -224,6 +224,16 @@ class KataGoPPOAlgorithm:
         self.params = params
         self.model = model
         self.forward_model = forward_model or model
+
+        # Compile + grad clipping requires forward_model and model to share parameters.
+        # Unwrap DataParallel/DDP if present to compare underlying modules.
+        fm_base = self.forward_model.module if hasattr(self.forward_model, "module") else self.forward_model
+        m_base = self.model.module if hasattr(self.model, "module") else self.model
+        assert fm_base is m_base, (
+            "forward_model and model must share parameters — "
+            "compile + grad clipping requires this"
+        )
+
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
