@@ -1,8 +1,10 @@
 <script>
-  import { leagueRanked, leagueResults, leagueEntries } from '../stores/league.js'
+  import { leagueRanked, leagueResults, leagueEntries, focusedEntryId } from '../stores/league.js'
 
   /** Current learner display_name — used to build an aggregate "Trainer" row */
   export let learnerName = null
+
+  $: focused = $focusedEntryId
 
   // Build head-to-head data: for each (row, col) pair, aggregate W/L/D
   // Entries sorted by Elo descending (same as leaderboard)
@@ -119,7 +121,7 @@
           <tr>
             <th class="corner"></th>
             {#each participants as col}
-              <th class="col-header" title={col.label}>
+              <th class="col-header" class:hl={focused != null && col.id === focused} title={col.label}>
                 <span class="rotated">{col.shortLabel}</span>
               </th>
             {/each}
@@ -127,21 +129,21 @@
         </thead>
         <tbody>
           {#each participants as row}
-            <tr>
-              <th class="row-header" class:trainer-row={row.isTrainer} title={row.label}>{row.shortLabel}</th>
+            <tr class:hl-row={focused != null && row.id === focused}>
+              <th class="row-header" class:trainer-row={row.isTrainer} class:hl={focused != null && row.id === focused} title={row.label}>{row.shortLabel}</th>
               {#each participants as col}
-                {@const cell = cellData(row.id, col.id)}
                 {#if row.id === col.id}
-                  <td class="self-cell">—</td>
-                {:else if cell === null}
-                  <td class="no-data">·</td>
+                  <td class="self-cell" class:hl={focused != null && (row.id === focused || col.id === focused)}>—</td>
+                {:else if cellData(row.id, col.id) === null}
+                  <td class="no-data" class:hl={focused != null && (row.id === focused || col.id === focused)}>·</td>
                 {:else}
                   <td
                     class="rate-cell"
-                    style="background: {cellColor(cell.winRate)}"
-                    title="{row.label} vs {col.label}: {cell.w}W {cell.l}L {cell.d}D ({cell.total} games)"
+                    class:hl={focused != null && (row.id === focused || col.id === focused)}
+                    style="background: {cellColor(cellData(row.id, col.id).winRate)}"
+                    title="{row.label} vs {col.label}: {cellData(row.id, col.id).w}W {cellData(row.id, col.id).l}L {cellData(row.id, col.id).d}D ({cellData(row.id, col.id).total} games)"
                   >
-                    {formatRate(cell.winRate)}
+                    {formatRate(cellData(row.id, col.id).winRate)}
                   </td>
                 {/if}
               {/each}
@@ -253,6 +255,21 @@
 
   .rate-cell:hover {
     opacity: 0.8;
+  }
+
+  /* Faint crosshatch highlight for focused entry's row + column */
+  .hl {
+    background-image: repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 3px,
+      rgba(77, 184, 168, 0.08) 3px,
+      rgba(77, 184, 168, 0.08) 4px
+    );
+  }
+
+  th.hl {
+    color: var(--accent-teal);
   }
 
   .empty {

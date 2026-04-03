@@ -1,5 +1,5 @@
 <script>
-  import { leagueRanked, entryWLD, eloDelta } from '../stores/league.js'
+  import { leagueRanked, entryWLD, eloDelta, focusedEntryId } from '../stores/league.js'
   import MatchHistory from './MatchHistory.svelte'
 
   /** Current learner's display_name (used to highlight their row) */
@@ -45,6 +45,7 @@
 
   function toggleExpand(id) {
     expandedId = expandedId === id ? null : id
+    focusedEntryId.set(expandedId)
   }
 
   function sortIndicator(col) {

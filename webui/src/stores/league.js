@@ -5,6 +5,9 @@ export const leagueEntries = writable([])
 export const leagueResults = writable([])
 export const eloHistory = writable([])
 
+/** Currently expanded/focused entry in leaderboard — used for cross-highlighting */
+export const focusedEntryId = writable(null)
+
 /** Event log: tracks arrivals, departures, and rank changes */
 const MAX_EVENTS = 50
 export const leagueEvents = writable([])
