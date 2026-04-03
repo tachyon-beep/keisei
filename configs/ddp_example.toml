@@ -1,0 +1,56 @@
+# configs/ddp_example.toml
+# Example config for multi-GPU DDP training.
+#
+# Launch with torchrun (preferred — portable across environments):
+#   torchrun --nproc_per_node=<NUM_GPUS> -m keisei.training.katago_loop configs/ddp_example.toml
+#
+# DDP activation is automatic when launched via torchrun (sets RANK, LOCAL_RANK,
+# WORLD_SIZE env vars). No "enabled" flag is needed in the config. Running this
+# config with plain `python` instead of `torchrun` trains on a single GPU.
+#
+# Each rank gets its own VecEnv instances. Total parallel environments =
+# num_games × num_gpus. With num_games=32 and 4 GPUs, you get 128 total envs.
+#
+# global_step logged by rank 0 counts rank-0's steps only. Total environment
+# steps per epoch = steps_per_epoch × world_size.
+
+[training]
+num_games = 32          # per-rank (total envs = num_games * num_gpus)
+max_ply = 500
+algorithm = "katago_ppo"
+checkpoint_interval = 50
+checkpoint_dir = "checkpoints/ddp"
+use_amp = true
+
+[training.algorithm_params]
+learning_rate = 2e-4
+batch_size = 256        # per-rank mini-batch size
+epochs_per_batch = 4
+gamma = 0.99
+gae_lambda = 0.95
+clip_epsilon = 0.2
+lambda_entropy = 0.01
+
+[display]
+moves_per_minute = 30
+db_path = "keisei.db"
+
+[model]
+display_name = "KataGo-DDP"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 20
+channels = 128
+obs_channels = 50
+
+# [distributed] section controls DDP behavior WHEN launched via torchrun.
+# Omit this section entirely to use defaults (sync_batchnorm=true, etc.).
+[distributed]
+sync_batchnorm = true               # synchronized BN across GPUs (recommended for small per-GPU batches)
+find_unused_parameters = false       # set true only if model has conditionally-unused parameters
+gradient_as_bucket_view = true       # memory optimization for gradient communication
+
+# NOTE: League mode ([league] section) is NOT supported with DDP.
+# Split-merge rollout collection can produce unequal buffer sizes across ranks,
+# causing NCCL allreduce deadlocks. Use single-GPU for league training.
