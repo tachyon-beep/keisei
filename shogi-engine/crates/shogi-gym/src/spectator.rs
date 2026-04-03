@@ -1,55 +1,11 @@
 use numpy::{PyArray3, PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use shogi_core::{GameState, HandPieceType, Move};
+use shogi_core::GameState;
 
 use crate::action_mapper::{ActionMapper, DefaultActionMapper};
 use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS};
-use crate::spectator_data::{build_spectator_dict, color_name};
-
-// ---------------------------------------------------------------------------
-// Helper functions (spectator-only)
-// ---------------------------------------------------------------------------
-
-/// Encode a drop piece char: P, L, N, S, G, B, R
-fn hand_piece_char(hpt: HandPieceType) -> char {
-    match hpt {
-        HandPieceType::Pawn   => 'P',
-        HandPieceType::Lance  => 'L',
-        HandPieceType::Knight => 'N',
-        HandPieceType::Silver => 'S',
-        HandPieceType::Gold   => 'G',
-        HandPieceType::Bishop => 'B',
-        HandPieceType::Rook   => 'R',
-    }
-}
-
-/// Build move notation string from a Move.
-/// Board: `"9a→8a+"` format: `{9-from_col}{chr(a+from_row)}→{9-to_col}{chr(a+to_row)}{+ if promote}`
-/// Drop:  `"P*5e"` format: `{piece_char}*{9-to_col}{chr(a+to_row)}`
-fn move_notation(mv: Move) -> String {
-    match mv {
-        Move::Board { from, to, promote } => {
-            let from_col_shogi = 9 - from.col();
-            let from_row_char = (b'a' + from.row()) as char;
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            let promo_str = if promote { "+" } else { "" };
-            format!(
-                "{}{}→{}{}{}",
-                from_col_shogi, from_row_char,
-                to_col_shogi, to_row_char,
-                promo_str
-            )
-        }
-        Move::Drop { to, piece_type } => {
-            let piece_char = hand_piece_char(piece_type);
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            format!("{}*{}{}", piece_char, to_col_shogi, to_row_char)
-        }
-    }
-}
+use crate::spectator_data::{build_spectator_dict, color_name, move_notation};
 
 // ---------------------------------------------------------------------------
 // SpectatorEnv
@@ -240,6 +196,7 @@ mod tests {
     use super::*;
     use shogi_core::{GameState, Color, HandPieceType, Move, Square};
     use crate::action_mapper::ActionMapper;
+    use crate::spectator_data::{hand_piece_char, move_notation};
 
     // -----------------------------------------------------------------------
     // move_notation tests

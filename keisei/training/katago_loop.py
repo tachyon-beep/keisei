@@ -804,7 +804,7 @@ class KataGoTrainingLoop:
                 "result": game_data.get("result", "in_progress"),
                 "sfen": game_data.get("sfen", ""),
                 "in_check": int(game_data.get("in_check", False)),
-                "move_history_json": "[]",
+                "move_history_json": json.dumps(game_data.get("move_history", [])),
                 "value_estimate": (
                     self.latest_values[i]
                     if i < len(self.latest_values)

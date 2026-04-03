@@ -16,12 +16,12 @@ use crate::observation::{
     DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS,
 };
 use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
-use crate::spectator_data::build_spectator_dict;
+use crate::spectator_data::{build_spectator_dict, move_notation};
 use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReason};
 
 use numpy::{PyArrayMethods, ToPyArray};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, MoveList};
 use shogi_core::rules::material_balance;
@@ -251,6 +251,9 @@ pub struct VecEnv {
     obs_buffer_len: usize,    // cached: obs_mode.buffer_len()
     action_space: usize,       // cached: action_mode.action_space_size()
     num_channels: usize,       // cached: obs_mode.channels()
+
+    // Per-env move history for spectator display (cleared on auto-reset)
+    move_histories: Vec<Vec<(usize, String)>>,
 
     // Episode tracking counters (atomic for rayon safety)
     episodes_completed: AtomicU64,
@@ -583,6 +586,7 @@ impl VecEnv {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
             episodes_truncated: AtomicU64::new(0),
@@ -594,9 +598,10 @@ impl VecEnv {
     ///
     /// Returns a `ResetResult` with initial observations and legal masks.
     pub fn reset(&mut self, py: Python<'_>) -> PyResult<ResetResult> {
-        // Reset all games
+        // Reset all games and move histories
         for i in 0..self.num_envs {
             self.games[i] = GameState::with_max_ply(self.max_ply);
+            self.move_histories[i].clear();
         }
 
         // Write initial obs + legal masks for all games
@@ -668,11 +673,25 @@ impl VecEnv {
             decoded_moves.push(mv);
         }
 
+        // Record move notations before apply (single-threaded, before state mutation)
+        for (i, mv) in decoded_moves.iter().enumerate() {
+            let action_idx = actions[i] as usize;
+            let notation = move_notation(*mv);
+            self.move_histories[i].push((action_idx, notation));
+        }
+
         // --- Phase 2: Apply (GIL released, with per-env panic isolation) ---
 
         py.allow_threads(|| {
             self.apply_moves(&decoded_moves);
         });
+
+        // Clear move histories for environments that were auto-reset
+        for i in 0..self.num_envs {
+            if self.terminated_buffer[i] || self.truncated_buffer[i] {
+                self.move_histories[i].clear();
+            }
+        }
 
         // --- Build Python result (GIL held) ---
 
@@ -822,8 +841,21 @@ impl VecEnv {
     /// Return spectator-format dicts for all games.
     pub fn get_spectator_data(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
         let mut result = Vec::with_capacity(self.num_envs);
-        for game in &self.games {
-            result.push(build_spectator_dict(py, game)?);
+        for (i, game) in self.games.iter().enumerate() {
+            let d_bound = build_spectator_dict(py, game)?;
+            let d = d_bound.bind(py);
+
+            // Append move_history
+            let history_list = PyList::empty(py);
+            for (action_idx, notation) in &self.move_histories[i] {
+                let hd = PyDict::new(py);
+                hd.set_item("action", *action_idx as i64)?;
+                hd.set_item("notation", notation.as_str())?;
+                history_list.append(hd)?;
+            }
+            d.set_item("move_history", history_list)?;
+
+            result.push(d_bound);
         }
         Ok(result)
     }
@@ -872,6 +904,7 @@ mod tests {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
             episodes_truncated: AtomicU64::new(0),
@@ -914,6 +947,7 @@ mod tests {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
             episodes_truncated: AtomicU64::new(0),
