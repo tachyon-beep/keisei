@@ -55,14 +55,13 @@
           <p class="empty">Elo history will appear after league matches are played.</p>
         {/if}
       </div>
+      <LeagueEventLog />
     </div>
     <div class="right-column">
       <MatchupMatrix {learnerName} />
       <RecentMatches />
     </div>
   </div>
-
-  <LeagueEventLog />
 </main>
 
 <style>
