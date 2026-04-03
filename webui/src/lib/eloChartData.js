@@ -26,8 +26,9 @@ export function buildEloChartData(history, entries) {
           data[epochIndex.get(h.epoch)] = h.elo_rating
         }
       }
+      const name = entry.display_name || entry.architecture
       return {
-        label: `${entry.architecture} (${Math.round(entry.elo_rating)})`,
+        label: `${name} (${Math.round(entry.elo_rating)})`,
         data,
         color: COLORS[i % COLORS.length],
       }

@@ -45,6 +45,7 @@
             xData={chartData.xData}
             series={chartData.series}
             height={400}
+            xLabel="Epoch"
           />
         {:else}
           <p class="empty">Elo history will appear after league matches are played.</p>
