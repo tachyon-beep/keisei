@@ -5,6 +5,7 @@
   import LeagueTable from './LeagueTable.svelte'
   import MatchupMatrix from './MatchupMatrix.svelte'
   import RecentMatches from './RecentMatches.svelte'
+  import LeagueEventLog from './LeagueEventLog.svelte'
   import MetricsChart from './MetricsChart.svelte'
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
@@ -60,6 +61,8 @@
       </div>
     </div>
   </div>
+
+  <LeagueEventLog />
 </main>
 
 <style>

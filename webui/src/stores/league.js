@@ -1,8 +1,88 @@
 import { writable, derived } from 'svelte/store'
+import { get } from 'svelte/store'
 
 export const leagueEntries = writable([])
 export const leagueResults = writable([])
 export const eloHistory = writable([])
+
+/** Event log: tracks arrivals, departures, and rank changes */
+const MAX_EVENTS = 50
+export const leagueEvents = writable([])
+
+let _prevEntryMap = new Map()
+let _prevRanks = new Map()
+
+/**
+ * Call after leagueEntries is updated to diff and generate events.
+ * Kept as an explicit function (not a derived store) because it needs
+ * to accumulate history across updates rather than recompute from scratch.
+ */
+export function diffLeagueEntries(entries) {
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const newMap = new Map(entries.map(e => [e.id, e]))
+  const events = []
+
+  // Arrivals
+  for (const [id, entry] of newMap) {
+    if (!_prevEntryMap.has(id)) {
+      events.push({
+        time: now,
+        type: 'arrival',
+        icon: '→',
+        name: entry.display_name || entry.architecture,
+        detail: `joined at Elo ${Math.round(entry.elo_rating)}`,
+      })
+    }
+  }
+
+  // Departures
+  for (const [id, entry] of _prevEntryMap) {
+    if (!newMap.has(id)) {
+      events.push({
+        time: now,
+        type: 'departure',
+        icon: '←',
+        name: entry.display_name || entry.architecture,
+        detail: 'removed from pool',
+      })
+    }
+  }
+
+  // Rank changes (only if pool has >1 entry and not first load)
+  if (_prevRanks.size > 0 && entries.length > 1) {
+    const sorted = [...entries].sort((a, b) => b.elo_rating - a.elo_rating)
+    for (let i = 0; i < sorted.length; i++) {
+      const e = sorted[i]
+      const newRank = i + 1
+      const oldRank = _prevRanks.get(e.id)
+      if (oldRank != null && oldRank !== newRank) {
+        // Only log significant rank changes (top 3 movements)
+        if (newRank <= 3 || oldRank <= 3) {
+          const direction = newRank < oldRank ? '↑' : '↓'
+          events.push({
+            time: now,
+            type: newRank < oldRank ? 'promotion' : 'demotion',
+            icon: direction,
+            name: e.display_name || e.architecture,
+            detail: `rank ${oldRank} → ${newRank}`,
+          })
+        }
+      }
+    }
+    // Update rank cache
+    _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
+  } else if (entries.length > 0) {
+    // First load — seed ranks without generating events
+    const sorted = [...entries].sort((a, b) => b.elo_rating - a.elo_rating)
+    _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
+  }
+
+  _prevEntryMap = newMap
+
+  if (events.length > 0) {
+    leagueEvents.update(existing => [...events, ...existing].slice(0, MAX_EVENTS))
+  }
+}
 
 /** Aggregate W/L/D totals keyed by entry id */
 export const entryWLD = derived(leagueResults, ($results) => {
