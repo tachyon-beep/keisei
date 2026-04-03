@@ -70,15 +70,20 @@ describe('selectedOpponent derived store', () => {
 
   it('returns opponent entry when opponent_id matches a league entry', () => {
     leagueEntries.set([
-      { id: 5, architecture: 'transformer_ep00008', elo_rating: 1180, games_played: 124 },
+      { id: 5, architecture: 'transformer_ep00008', elo_rating: 1180, games_played: 124, display_name: 'transformer_ep00008', created_epoch: 8, flavour_facts: [], model_params: {}, created_at: '2026-04-01T00:00:00Z' },
     ])
     games.set([{ game_id: 0, opponent_id: 5 }])
     selectedGameId.set(0)
     const opp = get(selectedOpponent)
     expect(opp).toEqual({
+      display_name: 'transformer_ep00008',
       architecture: 'transformer_ep00008',
       elo_rating: 1180,
       games_played: 124,
+      created_epoch: 8,
+      flavour_facts: [],
+      model_params: {},
+      created_at: '2026-04-01T00:00:00Z',
     })
   })
 })
