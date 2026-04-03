@@ -3,6 +3,8 @@
 
   /** Current learner display_name — used to build an aggregate "Trainer" row */
   export let learnerName = null
+  /** Total grid size — pad with placeholders to fill */
+  export let totalSlots = 20
 
   $: focused = $focusedEntryId
 
@@ -32,6 +34,17 @@
         label: learnerName + ' (all)',
         shortLabel: shortName(learnerName) + '*',
         isTrainer: true,
+      })
+    }
+    // Pad to totalSlots with placeholders
+    while (p.length < totalSlots) {
+      const slot = p.length + 1
+      p.push({
+        id: `empty-${slot}`,
+        label: `Slot ${slot}`,
+        shortLabel: `#${slot}`,
+        isTrainer: false,
+        isPlaceholder: true,
       })
     }
     return p
@@ -112,16 +125,13 @@
 
 <div class="matrix-card">
   <h2 class="section-header">Head-to-Head</h2>
-  {#if participants.length < 2}
-    <p class="empty">No matches yet.</p>
-  {:else}
     <div class="matrix-scroll">
       <table class="matrix" role="grid" aria-label="Head-to-head win rate matrix">
         <thead>
           <tr>
             <th class="corner"></th>
             {#each participants as col}
-              <th class="col-header" class:hl={focused != null && col.id === focused} title={col.label}>
+              <th class="col-header" class:hl={focused != null && col.id === focused} class:placeholder={col.isPlaceholder} title={col.label}>
                 <span class="rotated">{col.shortLabel}</span>
               </th>
             {/each}
@@ -130,7 +140,7 @@
         <tbody>
           {#each participants as row}
             <tr class:hl-row={focused != null && row.id === focused}>
-              <th class="row-header" class:trainer-row={row.isTrainer} class:hl={focused != null && row.id === focused} title={row.label}>{row.shortLabel}</th>
+              <th class="row-header" class:trainer-row={row.isTrainer} class:hl={focused != null && row.id === focused} class:placeholder={row.isPlaceholder} title={row.label}>{row.shortLabel}</th>
               {#each participants as col}
                 {#if row.id === col.id}
                   <td class="self-cell" class:hl={focused != null && (row.id === focused || col.id === focused)}>—</td>
@@ -152,7 +162,6 @@
         </tbody>
       </table>
     </div>
-  {/if}
 </div>
 
 <style>
@@ -273,6 +282,11 @@
 
   th.hl {
     color: var(--accent-teal);
+  }
+
+  .placeholder {
+    color: var(--text-muted);
+    opacity: 0.35;
   }
 
   .empty {

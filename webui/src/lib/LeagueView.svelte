@@ -135,9 +135,10 @@
   }
 
   .table-wrapper {
-    flex: 1;
+    flex: 0 1 auto;
     min-height: 0;
     overflow: hidden;
+    max-height: 50%;
   }
 
   .chart-card {
@@ -145,7 +146,8 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 14px;
-    flex-shrink: 0;
+    flex: 1;
+    min-height: 0;
   }
 
   .right-column {
