@@ -60,6 +60,180 @@ class SplitMergeResult:
     learner_indices: torch.Tensor  # (n_learner,) indices into full env array
 
 
+def _compute_value_cats(
+    rewards: torch.Tensor,
+    dones_bool: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    """Assign value-head categories from terminal rewards.
+
+    Returns a tensor of {-1=ignore, 0=win, 1=draw, 2=loss}.
+    Engine produces exact integer-valued rewards (0.0 for draws, ±1.0
+    for wins/losses), so float equality with == 0 is safe here.
+    """
+    cats = torch.full((rewards.numel(),), -1, dtype=torch.long, device=device)
+    cats[dones_bool & (rewards > 0)] = 0
+    cats[dones_bool & (rewards == 0)] = 1
+    cats[dones_bool & (rewards < 0)] = 2
+    return cats
+
+
+def _negate_where(
+    values: torch.Tensor,
+    condition: np.ndarray,
+) -> torch.Tensor:
+    """Clone a tensor and negate elements where condition is True.
+
+    Shared implementation for perspective correction functions.
+    """
+    result = values.clone()
+    if result.numel() == 0:
+        return result
+    mask = torch.tensor(condition, device=values.device, dtype=torch.bool)
+    result[mask] = -result[mask]
+    return result
+
+
+def to_learner_perspective(
+    rewards: torch.Tensor,
+    pre_players: np.ndarray,
+    learner_side: int,
+) -> torch.Tensor:
+    """Convert rewards from last-mover perspective to learner perspective.
+
+    In split-merge mode, rewards from vecenv.step() are relative to
+    whoever just moved (last_mover = pre_players). When the opponent
+    moved, the reward sign must be flipped for the learner.
+    """
+    return _negate_where(rewards, pre_players != learner_side)
+
+
+def sign_correct_bootstrap(
+    next_values: torch.Tensor,
+    current_players: np.ndarray,
+    learner_side: int,
+) -> torch.Tensor:
+    """Correct bootstrap values for learner-centric GAE.
+
+    The value network outputs from current-player perspective. When the
+    opponent is to-move, the bootstrap value represents the opponent's
+    advantage and must be negated for learner-centric GAE targets.
+    """
+    return _negate_where(next_values, current_players != learner_side)
+
+
+class PendingTransitions:
+    """Per-env state for learner transitions awaiting outcome resolution.
+
+    In split-merge mode, a learner transition is "opened" when the learner
+    moves, but its reward and done flag depend on what happens next (which
+    may be an opponent move). This class holds the transition data until
+    the outcome resolves.
+
+    Memory footprint: For num_envs=512, obs_shape=(50,9,9), action_space=11259,
+    the total allocation is ~90 MB on the device. This is a persistent per-epoch
+    cost alongside the rollout buffer. Kept on GPU to avoid device mismatches
+    in the finalize-mask logic (dones, valid, learner_next are all on GPU).
+    """
+
+    def __init__(
+        self,
+        num_envs: int,
+        obs_shape: tuple[int, ...],
+        action_space: int,
+        device: torch.device,
+    ) -> None:
+        self.num_envs = num_envs
+        self.obs = torch.zeros(num_envs, *obs_shape, device=device)
+        self.actions = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.log_probs = torch.zeros(num_envs, device=device)
+        self.values = torch.zeros(num_envs, device=device)
+        self.legal_masks = torch.zeros(num_envs, action_space, dtype=torch.bool, device=device)
+        self.rewards = torch.zeros(num_envs, device=device)
+        self.score_targets = torch.zeros(num_envs, device=device)
+        self.valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    def create(
+        self,
+        env_mask: torch.Tensor,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        log_probs: torch.Tensor,
+        values: torch.Tensor,
+        legal_masks: torch.Tensor,
+        rewards: torch.Tensor,
+        score_targets: torch.Tensor,
+    ) -> None:
+        """Open pending transitions for envs where the learner just moved.
+
+        Raises RuntimeError if any env in env_mask already has a valid
+        pending transition (indicates a protocol bug — finalize must be
+        called before create for the same env).
+        """
+        if (env_mask & self.valid).any():
+            raise RuntimeError(
+                "create() called on env(s) with already-valid pending transition. "
+                "finalize() must be called first."
+            )
+        self.obs[env_mask] = obs[env_mask]
+        self.actions[env_mask] = actions[env_mask]
+        self.log_probs[env_mask] = log_probs[env_mask]
+        self.values[env_mask] = values[env_mask]
+        self.legal_masks[env_mask] = legal_masks[env_mask]
+        self.rewards[env_mask] = rewards[env_mask]
+        self.score_targets[env_mask] = score_targets[env_mask]
+        self.valid[env_mask] = True
+
+    def accumulate_reward(self, learner_rewards: torch.Tensor) -> None:
+        """Add perspective-corrected rewards to all valid pending transitions.
+
+        Correctness assumption: non-mover envs have reward=0.0 from the engine,
+        so accumulating learner_rewards across all valid envs is safe. If the
+        engine ever emits shaping rewards for non-movers, this method would
+        need to accept a per-env mask of which envs actually stepped.
+        """
+        self.rewards[self.valid] += learner_rewards[self.valid]
+
+    def finalize(
+        self,
+        finalize_mask: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> dict[str, torch.Tensor] | None:
+        """Close pending transitions and return data for buffer insertion.
+
+        Returns None if no transitions need finalizing. Otherwise returns
+        a dict with keys: obs, actions, log_probs, values, rewards, dones,
+        legal_masks, score_targets, env_ids. All tensors are indexed by
+        the finalized subset (not full num_envs).
+
+        The finalize_mask may include envs where valid=False — these are
+        safely skipped via the internal `to_finalize = finalize_mask & self.valid`
+        guard.
+        """
+        to_finalize = finalize_mask & self.valid
+        if not to_finalize.any():
+            return None
+
+        indices = to_finalize.nonzero(as_tuple=True)[0]
+        result = {
+            "obs": self.obs[indices],
+            "actions": self.actions[indices],
+            "log_probs": self.log_probs[indices],
+            "values": self.values[indices],
+            "rewards": self.rewards[indices],
+            "dones": dones[indices].float(),
+            "legal_masks": self.legal_masks[indices],
+            "score_targets": self.score_targets[indices],
+            "env_ids": indices,
+        }
+
+        # Clear finalized state
+        self.valid[to_finalize] = False
+        self.rewards[to_finalize] = 0.0
+
+        return result
+
+
 def split_merge_step(
     obs: torch.Tensor,
     legal_masks: torch.Tensor,
@@ -457,10 +631,53 @@ class KataGoTrainingLoop:
                     self._current_opponent_entry, device=str(self.device),
                 )
 
+            # One-time LR scheduler reset for league mode to prevent value-loss
+            # spike from triggering premature LR reduction after reward-collection
+            # fix. Safe to remove once no pre-fix checkpoints are in use.
+            # Uses ReduceLROnPlateau internal attributes (best, mode_worse,
+            # num_bad_epochs) — guarded by hasattr for forward compatibility.
+            if (self._current_opponent is not None
+                    and self.lr_scheduler is not None
+                    and epoch_i == start_epoch
+                    and start_epoch > 0
+                    and hasattr(self.lr_scheduler, "best")):
+                self.lr_scheduler.best = self.lr_scheduler.mode_worse
+                self.lr_scheduler.num_bad_epochs = 0
+                if self.dist_ctx.is_main:
+                    logger.info(
+                        "LR scheduler reset at epoch %d for post-fix checkpoint continuity",
+                        epoch_i,
+                    )
+
+            if (self._current_opponent is not None
+                    and epoch_i == start_epoch
+                    and start_epoch > 0
+                    and self.dist_ctx.is_main):
+                logger.warning(
+                    "Resuming league training with corrected reward collection. "
+                    "Elo ratings from epochs before this fix may be inaccurate "
+                    "(opponent-turn terminals were previously miscounted). "
+                    "Elo will self-correct over subsequent epochs."
+                )
+
             # Per-epoch win/loss/draw counters for Elo tracking
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            # Per-color win counters (black=0, white=1)
+            black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
+            white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
+
+            learner_side = 0  # Epoch-scoped: used by bootstrap sign correction after the loop
+            pending: PendingTransitions | None = None
+            _scratch_log_probs = torch.zeros(self.num_envs, device=self.device)
+            _scratch_values = torch.zeros(self.num_envs, device=self.device)
+            if self._current_opponent is not None:
+                obs_channels = obs.shape[1]
+                action_space = self.buffer.action_space
+                pending = PendingTransitions(
+                    self.num_envs, (obs_channels, 9, 9), action_space, self.device,
+                )
 
             self._phase = "rollout"
             self._force_heartbeat()
@@ -468,16 +685,132 @@ class KataGoTrainingLoop:
                 self.global_step += 1
 
                 if self._current_opponent is not None:
+                    assert pending is not None
+                    pre_players = current_players.copy()
+                    # GPU copy of pre_players avoids .cpu().numpy() sync for indexing
+                    pre_players_t = torch.from_numpy(pre_players).to(self.device)
+                    learner_moved = pre_players_t == learner_side
+
                     # Split-merge: learner vs opponent
                     sm_result = split_merge_step(
                         obs=obs, legal_masks=legal_masks,
                         current_players=current_players,
                         learner_model=self.model,
                         opponent_model=self._current_opponent,
-                        learner_side=0,
+                        learner_side=learner_side,
                     )
                     actions = sm_result.actions
                     action_list = actions.tolist()
+                    step_result = self.vecenv.step(action_list)
+
+                    current_players = np.asarray(step_result.current_players)
+                    current_players_t = torch.from_numpy(current_players).to(self.device)
+                    learner_next = current_players_t == learner_side
+
+                    rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
+                    terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
+                    truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
+                    dones = terminated | truncated
+
+                    # Convert rewards to learner perspective
+                    learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
+
+                    # Track wins/losses/draws from learner perspective
+                    terminal_mask = dones.bool()
+                    if terminal_mask.any():
+                        t_rewards = learner_rewards[terminal_mask]
+                        # Engine produces exact integer-valued rewards (±1.0 or 0.0),
+                        # so float equality with == 0 is safe for draw detection.
+                        win_acc += (t_rewards > 0).sum()
+                        loss_acc += (t_rewards < 0).sum()
+                        draw_acc += (t_rewards == 0).sum()
+
+                        # Per-color wins: use pre_players_t (last_mover) + raw rewards
+                        # (from last_mover POV) to determine winner's color.
+                        t_raw_rewards = rewards[terminal_mask]
+                        t_players = pre_players_t[terminal_mask]
+                        winner_is_black = (
+                            ((t_raw_rewards > 0) & (t_players == 0))
+                            | ((t_raw_rewards < 0) & (t_players == 1))
+                        )
+                        winner_is_white = (
+                            ((t_raw_rewards > 0) & (t_players == 1))
+                            | ((t_raw_rewards < 0) & (t_players == 0))
+                        )
+                        black_wins += winner_is_black.sum()
+                        white_wins += winner_is_white.sum()
+
+                    # --- Pending transition protocol ---
+                    # Steps 1-2 finalize transitions from PRIOR steps.
+                    # Steps 3-4 create and possibly finalize transitions from THIS step.
+                    # These populations are disjoint. Do not reorder.
+
+                    # 1. Accumulate rewards into existing pending transitions
+                    pending.accumulate_reward(learner_rewards)
+
+                    # 2. Finalize resolved pending transitions:
+                    #    - Terminal: game ended (on any player's move)
+                    #    - Non-terminal return: opponent moved, turn returns to learner
+                    finalize_mask = pending.valid & (dones.bool() | learner_next)
+                    finalized = pending.finalize(finalize_mask, dones)
+
+                    if finalized is not None:
+                        f_value_cats = _compute_value_cats(
+                            finalized["rewards"], finalized["dones"].bool(), self.device,
+                        )
+                        self.buffer.add(
+                            finalized["obs"], finalized["actions"],
+                            finalized["log_probs"], finalized["values"],
+                            finalized["rewards"], finalized["dones"],
+                            finalized["legal_masks"], f_value_cats,
+                            finalized["score_targets"],
+                            env_ids=finalized["env_ids"],
+                        )
+
+                    # 3. Create new pending for envs where learner just moved
+                    if learner_moved.any():
+                        li = sm_result.learner_indices
+                        # Scatter compact learner data to pre-allocated scratch tensors
+                        _scratch_log_probs.zero_()
+                        _scratch_values.zero_()
+                        if li.numel() > 0:
+                            _scratch_log_probs[li] = sm_result.learner_log_probs
+                            _scratch_values[li] = sm_result.learner_values
+
+                        material = torch.from_numpy(
+                            np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
+                        ).to(self.device)
+                        full_score_targets = material / self.score_norm
+
+                        pending.create(
+                            learner_moved, obs, actions, _scratch_log_probs,
+                            _scratch_values, legal_masks, learner_rewards,
+                            full_score_targets,
+                        )
+
+                        # 4. Immediately finalize if learner's own move was terminal
+                        imm_terminal = learner_moved & dones.bool()
+                        if imm_terminal.any():
+                            imm_finalized = pending.finalize(imm_terminal, dones)
+                            if imm_finalized is not None:
+                                imm_value_cats = _compute_value_cats(
+                                    imm_finalized["rewards"], imm_finalized["dones"].bool(),
+                                    self.device,
+                                )
+                                self.buffer.add(
+                                    imm_finalized["obs"], imm_finalized["actions"],
+                                    imm_finalized["log_probs"], imm_finalized["values"],
+                                    imm_finalized["rewards"], imm_finalized["dones"],
+                                    imm_finalized["legal_masks"], imm_value_cats,
+                                    imm_finalized["score_targets"],
+                                    env_ids=imm_finalized["env_ids"],
+                                )
+                else:
+                    # No opponent: all envs are learner (original behavior)
+                    actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
+                    self.latest_values = values.tolist()
+                    action_list = actions.tolist()
+                    pre_players = current_players.copy()
                     step_result = self.vecenv.step(action_list)
 
                     current_players = np.asarray(step_result.current_players)
@@ -487,58 +820,25 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    # Track wins/losses/draws for Elo
                     terminal_mask = dones.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
-                        win_acc += (t_rewards > 0).sum()
-                        loss_acc += (t_rewards < 0).sum()
-                        draw_acc += (t_rewards == 0).sum()
-
-                    # Store ONLY learner transitions in the buffer
-                    li = sm_result.learner_indices
-                    if li.numel() > 0:
-                        # Compute value_cats and score_targets for learner envs
-                        li_terminal = dones[li].bool()
-                        li_rewards = rewards[li]
-                        li_value_cats = torch.full(
-                            (li.numel(),), -1, dtype=torch.long, device=self.device,
+                        # pre_players_t = who moved this step (last_mover), on GPU.
+                        # Reward is from last_mover's perspective.
+                        pre_players_t = torch.from_numpy(pre_players).to(self.device)
+                        t_players = pre_players_t[terminal_mask]
+                        winner_is_black = (
+                            ((t_rewards > 0) & (t_players == 0))
+                            | ((t_rewards < 0) & (t_players == 1))
                         )
-                        li_value_cats[li_terminal & (li_rewards > 0)] = 0
-                        li_value_cats[li_terminal & (li_rewards == 0)] = 1
-                        li_value_cats[li_terminal & (li_rewards < 0)] = 2
-
-                        # Per-step material balance for learner envs
-                        material = torch.from_numpy(
-                            np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
-                        ).to(self.device)
-                        li_score_targets = material[li] / self.score_norm
-
-                        self.buffer.add(
-                            obs[li], actions[li], sm_result.learner_log_probs,
-                            sm_result.learner_values, li_rewards, dones[li],
-                            legal_masks[li], li_value_cats, li_score_targets,
-                            env_ids=li,
+                        winner_is_white = (
+                            ((t_rewards > 0) & (t_players == 1))
+                            | ((t_rewards < 0) & (t_players == 0))
                         )
-                else:
-                    # No opponent: all envs are learner (original behavior)
-                    actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
-                    self.latest_values = values.tolist()
-                    action_list = actions.tolist()
-                    step_result = self.vecenv.step(action_list)
+                        black_wins += winner_is_black.sum()
+                        white_wins += winner_is_white.sum()
 
-                    rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
-                    terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
-                    truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
-                    dones = terminated | truncated
-
-                    terminal_mask = dones.bool()
-                    value_cats = torch.full(
-                        (self.num_envs,), -1, dtype=torch.long, device=self.device,
-                    )
-                    value_cats[terminal_mask & (rewards > 0)] = 0
-                    value_cats[terminal_mask & (rewards == 0)] = 1
-                    value_cats[terminal_mask & (rewards < 0)] = 2
+                    value_cats = _compute_value_cats(rewards, terminal_mask, self.device)
 
                     # Per-step material balance from the Rust engine, normalized.
                     # Every position gets a real score target — no NaN masking needed.
@@ -557,12 +857,46 @@ class KataGoTrainingLoop:
                 self._maybe_write_snapshots()
                 self._maybe_update_heartbeat()
 
+            # Finalize any remaining pending transitions at epoch end.
+            # These are learner moves whose games did not resolve before the epoch
+            # ended. They are stored with done=False so GAE bootstraps from next_values.
+            if pending is not None and pending.valid.any():
+                flush_count = pending.valid.sum().item()
+                remaining_mask = pending.valid.clone()
+                remaining_dones = torch.zeros(self.num_envs, device=self.device)
+                remaining = pending.finalize(remaining_mask, remaining_dones)
+                if remaining is not None:
+                    remaining_value_cats = torch.full(
+                        (remaining["env_ids"].numel(),), -1,
+                        dtype=torch.long, device=self.device,
+                    )
+                    self.buffer.add(
+                        remaining["obs"], remaining["actions"],
+                        remaining["log_probs"], remaining["values"],
+                        remaining["rewards"], remaining["dones"],
+                        remaining["legal_masks"], remaining_value_cats,
+                        remaining["score_targets"],
+                        env_ids=remaining["env_ids"],
+                    )
+                    logger.info(
+                        "Epoch %d: flushed %d pending transitions at epoch end",
+                        epoch_i, flush_count,
+                    )
+
             # Bootstrap value for GAE
             self.ppo.forward_model.eval()
             with torch.no_grad():
                 output = self.ppo.forward_model(obs)
                 next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
             self.ppo.forward_model.train()
+
+            # Sign-correct bootstrap for split-merge mode: the value network
+            # outputs from current-player perspective. When the opponent is to-move
+            # at epoch end, the bootstrap value must be negated for learner-centric GAE.
+            if self._current_opponent is not None:
+                next_values = sign_correct_bootstrap(
+                    next_values, current_players, learner_side,
+                )
 
             # Set epoch-dependent entropy coefficient
             self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
@@ -617,6 +951,8 @@ class KataGoTrainingLoop:
             win_count = win_acc.item()
             loss_count = loss_acc.item()
             draw_count = draw_acc.item()
+            black_win_count = black_wins.item()
+            white_win_count = white_wins.item()
 
             # Elo tracking (league mode, rank 0 only)
             if self.dist_ctx.is_main:
@@ -678,10 +1014,20 @@ class KataGoTrainingLoop:
                     "episodes_completed": ep_completed,
                     "avg_episode_length": getattr(self.vecenv, "mean_episode_length", None),
                     "truncation_rate": getattr(self.vecenv, "truncation_rate", None),
+                    # draw_rate from vecenv counts engine-level draws (stalemate,
+                    # repetition). draw_count from win/loss/draw accumulators counts
+                    # reward==0 terminals. These may diverge if truncations produce
+                    # non-zero rewards. Both are included for cross-validation.
                     "draw_rate": getattr(self.vecenv, "draw_rate", None),
                     "win_rate": (
                         (win_count + 0.5 * draw_count) / total_games
                         if total_games > 0 else None
+                    ),
+                    "black_win_rate": (
+                        black_win_count / total_games if total_games > 0 else None
+                    ),
+                    "white_win_rate": (
+                        white_win_count / total_games if total_games > 0 else None
                     ),
                 }
                 try:
