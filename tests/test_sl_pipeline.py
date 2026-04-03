@@ -1118,3 +1118,38 @@ class TestSLDatasetMmapCache:
         assert len(dataset._mmap_cache) == 1
         assert torch.equal(item_before["observation"], item_after["observation"])
         assert item_before["policy_target"] == item_after["policy_target"]
+
+    def test_worker_init_fn_wired_when_workers_nonzero(self, tmp_path):
+        """SLTrainer with num_workers > 0 must set worker_init_fn."""
+        from keisei.sl.trainer import SLConfig, SLTrainer
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        # Must have data — has_data=False suppresses worker_init_fn
+        self._write_shards(tmp_path, n_shards=1, n_positions=10)
+
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        config = SLConfig(data_dir=str(tmp_path), num_workers=2)
+        trainer = SLTrainer(model, config)
+        assert trainer.dataloader.worker_init_fn is not None
+
+    def test_worker_init_fn_none_when_workers_zero(self, tmp_path):
+        """SLTrainer with num_workers=0 must NOT set worker_init_fn."""
+        from keisei.sl.trainer import SLConfig, SLTrainer
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+        self._write_shards(tmp_path, n_shards=1, n_positions=10)
+
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        config = SLConfig(data_dir=str(tmp_path), num_workers=0)
+        trainer = SLTrainer(model, config)
+        assert trainer.dataloader.worker_init_fn is None

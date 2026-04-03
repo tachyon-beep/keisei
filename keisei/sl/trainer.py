@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, get_worker_info
 
 from keisei.sl.dataset import SLDataset
 from keisei.training.models.katago_base import KataGoBaseModel
@@ -30,6 +30,19 @@ class SLConfig:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _sl_worker_init(worker_id: int) -> None:
+    """Clear inherited mmap cache after fork so each worker opens its own."""
+    info = get_worker_info()
+    if info is None:
+        return  # called from main process (e.g., in tests)
+    dataset = info.dataset
+    # Walk wrapper chain (e.g., Subset wraps .dataset)
+    while hasattr(dataset, "dataset"):
+        dataset = dataset.dataset
+    if hasattr(dataset, "clear_cache"):
+        dataset.clear_cache()
 
 
 class SLTrainer:
@@ -62,6 +75,7 @@ class SLTrainer:
             num_workers=config.num_workers if has_data else 0,
             pin_memory=is_cuda and config.num_workers > 0 and has_data,
             persistent_workers=config.num_workers > 0 and has_data,
+            worker_init_fn=_sl_worker_init if config.num_workers > 0 and has_data else None,
         )
 
     def train_epoch(self) -> dict[str, float]:
