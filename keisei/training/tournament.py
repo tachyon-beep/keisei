@@ -396,11 +396,12 @@ class LeagueTournament:
             legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
             current_players = np.asarray(step_result.current_players, dtype=np.uint8)
             rewards = np.asarray(step_result.rewards)
-            dones = np.asarray(step_result.dones)
+            terminated = np.asarray(step_result.terminated)
+            truncated = np.asarray(step_result.truncated)
 
             # Count results from finished games
             for i in range(self.num_envs):
-                if dones[i]:
+                if terminated[i] or truncated[i]:
                     r = rewards[i]
                     if r > 0:
                         a_wins += 1  # black (A) wins
