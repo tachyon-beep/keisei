@@ -50,7 +50,7 @@ A dynamic model is eligible for promotion to static when:
 - It has >= 20 completed calibration matches
 - Promotion cadence is conservative — at most every 200-500 epochs
 
-### Dynamic (15 entries) — Competitive Pressure
+### Dynamic (8 entries) — Competitive Pressure
 
 - **Icon:** Crossed swords
 - **Purpose:** Co-evolving opponents that keep the learner challenged. "Is the training environment hard enough?" is answered by win rate against these.
@@ -58,7 +58,7 @@ A dynamic model is eligible for promotion to static when:
 - **Training mechanics:**
   - After each tournament match, the losing model (or both) gets a few PPO update steps using rollout data from the match.
   - Each dynamic model needs persistent optimizer state (Adam momentum/variance) saved alongside its checkpoint.
-  - Estimated memory per model (b6c96, ~3M params): ~48MB (weights + optimizer + gradients). 15 models = ~720MB — fits easily on a dedicated GPU.
+  - Estimated memory per model (b6c96, ~3M params): ~48MB (weights + optimizer + gradients). 8 models = ~384MB — fits easily on a dedicated GPU.
 - **Eviction:** When a newest entry graduates to dynamic, the lowest-Elo dynamic with >= 5 completed matchups is evicted.
 
 ### Newest (5 entries) — Fresh Blood
@@ -72,12 +72,12 @@ A dynamic model is eligible for promotion to static when:
 
 ```
 Learner snapshot ──→ [Newest] ──FIFO──→ [Dynamic] ──promotion──→ [Static]
-                        (5)                (15)          ↓           (5)
+                        (4)                (8)           ↓           (4)
                                      evict lowest    retire weakest
                                          Elo             static
 
 [Milestone] ← recomputed log-spaced from existing snapshots
-    (5)        (acts as extra statics until real milestones arrive)
+    (4)        (acts as extra statics until real milestones arrive)
 ```
 
 ## Graduation: Newest → Dynamic
@@ -88,14 +88,14 @@ When a newest entry ages out (pushed by a newer snapshot):
 
 ## Pool Size
 
-Total: **30 entries** (matching the current leaderboard placeholder count)
+Total: **20 entries** (matching the current leaderboard and max pool size)
 
 | Tier | Count | Trains? | Eviction |
 |------|-------|---------|----------|
-| Milestone | 5 | No | Log-spaced recomputation (gradual swap) |
-| Static | 5 | No | Weakest retires on promotion |
-| Dynamic | 15 | Yes | Lowest Elo (min games) on graduation |
-| Newest | 5 | No | FIFO into dynamic |
+| Milestone | 4 | No | Log-spaced recomputation (gradual swap) |
+| Static | 4 | No | Weakest retires on promotion |
+| Dynamic | 8 | Yes | Lowest Elo (min games) on graduation |
+| Newest | 4 | No | FIFO into dynamic |
 
 ## Elo Interpretation
 
@@ -134,7 +134,7 @@ Add PPO updates for dynamic-tier models after tournament matches.
 - Per-model optimizer state: save/load Adam state alongside checkpoint
 - Training step after match: 2-4 PPO epochs on collected rollout data
 - Checkpoint update: write new weights after training
-- Memory budget: validate 15 × ~48MB fits alongside main training
+- Memory budget: validate 8 × ~48MB fits alongside main training
 
 ### Phase 3: Per-Tier Elo Analytics
 
@@ -156,9 +156,9 @@ Current setup (b6c96 SE-ResNet, ~3M params):
 
 | Resource | Current | With Tiered Pool |
 |----------|---------|-----------------|
-| League GPU VRAM | ~50MB (2 models for tournament) | ~800MB (15 dynamic w/ optimizer + 2 loaded for match) |
+| League GPU VRAM | ~50MB (2 models for tournament) | ~450MB (8 dynamic w/ optimizer + 2 loaded for match) |
 | Disk per checkpoint | ~12MB | ~36MB (weights + optimizer state) |
-| Total disk (30 entries) | ~360MB | ~660MB (15 dynamic w/ optimizer + 15 inference-only) |
+| Total disk (20 entries) | ~240MB | ~480MB (8 dynamic w/ optimizer + 12 inference-only) |
 | Tournament match time | ~30s (inference only) | ~90s (inference + 2-4 PPO steps for dynamics) |
 | DB writes per match | 5 rows | 5 rows + checkpoint write |
 

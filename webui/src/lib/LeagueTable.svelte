@@ -5,7 +5,7 @@
   /** Current learner's display_name (used to highlight their row) */
   export let learnerName = null
   /** Total slots shown in leaderboard (empty ones are placeholders) */
-  export let totalSlots = 30
+  export let totalSlots = 20
 
   let sortColumn = 'elo_rating'
   let sortAsc = false
