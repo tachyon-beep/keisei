@@ -6,6 +6,7 @@ import pytest
 
 from keisei.db import (
     SCHEMA_VERSION,
+    _connect,
     init_db,
     read_elo_history,
     read_game_snapshots,
@@ -254,3 +255,19 @@ class TestLeagueDataReaders:
         assert len(history) == 2
         assert history[0]["elo_rating"] == 1050.0
         assert history[1]["epoch"] == 6
+
+
+class TestForeignKeyEnforcement:
+    """db.py._connect() must enable PRAGMA foreign_keys=ON so FK constraints
+    are enforced on every connection, not just OpponentPool's."""
+
+    def test_db_connect_enforces_foreign_keys(self, db: Path) -> None:
+        """_connect() should enable FK enforcement — inserting a league_results
+        row with a nonexistent learner_id must raise IntegrityError."""
+        conn = _connect(str(db))
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
+                "VALUES (1, 9999, 9999, 1, 0, 0)"
+            )
+        conn.close()

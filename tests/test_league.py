@@ -475,3 +475,43 @@ class TestOpponentSamplerEdgeCases:
         sampler = OpponentSampler(pool)
         with pytest.raises(ValueError, match="empty opponent pool"):
             sampler.sample()
+
+
+class TestDeleteEntryCleansGameSnapshots:
+    """Evicting a league entry must null out game_snapshots.opponent_id
+    referencing that entry, so snapshots remain valid display data."""
+
+    def test_eviction_nulls_game_snapshot_opponent_id(self, league_db, league_dir):
+        import sqlite3
+
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=1)
+        model = torch.nn.Linear(10, 10)
+
+        # Add an entry, record its id
+        entry = pool.add_snapshot(model, "resnet", {}, epoch=0)
+
+        # Insert a game_snapshot referencing this entry
+        conn = sqlite3.connect(league_db)
+        conn.execute(
+            "INSERT INTO game_snapshots "
+            "(game_id, board_json, hands_json, current_player, ply, is_over, "
+            "result, sfen, in_check, move_history_json, opponent_id) "
+            "VALUES (1, '{}', '{}', 'black', 0, 0, 'in_progress', 'startpos', 0, '[]', ?)",
+            (entry.id,),
+        )
+        conn.commit()
+        conn.close()
+
+        # Add a second entry — triggers eviction of the first
+        pool.add_snapshot(model, "resnet", {}, epoch=1)
+
+        # The game_snapshot should still exist but with opponent_id = NULL
+        conn = sqlite3.connect(league_db)
+        row = conn.execute(
+            "SELECT opponent_id FROM game_snapshots WHERE game_id = 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "game_snapshot row should still exist"
+        assert row[0] is None, (
+            f"opponent_id should be NULL after eviction, got {row[0]}"
+        )

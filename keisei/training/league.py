@@ -174,13 +174,17 @@ class OpponentPool:
             ckpt.unlink()
         conn = self._connect()
         try:
-            # Clean up orphaned results before deleting the entry
+            # Clean up all FK references before deleting the entry.
             conn.execute(
                 "DELETE FROM league_results WHERE learner_id = ? OR opponent_id = ?",
                 (entry.id, entry.id),
             )
             conn.execute(
                 "DELETE FROM elo_history WHERE entry_id = ?",
+                (entry.id,),
+            )
+            conn.execute(
+                "UPDATE game_snapshots SET opponent_id = NULL WHERE opponent_id = ?",
                 (entry.id,),
             )
             conn.execute("DELETE FROM league_entries WHERE id = ?", (entry.id,))
