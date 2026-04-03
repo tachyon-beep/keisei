@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from keisei.training.katago_loop import to_learner_perspective, sign_correct_bootstrap, PendingTransitions
+from keisei.training.katago_loop import (
+    to_learner_perspective, sign_correct_bootstrap, PendingTransitions,
+    _compute_value_cats,
+)
 
 
 class TestToLearnerPerspective:
@@ -137,7 +140,7 @@ class TestPendingTransitions:
                   legal_masks, rewards, score_targets)
 
         # Attempting to create again on the same env should fail
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError):
             pt.create(env_mask, obs, actions, log_probs, values,
                       legal_masks, rewards, score_targets)
 
@@ -525,3 +528,153 @@ class TestSplitMergeCollection:
         assert result["dones"][1].item() == 0.0
         assert result["values"][0].item() == pytest.approx(0.4)
         assert not pt.valid.any()
+
+
+class TestLearnerSideOne:
+    """Verify perspective correction works when learner plays White (side 1)."""
+
+    def test_to_learner_perspective_side_1(self):
+        """When learner_side=1, opponent is side 0. Rewards from side 0
+        moves should be negated."""
+        rewards = torch.tensor([1.0, -1.0, 0.0])
+        pre_players = np.array([0, 1, 0], dtype=np.uint8)
+        result = to_learner_perspective(rewards, pre_players, learner_side=1)
+        # Side 0 moved in envs 0,2 → opponent moved → negate
+        # Side 1 moved in env 1 → learner moved → keep
+        expected = torch.tensor([-1.0, -1.0, 0.0])
+        assert torch.equal(result, expected)
+
+    def test_sign_correct_bootstrap_side_1(self):
+        """When learner_side=1, negate bootstrap for envs where side 0 is to-move."""
+        next_values = torch.tensor([0.5, -0.5])
+        current_players = np.array([0, 1], dtype=np.uint8)
+        result = sign_correct_bootstrap(next_values, current_players, learner_side=1)
+        # Env 0: side 0 to move = opponent → negate
+        # Env 1: side 1 to move = learner → keep
+        expected = torch.tensor([-0.5, -0.5])
+        assert torch.equal(result, expected)
+
+    def test_opponent_terminal_side_1(self):
+        """Full protocol with learner_side=1: opponent (side 0) checkmates,
+        learner (side 1) should see done=True with negative reward."""
+        num_envs = 1
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 1
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Step 1: Learner (side 1) moves, game continues
+        pre_players_1 = np.array([1], dtype=np.uint8)
+        obs_1 = torch.randn(1, *obs_shape)
+        actions_1 = torch.tensor([42])
+        log_probs_1 = torch.tensor([-0.5])
+        values_1 = torch.tensor([0.3])
+        legal_masks_1 = torch.ones(1, action_space, dtype=torch.bool)
+        rewards_1 = torch.tensor([0.0])
+        dones_1 = torch.tensor([False])
+        score_targets_1 = torch.tensor([0.1])
+        current_players_after_1 = np.array([0], dtype=np.uint8)
+
+        learner_rewards_1 = to_learner_perspective(rewards_1, pre_players_1, learner_side)
+        pt.accumulate_reward(learner_rewards_1)
+        pt.finalize(
+            pt.valid & (
+                dones_1.bool()
+                | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
+            ),
+            dones_1,
+        )
+        learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
+                  legal_masks_1, learner_rewards_1, score_targets_1)
+
+        # Step 2: Opponent (side 0) checkmates
+        pre_players_2 = np.array([0], dtype=np.uint8)
+        rewards_2 = torch.tensor([1.0])  # from side 0 (opponent) POV
+        dones_2 = torch.tensor([True])
+        current_players_after_2 = np.array([1], dtype=np.uint8)
+
+        learner_rewards_2 = to_learner_perspective(rewards_2, pre_players_2, learner_side)
+        assert learner_rewards_2[0].item() == -1.0
+
+        pt.accumulate_reward(learner_rewards_2)
+        finalize_mask = pt.valid & (
+            dones_2.bool()
+            | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_2)
+
+        assert result is not None
+        assert result["rewards"][0].item() == pytest.approx(-1.0)
+        assert result["dones"][0].item() == 1.0
+
+
+class TestDrawTerminal:
+    """Verify draw outcomes are handled correctly at the protocol level."""
+
+    def test_draw_terminal_produces_value_cat_1(self):
+        """A terminal draw (done=True, reward=0.0) should produce value_cat=1."""
+        rewards = torch.tensor([0.0, 1.0, -1.0])
+        dones_bool = torch.tensor([True, True, True])
+        cats = _compute_value_cats(rewards, dones_bool, torch.device("cpu"))
+        assert cats[0].item() == 1  # draw
+        assert cats[1].item() == 0  # win
+        assert cats[2].item() == 2  # loss
+
+    def test_draw_terminal_in_protocol(self):
+        """A game ending in a draw (reward=0.0 from both perspectives)
+        should finalize with done=True and reward=0.0."""
+        num_envs = 1
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+        learner_side = 0
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Step 1: Learner moves
+        pre_players_1 = np.array([0], dtype=np.uint8)
+        obs_1 = torch.randn(1, *obs_shape)
+        actions_1 = torch.tensor([7])
+        log_probs_1 = torch.tensor([-0.3])
+        values_1 = torch.tensor([0.2])
+        legal_masks_1 = torch.ones(1, action_space, dtype=torch.bool)
+        rewards_1 = torch.tensor([0.0])
+        dones_1 = torch.tensor([False])
+        score_targets_1 = torch.tensor([0.0])
+        current_players_after_1 = np.array([1], dtype=np.uint8)
+
+        learner_rewards_1 = to_learner_perspective(rewards_1, pre_players_1, learner_side)
+        pt.accumulate_reward(learner_rewards_1)
+        pt.finalize(
+            pt.valid & (
+                dones_1.bool()
+                | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
+            ),
+            dones_1,
+        )
+        learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
+        pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
+                  legal_masks_1, learner_rewards_1, score_targets_1)
+
+        # Step 2: Opponent moves, game draws (e.g. repetition)
+        pre_players_2 = np.array([1], dtype=np.uint8)
+        rewards_2 = torch.tensor([0.0])  # draw from opponent POV
+        dones_2 = torch.tensor([True])
+        current_players_after_2 = np.array([0], dtype=np.uint8)
+
+        learner_rewards_2 = to_learner_perspective(rewards_2, pre_players_2, learner_side)
+        assert learner_rewards_2[0].item() == 0.0  # negating 0 is still 0
+
+        pt.accumulate_reward(learner_rewards_2)
+        finalize_mask = pt.valid & (
+            dones_2.bool()
+            | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
+        )
+        result = pt.finalize(finalize_mask, dones_2)
+
+        assert result is not None
+        assert result["rewards"][0].item() == pytest.approx(0.0)
+        assert result["dones"][0].item() == 1.0

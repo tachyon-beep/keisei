@@ -60,6 +60,24 @@ class SplitMergeResult:
     learner_indices: torch.Tensor  # (n_learner,) indices into full env array
 
 
+def _compute_value_cats(
+    rewards: torch.Tensor,
+    dones_bool: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    """Assign value-head categories from terminal rewards.
+
+    Returns a tensor of {-1=ignore, 0=win, 1=draw, 2=loss}.
+    Engine produces exact integer-valued rewards (0.0 for draws, ±1.0
+    for wins/losses), so float equality with == 0 is safe here.
+    """
+    cats = torch.full((rewards.numel(),), -1, dtype=torch.long, device=device)
+    cats[dones_bool & (rewards > 0)] = 0
+    cats[dones_bool & (rewards == 0)] = 1
+    cats[dones_bool & (rewards < 0)] = 2
+    return cats
+
+
 def _negate_where(
     values: torch.Tensor,
     condition: np.ndarray,
@@ -148,14 +166,15 @@ class PendingTransitions:
     ) -> None:
         """Open pending transitions for envs where the learner just moved.
 
-        Raises AssertionError if any env in env_mask already has a valid
+        Raises RuntimeError if any env in env_mask already has a valid
         pending transition (indicates a protocol bug — finalize must be
         called before create for the same env).
         """
-        assert not (env_mask & self.valid).any(), (
-            "create() called on env(s) with already-valid pending transition. "
-            "finalize() must be called first."
-        )
+        if (env_mask & self.valid).any():
+            raise RuntimeError(
+                "create() called on env(s) with already-valid pending transition. "
+                "finalize() must be called first."
+            )
         self.obs[env_mask] = obs[env_mask]
         self.actions[env_mask] = actions[env_mask]
         self.log_probs[env_mask] = log_probs[env_mask]
@@ -615,10 +634,13 @@ class KataGoTrainingLoop:
             # One-time LR scheduler reset for league mode to prevent value-loss
             # spike from triggering premature LR reduction after reward-collection
             # fix. Safe to remove once no pre-fix checkpoints are in use.
+            # Uses ReduceLROnPlateau internal attributes (best, mode_worse,
+            # num_bad_epochs) — guarded by hasattr for forward compatibility.
             if (self._current_opponent is not None
                     and self.lr_scheduler is not None
                     and epoch_i == start_epoch
-                    and start_epoch > 0):
+                    and start_epoch > 0
+                    and hasattr(self.lr_scheduler, "best")):
                 self.lr_scheduler.best = self.lr_scheduler.mode_worse
                 self.lr_scheduler.num_bad_epochs = 0
                 if self.dist_ctx.is_main:
@@ -648,6 +670,8 @@ class KataGoTrainingLoop:
 
             learner_side = 0  # Epoch-scoped: used by bootstrap sign correction after the loop
             pending: PendingTransitions | None = None
+            _scratch_log_probs = torch.zeros(self.num_envs, device=self.device)
+            _scratch_values = torch.zeros(self.num_envs, device=self.device)
             if self._current_opponent is not None:
                 obs_channels = obs.shape[1]
                 action_space = self.buffer.action_space
@@ -663,6 +687,9 @@ class KataGoTrainingLoop:
                 if self._current_opponent is not None:
                     assert pending is not None
                     pre_players = current_players.copy()
+                    # GPU copy of pre_players avoids .cpu().numpy() sync for indexing
+                    pre_players_t = torch.from_numpy(pre_players).to(self.device)
+                    learner_moved = pre_players_t == learner_side
 
                     # Split-merge: learner vs opponent
                     sm_result = split_merge_step(
@@ -677,6 +704,8 @@ class KataGoTrainingLoop:
                     step_result = self.vecenv.step(action_list)
 
                     current_players = np.asarray(step_result.current_players)
+                    current_players_t = torch.from_numpy(current_players).to(self.device)
+                    learner_next = current_players_t == learner_side
 
                     rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
                     terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
@@ -690,16 +719,16 @@ class KataGoTrainingLoop:
                     terminal_mask = dones.bool()
                     if terminal_mask.any():
                         t_rewards = learner_rewards[terminal_mask]
+                        # Engine produces exact integer-valued rewards (±1.0 or 0.0),
+                        # so float equality with == 0 is safe for draw detection.
                         win_acc += (t_rewards > 0).sum()
                         loss_acc += (t_rewards < 0).sum()
                         draw_acc += (t_rewards == 0).sum()
 
-                        # Per-color wins: use pre_players (last_mover) + raw rewards
+                        # Per-color wins: use pre_players_t (last_mover) + raw rewards
                         # (from last_mover POV) to determine winner's color.
                         t_raw_rewards = rewards[terminal_mask]
-                        t_players = torch.from_numpy(
-                            pre_players[terminal_mask.cpu().numpy()]
-                        ).to(self.device)
+                        t_players = pre_players_t[terminal_mask]
                         winner_is_black = (
                             ((t_raw_rewards > 0) & (t_players == 0))
                             | ((t_raw_rewards < 0) & (t_players == 1))
@@ -722,23 +751,13 @@ class KataGoTrainingLoop:
                     # 2. Finalize resolved pending transitions:
                     #    - Terminal: game ended (on any player's move)
                     #    - Non-terminal return: opponent moved, turn returns to learner
-                    learner_next = torch.tensor(
-                        current_players == learner_side, device=self.device, dtype=torch.bool,
-                    )
                     finalize_mask = pending.valid & (dones.bool() | learner_next)
                     finalized = pending.finalize(finalize_mask, dones)
 
                     if finalized is not None:
-                        f_rewards = finalized["rewards"]
-                        f_dones_bool = finalized["dones"].bool()
-                        f_value_cats = torch.full(
-                            (finalized["env_ids"].numel(),), -1,
-                            dtype=torch.long, device=self.device,
+                        f_value_cats = _compute_value_cats(
+                            finalized["rewards"], finalized["dones"].bool(), self.device,
                         )
-                        f_value_cats[f_dones_bool & (f_rewards > 0)] = 0
-                        f_value_cats[f_dones_bool & (f_rewards == 0)] = 1
-                        f_value_cats[f_dones_bool & (f_rewards < 0)] = 2
-
                         self.buffer.add(
                             finalized["obs"], finalized["actions"],
                             finalized["log_probs"], finalized["values"],
@@ -749,17 +768,14 @@ class KataGoTrainingLoop:
                         )
 
                     # 3. Create new pending for envs where learner just moved
-                    learner_moved = torch.tensor(
-                        pre_players == learner_side, device=self.device, dtype=torch.bool,
-                    )
                     if learner_moved.any():
                         li = sm_result.learner_indices
-                        # Scatter compact learner data to full num_envs tensors
-                        full_log_probs = torch.zeros(self.num_envs, device=self.device)
-                        full_values = torch.zeros(self.num_envs, device=self.device)
+                        # Scatter compact learner data to pre-allocated scratch tensors
+                        _scratch_log_probs.zero_()
+                        _scratch_values.zero_()
                         if li.numel() > 0:
-                            full_log_probs[li] = sm_result.learner_log_probs
-                            full_values[li] = sm_result.learner_values
+                            _scratch_log_probs[li] = sm_result.learner_log_probs
+                            _scratch_values[li] = sm_result.learner_values
 
                         material = torch.from_numpy(
                             np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
@@ -767,8 +783,9 @@ class KataGoTrainingLoop:
                         full_score_targets = material / self.score_norm
 
                         pending.create(
-                            learner_moved, obs, actions, full_log_probs, full_values,
-                            legal_masks, learner_rewards, full_score_targets,
+                            learner_moved, obs, actions, _scratch_log_probs,
+                            _scratch_values, legal_masks, learner_rewards,
+                            full_score_targets,
                         )
 
                         # 4. Immediately finalize if learner's own move was terminal
@@ -776,16 +793,10 @@ class KataGoTrainingLoop:
                         if imm_terminal.any():
                             imm_finalized = pending.finalize(imm_terminal, dones)
                             if imm_finalized is not None:
-                                imm_rewards = imm_finalized["rewards"]
-                                imm_dones_bool = imm_finalized["dones"].bool()
-                                imm_value_cats = torch.full(
-                                    (imm_finalized["env_ids"].numel(),), -1,
-                                    dtype=torch.long, device=self.device,
+                                imm_value_cats = _compute_value_cats(
+                                    imm_finalized["rewards"], imm_finalized["dones"].bool(),
+                                    self.device,
                                 )
-                                imm_value_cats[imm_dones_bool & (imm_rewards > 0)] = 0
-                                imm_value_cats[imm_dones_bool & (imm_rewards == 0)] = 1
-                                imm_value_cats[imm_dones_bool & (imm_rewards < 0)] = 2
-
                                 self.buffer.add(
                                     imm_finalized["obs"], imm_finalized["actions"],
                                     imm_finalized["log_probs"], imm_finalized["values"],
@@ -812,11 +823,10 @@ class KataGoTrainingLoop:
                     terminal_mask = dones.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
-                        # pre_players = who moved this step (last_mover).
+                        # pre_players_t = who moved this step (last_mover), on GPU.
                         # Reward is from last_mover's perspective.
-                        t_players = torch.from_numpy(
-                            pre_players[terminal_mask.cpu().numpy()]
-                        ).to(self.device)
+                        pre_players_t = torch.from_numpy(pre_players).to(self.device)
+                        t_players = pre_players_t[terminal_mask]
                         winner_is_black = (
                             ((t_rewards > 0) & (t_players == 0))
                             | ((t_rewards < 0) & (t_players == 1))
@@ -828,12 +838,7 @@ class KataGoTrainingLoop:
                         black_wins += winner_is_black.sum()
                         white_wins += winner_is_white.sum()
 
-                    value_cats = torch.full(
-                        (self.num_envs,), -1, dtype=torch.long, device=self.device,
-                    )
-                    value_cats[terminal_mask & (rewards > 0)] = 0
-                    value_cats[terminal_mask & (rewards == 0)] = 1
-                    value_cats[terminal_mask & (rewards < 0)] = 2
+                    value_cats = _compute_value_cats(rewards, terminal_mask, self.device)
 
                     # Per-step material balance from the Rust engine, normalized.
                     # Every position gets a real score target — no NaN masking needed.
@@ -873,7 +878,7 @@ class KataGoTrainingLoop:
                         remaining["score_targets"],
                         env_ids=remaining["env_ids"],
                     )
-                    logger.debug(
+                    logger.info(
                         "Epoch %d: flushed %d pending transitions at epoch end",
                         epoch_i, flush_count,
                     )
@@ -1009,6 +1014,10 @@ class KataGoTrainingLoop:
                     "episodes_completed": ep_completed,
                     "avg_episode_length": getattr(self.vecenv, "mean_episode_length", None),
                     "truncation_rate": getattr(self.vecenv, "truncation_rate", None),
+                    # draw_rate from vecenv counts engine-level draws (stalemate,
+                    # repetition). draw_count from win/loss/draw accumulators counts
+                    # reward==0 terminals. These may diverge if truncations produce
+                    # non-zero rewards. Both are included for cross-validation.
                     "draw_rate": getattr(self.vecenv, "draw_rate", None),
                     "win_rate": (
                         (win_count + 0.5 * draw_count) / total_games
