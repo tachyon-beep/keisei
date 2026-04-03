@@ -114,6 +114,14 @@ class SLDataset(Dataset):
             self._mmap_cache.popitem(last=False)
         return mmap
 
+    def clear_cache(self) -> None:
+        """Drop all cached mmap objects.
+
+        Safe to call from worker_init_fn after fork. Not thread-safe —
+        intended for single-threaded access per process (DataLoader worker model).
+        """
+        self._mmap_cache.clear()
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if idx < 0 or idx >= self._total:
             raise IndexError(

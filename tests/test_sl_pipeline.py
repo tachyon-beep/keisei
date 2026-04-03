@@ -1099,3 +1099,22 @@ class TestSLDatasetMmapCache:
         with caplog.at_level(logging.WARNING, logger="keisei.sl.dataset"):
             SLDataset(tmp_path, max_cache_size=2)
         assert any("5 shards but max_cache_size=2" in msg for msg in caplog.messages)
+
+    def test_clear_cache_empties_and_reaccess_works(self, tmp_path):
+        """clear_cache() empties the cache; subsequent access re-opens cleanly."""
+        self._write_shards(tmp_path, n_shards=2)
+        dataset = SLDataset(tmp_path, max_cache_size=16)
+
+        # Populate cache
+        item_before = dataset[0]
+        assert len(dataset._mmap_cache) == 1
+
+        # Clear
+        dataset.clear_cache()
+        assert len(dataset._mmap_cache) == 0
+
+        # Re-access same item — should work and return identical values
+        item_after = dataset[0]
+        assert len(dataset._mmap_cache) == 1
+        assert torch.equal(item_before["observation"], item_after["observation"])
+        assert item_before["policy_target"] == item_after["policy_target"]
