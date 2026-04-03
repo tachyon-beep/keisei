@@ -375,6 +375,9 @@ class TestSplitMergeIntegration:
     def test_run_with_league_completes(self, katago_config, tmp_path):
         """With league enabled, run() should complete without error."""
         mock_env = _make_mock_katago_vecenv(num_envs=4)
+        katago_config = dataclasses.replace(
+            katago_config, training=dataclasses.replace(katago_config.training, num_games=4),
+        )
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=5)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
@@ -383,6 +386,9 @@ class TestSplitMergeIntegration:
     def test_run_with_alternating_players(self, katago_config, tmp_path):
         """W2: exercise the split path with alternating current_players."""
         mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
+        katago_config = dataclasses.replace(
+            katago_config, training=dataclasses.replace(katago_config.training, num_games=4),
+        )
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=5)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=1, steps_per_epoch=4)
@@ -391,6 +397,9 @@ class TestSplitMergeIntegration:
     def test_buffer_stores_learner_only(self, katago_config, tmp_path):
         """W3: with split-merge, buffer should contain fewer samples than total steps * envs."""
         mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
+        katago_config = dataclasses.replace(
+            katago_config, training=dataclasses.replace(katago_config.training, num_games=4),
+        )
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=50)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         # Don't run — manually step to inspect buffer
