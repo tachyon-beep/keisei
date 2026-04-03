@@ -270,6 +270,23 @@ class KataGoPPOAlgorithm:
             self.compiled_train = None
             self.compiled_eval = None
 
+        # CUDA event timing — records event pairs during forward passes and GAE.
+        # Events are accumulated without synchronization during the hot loop.
+        # Call flush_timings() to read elapsed times (triggers one sync).
+        # Lifecycle: select_actions_forward_ms accumulates during rollout,
+        # update_forward_backward_ms and gae_ms accumulate during update().
+        # All lists are cleared at the start of each update() call.
+        self._timing_events: dict[str, list[tuple[torch.cuda.Event, torch.cuda.Event]]] = {
+            "select_actions_forward_ms": [],
+            "update_forward_backward_ms": [],
+            "gae_ms": [],
+        }
+        self.timings: dict[str, list[float]] = {
+            "select_actions_forward_ms": [],
+            "update_forward_backward_ms": [],
+            "gae_ms": [],
+        }
+
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
         self.scaler = GradScaler(enabled=params.use_amp)
         self.warmup_epochs = warmup_epochs
@@ -285,6 +302,21 @@ class KataGoPPOAlgorithm:
         if epoch < self.warmup_epochs:
             return self.warmup_entropy
         return self.params.lambda_entropy
+
+    def flush_timings(self) -> None:
+        """Convert accumulated CUDA event pairs to elapsed-time floats.
+
+        Calls elapsed_time() on each event pair, which implicitly waits for
+        both events to complete. This is the ONLY synchronization point —
+        no torch.cuda.synchronize() is called during recording.
+
+        Call this after update() returns to populate self.timings with ms values.
+        """
+        for key, event_pairs in self._timing_events.items():
+            self.timings[key] = [
+                start.elapsed_time(end) for start, end in event_pairs
+            ]
+            event_pairs.clear()
 
     @staticmethod
     def scalar_value(value_logits: torch.Tensor) -> torch.Tensor:
@@ -322,8 +354,20 @@ class KataGoPPOAlgorithm:
             model = self.forward_model
             model.eval()
         try:
+            # Record CUDA events around forward pass only (not the legal mask guard,
+            # which includes a CPU-syncing .nonzero() call — see spec hazard H8).
+            if device.type == "cuda":
+                _sa_start = torch.cuda.Event(enable_timing=True)
+                _sa_end = torch.cuda.Event(enable_timing=True)
+                _sa_start.record()
+
             with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
                 output = model(obs)
+
+            if device.type == "cuda":
+                _sa_end.record()
+                # Do NOT synchronize here — events are read lazily in flush_timings()
+                self._timing_events["select_actions_forward_ms"].append((_sa_start, _sa_end))
 
             # Guard: no env should have zero legal actions
             legal_counts = legal_masks.sum(dim=-1)
@@ -367,6 +411,11 @@ class KataGoPPOAlgorithm:
             "forward_model must be in train mode at start of update() — "
             "compiled_train graph requires this"
         )
+
+        # Clear timing events from previous cycle
+        for event_list in self._timing_events.values():
+            event_list.clear()
+
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
@@ -383,6 +432,11 @@ class KataGoPPOAlgorithm:
             dones_2d = data["dones"].reshape(T, N)
 
             if device.type == "cuda":
+                _gae_start = torch.cuda.Event(enable_timing=True)
+                _gae_end = torch.cuda.Event(enable_timing=True)
+                _gae_start.record()
+
+            if device.type == "cuda":
                 # GPU path: move buffer tensors to GPU, compute GAE there, return to CPU.
                 # next_values is already on GPU (from bootstrap forward pass).
                 # .detach() ensures no gradient graph leaks through GAE.
@@ -397,6 +451,10 @@ class KataGoPPOAlgorithm:
                     rewards_2d, values_2d, dones_2d,
                     next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1)
+
+            if device.type == "cuda":
+                _gae_end.record()
+                self._timing_events["gae_ms"].append((_gae_start, _gae_end))
         elif "env_ids" in data:
             # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
             # compute GAE in a single vectorized pass.
@@ -488,6 +546,11 @@ class KataGoPPOAlgorithm:
                 batch_value_cats = data["value_categories"][idx].to(device)
                 batch_score_targets = data["score_targets"][idx].to(device)
 
+                if device.type == "cuda":
+                    _fb_start = torch.cuda.Event(enable_timing=True)
+                    _fb_end = torch.cuda.Event(enable_timing=True)
+                    _fb_start.record()
+
                 with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
                     # Use compiled_train if available; fall back to eager forward_model.
                     # compiled_train was traced in train mode — BN updates running stats.
@@ -578,6 +641,11 @@ class KataGoPPOAlgorithm:
                 )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+
+                if device.type == "cuda":
+                    _fb_end.record()
+                    # Do NOT synchronize — events read lazily in flush_timings()
+                    self._timing_events["update_forward_backward_ms"].append((_fb_start, _fb_end))
 
                 total_policy_loss += policy_loss.item()
                 total_value_loss += value_loss.item()

@@ -281,3 +281,26 @@ class TestGAERouting:
         next_values = torch.randn(4)
         metrics = ppo.update(buf, next_values)
         assert "policy_loss" in metrics
+
+
+class TestTimings:
+    def test_timings_exist_after_init(self):
+        """timings dict is initialized with expected keys."""
+        model = _small_model()
+        params = KataGoPPOParams()
+        ppo = KataGoPPOAlgorithm(params, model)
+        assert "select_actions_forward_ms" in ppo.timings
+        assert "update_forward_backward_ms" in ppo.timings
+        assert "gae_ms" in ppo.timings
+
+    def test_timings_empty_on_cpu(self):
+        """On CPU, no CUDA events are recorded, so timings stay empty."""
+        model = _small_model()
+        params = KataGoPPOParams(batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        ppo.update(buf, next_values)
+        ppo.flush_timings()
+        assert ppo.timings["update_forward_backward_ms"] == []
+        assert ppo.timings["gae_ms"] == []
