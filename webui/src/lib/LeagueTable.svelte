@@ -182,7 +182,7 @@
 
   .table-scroll {
     flex: 1;
-    overflow: auto;
+    overflow-y: scroll;
     min-height: 0;
   }
 

@@ -44,7 +44,7 @@
   }
 
   .feed {
-    overflow-y: auto;
+    overflow-y: scroll;
     min-height: 0;
     flex: 1;
     display: flex;
