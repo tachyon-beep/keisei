@@ -40,6 +40,9 @@
       const clashes = pairClashes(r.learner_id, r.opponent_id)
       const winPct = total > 0 ? Math.round(((r.wins || 0) / total) * 100) : 0
 
+      const eloA = r.elo_delta_a || 0
+      const eloB = r.elo_delta_b || 0
+
       out.push({
         type: 'match',
         ...r,
@@ -50,6 +53,8 @@
         draw,
         clashes,
         winPct,
+        eloA,
+        eloB,
       })
     }
     return out
@@ -87,6 +92,12 @@
               <span>{item.winPct}% win</span>
               <span class="sep">·</span>
               <span>clash #{item.clashes}</span>
+              {#if item.eloA !== 0 || item.eloB !== 0}
+                <span class="sep">·</span>
+                <span class="elo-delta" class:positive={item.eloA > 0} class:negative={item.eloA < 0}>{item.eloA > 0 ? '+' : ''}{item.eloA}</span>
+                <span class="elo-slash">/</span>
+                <span class="elo-delta" class:positive={item.eloB > 0} class:negative={item.eloB < 0}>{item.eloB > 0 ? '+' : ''}{item.eloB}</span>
+              {/if}
             </div>
           </div>
         {/if}
@@ -203,6 +214,14 @@
   .sep {
     color: var(--border);
   }
+
+  .elo-delta {
+    font-family: monospace;
+    font-weight: 600;
+  }
+  .elo-delta.positive { color: var(--accent-teal); }
+  .elo-delta.negative { color: var(--danger); }
+  .elo-slash { color: var(--border); }
 
   .empty {
     color: var(--text-muted);

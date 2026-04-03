@@ -99,6 +99,8 @@ def init_db(db_path: str) -> None:
                 wins            INTEGER NOT NULL,
                 losses          INTEGER NOT NULL,
                 draws           INTEGER NOT NULL,
+                elo_delta_a     REAL NOT NULL DEFAULT 0.0,
+                elo_delta_b     REAL NOT NULL DEFAULT 0.0,
                 recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
@@ -315,7 +317,7 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "FROM league_entries ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
-            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, recorded_at "
+            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b, recorded_at "
             "FROM league_results ORDER BY id DESC"
         ).fetchall()
         parsed_entries = []

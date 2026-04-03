@@ -1045,17 +1045,20 @@ class KataGoTrainingLoop:
                         and total_games > 0):
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
-                        self.pool.record_result(
-                            epoch=epoch_i, learner_id=learner_entry.id,
-                            opponent_id=self._current_opponent_entry.id,
-                            wins=win_count, losses=loss_count, draws=draw_count,
-                        )
                         result_score = (win_count + 0.5 * draw_count) / total_games
                         k = self.config.league.elo_k_factor if self.config.league else 32.0
                         new_learner_elo, new_opp_elo = compute_elo_update(
                             learner_entry.elo_rating,
                             self._current_opponent_entry.elo_rating,
                             result=result_score, k=k,
+                        )
+                        delta_a = round(new_learner_elo - learner_entry.elo_rating, 1)
+                        delta_b = round(new_opp_elo - self._current_opponent_entry.elo_rating, 1)
+                        self.pool.record_result(
+                            epoch=epoch_i, learner_id=learner_entry.id,
+                            opponent_id=self._current_opponent_entry.id,
+                            wins=win_count, losses=loss_count, draws=draw_count,
+                            elo_delta_a=delta_a, elo_delta_b=delta_b,
                         )
                         self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
                         self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)

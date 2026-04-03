@@ -14,8 +14,8 @@ Usage:
 
 from __future__ import annotations
 
-import itertools
 import logging
+import random
 import sqlite3
 import threading
 import time
@@ -120,6 +120,7 @@ class LeagueTournament:
         )
 
         conn = self._open_connection()
+        last_epoch = -1
 
         try:
             while not self._stop_event.is_set():
@@ -128,34 +129,54 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds * 2)
                     continue
 
-                pair = self._pick_pair(conn, entries)
-                if pair is None:
+                # Wait for a new epoch before running the next round
+                epoch = self._current_epoch(conn)
+                if epoch == last_epoch:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                entry_a, entry_b = pair
-                try:
-                    wins_a, wins_b, draws = self._play_match(
-                        vecenv, entry_a, entry_b,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Match failed: %s vs %s", entry_a.display_name, entry_b.display_name,
-                    )
+                last_epoch = epoch
+                pairings = self._generate_round(entries)
+                if not pairings:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                total = wins_a + wins_b + draws
-                if total > 0:
-                    epoch = self._current_epoch(conn)
-                    self._record_result(conn, entry_a, entry_b, wins_a, wins_b, draws, epoch)
-                    logger.info(
-                        "Tournament: %s vs %s — %dW %dL %dD",
-                        entry_a.display_name, entry_b.display_name,
-                        wins_a, wins_b, draws,
-                    )
+                bye = entries[len(entries) - 1] if len(entries) % 2 != 0 else None
+                if bye:
+                    logger.info("Tournament round E%d: %d matches, bye=%s",
+                                epoch, len(pairings), bye.display_name)
+                else:
+                    logger.info("Tournament round E%d: %d matches", epoch, len(pairings))
 
-                self._stop_event.wait(self.pause_seconds)
+                for entry_a, entry_b in pairings:
+                    if self._stop_event.is_set():
+                        break
+
+                    try:
+                        wins_a, wins_b, draws = self._play_match(
+                            vecenv, entry_a, entry_b,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Match failed: %s vs %s",
+                            entry_a.display_name, entry_b.display_name,
+                        )
+                        continue
+
+                    total = wins_a + wins_b + draws
+                    if total > 0:
+                        self._record_result(
+                            conn, entry_a, entry_b, wins_a, wins_b, draws, epoch,
+                        )
+                        logger.info(
+                            "  %s vs %s — %dW %dL %dD",
+                            entry_a.display_name, entry_b.display_name,
+                            wins_a, wins_b, draws,
+                        )
+
+                    self._stop_event.wait(self.pause_seconds)
+
+                logger.info("Tournament round E%d complete", epoch)
         except Exception:
             logger.exception("Tournament thread crashed")
         finally:
@@ -188,33 +209,33 @@ class LeagueTournament:
         ).fetchall()
         return [OpponentEntry.from_db_row(r) for r in rows]
 
-    def _pick_pair(
-        self, conn: sqlite3.Connection, entries: list[OpponentEntry],
-    ) -> tuple[OpponentEntry, OpponentEntry] | None:
-        """Pick the pair with the fewest head-to-head games."""
+    def _generate_round(
+        self, entries: list[OpponentEntry],
+    ) -> list[tuple[OpponentEntry, OpponentEntry]]:
+        """Generate N/2 pairings for a full round. Odd entry gets a bye.
+
+        Uses a rotating schedule so consecutive rounds produce different
+        pairings. The rotation is seeded by the number of entries and
+        the current time to avoid repeating the same round.
+        """
         if len(entries) < 2:
-            return None
+            return []
 
-        # Count existing h2h games for each pair
-        h2h_counts: dict[tuple[int, int], int] = {}
-        rows = conn.execute(
-            "SELECT learner_id, opponent_id, SUM(wins + losses + draws) as total "
-            "FROM league_results GROUP BY learner_id, opponent_id"
-        ).fetchall()
-        for row in rows:
-            key = (row["learner_id"], row["opponent_id"])
-            h2h_counts[key] = row["total"]
+        # Shuffle to vary pairings round-to-round
+        shuffled = list(entries)
+        random.shuffle(shuffled)
 
-        # Find the pair with minimum total games (both directions)
-        best_pair = None
-        best_count = float("inf")
-        for a, b in itertools.combinations(entries, 2):
-            count = h2h_counts.get((a.id, b.id), 0) + h2h_counts.get((b.id, a.id), 0)
-            if count < best_count:
-                best_count = count
-                best_pair = (a, b)
+        # If odd, last entry gets a bye (excluded from pairings)
+        if len(shuffled) % 2 != 0:
+            shuffled = shuffled[:-1]
 
-        return best_pair
+        # Pair first with last, second with second-to-last, etc.
+        n = len(shuffled)
+        pairings = []
+        for i in range(n // 2):
+            pairings.append((shuffled[i], shuffled[n - 1 - i]))
+
+        return pairings
 
     def _record_result(
         self,
@@ -229,26 +250,8 @@ class LeagueTournament:
         """Record match result and update Elo for both entries."""
         total = wins_a + wins_b + draws
 
-        conn.execute(
-            """INSERT INTO league_results
-               (epoch, learner_id, opponent_id, wins, losses, draws)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (epoch, entry_a.id, entry_b.id, wins_a, wins_b, draws),
-        )
-
-        # Update games_played for both
-        conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total, entry_a.id),
-        )
-        conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total, entry_b.id),
-        )
-
-        # Elo update
+        # Elo update (computed before INSERT so we can store deltas)
         result_score = (wins_a + 0.5 * draws) / total
-        # Re-read current Elo (may have changed since we loaded entries)
         row_a = conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_a.id,)
         ).fetchone()
@@ -261,6 +264,25 @@ class LeagueTournament:
 
         elo_a, elo_b = row_a["elo_rating"], row_b["elo_rating"]
         new_a, new_b = compute_elo_update(elo_a, elo_b, result_score, k=self.k_factor)
+        delta_a = round(new_a - elo_a, 1)
+        delta_b = round(new_b - elo_b, 1)
+
+        conn.execute(
+            """INSERT INTO league_results
+               (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (epoch, entry_a.id, entry_b.id, wins_a, wins_b, draws, delta_a, delta_b),
+        )
+
+        # Update games_played for both
+        conn.execute(
+            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
+            (total, entry_a.id),
+        )
+        conn.execute(
+            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
+            (total, entry_b.id),
+        )
 
         conn.execute(
             "UPDATE league_entries SET elo_rating = ? WHERE id = ?", (new_a, entry_a.id),

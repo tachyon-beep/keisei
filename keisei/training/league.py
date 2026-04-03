@@ -326,12 +326,13 @@ class OpponentPool:
     def record_result(
         self, epoch: int, learner_id: int, opponent_id: int,
         wins: int, losses: int, draws: int,
+        elo_delta_a: float = 0.0, elo_delta_b: float = 0.0,
     ) -> None:
         self._conn.execute(
             """INSERT INTO league_results
-               (epoch, learner_id, opponent_id, wins, losses, draws)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (epoch, learner_id, opponent_id, wins, losses, draws),
+               (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b),
         )
         total_games = wins + losses + draws
         self._conn.execute(
