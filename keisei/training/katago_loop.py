@@ -463,6 +463,7 @@ class KataGoTrainingLoop:
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
 
             self._phase = "rollout"
+            self._force_heartbeat()
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
 
@@ -572,6 +573,7 @@ class KataGoTrainingLoop:
                 )
 
             self._phase = "update"
+            self._force_heartbeat()
             losses = self.ppo.update(
                 self.buffer, next_values,
                 heartbeat_fn=self._maybe_update_heartbeat,
@@ -768,6 +770,18 @@ class KataGoTrainingLoop:
             "learner_entry=%d",
             epoch, self.ppo.warmup_epochs, self._learner_entry_id,
         )
+
+    def _force_heartbeat(self) -> None:
+        """Write phase transition to DB immediately (skips timer check)."""
+        if not self.dist_ctx.is_main:
+            return
+        self._last_heartbeat = time.monotonic()
+        try:
+            update_training_progress(
+                self.db_path, self.epoch, self.global_step, phase=self._phase,
+            )
+        except Exception:
+            pass  # best-effort — don't let a heartbeat failure stop training
 
     def _maybe_update_heartbeat(self) -> None:
         if not self.dist_ctx.is_main:
