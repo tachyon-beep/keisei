@@ -35,6 +35,7 @@ def _make_mock_katago_vecenv(
     mock.episodes_completed = 0
     mock.mean_episode_length = 0.0
     mock.truncation_rate = 0.0
+    mock.draw_rate = 0.0
     step_count = [0]
 
     def make_reset_result():

@@ -665,13 +665,21 @@ class KataGoTrainingLoop:
             if self.dist_ctx.is_main:
                 # Metrics and logging
                 ep_completed = getattr(self.vecenv, "episodes_completed", 0)
-                metrics = {
+                total_games = win_count + loss_count + draw_count
+                metrics: dict[str, object] = {
                     "epoch": epoch_i, "step": self.global_step,
                     "policy_loss": losses["policy_loss"],
                     "value_loss": losses["value_loss"],
                     "entropy": losses["entropy"],
                     "gradient_norm": losses["gradient_norm"],
                     "episodes_completed": ep_completed,
+                    "avg_episode_length": getattr(self.vecenv, "mean_episode_length", None),
+                    "truncation_rate": getattr(self.vecenv, "truncation_rate", None),
+                    "draw_rate": getattr(self.vecenv, "draw_rate", None),
+                    "win_rate": (
+                        (win_count + 0.5 * draw_count) / total_games
+                        if total_games > 0 else None
+                    ),
                 }
                 try:
                     write_metrics(self.db_path, metrics)
