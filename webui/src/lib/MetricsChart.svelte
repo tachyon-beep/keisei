@@ -24,7 +24,7 @@
 
   function getOpts() {
     const w = container ? container.clientWidth : width
-    const h = sideLegend && container?.clientHeight > 0 ? container.clientHeight : height
+    const h = container?.clientHeight > 0 ? container.clientHeight : height
     const colors = resolveThemeColors()
     const opts = buildChartOpts({ width: w, height: h, series, compact, xLabel, colors })
     if (sideLegend) {
@@ -61,7 +61,7 @@
       if (chart && entries[0]) {
         const { width: w, height: h } = entries[0].contentRect
         if (w > 0) {
-          const chartH = sideLegend && h > 0 ? Math.floor(h) : height
+          const chartH = h > 0 ? Math.floor(h) : height
           chart.setSize({ width: Math.floor(w), height: chartH })
         }
       }
@@ -119,10 +119,13 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
   }
 
   .chart-wrapper.has-side-legend {
-    display: flex;
+    flex-direction: row;
     gap: 12px;
     align-items: stretch;
   }
@@ -130,11 +133,12 @@
   .chart-body {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
   }
 
-  .has-side-legend .chart-container {
+  .chart-container {
     flex: 1;
     min-height: 0;
   }
