@@ -22,6 +22,7 @@ from keisei.db import (
     init_db,
     read_training_state,
     update_training_progress,
+    write_game_snapshots,
     write_metrics,
     write_training_state,
 )
@@ -271,6 +272,7 @@ class KataGoTrainingLoop:
         self.score_norm = ppo_params.score_normalization
         self.moves_per_minute = config.display.moves_per_minute
         self._last_snapshot_time = 0.0
+        self.latest_values: list[float] = [0.0] * self.num_envs
         self.epoch = 0
         self.global_step = 0
         self._last_heartbeat = time.monotonic()
@@ -453,6 +455,7 @@ class KataGoTrainingLoop:
                 else:
                     # No opponent: all envs are learner (original behavior)
                     actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
+                    self.latest_values = values.tolist()
                     action_list = actions.tolist()
                     step_result = self.vecenv.step(action_list)
 
@@ -483,6 +486,7 @@ class KataGoTrainingLoop:
 
                 obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
                 legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
+                self._maybe_write_snapshots()
                 self._maybe_update_heartbeat()
 
             # Bootstrap value for GAE
@@ -500,7 +504,10 @@ class KataGoTrainingLoop:
                     self.ppo.current_entropy_coeff, self.ppo.warmup_epochs, epoch_i,
                 )
 
-            losses = self.ppo.update(self.buffer, next_values)
+            losses = self.ppo.update(
+                self.buffer, next_values,
+                heartbeat_fn=self._maybe_update_heartbeat,
+            )
 
             if losses["value_loss"] == 0.0:
                 logger.info(
@@ -666,6 +673,39 @@ class KataGoTrainingLoop:
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
             update_training_progress(self.db_path, self.epoch, self.global_step)
+
+    def _maybe_write_snapshots(self) -> None:
+        if self.moves_per_minute <= 0:
+            return
+        now = time.monotonic()
+        interval = 60.0 / self.moves_per_minute
+        if now - self._last_snapshot_time < interval:
+            return
+        self._last_snapshot_time = now
+
+        if not hasattr(self.vecenv, "get_spectator_data"):
+            return
+        spectator_data = self.vecenv.get_spectator_data()
+        snapshots = []
+        for i, game_data in enumerate(spectator_data):
+            snapshots.append({
+                "game_id": i,
+                "board_json": json.dumps(game_data.get("board", [])),
+                "hands_json": json.dumps(game_data.get("hands", {})),
+                "current_player": game_data.get("current_player", "black"),
+                "ply": game_data.get("ply", 0),
+                "is_over": int(game_data.get("is_over", False)),
+                "result": game_data.get("result", "in_progress"),
+                "sfen": game_data.get("sfen", ""),
+                "in_check": int(game_data.get("in_check", False)),
+                "move_history_json": "[]",
+                "value_estimate": (
+                    self.latest_values[i]
+                    if i < len(self.latest_values)
+                    else 0.0
+                ),
+            })
+        write_game_snapshots(self.db_path, snapshots)
 
 
 def main() -> None:

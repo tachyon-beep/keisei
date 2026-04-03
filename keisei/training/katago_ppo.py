@@ -411,6 +411,7 @@ class KataGoPPOAlgorithm:
         buffer: KataGoRolloutBuffer,
         next_values: torch.Tensor,
         value_adapter: Any | None = None,
+        heartbeat_fn: Any | None = None,
     ) -> dict[str, float]:
         from keisei.training.gae import compute_gae  # noqa: PLC0415 — local import for circular-import safety
 
@@ -666,6 +667,9 @@ class KataGoPPOAlgorithm:
                 total_entropy += entropy.item()
                 total_grad_norm += float(grad_norm)
                 num_updates += 1
+
+                if heartbeat_fn is not None:
+                    heartbeat_fn()
 
         buffer.clear()
 
