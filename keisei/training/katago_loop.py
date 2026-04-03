@@ -104,6 +104,117 @@ def sign_correct_bootstrap(
     return _negate_where(next_values, current_players != learner_side)
 
 
+class PendingTransitions:
+    """Per-env state for learner transitions awaiting outcome resolution.
+
+    In split-merge mode, a learner transition is "opened" when the learner
+    moves, but its reward and done flag depend on what happens next (which
+    may be an opponent move). This class holds the transition data until
+    the outcome resolves.
+
+    Memory footprint: For num_envs=512, obs_shape=(50,9,9), action_space=11259,
+    the total allocation is ~90 MB on the device. This is a persistent per-epoch
+    cost alongside the rollout buffer. Kept on GPU to avoid device mismatches
+    in the finalize-mask logic (dones, valid, learner_next are all on GPU).
+    """
+
+    def __init__(
+        self,
+        num_envs: int,
+        obs_shape: tuple[int, ...],
+        action_space: int,
+        device: torch.device,
+    ) -> None:
+        self.num_envs = num_envs
+        self.obs = torch.zeros(num_envs, *obs_shape, device=device)
+        self.actions = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.log_probs = torch.zeros(num_envs, device=device)
+        self.values = torch.zeros(num_envs, device=device)
+        self.legal_masks = torch.zeros(num_envs, action_space, dtype=torch.bool, device=device)
+        self.rewards = torch.zeros(num_envs, device=device)
+        self.score_targets = torch.zeros(num_envs, device=device)
+        self.valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    def create(
+        self,
+        env_mask: torch.Tensor,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        log_probs: torch.Tensor,
+        values: torch.Tensor,
+        legal_masks: torch.Tensor,
+        rewards: torch.Tensor,
+        score_targets: torch.Tensor,
+    ) -> None:
+        """Open pending transitions for envs where the learner just moved.
+
+        Raises AssertionError if any env in env_mask already has a valid
+        pending transition (indicates a protocol bug — finalize must be
+        called before create for the same env).
+        """
+        assert not (env_mask & self.valid).any(), (
+            "create() called on env(s) with already-valid pending transition. "
+            "finalize() must be called first."
+        )
+        self.obs[env_mask] = obs[env_mask]
+        self.actions[env_mask] = actions[env_mask]
+        self.log_probs[env_mask] = log_probs[env_mask]
+        self.values[env_mask] = values[env_mask]
+        self.legal_masks[env_mask] = legal_masks[env_mask]
+        self.rewards[env_mask] = rewards[env_mask]
+        self.score_targets[env_mask] = score_targets[env_mask]
+        self.valid[env_mask] = True
+
+    def accumulate_reward(self, learner_rewards: torch.Tensor) -> None:
+        """Add perspective-corrected rewards to all valid pending transitions.
+
+        Correctness assumption: non-mover envs have reward=0.0 from the engine,
+        so accumulating learner_rewards across all valid envs is safe. If the
+        engine ever emits shaping rewards for non-movers, this method would
+        need to accept a per-env mask of which envs actually stepped.
+        """
+        self.rewards[self.valid] += learner_rewards[self.valid]
+
+    def finalize(
+        self,
+        finalize_mask: torch.Tensor,
+        dones: torch.Tensor,
+    ) -> dict[str, torch.Tensor] | None:
+        """Close pending transitions and return data for buffer insertion.
+
+        Returns None if no transitions need finalizing. Otherwise returns
+        a dict with keys: obs, actions, log_probs, values, rewards, dones,
+        legal_masks, score_targets, env_ids. All tensors are indexed by
+        the finalized subset (not full num_envs).
+
+        The finalize_mask may include envs where valid=False — these are
+        safely skipped via the internal `to_finalize = finalize_mask & self.valid`
+        guard.
+        """
+        to_finalize = finalize_mask & self.valid
+        if not to_finalize.any():
+            return None
+
+        indices = to_finalize.nonzero(as_tuple=True)[0]
+        result = {
+            "obs": self.obs[indices],
+            "actions": self.actions[indices],
+            "log_probs": self.log_probs[indices],
+            "values": self.values[indices],
+            "rewards": self.rewards[indices],
+            "dones": dones[indices].float(),
+            "legal_masks": self.legal_masks[indices],
+            "score_targets": self.score_targets[indices],
+            "env_ids": indices,
+        }
+
+        # Clear finalized state
+        self.valid[to_finalize] = False
+        self.rewards[to_finalize] = 0.0
+
+        return result
+
+
 def split_merge_step(
     obs: torch.Tensor,
     legal_masks: torch.Tensor,
