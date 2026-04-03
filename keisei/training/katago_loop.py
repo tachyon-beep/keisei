@@ -1067,6 +1067,18 @@ class KataGoTrainingLoop:
                             win_count, loss_count, draw_count,
                         )
 
+            # Carry forward Elo for entries that didn't play this epoch,
+            # so the Elo chart has continuous lines with no gaps.
+            if self.dist_ctx.is_main and self.pool is not None:
+                played_ids = set()
+                if self._learner_entry_id is not None:
+                    played_ids.add(self._learner_entry_id)
+                if self._current_opponent_entry is not None:
+                    played_ids.add(self._current_opponent_entry.id)
+                for entry in self.pool.list_entries():
+                    if entry.id not in played_ids:
+                        self.pool.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
+
             if self.dist_ctx.is_main:
                 # Seat rotation (takes priority — includes its own snapshot)
                 rotating_this_epoch = (

@@ -147,7 +147,8 @@ class LeagueTournament:
 
                 total = wins_a + wins_b + draws
                 if total > 0:
-                    self._record_result(conn, entry_a, entry_b, wins_a, wins_b, draws)
+                    epoch = self._current_epoch(conn)
+                    self._record_result(conn, entry_a, entry_b, wins_a, wins_b, draws, epoch)
                     logger.info(
                         "Tournament: %s vs %s — %dW %dL %dD",
                         entry_a.display_name, entry_b.display_name,
@@ -170,6 +171,16 @@ class LeagueTournament:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def _current_epoch(self, conn: sqlite3.Connection) -> int:
+        """Read the current training epoch from the DB."""
+        try:
+            row = conn.execute(
+                "SELECT current_epoch FROM training_state WHERE id = 1"
+            ).fetchone()
+            return row["current_epoch"] if row else 0
+        except Exception:
+            return 0
 
     def _load_entries(self, conn: sqlite3.Connection) -> list[OpponentEntry]:
         rows = conn.execute(
@@ -213,17 +224,16 @@ class LeagueTournament:
         wins_a: int,
         wins_b: int,
         draws: int,
+        epoch: int = 0,
     ) -> None:
         """Record match result and update Elo for both entries."""
         total = wins_a + wins_b + draws
 
-        # Use epoch=-1 to distinguish tournament matches from main-loop matches
-        # in the results table. The UI can filter or label these differently.
         conn.execute(
             """INSERT INTO league_results
                (epoch, learner_id, opponent_id, wins, losses, draws)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (-1, entry_a.id, entry_b.id, wins_a, wins_b, draws),
+            (epoch, entry_a.id, entry_b.id, wins_a, wins_b, draws),
         )
 
         # Update games_played for both
@@ -259,14 +269,14 @@ class LeagueTournament:
             "UPDATE league_entries SET elo_rating = ? WHERE id = ?", (new_b, entry_b.id),
         )
 
-        # Record Elo history (epoch=-1 for tournament)
+        # Record Elo history at current training epoch
         conn.execute(
             "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (entry_a.id, -1, new_a),
+            (entry_a.id, epoch, new_a),
         )
         conn.execute(
             "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (entry_b.id, -1, new_b),
+            (entry_b.id, epoch, new_b),
         )
 
         conn.commit()

@@ -9,7 +9,11 @@ const COLORS = ['#4ade80', '#60a5fa', '#f59e0b', '#a78bfa', '#f472b6']
 export function buildEloChartData(history, entries) {
   if (history.length === 0) return { xData: [], series: [] }
 
-  const epochSet = new Set(history.map(h => h.epoch))
+  // Filter out any legacy epoch=-1 sentinel values
+  const filtered = history.filter(h => h.epoch >= 0)
+  if (filtered.length === 0) return { xData: [], series: [] }
+
+  const epochSet = new Set(filtered.map(h => h.epoch))
   const xData = [...epochSet].sort((a, b) => a - b)
   const epochIndex = new Map(xData.map((e, i) => [e, i]))
 
@@ -17,11 +21,11 @@ export function buildEloChartData(history, entries) {
   const entryMap = new Map(entries.map(e => [e.id, e]))
 
   const series = entryIds
-    .filter(id => history.some(h => h.entry_id === id))
+    .filter(id => filtered.some(h => h.entry_id === id))
     .map((id, i) => {
       const entry = entryMap.get(id)
       const data = new Array(xData.length).fill(null)
-      for (const h of history) {
+      for (const h of filtered) {
         if (h.entry_id === id) {
           data[epochIndex.get(h.epoch)] = h.elo_rating
         }
