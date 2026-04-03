@@ -13,15 +13,23 @@
   export let height = 100
   export let compact = false
   export let xLabel = null
+  /** 'bottom' (default uPlot) or 'right' (custom side legend) */
+  export let legendPosition = 'bottom'
 
   let container
   let chart = null
   let resizeObserver = null
 
+  $: sideLegend = legendPosition === 'right'
+
   function getOpts() {
     const w = container ? container.clientWidth : width
     const colors = resolveThemeColors()
-    return buildChartOpts({ width: w, height, series, compact, xLabel, colors })
+    const opts = buildChartOpts({ width: w, height, series, compact, xLabel, colors })
+    if (sideLegend) {
+      opts.legend = { show: false }
+    }
+    return opts
   }
 
   function getData() {
@@ -83,11 +91,23 @@
   })
 </script>
 
-<div class="chart-wrapper">
-  <div class="chart-title">{title}</div>
-  <div class="chart-container" bind:this={container}></div>
-  {#if annotation && !compact}
-    <div class="annotation">{annotation}</div>
+<div class="chart-wrapper" class:has-side-legend={sideLegend}>
+  <div class="chart-body">
+    <div class="chart-title">{title}</div>
+    <div class="chart-container" bind:this={container}></div>
+    {#if annotation && !compact}
+      <div class="annotation">{annotation}</div>
+    {/if}
+  </div>
+  {#if sideLegend && series.length > 0}
+    <div class="side-legend" role="list" aria-label="Chart legend">
+      {#each series as s}
+        <div class="legend-item" role="listitem">
+          <span class="legend-swatch" style="background: {s.color}"></span>
+          <span class="legend-label">{s.label}</span>
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 
@@ -97,6 +117,17 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px;
+  }
+
+  .chart-wrapper.has-side-legend {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .chart-body {
+    flex: 1;
+    min-width: 0;
   }
 
   .chart-title {
@@ -114,6 +145,40 @@
   .chart-container :global(.u-legend) {
     font-size: 12px !important;
     color: var(--text-secondary) !important;
+  }
+
+  .side-legend {
+    flex: 0 0 auto;
+    max-width: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+    border-left: 1px solid var(--border-subtle);
+    padding-left: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.3;
+  }
+
+  .legend-swatch {
+    flex-shrink: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  .legend-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .annotation {
