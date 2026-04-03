@@ -12,7 +12,7 @@ import torch
 
 from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
 from keisei.db import update_training_progress
-from keisei.training.distributed import DistributedContext
+from keisei.training.distributed import DistributedContext, setup_distributed, cleanup_distributed
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
@@ -1285,3 +1285,26 @@ class TestDDPDBInit:
              patch("keisei.training.katago_loop.write_training_state"):
             loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
             mock_init.assert_called_once()
+
+
+class TestMainEntryPoint:
+    def test_main_calls_setup_and_cleanup(self):
+        """main() should call setup_distributed and cleanup_distributed."""
+        with patch("keisei.training.katago_loop.get_distributed_context") as mock_ctx, \
+             patch("keisei.training.katago_loop.setup_distributed") as mock_setup, \
+             patch("keisei.training.katago_loop.cleanup_distributed") as mock_cleanup, \
+             patch("keisei.training.katago_loop.seed_all_ranks") as mock_seed, \
+             patch("keisei.training.katago_loop.load_config"), \
+             patch("keisei.training.katago_loop.KataGoTrainingLoop") as mock_loop, \
+             patch("sys.argv", ["prog", "dummy.toml", "--epochs", "1"]):
+            mock_ctx.return_value = DistributedContext(
+                rank=0, local_rank=0, world_size=1, is_distributed=False,
+            )
+            mock_loop.return_value.run = MagicMock()
+
+            from keisei.training.katago_loop import main
+            main()
+
+            mock_setup.assert_called_once()
+            mock_cleanup.assert_called_once()
+            mock_seed.assert_called_once_with(42)  # base_seed(42) + rank(0)

@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from keisei.config import AppConfig
+from keisei.config import AppConfig, load_config
 
 if TYPE_CHECKING:
     from keisei.training.value_adapter import ValueHeadAdapter
@@ -28,7 +28,10 @@ from keisei.db import (
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
-from keisei.training.distributed import DistributedContext, get_distributed_context, broadcast_string
+from keisei.training.distributed import (
+    DistributedContext, get_distributed_context,
+    broadcast_string, setup_distributed, cleanup_distributed, seed_all_ranks,
+)
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from keisei.training.katago_ppo import (
@@ -801,18 +804,30 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    parser = argparse.ArgumentParser(description="Keisei training")
-    parser.add_argument("config", type=Path, help="Path to TOML config file")
-    parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
-    parser.add_argument("--steps-per-epoch", type=int, default=None,
-                        help="Steps per epoch (default: max_ply from config)")
-    args = parser.parse_args()
 
-    from keisei.config import load_config
-    config = load_config(args.config)
-    steps = args.steps_per_epoch or config.training.max_ply
-    loop = KataGoTrainingLoop(config)
-    loop.run(num_epochs=args.epochs, steps_per_epoch=steps)
+    dist_ctx = get_distributed_context()
+    setup_distributed(dist_ctx)
+
+    try:
+        parser = argparse.ArgumentParser(description="Keisei training")
+        parser.add_argument("config", type=Path, help="Path to TOML config file")
+        parser.add_argument("--epochs", type=int, default=1000, help="Number of epochs")
+        parser.add_argument("--steps-per-epoch", type=int, default=None,
+                            help="Steps per epoch (default: max_ply from config)")
+        parser.add_argument("--seed", type=int, default=42,
+                            help="Base random seed (each rank adds its rank index)")
+        args = parser.parse_args()
+
+        # Set all RNG seeds: base_seed + rank for different-but-reproducible rollouts.
+        # Seeds torch, numpy, and Python stdlib RNG.
+        seed_all_ranks(args.seed + dist_ctx.rank)
+
+        config = load_config(args.config)
+        steps = args.steps_per_epoch or config.training.max_ply
+        loop = KataGoTrainingLoop(config, dist_ctx=dist_ctx)
+        loop.run(num_epochs=args.epochs, steps_per_epoch=steps)
+    finally:
+        cleanup_distributed(dist_ctx)
 
 
 if __name__ == "__main__":
