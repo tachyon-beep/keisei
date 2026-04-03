@@ -612,6 +612,32 @@ class KataGoTrainingLoop:
                     self._current_opponent_entry, device=str(self.device),
                 )
 
+            # One-time LR scheduler reset for league mode to prevent value-loss
+            # spike from triggering premature LR reduction after reward-collection
+            # fix. Safe to remove once no pre-fix checkpoints are in use.
+            if (self._current_opponent is not None
+                    and self.lr_scheduler is not None
+                    and epoch_i == start_epoch
+                    and start_epoch > 0):
+                self.lr_scheduler.best = self.lr_scheduler.mode_worse
+                self.lr_scheduler.num_bad_epochs = 0
+                if self.dist_ctx.is_main:
+                    logger.info(
+                        "LR scheduler reset at epoch %d for post-fix checkpoint continuity",
+                        epoch_i,
+                    )
+
+            if (self._current_opponent is not None
+                    and epoch_i == start_epoch
+                    and start_epoch > 0
+                    and self.dist_ctx.is_main):
+                logger.warning(
+                    "Resuming league training with corrected reward collection. "
+                    "Elo ratings from epochs before this fix may be inaccurate "
+                    "(opponent-turn terminals were previously miscounted). "
+                    "Elo will self-correct over subsequent epochs."
+                )
+
             # Per-epoch win/loss/draw counters for Elo tracking
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
