@@ -359,6 +359,13 @@ class KataGoPPOAlgorithm:
         from keisei.training.gae import compute_gae
 
         self.forward_model.train()
+        # Safety assertion: forward_model must be in train mode before compiled_train
+        # is used. split_merge_step calls learner_model.eval() during rollout and
+        # relies on update() to restore train mode. See Note N3 in the plan.
+        assert self.forward_model.training, (
+            "forward_model must be in train mode at start of update() — "
+            "compiled_train graph requires this"
+        )
         data = buffer.flatten()
         T = buffer.size
         N = buffer.num_envs
@@ -470,7 +477,12 @@ class KataGoPPOAlgorithm:
                 batch_score_targets = data["score_targets"][idx].to(device)
 
                 with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                    output = self.forward_model(batch_obs)
+                    # Use compiled_train if available; fall back to eager forward_model.
+                    # compiled_train was traced in train mode — BN updates running stats.
+                    if self.compiled_train is not None:
+                        output = self.compiled_train(batch_obs)
+                    else:
+                        output = self.forward_model(batch_obs)
 
                     # Policy loss (clipped surrogate)
                     flat_logits = output.policy_logits.reshape(batch_obs.shape[0], -1)
@@ -583,16 +595,23 @@ class KataGoPPOAlgorithm:
                 sample_size = min(256, valid_obs.shape[0])
                 sample_obs = valid_obs[:sample_size].to(device)
                 sample_cats = valid_cats[:sample_size].to(device)
+                if self.compiled_eval is not None:
+                    eval_model = self.compiled_eval
+                else:
+                    eval_model = self.forward_model
+                    eval_model.eval()
                 try:
-                    self.forward_model.eval()
                     with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
-                        sample_output = self.forward_model(sample_obs)
+                        sample_output = eval_model(sample_obs)
                     value_metrics = compute_value_metrics(
                         sample_output.value_logits, sample_cats
                     )
                     metrics.update(value_metrics)
                 finally:
-                    self.forward_model.train()
+                    if self.compiled_eval is None:
+                        self.forward_model.train()
 
+        # Always restore train mode — even when compiled. split_merge_step
+        # relies on this (see Note N3). No-op if already in train mode.
         self.forward_model.train()
         return metrics

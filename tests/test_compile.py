@@ -193,3 +193,64 @@ class TestSelectActionsCompile:
         assert ppo.forward_model.training is True, (
             "select_actions must not leave forward_model in eval mode when compiled"
         )
+
+
+class TestUpdateCompile:
+    def test_update_runs_with_compile(self):
+        """update() completes without error when compile_mode is set."""
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default", batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics
+        assert "value_loss" in metrics
+        assert "entropy" in metrics
+
+    def test_update_eager_still_works(self):
+        """update() still works without compile."""
+        model = _small_model()
+        params = KataGoPPOParams(batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        metrics = ppo.update(buf, next_values)
+        assert "policy_loss" in metrics
+
+    def test_update_changes_weights(self):
+        """update() must actually modify model weights (detects stale-gradient bugs).
+
+        Captures parameter values before and after update, verifies they changed.
+        This catches silent bugs where compiled_train dispatches to the wrong model
+        or the optimizer operates on a different parameter set.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default", batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        # Snapshot first parameter before update
+        first_param = list(model.parameters())[0]
+        before = first_param.data.clone()
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        ppo.update(buf, next_values)
+        after = first_param.data
+        assert not torch.equal(before, after), (
+            "Model parameters should change after update() — optimizer may be "
+            "operating on the wrong parameter set"
+        )
+
+    def test_forward_model_in_train_mode_after_update(self):
+        """forward_model must be in train mode after update() completes.
+
+        This is critical for the BN invariant: split_merge_step in katago_loop.py
+        calls learner_model.eval() during rollout (line 89), and update() must
+        restore train mode. See Note N3.
+        """
+        model = _small_model()
+        params = KataGoPPOParams(compile_mode="default", batch_size=4)
+        ppo = KataGoPPOAlgorithm(params, model)
+        buf = _filled_buffer(num_envs=4, steps=3)
+        next_values = torch.randn(4)
+        ppo.update(buf, next_values)
+        assert ppo.forward_model.training is True
