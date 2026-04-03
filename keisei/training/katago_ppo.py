@@ -64,6 +64,8 @@ class KataGoPPOParams:
     score_normalization: float = SCORE_NORMALIZATION  # used by KataGoTrainingLoop to normalize targets
     grad_clip: float = 1.0
     use_amp: bool = False
+    compile_mode: str | None = None    # None, "default", "reduce-overhead", "max-autotune"
+    compile_dynamic: bool = True       # dynamic shapes — True for league/split-merge safety
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
