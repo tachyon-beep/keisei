@@ -823,6 +823,12 @@ class KataGoTrainingLoop:
                     terminal_mask = dones.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
+                        # Engine produces exact integer-valued rewards (±1.0 or 0.0),
+                        # so float equality with == 0 is safe for draw detection.
+                        win_acc += (t_rewards > 0).sum()
+                        loss_acc += (t_rewards < 0).sum()
+                        draw_acc += (t_rewards == 0).sum()
+
                         # pre_players_t = who moved this step (last_mover), on GPU.
                         # Reward is from last_mover's perspective.
                         pre_players_t = torch.from_numpy(pre_players).to(self.device)

@@ -33,7 +33,7 @@ lambda_entropy = 0.01
 
 [display]
 moves_per_minute = 30
-db_path = "keisei.db"
+db_path = "../keisei.db"
 
 [model]
 display_name = "KataGo-DDP"
