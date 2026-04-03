@@ -576,6 +576,7 @@ class KataGoTrainingLoop:
                 self.buffer, next_values,
                 heartbeat_fn=self._maybe_update_heartbeat,
             )
+            self._phase = "rollout"
 
             if losses["value_loss"] == 0.0:
                 logger.info(
