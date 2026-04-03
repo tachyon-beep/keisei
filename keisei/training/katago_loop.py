@@ -505,6 +505,9 @@ class KataGoTrainingLoop:
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            # Per-color win counters (black=0, white=1)
+            black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
+            white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
 
             self._phase = "rollout"
             self._force_heartbeat()
@@ -513,6 +516,7 @@ class KataGoTrainingLoop:
 
                 if self._current_opponent is not None:
                     # Split-merge: learner vs opponent
+                    pre_players = current_players.copy()
                     sm_result = split_merge_step(
                         obs=obs, legal_masks=legal_masks,
                         current_players=current_players,
@@ -538,6 +542,23 @@ class KataGoTrainingLoop:
                         win_acc += (t_rewards > 0).sum()
                         loss_acc += (t_rewards < 0).sum()
                         draw_acc += (t_rewards == 0).sum()
+
+                        # Per-color wins: rewards are from last_mover perspective,
+                        # pre_players tells us who moved this step.
+                        t_players = torch.from_numpy(
+                            pre_players[terminal_mask.cpu().numpy()]
+                        ).to(self.device)
+                        # Winner is last_mover when reward > 0, opponent when reward < 0
+                        winner_is_black = (
+                            ((t_rewards > 0) & (t_players == 0))
+                            | ((t_rewards < 0) & (t_players == 1))
+                        )
+                        winner_is_white = (
+                            ((t_rewards > 0) & (t_players == 1))
+                            | ((t_rewards < 0) & (t_players == 0))
+                        )
+                        black_wins += winner_is_black.sum()
+                        white_wins += winner_is_white.sum()
 
                     # Store ONLY learner transitions in the buffer
                     li = sm_result.learner_indices
@@ -569,7 +590,10 @@ class KataGoTrainingLoop:
                     actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
                     self.latest_values = values.tolist()
                     action_list = actions.tolist()
+                    pre_players = current_players.copy()
                     step_result = self.vecenv.step(action_list)
+
+                    current_players = np.asarray(step_result.current_players)
 
                     rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
                     terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
@@ -577,6 +601,24 @@ class KataGoTrainingLoop:
                     dones = terminated | truncated
 
                     terminal_mask = dones.bool()
+                    if terminal_mask.any():
+                        t_rewards = rewards[terminal_mask]
+                        # pre_players = who moved this step (last_mover).
+                        # Reward is from last_mover's perspective.
+                        t_players = torch.from_numpy(
+                            pre_players[terminal_mask.cpu().numpy()]
+                        ).to(self.device)
+                        winner_is_black = (
+                            ((t_rewards > 0) & (t_players == 0))
+                            | ((t_rewards < 0) & (t_players == 1))
+                        )
+                        winner_is_white = (
+                            ((t_rewards > 0) & (t_players == 1))
+                            | ((t_rewards < 0) & (t_players == 0))
+                        )
+                        black_wins += winner_is_black.sum()
+                        white_wins += winner_is_white.sum()
+
                     value_cats = torch.full(
                         (self.num_envs,), -1, dtype=torch.long, device=self.device,
                     )
@@ -661,6 +703,8 @@ class KataGoTrainingLoop:
             win_count = win_acc.item()
             loss_count = loss_acc.item()
             draw_count = draw_acc.item()
+            black_win_count = black_wins.item()
+            white_win_count = white_wins.item()
 
             # Elo tracking (league mode, rank 0 only)
             if self.dist_ctx.is_main:
@@ -726,6 +770,12 @@ class KataGoTrainingLoop:
                     "win_rate": (
                         (win_count + 0.5 * draw_count) / total_games
                         if total_games > 0 else None
+                    ),
+                    "black_win_rate": (
+                        black_win_count / total_games if total_games > 0 else None
+                    ),
+                    "white_win_rate": (
+                        white_win_count / total_games if total_games > 0 else None
                     ),
                 }
                 try:
