@@ -16,12 +16,99 @@ from keisei.training.model_registry import build_model
 
 logger = logging.getLogger(__name__)
 
+# Themed name pool for league entries — Japanese shogi/martial arts themed.
+# Each snapshot gets a unique name from this pool, assigned deterministically
+# from the epoch number so names are stable across restarts.
+LEAGUE_NAMES: list[str] = [
+    # Batch 1 — warriors and strategists
+    "Takeshi", "Haruka", "Renjiro", "Sakura", "Noboru",
+    "Kaede", "Shingen", "Tomoe", "Genryu", "Hana",
+    "Kenshin", "Mizuki", "Raiden", "Ayame", "Daisuke",
+    "Shiori", "Hayato", "Natsuki", "Sorin", "Yuki",
+    "Jubei", "Kasumi", "Tetsuo", "Akane", "Goemon",
+    # Batch 2 — poets and wanderers
+    "Rin", "Masato", "Chihiro", "Ryoma", "Satsuki",
+    "Kojiro", "Fumiko", "Hideki", "Koharu", "Saburo",
+    "Mio", "Tadashi", "Hotaru", "Isamu", "Nanami",
+    "Shiro", "Kaori", "Benkei", "Sumire", "Yasuo",
+    "Tsubaki", "Goro", "Hikari", "Kenji", "Aoi",
+    # Batch 3 — legends and scholars
+    "Musashi", "Hanzo", "Kagero", "Tsukasa", "Rinko",
+    "Souji", "Yukimura", "Makoto", "Azami", "Taro",
+    "Hinata", "Shizuka", "Ieyasu", "Momiji", "Tetsu",
+    "Kurama", "Suzu", "Dosetsu", "Fubuki", "Sei",
+    "Nagato", "Chiyo", "Ranmaru", "Mayumi", "Jinbei",
+    # Batch 4 — elements and seasons
+    "Arashi", "Tsukimi", "Enma", "Wakaba", "Ryusei",
+    "Asuka", "Kagerou", "Tamamo", "Sora", "Inari",
+    "Kaze", "Kurenai", "Yamato", "Suzume", "Homura",
+    "Michiru", "Hayate", "Kaguya", "Ibuki", "Akira",
+    "Minato", "Shinobu", "Sessho", "Uzume", "Ginga",
+]
+
+
+_FLAVOUR_POOLS: dict[str, list[str]] = {
+    "Favourite piece": [
+        "Gold General", "Silver General", "Knight", "Lance", "Bishop",
+        "Rook", "Promoted Pawn", "King", "Dragon Horse", "Dragon King",
+    ],
+    "Favourite opening": [
+        "Static Rook", "Ranging Rook", "Fourth File Rook", "Central Rook",
+        "Opposing Rook", "Double Wing Attack", "Snow Roof", "Bear-in-the-Hole",
+        "Right King", "Yagura",
+    ],
+    "Philosophy": [
+        "Musashi", "Sun Tzu", "Confucius", "Lao Tzu", "Miyamoto",
+        "Leibniz", "Turing", "Shannon", "Von Neumann", "Bellman",
+    ],
+    "Favourite snack": [
+        "Onigiri", "Mochi", "Dango", "Taiyaki", "Senbei",
+        "Gradient soup", "Loss crumble", "Entropy tea", "Batch noodles", "Tensor rolls",
+    ],
+    "Training motto": [
+        '"Loss goes down"', '"Explore everything"', '"Patience is policy"',
+        '"Trust the gradient"', '"Variance is the enemy"', '"Clip wisely"',
+        '"Entropy is freedom"', '"Value the position"', '"Every ply counts"',
+        '"Promote early"',
+    ],
+    "Lucky number": [
+        "0.0001", "0.99", "42", "3.14", "2048",
+        "0.95", "1e-8", "256", "0.2", "7.5M",
+    ],
+}
+
+
+def _generate_flavour_facts(epoch: int, num_facts: int = 3) -> list[list[str]]:
+    """Pick random flavour facts for a league entry, deterministic by epoch."""
+    rng = random.Random(f"flavour-{epoch}")
+    categories = rng.sample(list(_FLAVOUR_POOLS.keys()), min(num_facts, len(_FLAVOUR_POOLS)))
+    return [[cat, rng.choice(_FLAVOUR_POOLS[cat])] for cat in categories]
+
+
+def _generate_display_name(epoch: int, existing_names: set[str]) -> str:
+    """Generate a unique display name for a league entry.
+
+    Shuffles the full name pool deterministically by epoch, then picks
+    the first name not already in use. With 100 names and max pool
+    size 20, collisions are impossible unless the pool exceeds the
+    name count.
+    """
+    rng = random.Random(f"name-{epoch}")
+    shuffled = list(LEAGUE_NAMES)
+    rng.shuffle(shuffled)
+    for name in shuffled:
+        if name not in existing_names:
+            return name
+    # Fallback: all 100 names taken (pool > 100). Add epoch suffix.
+    return f"{shuffled[0]} E{epoch}"
+
 
 @dataclass(frozen=True)
 class OpponentEntry:
     """A snapshot in the opponent pool."""
 
     id: int
+    display_name: str
     architecture: str
     model_params: dict[str, Any]
     checkpoint_path: str
@@ -29,11 +116,14 @@ class OpponentEntry:
     created_epoch: int
     games_played: int
     created_at: str
+    flavour_facts: list[list[str]]
 
     @classmethod
     def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
+        raw_facts = row["flavour_facts"] if "flavour_facts" in row.keys() else "[]"
         return cls(
             id=row["id"],
+            display_name=row["display_name"],
             architecture=row["architecture"],
             model_params=json.loads(row["model_params"]),
             checkpoint_path=row["checkpoint_path"],
@@ -41,6 +131,7 @@ class OpponentEntry:
             created_epoch=row["created_epoch"],
             games_played=row["games_played"],
             created_at=row["created_at"],
+            flavour_facts=json.loads(raw_facts),
         )
 
 
@@ -120,19 +211,24 @@ class OpponentPool:
         torch.save(raw_model.state_dict(), tmp_path)
         tmp_path.rename(ckpt_path)
 
+        # Generate a unique themed name and flavour facts for this snapshot
+        existing_names = {e.display_name for e in self.list_entries()}
+        display_name = _generate_display_name(epoch, existing_names)
+        flavour_facts = _generate_flavour_facts(epoch)
+
         cursor = self._conn.execute(
             """INSERT INTO league_entries
-               (architecture, model_params, checkpoint_path, created_epoch)
-               VALUES (?, ?, ?, ?)""",
-            (architecture, json.dumps(model_params), str(ckpt_path), epoch),
+               (display_name, flavour_facts, architecture, model_params, checkpoint_path, created_epoch)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (display_name, json.dumps(flavour_facts), architecture, json.dumps(model_params), str(ckpt_path), epoch),
         )
         entry_id = cursor.lastrowid
         self._evict_if_needed()
         self._conn.commit()
 
         logger.info(
-            "Pool snapshot: %s epoch %d -> %s (id=%d)",
-            architecture, epoch, ckpt_path.name, entry_id,
+            "Pool snapshot: %s (%s) epoch %d -> %s (id=%d)",
+            display_name, architecture, epoch, ckpt_path.name, entry_id,
         )
 
         entry = self._get_entry(entry_id)

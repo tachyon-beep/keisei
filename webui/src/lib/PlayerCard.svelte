@@ -7,30 +7,12 @@
   export let elo = null
   /** @type {string} */
   export let detail = ''
+  /** @type {Array<[string, string]>} */
+  export let stats = []
 
   $: icon = role === 'learner' ? '☗' : '☖'
   $: roleLabel = role === 'learner' ? 'Learner' : 'Opponent'
   $: colorClass = role === 'learner' ? 'learner' : 'opponent'
-
-  const learnerFacts = [
-    ['Favourite opening', 'Static Rook'],
-    ['Spirit animal', 'Capybara'],
-    ['Favourite food', 'Gradient soup'],
-    ['Motto', '"Loss goes down"'],
-    ['Lucky number', '0.0001'],
-    ['Hobby', 'Backpropagation'],
-  ]
-
-  const opponentFacts = [
-    ['Favourite opening', 'Ranging Rook'],
-    ['Spirit animal', 'Tanuki'],
-    ['Favourite food', 'Random rollouts'],
-    ['Motto', '"Explore everything"'],
-    ['Lucky number', '42'],
-    ['Hobby', 'Self-play'],
-  ]
-
-  $: facts = role === 'learner' ? learnerFacts : opponentFacts
 </script>
 
 <div
@@ -47,14 +29,16 @@
   {#if detail}
     <div class="detail">{detail}</div>
   {/if}
-  <div class="facts">
-    {#each facts as [label, value]}
-      <div class="fact-row">
-        <span class="fact-label">{label}</span>
-        <span class="fact-value">{value}</span>
-      </div>
-    {/each}
-  </div>
+  {#if stats.length > 0}
+    <div class="facts">
+      {#each stats as [label, value]}
+        <div class="fact-row">
+          <span class="fact-label">{label}</span>
+          <span class="fact-value">{value}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>

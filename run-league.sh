@@ -18,7 +18,7 @@
 #   ./run-league.sh checkpoints/500k/epoch_00100.pt     # seed from checkpoint
 #   ./run-league.sh resume                               # resume existing league run
 #
-# Dashboard: http://keisei.foundryside.dev:8742
+# Dashboard: http://keisei.foundryside.dev (Caddy proxies port 8741)
 # Logs:      logs/league_train_YYYYMMDD_HHMMSS.log
 #            logs/league_server_YYYYMMDD_HHMMSS.log
 #
@@ -34,7 +34,7 @@ cd "$(dirname "$0")"
 CONFIG="${CONFIG:-keisei-league.toml}"
 EPOCHS="${EPOCHS:-50000}"
 WEB_HOST="0.0.0.0"
-WEB_PORT=8742           # different port from run-500k.sh (8741) so both can run
+WEB_PORT="${WEB_PORT:-8741}"
 LOG_DIR="logs"
 DB_PATH="keisei-league.db"
 

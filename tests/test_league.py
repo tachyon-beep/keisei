@@ -39,19 +39,23 @@ class TestOpponentEntry:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         conn.execute(
-            "CREATE TABLE t (id INT, architecture TEXT, model_params TEXT, "
+            "CREATE TABLE t (id INT, display_name TEXT, flavour_facts TEXT, "
+            "architecture TEXT, model_params TEXT, "
             "checkpoint_path TEXT, elo_rating REAL, created_epoch INT, "
             "games_played INT, created_at TEXT)"
         )
         conn.execute(
-            "INSERT INTO t VALUES (1, 'resnet', '{\"hidden_size\": 16}', "
-            "'/path/to/ckpt.pt', 1000.0, 10, 5, '2026-04-01T00:00:00Z')"
+            """INSERT INTO t VALUES (1, 'Takeshi', '[["Favourite piece","Rook"]]', """
+            """'resnet', '{"hidden_size": 16}', """
+            """'/path/to/ckpt.pt', 1000.0, 10, 5, '2026-04-01T00:00:00Z')"""
         )
         row = conn.execute("SELECT * FROM t").fetchone()
         conn.close()
 
         entry = OpponentEntry.from_db_row(row)
         assert entry.id == 1
+        assert entry.display_name == "Takeshi"
+        assert entry.flavour_facts == [["Favourite piece", "Rook"]]
         assert entry.architecture == "resnet"
         assert entry.model_params == {"hidden_size": 16}
         assert entry.elo_rating == 1000.0

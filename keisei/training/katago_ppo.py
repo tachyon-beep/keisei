@@ -535,30 +535,49 @@ class KataGoPPOAlgorithm:
 
         amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_score_loss = 0.0
-        total_entropy = 0.0
-        total_grad_norm = 0.0
+        # --- Optimization: move entire dataset to GPU once ---
+        # Previously each mini-batch transferred ~2.8 MB from CPU 512 times
+        # (~1.4 GB PCIe traffic per update). Now we transfer once (~900 MB)
+        # and index GPU tensors directly — pure GPU gathers, no PCIe.
+        gpu_obs = data["observations"].to(device, non_blocking=True)
+        gpu_actions = data["actions"].to(device, non_blocking=True)
+        gpu_old_log_probs = data["log_probs"].to(device, non_blocking=True)
+        gpu_advantages = advantages.to(device, non_blocking=True)
+        gpu_legal_masks = data["legal_masks"].to(device, non_blocking=True)
+        gpu_value_cats = data["value_categories"].to(device, non_blocking=True)
+        gpu_score_targets = data["score_targets"].to(device, non_blocking=True)
+
+        # --- Optimization: accumulate losses as GPU tensors ---
+        # Previously 5x .item() per mini-batch = 2560 CPU-GPU syncs per update.
+        # Now we accumulate on GPU and read once at the end.
+        acc_policy_loss = torch.tensor(0.0, device=device)
+        acc_value_loss = torch.tensor(0.0, device=device)
+        acc_score_loss = torch.tensor(0.0, device=device)
+        acc_entropy = torch.tensor(0.0, device=device)
+        acc_grad_norm = torch.tensor(0.0, device=device)
         num_updates = 0
         # Pre-allocate zero tensor used when value_adapter merges score loss
         # internally — avoids a per-mini-batch allocation inside the AMP context.
         _zero = torch.tensor(0.0, device=device)
 
+        # Save last mini-batch outputs for value metrics (avoids extra eval pass)
+        last_value_logits = None
+        last_value_cats = None
+
         for _ in range(self.params.epochs_per_batch):
-            indices = torch.randperm(total_samples)
+            indices = torch.randperm(total_samples, device=device)
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
                 idx = indices[start:end]
 
-                # Transfer mini-batch from CPU to training device
-                batch_obs = data["observations"][idx].to(device)
-                batch_actions = data["actions"][idx].to(device)
-                batch_old_log_probs = data["log_probs"][idx].to(device)
-                batch_advantages = advantages[idx].to(device)
-                batch_legal_masks = data["legal_masks"][idx].to(device)
-                batch_value_cats = data["value_categories"][idx].to(device)
-                batch_score_targets = data["score_targets"][idx].to(device)
+                # GPU-to-GPU gather — no PCIe transfer
+                batch_obs = gpu_obs[idx]
+                batch_actions = gpu_actions[idx]
+                batch_old_log_probs = gpu_old_log_probs[idx]
+                batch_advantages = gpu_advantages[idx]
+                batch_legal_masks = gpu_legal_masks[idx]
+                batch_value_cats = gpu_value_cats[idx]
+                batch_score_targets = gpu_score_targets[idx]
 
                 if device.type == "cuda":
                     _fb_start = torch.cuda.Event(enable_timing=True)
@@ -661,51 +680,45 @@ class KataGoPPOAlgorithm:
                     # Do NOT synchronize — events read lazily in flush_timings()
                     self._timing_events["update_forward_backward_ms"].append((_fb_start, _fb_end))
 
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                total_score_loss += score_loss.item()
-                total_entropy += entropy.item()
-                total_grad_norm += float(grad_norm)
+                # Accumulate on GPU — no .item() sync per mini-batch
+                acc_policy_loss += policy_loss.detach()
+                acc_value_loss += value_loss.detach()
+                acc_score_loss += score_loss.detach()
+                acc_entropy += entropy.detach()
+                acc_grad_norm += grad_norm.detach() if isinstance(grad_norm, torch.Tensor) else torch.tensor(float(grad_norm), device=device)
                 num_updates += 1
+
+                # Save last mini-batch for value metrics (replaces extra eval pass)
+                last_value_logits = output.value_logits.detach()
+                last_value_cats = batch_value_cats
 
                 if heartbeat_fn is not None:
                     heartbeat_fn()
 
+        # Free GPU copies of the dataset now that the epoch loop is done
+        del gpu_obs, gpu_actions, gpu_old_log_probs, gpu_advantages
+        del gpu_legal_masks, gpu_value_cats, gpu_score_targets
+
         buffer.clear()
 
+        # Single GPU→CPU sync for all accumulated losses
         denom = max(num_updates, 1)
         metrics = {
-            "policy_loss": total_policy_loss / denom,
-            "value_loss": total_value_loss / denom,
-            "score_loss": total_score_loss / denom,
-            "entropy": total_entropy / denom,
-            "gradient_norm": total_grad_norm / denom,
+            "policy_loss": (acc_policy_loss / denom).item(),
+            "value_loss": (acc_value_loss / denom).item(),
+            "score_loss": (acc_score_loss / denom).item(),
+            "entropy": (acc_entropy / denom).item(),
+            "gradient_norm": (acc_grad_norm / denom).item(),
         }
 
-        # Value prediction metrics for monitoring degeneracy
-        # (e.g., model predicting WIN for every position → value_accuracy plateau)
-        valid_mask = data["value_categories"] >= 0  # exclude ignore_index=-1
-        if valid_mask.any():
-            with torch.no_grad():
-                valid_cats = data["value_categories"][valid_mask]
-                valid_obs = data["observations"][valid_mask]
-                sample_size = min(256, valid_obs.shape[0])
-                sample_obs = valid_obs[:sample_size].to(device)
-                sample_cats = valid_cats[:sample_size].to(device)
-                if self.compiled_eval is not None:
-                    eval_model = self.compiled_eval
-                else:
-                    eval_model = self.forward_model
-                    eval_model.eval()
-                try:
-                    sample_output = eval_model(sample_obs)
-                    value_metrics = compute_value_metrics(
-                        sample_output.value_logits, sample_cats
-                    )
-                    metrics.update(value_metrics)
-                finally:
-                    if self.compiled_eval is None:
-                        self.forward_model.train()
+        # Value prediction metrics from last mini-batch (no extra forward pass)
+        if last_value_logits is not None and last_value_cats is not None:
+            valid_mask = last_value_cats >= 0
+            if valid_mask.any():
+                value_metrics = compute_value_metrics(
+                    last_value_logits[valid_mask], last_value_cats[valid_mask]
+                )
+                metrics.update(value_metrics)
 
         # Always restore train mode — even when compiled. split_merge_step
         # relies on this (see Note N3). No-op if already in train mode.

@@ -15,9 +15,13 @@ export const selectedOpponent = derived(
     const entry = $entries.find(e => e.id === $game.opponent_id)
     if (!entry) return null
     return {
+      display_name: entry.display_name || entry.architecture,
       architecture: entry.architecture,
       elo_rating: entry.elo_rating,
       games_played: entry.games_played,
+      created_epoch: entry.created_epoch,
+      flavour_facts: entry.flavour_facts || [],
+      created_at: entry.created_at || '',
     }
   }
 )

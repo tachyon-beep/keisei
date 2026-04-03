@@ -43,7 +43,7 @@
       <thead>
         <tr>
           <th class="num">#</th>
-          <th><button class="sort-btn" on:click={() => toggleSort('architecture')}>Model{sortIndicator('architecture')}</button></th>
+          <th><button class="sort-btn" on:click={() => toggleSort('display_name')}>Name{sortIndicator('display_name')}</button></th>
           <th class="num"><button class="sort-btn" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button></th>
           <th class="num"><button class="sort-btn" on:click={() => toggleSort('games_played')}>Games{sortIndicator('games_played')}</button></th>
           <th class="num"><button class="sort-btn" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button></th>
@@ -60,7 +60,7 @@
             on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
           >
             <td class="num rank">{entry.rank}</td>
-            <td>{entry.architecture}</td>
+            <td>{entry.display_name || entry.architecture}</td>
             <td class="num elo">{Math.round(entry.elo_rating)}</td>
             <td class="num">{entry.games_played}</td>
             <td class="num">{entry.created_epoch}</td>

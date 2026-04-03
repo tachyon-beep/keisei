@@ -31,9 +31,11 @@ def _make_mock_pool(num_entries=3):
     pool = MagicMock()
     entries = [
         OpponentEntry(
-            id=i, architecture="resnet", model_params={"hidden_size": 16},
+            id=i, display_name=f"Test {i}", architecture="resnet",
+            model_params={"hidden_size": 16},
             checkpoint_path=f"/fake/ckpt_{i}.pt", elo_rating=1000.0 + i * 50,
             created_epoch=i * 10, games_played=0, created_at="2026-01-01",
+            flavour_facts=[],
         )
         for i in range(num_entries)
     ]

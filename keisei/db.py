@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -80,6 +81,8 @@ def init_db(db_path: str) -> None:
             );
             CREATE TABLE IF NOT EXISTS league_entries (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name    TEXT NOT NULL DEFAULT '',
+                flavour_facts   TEXT NOT NULL DEFAULT '[]',
                 architecture    TEXT NOT NULL,
                 model_params    TEXT NOT NULL,
                 checkpoint_path TEXT NOT NULL,
@@ -112,6 +115,16 @@ def init_db(db_path: str) -> None:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+        else:
+            db_version = row[0]
+            if db_version < 3:
+                # v2 → v3: add display_name and flavour_facts to league_entries
+                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
+                if "display_name" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+                if "flavour_facts" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN flavour_facts TEXT NOT NULL DEFAULT '[]'")
+                conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         conn.commit()
     finally:
         conn.close()
@@ -298,15 +311,22 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
     conn = _connect(db_path)
     try:
         entries = conn.execute(
-            "SELECT id, architecture, elo_rating, games_played, created_epoch, created_at "
+            "SELECT id, display_name, flavour_facts, architecture, elo_rating, games_played, created_epoch, created_at "
             "FROM league_entries ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
             "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, recorded_at "
             "FROM league_results ORDER BY id DESC"
         ).fetchall()
+        parsed_entries = []
+        for r in entries:
+            e = dict(r)
+            # Parse JSON string fields for the frontend
+            if isinstance(e.get("flavour_facts"), str):
+                e["flavour_facts"] = json.loads(e["flavour_facts"])
+            parsed_entries.append(e)
         return {
-            "entries": [dict(r) for r in entries],
+            "entries": parsed_entries,
             "results": [dict(r) for r in results],
         }
     finally:

@@ -50,15 +50,16 @@ class TestSchemaV2:
         assert "game_type" in cols
         assert "demo_slot" in cols
 
-    def test_schema_version_is_2(self, tmp_path):
+    def test_schema_version_is_3(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
         init_db(db_path)
-        assert _get_schema_version(db_path) == 2
+        assert _get_schema_version(db_path) == 3
 
     def test_league_entries_columns(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
         init_db(db_path)
         cols = _get_table_columns(db_path, "league_entries")
+        assert "display_name" in cols
         assert "architecture" in cols
         assert "elo_rating" in cols
         assert "checkpoint_path" in cols

@@ -48,6 +48,7 @@ class LeagueConfig:
     initial_elo: float = 1000.0
     elo_k_factor: float = 32.0
     elo_floor: float = 500.0
+    opponent_device: str | None = None  # e.g. "cuda:1" — defaults to learner device
 
     def __post_init__(self) -> None:
         ratio_sum = self.historical_ratio + self.current_best_ratio

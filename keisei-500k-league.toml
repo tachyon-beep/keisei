@@ -1,0 +1,62 @@
+# keisei-500k-league.toml — "Kenshi" (剣士, swordsman) — 500K league training on 2x GPU
+#
+# Hardware: 2x NVIDIA RTX 4060 Ti 16GB (learner on cuda:0, opponents on cuda:1)
+# Model:    KataGo SE-ResNet b10c128 (~7.5M params)
+# Purpose:  Long league training run with opponent pool to prevent strategy collapse.
+#           The learner trains on GPU 0 while historical opponents serve on GPU 1.
+#           NOT DDP — single process using both GPUs for different roles.
+#
+# Launch:   ./run-500k-league.sh                    # fresh start
+#           ./run-500k-league.sh resume              # resume from checkpoint
+#
+# Dashboard: https://keisei.foundryside.dev
+
+[model]
+display_name = "Kenshi"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 10
+channels = 128
+se_reduction = 8
+global_pool_channels = 64
+policy_channels = 16
+value_fc_size = 128
+score_fc_size = 64
+obs_channels = 50
+
+[training]
+num_games = 64              # single process, more envs to keep GPU busy
+max_ply = 512
+algorithm = "katago_ppo"
+checkpoint_interval = 100
+checkpoint_dir = "checkpoints/500k-league/"
+use_amp = true
+
+[training.algorithm_params]
+learning_rate = 0.0002
+gamma = 0.99
+gae_lambda = 0.95
+clip_epsilon = 0.2
+epochs_per_batch = 4
+batch_size = 2048
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 30
+db_path = "keisei-500k-league.db"
+
+[league]
+max_pool_size = 20          # keep up to 20 historical opponents
+snapshot_interval = 10      # snapshot every 10 epochs — fills pool fast early on
+epochs_per_seat = 5         # rotate opponent every 5 epochs for diversity
+historical_ratio = 0.8      # 80% historical, 20% current best
+current_best_ratio = 0.2
+elo_k_factor = 32.0
+elo_floor = 500.0
+opponent_device = "cuda:1"  # serve opponents on second GPU

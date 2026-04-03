@@ -4,7 +4,8 @@
   import { games, selectedGame, selectedOpponent } from './stores/games.js'
   import { activeTab } from './stores/navigation.js'
   import { trainingState } from './stores/training.js'
-  import { leagueEntries } from './stores/league.js'
+  import { leagueEntries, leagueResults } from './stores/league.js'
+  import { latestMetrics } from './stores/metrics.js'
   import StatusIndicator from './lib/StatusIndicator.svelte'
   import GameThumbnail from './lib/GameThumbnail.svelte'
   import Board from './lib/Board.svelte'
@@ -52,11 +53,55 @@
     ? `${$trainingState.model_arch || ''} · Epoch ${$trainingState.current_epoch || 0} · ${($trainingState.current_step || 0).toLocaleString()} steps`
     : ''
 
+  // Learner stats for PlayerCard
+  $: learnerStats = (() => {
+    const s = []
+    if ($trainingState?.model_arch) s.push(['Architecture', $trainingState.model_arch])
+    const m = $latestMetrics
+    if (m) {
+      if (m.policy_loss != null) s.push(['Policy loss', m.policy_loss.toFixed(4)])
+      if (m.value_loss != null) s.push(['Value loss', m.value_loss.toFixed(4)])
+      if (m.entropy != null) s.push(['Entropy', m.entropy.toFixed(4)])
+      if (m.value_accuracy != null) s.push(['Value accuracy', (m.value_accuracy * 100).toFixed(1) + '%'])
+    }
+    // W/L/D from recent league results (last 10 epochs)
+    if ($leagueResults.length > 0) {
+      const recent = $leagueResults.slice(0, 10)
+      const totals = recent.reduce((a, r) => ({
+        w: a.w + (r.wins || 0), l: a.l + (r.losses || 0), d: a.d + (r.draws || 0)
+      }), { w: 0, l: 0, d: 0 })
+      s.push(['Recent W/L/D', `${totals.w} / ${totals.l} / ${totals.d}`])
+    }
+    return s
+  })()
+
   // Opponent info from selected game
   $: opp = $selectedOpponent
-  $: opponentName = opp ? opp.architecture : 'Self-play'
+  $: opponentName = opp ? opp.display_name : 'Self-play'
   $: opponentElo = opp?.elo_rating ?? null
-  $: opponentDetail = opp ? `${opp.games_played} games played` : ''
+  $: opponentDetail = opp
+    ? `${opp.architecture} · Epoch ${opp.created_epoch}`
+    : ''
+
+  // Opponent stats for PlayerCard
+  $: opponentStats = (() => {
+    if (!opp) return []
+    const s = []
+    s.push(['Architecture', opp.architecture])
+    s.push(['Snapshot epoch', String(opp.created_epoch)])
+    s.push(['Games played', String(opp.games_played)])
+    if (opp.created_at) {
+      const d = new Date(opp.created_at)
+      s.push(['Born', d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })])
+    }
+    // Append flavour facts from the league entry
+    if (opp.flavour_facts) {
+      for (const [label, value] of opp.flavour_facts) {
+        s.push([label, value])
+      }
+    }
+    return s
+  })()
 </script>
 
 <div class="app">
@@ -75,9 +120,9 @@
       </aside>
 
       <div class="player-panel">
-        <PlayerCard role="learner" name={learnerName} elo={learnerElo} detail={learnerDetail} />
+        <PlayerCard role="learner" name={learnerName} elo={learnerElo} detail={learnerDetail} stats={learnerStats} />
         <div class="vs-separator">VS</div>
-        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} />
+        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} stats={opponentStats} />
       </div>
 
       <main id="game-panel" class="game-panel" aria-label="Game viewer">

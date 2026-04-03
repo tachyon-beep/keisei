@@ -286,10 +286,22 @@ def split_merge_step(
 
         actions[learner_indices] = l_actions
 
-    # Opponent forward pass (always no_grad, eval mode)
+    # Opponent forward pass (always no_grad, eval mode).
+    # When the opponent lives on a different GPU (e.g. cuda:1), move
+    # observations there for inference, then move actions back.
     if opponent_indices.numel() > 0:
         o_obs = obs[opponent_indices]
         o_masks = legal_masks[opponent_indices]
+
+        # Detect cross-device opponent (e.g. learner on cuda:0, opponent on cuda:1)
+        try:
+            opp_device = next(opponent_model.parameters()).device
+        except (StopIteration, AttributeError):
+            opp_device = device  # fallback: assume same device
+        cross_device = isinstance(opp_device, torch.device) and opp_device != device
+        if cross_device:
+            o_obs = o_obs.to(opp_device)
+            o_masks = o_masks.to(opp_device)
 
         opponent_model.eval()
         with torch.no_grad():
@@ -301,6 +313,8 @@ def split_merge_step(
         o_dist = torch.distributions.Categorical(o_probs)
         o_actions = o_dist.sample()
 
+        if cross_device:
+            o_actions = o_actions.to(device)
         actions[opponent_indices] = o_actions
 
     return SplitMergeResult(
@@ -642,8 +656,13 @@ class KataGoTrainingLoop:
             # Sample opponent for this epoch (if league enabled)
             if self.sampler is not None:
                 self._current_opponent_entry = self.sampler.sample()
+                opp_device = (
+                    self.config.league.opponent_device
+                    if self.config.league and self.config.league.opponent_device
+                    else str(self.device)
+                )
                 self._current_opponent = self.pool.load_opponent(
-                    self._current_opponent_entry, device=str(self.device),
+                    self._current_opponent_entry, device=opp_device,
                 )
 
             # One-time LR scheduler reset for league mode to prevent value-loss
@@ -1193,6 +1212,11 @@ class KataGoTrainingLoop:
                     self.latest_values[i]
                     if i < len(self.latest_values)
                     else 0.0
+                ),
+                "opponent_id": (
+                    self._current_opponent_entry.id
+                    if self._current_opponent_entry is not None
+                    else None
                 ),
             })
         write_game_snapshots(self.db_path, snapshots)
