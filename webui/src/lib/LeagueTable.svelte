@@ -1,15 +1,29 @@
 <script>
-  import { leagueRanked } from '../stores/league.js'
+  import { leagueRanked, entryWLD } from '../stores/league.js'
   import MatchHistory from './MatchHistory.svelte'
+
+  /** Current learner's display_name (used to highlight their row) */
+  export let learnerName = null
 
   let sortColumn = 'elo_rating'
   let sortAsc = false
   let expandedId = null
 
+  $: wld = $entryWLD
+
   $: sorted = (() => {
     const entries = [...$leagueRanked]
     entries.sort((a, b) => {
-      const av = a[sortColumn], bv = b[sortColumn]
+      let av, bv
+      if (sortColumn === 'wins') {
+        av = (wld.get(a.id)?.w || 0); bv = (wld.get(b.id)?.w || 0)
+      } else if (sortColumn === 'losses') {
+        av = (wld.get(a.id)?.l || 0); bv = (wld.get(b.id)?.l || 0)
+      } else if (sortColumn === 'draws') {
+        av = (wld.get(a.id)?.d || 0); bv = (wld.get(b.id)?.d || 0)
+      } else {
+        av = a[sortColumn]; bv = b[sortColumn]
+      }
       return sortAsc ? (av > bv ? 1 : -1) : (bv > av ? 1 : -1)
     })
     return entries.map((e, i) => ({ ...e, rank: i + 1 }))
@@ -32,54 +46,105 @@
     if (sortColumn !== col) return ''
     return sortAsc ? ' ▲' : ' ▼'
   }
+
+  function ariaSortValue(col) {
+    if (sortColumn !== col) return 'none'
+    return sortAsc ? 'ascending' : 'descending'
+  }
+
+  function isLearner(entry) {
+    return learnerName && entry.display_name === learnerName
+  }
 </script>
 
-<div class="league-table">
+<div class="league-table-card">
   <h2 class="section-header">Elo Leaderboard</h2>
   {#if sorted.length === 0}
     <p class="empty">No league entries yet. League data appears once opponent pool training begins.</p>
   {:else}
-    <table>
-      <thead>
-        <tr>
-          <th class="num">#</th>
-          <th><button class="sort-btn" on:click={() => toggleSort('display_name')}>Name{sortIndicator('display_name')}</button></th>
-          <th class="num"><button class="sort-btn" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button></th>
-          <th class="num"><button class="sort-btn" on:click={() => toggleSort('games_played')}>Games{sortIndicator('games_played')}</button></th>
-          <th class="num"><button class="sort-btn" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each sorted as entry}
-          <tr
-            class:top={entry.rank === 1}
-            class:expanded={expandedId === entry.id}
-            on:click={() => toggleExpand(entry.id)}
-            aria-expanded={expandedId === entry.id}
-            tabindex="0"
-            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
-          >
-            <td class="num rank">{entry.rank}</td>
-            <td>{entry.display_name || entry.architecture}</td>
-            <td class="num elo">{Math.round(entry.elo_rating)}</td>
-            <td class="num">{entry.games_played}</td>
-            <td class="num">{entry.created_epoch}</td>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="num" aria-sort="none">#</th>
+            <th aria-sort={ariaSortValue('display_name')}>
+              <button class="sort-btn" on:click={() => toggleSort('display_name')}>Name{sortIndicator('display_name')}</button>
+            </th>
+            <th class="num" aria-sort={ariaSortValue('elo_rating')}>
+              <button class="sort-btn" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button>
+            </th>
+            <th class="num" aria-sort={ariaSortValue('games_played')}>
+              <button class="sort-btn" on:click={() => toggleSort('games_played')}>GP{sortIndicator('games_played')}</button>
+            </th>
+            <th class="num wld-col" aria-sort={ariaSortValue('wins')}>
+              <button class="sort-btn" on:click={() => toggleSort('wins')}>W{sortIndicator('wins')}</button>
+            </th>
+            <th class="num wld-col" aria-sort={ariaSortValue('losses')}>
+              <button class="sort-btn" on:click={() => toggleSort('losses')}>L{sortIndicator('losses')}</button>
+            </th>
+            <th class="num wld-col" aria-sort={ariaSortValue('draws')}>
+              <button class="sort-btn" on:click={() => toggleSort('draws')}>D{sortIndicator('draws')}</button>
+            </th>
+            <th class="num" aria-sort={ariaSortValue('created_epoch')}>
+              <button class="sort-btn" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button>
+            </th>
           </tr>
-          {#if expandedId === entry.id}
-            <tr class="history-row">
-              <td colspan="5">
-                <MatchHistory entryId={entry.id} />
+        </thead>
+        <tbody>
+          {#each sorted as entry}
+            <tr
+              class:top={entry.rank === 1}
+              class:learner={isLearner(entry)}
+              class:expanded={expandedId === entry.id}
+              on:click={() => toggleExpand(entry.id)}
+              aria-expanded={expandedId === entry.id}
+              tabindex="0"
+              on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
+            >
+              <td class="num rank">
+                {#if entry.rank === 1}
+                  <span class="crown" aria-label="Rank 1">♛</span>
+                {:else}
+                  {entry.rank}
+                {/if}
               </td>
+              <td class="name-cell">
+                {entry.display_name || entry.architecture}
+                {#if isLearner(entry)}
+                  <span class="learner-badge">YOU</span>
+                {/if}
+              </td>
+              <td class="num elo">{Math.round(entry.elo_rating)}</td>
+              <td class="num">{entry.games_played}</td>
+              <td class="num win">{wld.get(entry.id)?.w || 0}</td>
+              <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
+              <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
+              <td class="num">{entry.created_epoch}</td>
             </tr>
-          {/if}
-        {/each}
-      </tbody>
-    </table>
+            {#if expandedId === entry.id}
+              <tr class="history-row">
+                <td colspan="8">
+                  <MatchHistory entryId={entry.id} />
+                </td>
+              </tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </div>
 
 <style>
-  .league-table { padding: 12px; }
+  .league-table-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
 
   .section-header {
     font-size: 12px;
@@ -88,12 +153,20 @@
     text-transform: uppercase;
     letter-spacing: 1px;
     margin-bottom: 10px;
+    flex-shrink: 0;
+  }
+
+  .table-scroll {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
   }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  thead { color: var(--text-muted); font-size: 13px; }
+  thead { color: var(--text-muted); font-size: 13px; position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
   th, td { text-align: left; padding: 6px 10px; }
   th.num, td.num { text-align: right; }
+  th.wld-col { min-width: 36px; }
 
   .sort-btn {
     background: none;
@@ -113,18 +186,57 @@
     color: var(--text-primary);
     transition: background 0.1s;
   }
-  tbody tr:hover { background: var(--bg-secondary); }
+  tbody tr:hover { background: var(--bg-card); }
   tbody tr:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 
+  /* Rank #1 row accent */
+  tr.top {
+    border-left: 3px solid var(--accent-gold);
+  }
   tr.top .rank { color: var(--accent-gold); font-weight: 700; }
   tr.top .elo { color: var(--accent-teal); font-weight: 700; }
-  tr.expanded { background: var(--bg-secondary); }
+
+  .crown {
+    color: var(--accent-gold);
+    font-size: 15px;
+  }
+
+  /* Current learner highlight */
+  tr.learner {
+    background: rgba(77, 184, 168, 0.08);
+    border-left: 3px solid var(--accent-teal);
+  }
+  tr.learner:hover {
+    background: rgba(77, 184, 168, 0.14);
+  }
+
+  .learner-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: var(--accent-teal);
+    background: rgba(77, 184, 168, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .name-cell {
+    white-space: nowrap;
+  }
+
+  tr.expanded { background: var(--bg-card); }
 
   .history-row { cursor: default; }
   .history-row:hover { background: transparent; }
   .history-row td { padding: 0; }
 
   .elo { font-family: monospace; }
+  .win { color: var(--accent-teal); font-family: monospace; }
+  .loss { color: var(--danger); font-family: monospace; }
+  .draw { color: var(--accent-gold); font-family: monospace; }
+
   .empty { color: var(--text-muted); font-size: 13px; padding: 24px; text-align: center; }
 
   @media (prefers-reduced-motion: reduce) {
