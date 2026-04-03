@@ -1,0 +1,45 @@
+# keisei-ddp.toml — DDP test run on 2x RTX 4060 Ti
+# Launch: torchrun --nproc_per_node=2 -m keisei.training.katago_loop keisei-ddp.toml
+
+[model]
+display_name = "KataGo-DDP-b10c128"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 10
+channels = 128
+se_reduction = 8
+global_pool_channels = 64
+policy_channels = 16
+value_fc_size = 128
+score_fc_size = 64
+obs_channels = 50
+
+[training]
+num_games = 32              # per-rank → 64 total envs across 2 GPUs
+max_ply = 512
+algorithm = "katago_ppo"
+checkpoint_interval = 10
+checkpoint_dir = "checkpoints/ddp-test/"
+use_amp = true
+
+[training.algorithm_params]
+learning_rate = 0.0002
+gamma = 0.99
+gae_lambda = 0.95
+clip_epsilon = 0.2
+epochs_per_batch = 4
+batch_size = 256
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 30
+db_path = "keisei-ddp.db"
+
+[distributed]
+sync_batchnorm = true

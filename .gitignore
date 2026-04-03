@@ -37,3 +37,4 @@ checkpoints/
 keisei.db
 keisei-katago.db
 node_modules/
+keisei-ddp.db
