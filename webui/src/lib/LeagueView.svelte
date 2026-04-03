@@ -3,6 +3,8 @@
   import { trainingState } from '../stores/training.js'
   import { buildEloChartData } from './eloChartData.js'
   import LeagueTable from './LeagueTable.svelte'
+  import MatchupMatrix from './MatchupMatrix.svelte'
+  import RecentMatches from './RecentMatches.svelte'
   import MetricsChart from './MetricsChart.svelte'
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
@@ -33,10 +35,10 @@
   {/if}
 
   <div class="league-columns">
-    <div class="table-column">
+    <div class="left-column">
       <LeagueTable {learnerName} />
     </div>
-    <div class="chart-column">
+    <div class="right-column">
       <div class="chart-card">
         <h2 class="section-header">Elo Over Time</h2>
         {#if chartData.xData.length > 0}
@@ -44,12 +46,16 @@
             title=""
             xData={chartData.xData}
             series={chartData.series}
-            height={400}
+            height={280}
             xLabel="Epoch"
           />
         {:else}
           <p class="empty">Elo history will appear after league matches are played.</p>
         {/if}
+      </div>
+      <div class="bottom-panels">
+        <MatchupMatrix {learnerName} />
+        <RecentMatches />
       </div>
     </div>
   </div>
@@ -63,12 +69,13 @@
     padding: 12px 16px;
     height: 100%;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
   }
 
   .stats-banner {
     display: flex;
     gap: 12px;
+    flex-shrink: 0;
   }
 
   .stat-card {
@@ -113,27 +120,37 @@
     gap: 12px;
     flex: 1;
     min-height: 0;
+    overflow: hidden;
   }
 
-  .table-column {
+  .left-column {
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
   }
 
-  .chart-column {
+  .right-column {
     min-height: 0;
     display: flex;
     flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
   }
 
   .chart-card {
-    flex: 1;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 14px;
-    display: flex;
-    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .bottom-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .section-header {
@@ -150,9 +167,5 @@
     font-size: 13px;
     text-align: center;
     padding: 24px;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
   }
 </style>

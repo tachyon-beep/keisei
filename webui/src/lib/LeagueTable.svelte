@@ -1,5 +1,5 @@
 <script>
-  import { leagueRanked, entryWLD } from '../stores/league.js'
+  import { leagueRanked, entryWLD, eloDelta } from '../stores/league.js'
   import MatchHistory from './MatchHistory.svelte'
 
   /** Current learner's display_name (used to highlight their row) */
@@ -10,6 +10,7 @@
   let expandedId = null
 
   $: wld = $entryWLD
+  $: deltas = $eloDelta
 
   $: sorted = (() => {
     const entries = [...$leagueRanked]
@@ -21,6 +22,8 @@
         av = (wld.get(a.id)?.l || 0); bv = (wld.get(b.id)?.l || 0)
       } else if (sortColumn === 'draws') {
         av = (wld.get(a.id)?.d || 0); bv = (wld.get(b.id)?.d || 0)
+      } else if (sortColumn === 'elo_delta') {
+        av = (deltas.get(a.id) || 0); bv = (deltas.get(b.id) || 0)
       } else {
         av = a[sortColumn]; bv = b[sortColumn]
       }
@@ -73,6 +76,9 @@
             <th class="num" aria-sort={ariaSortValue('elo_rating')}>
               <button class="sort-btn" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button>
             </th>
+            <th class="num" aria-sort={ariaSortValue('elo_delta')}>
+              <button class="sort-btn" on:click={() => toggleSort('elo_delta')}>±{sortIndicator('elo_delta')}</button>
+            </th>
             <th class="num" aria-sort={ariaSortValue('games_played')}>
               <button class="sort-btn" on:click={() => toggleSort('games_played')}>GP{sortIndicator('games_played')}</button>
             </th>
@@ -115,6 +121,9 @@
                 {/if}
               </td>
               <td class="num elo">{Math.round(entry.elo_rating)}</td>
+              <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
+                {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
+              </td>
               <td class="num">{entry.games_played}</td>
               <td class="num win">{wld.get(entry.id)?.w || 0}</td>
               <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
@@ -123,7 +132,7 @@
             </tr>
             {#if expandedId === entry.id}
               <tr class="history-row">
-                <td colspan="8">
+                <td colspan="9">
                   <MatchHistory entryId={entry.id} />
                 </td>
               </tr>
@@ -233,6 +242,9 @@
   .history-row td { padding: 0; }
 
   .elo { font-family: monospace; }
+  .delta { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+  .delta-pos { color: var(--accent-teal); }
+  .delta-neg { color: var(--danger); }
   .win { color: var(--accent-teal); font-family: monospace; }
   .loss { color: var(--danger); font-family: monospace; }
   .draw { color: var(--accent-gold); font-family: monospace; }

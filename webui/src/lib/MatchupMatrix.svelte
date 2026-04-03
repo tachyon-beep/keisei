@@ -1,0 +1,268 @@
+<script>
+  import { leagueRanked, leagueResults, leagueEntries } from '../stores/league.js'
+
+  /** Current learner display_name — used to build an aggregate "Trainer" row */
+  export let learnerName = null
+
+  // Build head-to-head data: for each (row, col) pair, aggregate W/L/D
+  // Entries sorted by Elo descending (same as leaderboard)
+  $: entries = $leagueRanked
+
+  // Build aggregated trainer record across all its snapshots
+  $: trainerSnapshotIds = learnerName
+    ? new Set($leagueEntries.filter(e => e.display_name === learnerName).map(e => e.id))
+    : new Set()
+
+  $: hasTrainerRow = learnerName && trainerSnapshotIds.size > 0
+
+  // Matrix participants: all entries + optionally a synthetic trainer row
+  // The trainer row id is 'trainer' (string, won't collide with numeric ids)
+  $: participants = (() => {
+    const p = entries.map(e => ({
+      id: e.id,
+      label: e.display_name || e.architecture,
+      shortLabel: shortName(e.display_name || e.architecture),
+      isTrainer: false,
+    }))
+    if (hasTrainerRow) {
+      p.unshift({
+        id: 'trainer',
+        label: learnerName + ' (all)',
+        shortLabel: shortName(learnerName) + '*',
+        isTrainer: true,
+      })
+    }
+    return p
+  })()
+
+  function shortName(name) {
+    if (!name) return '?'
+    // Truncate long names
+    return name.length > 12 ? name.slice(0, 11) + '…' : name
+  }
+
+  // Build h2h map: key = "rowId-colId" => { w, l, d, winRate }
+  $: h2h = (() => {
+    const map = new Map()
+    for (const r of $leagueResults) {
+      // Direct entry-to-entry
+      addResult(map, r.learner_id, r.opponent_id, r.wins, r.losses, r.draws)
+      // If learner is a trainer snapshot, also aggregate into trainer row
+      if (trainerSnapshotIds.has(r.learner_id)) {
+        addResult(map, 'trainer', r.opponent_id, r.wins, r.losses, r.draws)
+      }
+      // If opponent is a trainer snapshot, aggregate into trainer row (as opponent)
+      if (trainerSnapshotIds.has(r.opponent_id)) {
+        addResult(map, 'trainer', r.learner_id, r.losses, r.wins, r.draws)
+      }
+    }
+    // Compute win rates
+    for (const [, rec] of map) {
+      const total = rec.w + rec.l + rec.d
+      rec.winRate = total > 0 ? rec.w / total : null
+      rec.total = total
+    }
+    return map
+  })()
+
+  function addResult(map, rowId, colId, wins, losses, draws) {
+    // row vs col
+    const key = `${rowId}-${colId}`
+    const rec = map.get(key) || { w: 0, l: 0, d: 0 }
+    rec.w += wins || 0
+    rec.l += losses || 0
+    rec.d += draws || 0
+    map.set(key, rec)
+    // col vs row (mirror)
+    const keyR = `${colId}-${rowId}`
+    const recR = map.get(keyR) || { w: 0, l: 0, d: 0 }
+    recR.w += losses || 0
+    recR.l += wins || 0
+    recR.d += draws || 0
+    map.set(keyR, recR)
+  }
+
+  function cellData(rowId, colId) {
+    if (rowId === colId) return null
+    // Skip trainer vs its own snapshots
+    if (rowId === 'trainer' && trainerSnapshotIds.has(colId)) return null
+    if (colId === 'trainer' && trainerSnapshotIds.has(rowId)) return null
+    return h2h.get(`${rowId}-${colId}`) || null
+  }
+
+  function cellColor(winRate) {
+    if (winRate == null) return 'transparent'
+    // Red (0%) → neutral (50%) → green (100%)
+    if (winRate >= 0.5) {
+      const t = (winRate - 0.5) * 2 // 0..1
+      return `rgba(77, 184, 168, ${0.08 + t * 0.35})`
+    } else {
+      const t = (0.5 - winRate) * 2 // 0..1
+      return `rgba(224, 80, 80, ${0.08 + t * 0.35})`
+    }
+  }
+
+  function formatRate(winRate) {
+    if (winRate == null) return ''
+    return Math.round(winRate * 100) + '%'
+  }
+</script>
+
+<div class="matrix-card">
+  <h2 class="section-header">Head-to-Head</h2>
+  {#if participants.length < 2}
+    <p class="empty">Matchup data will appear after multiple opponents have played.</p>
+  {:else}
+    <div class="matrix-scroll">
+      <table class="matrix" role="grid" aria-label="Head-to-head win rate matrix">
+        <thead>
+          <tr>
+            <th class="corner"></th>
+            {#each participants as col}
+              <th class="col-header" title={col.label}>
+                <span class="rotated">{col.shortLabel}</span>
+              </th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#each participants as row}
+            <tr>
+              <th class="row-header" class:trainer-row={row.isTrainer} title={row.label}>{row.shortLabel}</th>
+              {#each participants as col}
+                {@const cell = cellData(row.id, col.id)}
+                {#if row.id === col.id}
+                  <td class="self-cell">—</td>
+                {:else if cell === null}
+                  <td class="no-data">·</td>
+                {:else}
+                  <td
+                    class="rate-cell"
+                    style="background: {cellColor(cell.winRate)}"
+                    title="{row.label} vs {col.label}: {cell.w}W {cell.l}L {cell.d}D ({cell.total} games)"
+                  >
+                    {formatRate(cell.winRate)}
+                  </td>
+                {/if}
+              {/each}
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .matrix-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .section-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+  }
+
+  .matrix-scroll {
+    overflow: auto;
+    min-height: 0;
+    flex: 1;
+  }
+
+  .matrix {
+    border-collapse: collapse;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .corner {
+    min-width: 80px;
+  }
+
+  .col-header {
+    padding: 2px 4px;
+    vertical-align: bottom;
+    height: 80px;
+  }
+
+  .rotated {
+    display: block;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    max-height: 75px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .row-header {
+    text-align: right;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-header.trainer-row {
+    color: var(--accent-teal);
+    font-weight: 700;
+  }
+
+  td {
+    text-align: center;
+    padding: 4px 6px;
+    min-width: 44px;
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+  }
+
+  .self-cell {
+    background: var(--bg-primary);
+    color: var(--text-muted);
+  }
+
+  .no-data {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+
+  .rate-cell {
+    cursor: help;
+    transition: opacity 0.1s;
+  }
+
+  .rate-cell:hover {
+    opacity: 0.8;
+  }
+
+  .empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rate-cell { transition: none; }
+  }
+</style>
