@@ -190,4 +190,19 @@
     text-align: center;
     padding: 24px;
   }
+
+  @media (max-width: 1200px) {
+    .league-columns {
+      grid-template-columns: 1fr;
+      overflow-y: auto;
+    }
+
+    .table-wrapper {
+      max-height: none;
+    }
+
+    .bottom-row {
+      flex-direction: column;
+    }
+  }
 </style>
