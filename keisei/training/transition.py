@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from keisei.config import (
     AppConfig,
@@ -20,6 +20,7 @@ from keisei.config import (
 )
 from keisei.db import init_db, write_training_state
 from keisei.sl.trainer import SLConfig, SLTrainer
+from keisei.training.models.katago_base import KataGoBaseModel
 from keisei.training.checkpoint import save_checkpoint
 from keisei.training.katago_loop import KataGoTrainingLoop
 from keisei.training.model_registry import build_model
@@ -67,7 +68,7 @@ def sl_to_rl(
         total_epochs=sl_epochs,
         use_amp=sl_use_amp,
     )
-    trainer = SLTrainer(model, sl_config)
+    trainer = SLTrainer(cast(KataGoBaseModel, model), sl_config)
 
     logger.info("Starting SL training: %d epochs, batch_size=%d", sl_epochs, sl_batch_size)
     for epoch in range(sl_epochs):

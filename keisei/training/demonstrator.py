@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -18,16 +19,18 @@ from keisei.training.league import OpponentEntry, OpponentPool
 logger = logging.getLogger(__name__)
 
 
-def _get_policy_flat(model_output: object, batch_size: int) -> torch.Tensor:
+def _get_policy_flat(model_output: Any, batch_size: int) -> torch.Tensor:
     """Extract flat policy logits from either BaseModel or KataGoBaseModel output.
 
     BaseModel.forward() returns (policy_logits, value) — policy already flat.
     KataGoBaseModel.forward() returns KataGoOutput — policy is (B, 9, 9, 139).
     """
     if isinstance(model_output, tuple):
-        return model_output[0]
+        result: torch.Tensor = model_output[0]
+        return result
     else:
-        return model_output.policy_logits.reshape(batch_size, -1)
+        result = model_output.policy_logits.reshape(batch_size, -1)
+        return result
 
 
 @dataclass
@@ -153,7 +156,8 @@ class DemonstratorRunner(threading.Thread):
             from shogi_gym import VecEnv
             env = VecEnv(
                 num_envs=1, max_ply=512,
-                observation_mode="katago", action_mode="spatial",
+                observation_mode="katago",  # type: ignore[call-arg]
+                action_mode="spatial",
             )
         except ImportError:
             logger.warning("shogi_gym not available — demo slot %d inactive", matchup.slot)

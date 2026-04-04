@@ -659,7 +659,7 @@ class TestThreadSafety:
         model = torch.nn.Linear(10, 10)
         pool.add_snapshot(model, "resnet", {}, epoch=0)
 
-        result = {}
+        result: dict[str, object] = {}
 
         def worker():
             try:
@@ -673,7 +673,9 @@ class TestThreadSafety:
         t.join(timeout=5)
 
         assert "error" not in result, f"Background thread raised: {result.get('error')}"
-        assert len(result["entries"]) == 1
+        entries = result["entries"]
+        assert isinstance(entries, list)
+        assert len(entries) == 1
 
     def test_cross_thread_pin_unpin(self, league_db, league_dir):
         """pin/unpin from a background thread must not corrupt state."""

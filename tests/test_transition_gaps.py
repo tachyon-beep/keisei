@@ -18,7 +18,7 @@ from keisei.db import init_db, read_training_state
 @pytest.fixture
 def sl_data_dir(tmp_path: Path) -> Path:
     """Create a minimal SL data shard."""
-    from keisei.sl.prepare import write_shard
+    from keisei.sl.dataset import write_shard
 
     data_dir = tmp_path / "sl_data"
     data_dir.mkdir()
@@ -35,7 +35,7 @@ def sl_data_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def model_params() -> dict:
+def model_params() -> dict[str, int]:
     return {
         "num_blocks": 2, "channels": 32, "se_reduction": 8,
         "global_pool_channels": 16, "policy_channels": 8,

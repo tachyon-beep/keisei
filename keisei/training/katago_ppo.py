@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]  # stubs lag behind PyTorch 2.x
 
 from keisei.sl.dataset import SCORE_NORMALIZATION
 from keisei.training.gae import compute_gae_gpu
@@ -273,6 +273,8 @@ class KataGoPPOAlgorithm:
         # Note: torch.compile() does NOT trace the graph — that happens at the
         # first forward call. The mode set here must match the mode at first call.
         _log = logging.getLogger(__name__)
+        self.compiled_train: Callable[..., Any] | None = None
+        self.compiled_eval: Callable[..., Any] | None = None
         if self.params.compile_mode is not None:
             if self.params.compile_mode == "reduce-overhead" and self.params.compile_dynamic:
                 _log.warning(

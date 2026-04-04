@@ -44,14 +44,14 @@ class TestCheckpointDistributedRNG:
             torch.randn(10)
 
         pre_load_py = random.getstate()
-        pre_load_np = np.random.get_state()[1].copy()
+        pre_load_np: np.ndarray = np.random.get_state()[1].copy()  # type: ignore[index]
         pre_load_torch = torch.random.get_rng_state().clone()
 
         # Load with world_size > 1 — should NOT restore RNG
         load_checkpoint(path, model, optimizer, current_world_size=2)
 
         assert random.getstate() == pre_load_py
-        assert np.array_equal(np.random.get_state()[1], pre_load_np)
+        assert np.array_equal(np.random.get_state()[1], pre_load_np)  # type: ignore[index]
         assert torch.equal(torch.random.get_rng_state(), pre_load_torch)
 
     def test_rng_restored_when_world_size_1(self, tmp_path: Path) -> None:

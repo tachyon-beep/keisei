@@ -6,6 +6,7 @@ import torch
 from keisei.training.value_adapter import (
     MultiHeadValueAdapter,
     ScalarValueAdapter,
+    ValueHeadAdapter,
     get_value_adapter,
 )
 
@@ -168,4 +169,5 @@ class TestScalarValueBlended:
 
     def test_get_value_adapter_passes_alpha(self):
         adapter = get_value_adapter("multi_head", score_blend_alpha=0.3)
+        assert isinstance(adapter, MultiHeadValueAdapter)
         assert adapter.score_blend_alpha == 0.3

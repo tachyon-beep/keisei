@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import torch
-from torch.amp import GradScaler
+from torch.amp import GradScaler  # type: ignore[attr-defined]
 
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.katago_loop import split_merge_step

@@ -73,7 +73,7 @@ def validate_model_params(architecture: str, params: dict[str, Any]) -> object:
     return validated
 
 
-def build_model(architecture: str, params: dict[str, Any]) -> BaseModel | KataGoBaseModel:
+def build_model(architecture: str, params: dict[str, Any]) -> nn.Module:
     """Build a model instance for the given architecture and params."""
     validated_params = validate_model_params(architecture, params)
     spec = _get_spec(architecture)

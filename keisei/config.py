@@ -5,6 +5,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from keisei.training.algorithm_registry import VALID_ALGORITHMS  # noqa: E402
 
@@ -22,7 +23,7 @@ class TrainingConfig:
     algorithm: str
     checkpoint_interval: int
     checkpoint_dir: str
-    algorithm_params: dict[str, object]
+    algorithm_params: dict[str, Any]
     use_amp: bool = False
 
 

@@ -19,7 +19,7 @@ def _make_mock_model():
         output.policy_logits = torch.randn(batch, 9, 9, 139)
         return output
 
-    model.__call__ = forward
+    model.__call__ = forward  # type: ignore[method-assign]
     model.eval = MagicMock(return_value=model)
     model.to = MagicMock(return_value=model)
     return model
@@ -125,7 +125,7 @@ class TestPlayGamePinUnpin:
         # Block shogi_gym import so _play_game returns after load (pin/unpin
         # lifecycle is what we're testing, not the game loop).
         saved = sys.modules.get("shogi_gym")
-        sys.modules["shogi_gym"] = None  # forces ImportError
+        sys.modules["shogi_gym"] = None  # type: ignore[assignment]  # forces ImportError
         try:
             runner._play_game(matchup)
         finally:
@@ -196,9 +196,8 @@ class TestPlayGamePinUnpin:
         entries = pool.list_entries()
         matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
 
-        # Must return None (no exception propagated)
-        result = runner._play_game(matchup)
-        assert result is None
+        # Must not raise an exception
+        runner._play_game(matchup)
 
     def test_pin_order_before_load(self):
         """pin() calls happen before load_opponent() calls."""
@@ -207,9 +206,10 @@ class TestPlayGamePinUnpin:
         pool = _make_mock_pool(num_entries=2)
         call_order = []
         pool.pin.side_effect = lambda id_: call_order.append(("pin", id_))
-        pool.load_opponent.side_effect = lambda entry, device=None: (
-            call_order.append(("load", entry.id)) or _make_mock_model()
-        )
+        def _load_side_effect(entry: object, device: object = None) -> object:
+            call_order.append(("load", entry.id))  # type: ignore[attr-defined]
+            return _make_mock_model()
+        pool.load_opponent.side_effect = _load_side_effect
         pool.unpin.side_effect = lambda id_: call_order.append(("unpin", id_))
 
         runner = DemonstratorRunner(
@@ -221,7 +221,7 @@ class TestPlayGamePinUnpin:
 
         # Block shogi_gym import — we're testing pin/load ordering, not game play.
         saved = sys.modules.get("shogi_gym")
-        sys.modules["shogi_gym"] = None
+        sys.modules["shogi_gym"] = None  # type: ignore[assignment]
         try:
             runner._play_game(matchup)
         finally:
@@ -287,7 +287,7 @@ class TestPlayGameWithMockedVecEnv:
         mock_vecenv, step_count = self._make_mock_vecenv(terminate_after=3)
 
         fake_shogi_gym = types.ModuleType("shogi_gym")
-        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)
+        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)  # type: ignore[attr-defined]
 
         pool = _make_mock_pool(num_entries=2)
         # Use real models so forward passes produce real tensors
@@ -326,7 +326,7 @@ class TestPlayGameWithMockedVecEnv:
         mock_vecenv, step_count = self._make_mock_vecenv(terminate_after=999)
 
         fake_shogi_gym = types.ModuleType("shogi_gym")
-        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)
+        fake_shogi_gym.VecEnv = MagicMock(return_value=mock_vecenv)  # type: ignore[attr-defined]
 
         pool = _make_mock_pool(num_entries=2)
         real_model = self._make_real_model()

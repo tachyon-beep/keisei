@@ -97,4 +97,4 @@ class TestDistributedConfig:
     def test_rejects_unknown_keys(self):
         """Typos in config keys should fail loudly."""
         with pytest.raises(TypeError, match="unexpected keyword argument"):
-            DistributedConfig(sycn_batchnorm=True)
+            DistributedConfig(sycn_batchnorm=True)  # type: ignore[call-arg]

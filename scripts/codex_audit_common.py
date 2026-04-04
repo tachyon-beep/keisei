@@ -27,7 +27,7 @@ try:
 except ImportError:
     HAS_TQDM = False
 
-    class AsyncTqdm:  # type: ignore
+    class AsyncTqdm:
         """Fallback progress bar when tqdm is not available."""
 
         def __init__(self, *args: Any, **kwargs: Any):

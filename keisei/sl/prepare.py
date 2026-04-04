@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from keisei.sl.parsers import (
     GameFilter,
     GameOutcome,
     GameParser,
+    GameRecord,
     SFENParser,
 )
 
@@ -32,7 +34,7 @@ def _build_parser_registry() -> dict[str, GameParser]:
     return registry
 
 
-def _iter_records_safe(parser: GameParser, game_file: Path):
+def _iter_records_safe(parser: GameParser, game_file: Path) -> Iterator[GameRecord | None]:
     """Yield records from parser, logging per-record errors without discarding prior results."""
     try:
         it = parser.parse(game_file)

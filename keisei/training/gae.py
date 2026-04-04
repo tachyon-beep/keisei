@@ -97,7 +97,7 @@ def compute_gae_padded(
     # lengths[i]-1 is the index of the last valid timestep for env i
     last_step_idx = (lengths - 1).clamp(min=0)  # (N,) indices, shape guard
     for i in range(N):
-        t_last = last_step_idx[i].item()
+        t_last = int(last_step_idx[i].item())
         next_vals[t_last, i] = next_values[i]
 
     for t in reversed(range(T_max)):

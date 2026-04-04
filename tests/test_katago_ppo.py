@@ -680,9 +680,9 @@ class TestPerEnvGAE:
         # Simulate 3 envs with variable learner participation
         # Step 0: envs [0, 1], Step 1: envs [0, 2], Step 2: envs [1, 2]
         env_id_lists = [[0, 1], [0, 2], [1, 2]]
-        rewards_per_step = {0: [], 1: [], 2: []}
-        values_per_step = {0: [], 1: [], 2: []}
-        dones_per_step = {0: [], 1: [], 2: []}
+        rewards_per_step: dict[int, list[torch.Tensor]] = {0: [], 1: [], 2: []}
+        values_per_step: dict[int, list[torch.Tensor]] = {0: [], 1: [], 2: []}
+        dones_per_step: dict[int, list[torch.Tensor]] = {0: [], 1: [], 2: []}
 
         all_rewards = []
         all_values = []

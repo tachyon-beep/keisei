@@ -19,6 +19,7 @@ import random
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -114,7 +115,7 @@ class LeagueTournament:
         vecenv = VecEnv(
             num_envs=self.num_envs,
             max_ply=self.max_ply,
-            observation_mode="katago",
+            observation_mode="katago",  # type: ignore[call-arg]
             action_mode="spatial",
         )
 
@@ -329,7 +330,7 @@ class LeagueTournament:
 
     def _play_match(
         self,
-        vecenv: object,
+        vecenv: Any,
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
     ) -> tuple[int, int, int]:
@@ -358,7 +359,7 @@ class LeagueTournament:
 
     def _play_batch(
         self,
-        vecenv: object,
+        vecenv: Any,
         model_a: torch.nn.Module,
         model_b: torch.nn.Module,
     ) -> tuple[int, int, int]:

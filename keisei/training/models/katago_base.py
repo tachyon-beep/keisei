@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from torch.amp import autocast
+from torch.amp import autocast  # type: ignore[attr-defined]  # stubs lag behind PyTorch 2.x
 
 
 @dataclass

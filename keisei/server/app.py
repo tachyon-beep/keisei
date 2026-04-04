@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -49,9 +51,9 @@ def _db_accessible(db_path: str) -> bool:
         return False
 
 
-def _get_system_stats() -> dict:
+def _get_system_stats() -> dict[str, Any]:
     """Get CPU and GPU utilization stats."""
-    stats = {}
+    stats: dict[str, Any] = {}
     try:
         import psutil
         stats["cpu_percent"] = psutil.cpu_percent(interval=0.1)
@@ -71,7 +73,7 @@ def _get_system_stats() -> dict:
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            gpus = []
+            gpus: list[dict[str, int]] = []
             for line in result.stdout.strip().split("\n"):
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) == 3:
@@ -105,23 +107,24 @@ def _training_alive(db_path: str) -> bool:
 class HostFilterMiddleware(BaseHTTPMiddleware):
     """Reject requests whose Host header isn't in the allowed set."""
 
-    def __init__(self, app, hosts: frozenset[str] = ALLOWED_HOSTS):
+    def __init__(self, app: Any, hosts: frozenset[str] = ALLOWED_HOSTS) -> None:
         super().__init__(app)
         self._hosts = hosts
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
         host = request.headers.get("host", "")
         # Strip port from host header (e.g., "keisei.foundryside.dev:443" -> "keisei.foundryside.dev")
         hostname = host.split(":")[0]
         if hostname not in self._hosts:
             logger.warning("Rejected request with Host: %s", host)
             return PlainTextResponse("Forbidden", status_code=403)
-        return await call_next(request)
+        response: Response = await call_next(request)
+        return response
 
 
 def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Server starting, db_path=%s", db_path)
         yield
         logger.info("Server shutting down")

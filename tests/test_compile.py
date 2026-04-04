@@ -122,11 +122,13 @@ class TestCompileSetup:
         ppo = KataGoPPOAlgorithm(params, model)
         # torch.compile returns an OptimizedModule with _orig_mod pointing to
         # the original module. Both wrappers should point to the same module.
+        assert ppo.compiled_train is not None
+        assert ppo.compiled_eval is not None
         assert hasattr(ppo.compiled_train, "_orig_mod"), (
             "compiled_train should be an OptimizedModule with _orig_mod"
         )
         assert ppo.compiled_train._orig_mod is ppo.forward_model
-        assert ppo.compiled_eval._orig_mod is ppo.forward_model
+        assert ppo.compiled_eval._orig_mod is ppo.forward_model  # type: ignore[attr-defined]
         # And the underlying parameters should be the same objects
         train_params = list(ppo.compiled_train._orig_mod.parameters())
         model_params = list(ppo.model.parameters())

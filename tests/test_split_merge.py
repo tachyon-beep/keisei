@@ -21,7 +21,7 @@ def _make_mock_model(action_space: int = 11259):
         return output
 
     model.side_effect = forward
-    model.__call__ = forward
+    model.__call__ = forward  # type: ignore[method-assign]
     return model
 
 
@@ -121,7 +121,7 @@ def _make_deterministic_model(bias: float = 0.0, action_space: int = 11259):
 
     model = MagicMock()
     model.side_effect = forward
-    model.__call__ = forward
+    model.__call__ = forward  # type: ignore[method-assign]
     # Give the mock a parameters() method that returns an empty iterator
     # so the cross-device detection doesn't fail
     model.parameters = MagicMock(return_value=iter([]))

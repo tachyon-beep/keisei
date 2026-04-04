@@ -18,7 +18,7 @@ class TestSLToRL:
     @pytest.fixture
     def sl_data_dir(self, tmp_path: Path) -> Path:
         """Create a minimal SL data shard."""
-        from keisei.sl.prepare import write_shard
+        from keisei.sl.dataset import write_shard
 
         data_dir = tmp_path / "sl_data"
         data_dir.mkdir()

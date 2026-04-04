@@ -347,6 +347,7 @@ class TestLeagueIntegration:
         mock_env = _make_mock_katago_vecenv(num_envs=2)
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=10)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
+        assert loop.pool is not None
         assert len(loop.pool.list_entries()) == 1
 
     def test_periodic_snapshot(self, katago_config, tmp_path):
@@ -355,6 +356,7 @@ class TestLeagueIntegration:
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=2)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=4, steps_per_epoch=2)
+        assert loop.pool is not None
         entries = loop.pool.list_entries()
         assert len(entries) >= 3  # bootstrap + 2 periodic
 
@@ -548,7 +550,7 @@ class TestCheckResume:
 
         # First: create a loop to initialize the DB and get a model we can save
         loop1 = KataGoTrainingLoop(katago_config, vecenv=mock_env)
-        base_model = loop1.model.module if hasattr(loop1.model, "module") else loop1.model
+        base_model: torch.nn.Module = loop1.model.module if hasattr(loop1.model, "module") else loop1.model  # type: ignore[assignment]
 
         # Save a checkpoint at epoch=7, step=42
         ckpt_path = tmp_path / "checkpoints" / "resume_test.pt"
@@ -600,7 +602,7 @@ class TestCheckResume:
 
         # First: create a loop to initialize the DB and get a model we can save
         loop1 = KataGoTrainingLoop(katago_config, vecenv=mock_env)
-        base_model = loop1.model.module if hasattr(loop1.model, "module") else loop1.model
+        base_model: torch.nn.Module = loop1.model.module if hasattr(loop1.model, "module") else loop1.model  # type: ignore[assignment]
 
         # Save a checkpoint at epoch=7, step=42
         ckpt_path = tmp_path / "checkpoints" / "sl_resume_test.pt"
@@ -901,7 +903,7 @@ class TestValueCategoryNoLeague:
             captured_value_cats.append(args[8].clone())
             return original_add(*args, **kwargs)
 
-        loop.buffer.add = spy_add
+        loop.buffer.add = spy_add  # type: ignore[method-assign]
 
         # Run 1 epoch with 4 steps; termination at step 2
         loop.run(num_epochs=1, steps_per_epoch=4)
@@ -1091,6 +1093,7 @@ class TestRotateSeat:
 
         assert loop.lr_scheduler is not old_scheduler, "Should be a new scheduler"
         # Verify the new scheduler is connected to the new optimizer
+        assert loop.lr_scheduler is not None
         assert loop.lr_scheduler.optimizer is loop.ppo.optimizer
 
     def test_rotate_seat_extends_warmup(self, league_config):
@@ -1122,6 +1125,8 @@ class TestRotateSeat:
         loop._rotate_seat(epoch=5)
 
         # The NEW entry should start at the default 1000.0, not 1650.0
+        assert loop.pool is not None
+        assert loop._learner_entry_id is not None
         new_entry = loop.pool._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
@@ -1137,6 +1142,8 @@ class TestRotateSeat:
 
         loop._rotate_seat(epoch=5)
 
+        assert loop.pool is not None
+        assert old_id is not None
         old_entry = loop.pool._get_entry(old_id)
         assert old_entry is not None
         assert old_entry.elo_rating == 1200.0
@@ -1164,6 +1171,7 @@ class TestRotateSeat:
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
 
         # Fill pool to max, forcing eviction of the original entry
+        assert loop.pool is not None
         for i in range(league_config.league.max_pool_size + 1):
             loop.pool.add_snapshot(
                 loop._base_model, "se_resnet",
@@ -1172,6 +1180,7 @@ class TestRotateSeat:
 
         # Old learner entry may have been evicted
         loop._rotate_seat(epoch=200)
+        assert loop._learner_entry_id is not None
         new_entry = loop.pool._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
@@ -1471,6 +1480,8 @@ class TestFairnessInteractions:
             loop.pool.update_elo(loop._learner_entry_id, 1500.0, epoch=0)
 
         loop._rotate_seat(epoch=5)
+        assert loop.pool is not None
+        assert loop._learner_entry_id is not None
         new_entry = loop.pool._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
@@ -1509,6 +1520,7 @@ class TestFairnessInteractions:
             loop._opponent_results = {}
 
         # Get the existing pool entries
+        assert loop.pool is not None
         entries = loop.pool.list_entries()
         if len(entries) < 2:
             # Add a second entry so we have two opponents

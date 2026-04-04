@@ -46,9 +46,9 @@ def _make_entry(
 
 def _make_tournament(db_path: str, league_dir: str, **kwargs) -> LeagueTournament:
     """Create a LeagueTournament with CPU device to avoid GPU requirement."""
-    defaults = dict(device="cpu", num_envs=1, games_per_match=1)
+    defaults: dict[str, object] = dict(device="cpu", num_envs=1, games_per_match=1)
     defaults.update(kwargs)
-    return LeagueTournament(db_path, league_dir, **defaults)
+    return LeagueTournament(db_path, league_dir, **defaults)  # type: ignore[arg-type]
 
 
 def _insert_entry(conn: sqlite3.Connection, entry: OpponentEntry) -> None:
@@ -419,6 +419,7 @@ class TestLifecycle:
             t.start()
             exit_event.wait(timeout=2.0)
             # Give the thread time to actually finish
+            assert t._thread is not None
             t._thread.join(timeout=2.0)
             assert not t.is_running
 

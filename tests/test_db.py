@@ -92,7 +92,7 @@ def test_metrics_since_filters(db: Path) -> None:
 
 
 def test_game_snapshots_round_trip(db: Path) -> None:
-    board = [None] * 81
+    board: list[dict[str, object] | None] = [None] * 81
     board[0] = {"type": "king", "color": "black", "promoted": False, "row": 0, "col": 0}
     hands = {"black": {"pawn": 2}, "white": {"pawn": 0}}
     history = [{"action": 42, "notation": "P-7f"}]
@@ -155,6 +155,8 @@ def test_update_heartbeat(db: Path) -> None:
     old_state = read_training_state(str(db))
     update_heartbeat(str(db))
     new_state = read_training_state(str(db))
+    assert old_state is not None
+    assert new_state is not None
     assert new_state["heartbeat_at"] >= old_state["heartbeat_at"]
 
 
@@ -165,6 +167,7 @@ def test_update_training_progress(db: Path) -> None:
     })
     update_training_progress(str(db), epoch=5, step=500, checkpoint_path="/tmp/ckpt.pt")
     state = read_training_state(str(db))
+    assert state is not None
     assert state["current_epoch"] == 5
     assert state["current_step"] == 500
     assert state["checkpoint_path"] == "/tmp/ckpt.pt"
@@ -187,6 +190,7 @@ def test_update_training_progress_no_checkpoint(db: Path) -> None:
     # Then update without checkpoint_path
     update_training_progress(str(db), epoch=10, step=1000)
     state = read_training_state(str(db))
+    assert state is not None
     assert state["current_epoch"] == 10
     assert state["current_step"] == 1000
     # checkpoint_path should remain from the previous update

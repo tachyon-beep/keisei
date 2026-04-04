@@ -35,7 +35,7 @@ Changelog = "https://github.com/tachyon-beep/keisei/blob/main/CHANGELOG.md"
 Issues = "https://github.com/tachyon-beep/keisei/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
+dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy", "types-chardet", "types-psutil", "types-tqdm"]
 sl = ["chardet>=5.0"]
 
 [project.scripts]
@@ -67,4 +67,44 @@ select = ["E", "F", "I", "W"]
 
 [tool.mypy]
 python_version = "3.12"
-strict = true
+# Expanded from strict=true, minus disallow_untyped_call (PyTorch stubs are incomplete)
+exclude = [
+    "shogi-engine/",  # PyO3 extension — tested via maturin, not mypy
+]
+warn_unused_configs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = "scripts.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = "shogi_gym.*"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "torch",
+]
+ignore_missing_imports = true

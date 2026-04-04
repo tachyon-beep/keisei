@@ -24,7 +24,7 @@ def test_katago_output_fields():
 def test_katago_base_model_is_abstract():
     """KataGoBaseModel should not be instantiable directly."""
     with pytest.raises(TypeError):
-        KataGoBaseModel()
+        KataGoBaseModel()  # type: ignore[abstract]
 
 
 class TestGlobalPoolBiasBlock:

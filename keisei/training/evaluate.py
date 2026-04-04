@@ -6,6 +6,7 @@ import argparse
 import logging
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -62,8 +63,8 @@ def run_evaluation(
     arch_b: str,
     games: int = 400,
     max_ply: int = 500,
-    params_a: dict | None = None,
-    params_b: dict | None = None,
+    params_a: dict[str, Any] | None = None,
+    params_b: dict[str, Any] | None = None,
     device: str | None = None,
 ) -> EvalResult:
     """Run head-to-head evaluation between two checkpoints."""
@@ -79,7 +80,7 @@ def _play_evaluation_games(
     checkpoint_a: str, arch_a: str,
     checkpoint_b: str, arch_b: str,
     games: int, max_ply: int,
-    params_a: dict, params_b: dict,
+    params_a: dict[str, Any], params_b: dict[str, Any],
     device: str,
 ) -> EvalResult:
     """Play the actual games. Separated for testability (can be mocked)."""
@@ -101,7 +102,8 @@ def _play_evaluation_games(
 
     wins, losses, draws = 0, 0, 0
     env = VecEnv(num_envs=1, max_ply=max_ply,
-                 observation_mode="katago", action_mode="spatial")
+                 observation_mode="katago",  # type: ignore[call-arg]
+                 action_mode="spatial")
 
     for game_i in range(games):
         a_is_black = game_i % 2 == 0

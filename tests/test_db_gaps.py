@@ -61,7 +61,7 @@ def test_update_heartbeat_no_training_state_row(db: Path) -> None:
 # M2 — read_game_snapshots_since() timestamp filtering
 # ===================================================================
 
-def _make_snapshot(game_id: int) -> dict:
+def _make_snapshot(game_id: int) -> dict[str, object]:
     """Helper: minimal valid game snapshot."""
     return {
         "game_id": game_id, "board_json": "[]", "hands_json": "{}",

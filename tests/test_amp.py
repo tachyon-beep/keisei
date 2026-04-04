@@ -19,7 +19,7 @@ class _TinyModel(nn.Module):
         self.fc = nn.Linear(4, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
+        return self.fc(x)  # type: ignore[no-any-return]
 
 
 class TestGradScalerCheckpoint:
@@ -27,7 +27,7 @@ class TestGradScalerCheckpoint:
         """GradScaler state survives save → load cycle."""
         model = _TinyModel()
         optimizer = torch.optim.Adam(model.parameters())
-        scaler = torch.amp.GradScaler()
+        scaler = torch.amp.GradScaler()  # type: ignore[attr-defined]
 
         # Simulate a few steps so scaler has non-default state
         scaler._scale = torch.tensor(32768.0)
@@ -40,7 +40,7 @@ class TestGradScalerCheckpoint:
 
         model2 = _TinyModel()
         optimizer2 = torch.optim.Adam(model2.parameters())
-        scaler2 = torch.amp.GradScaler()
+        scaler2 = torch.amp.GradScaler()  # type: ignore[attr-defined]
 
         load_checkpoint(
             tmp_path / "ckpt.pt", model2, optimizer2, grad_scaler=scaler2,
@@ -63,7 +63,7 @@ class TestGradScalerCheckpoint:
 
         model2 = _TinyModel()
         optimizer2 = torch.optim.Adam(model2.parameters())
-        scaler2 = torch.amp.GradScaler()
+        scaler2 = torch.amp.GradScaler()  # type: ignore[attr-defined]
         original_scale = scaler2.get_scale()
 
         # Load with scaler — should not crash, scaler keeps defaults

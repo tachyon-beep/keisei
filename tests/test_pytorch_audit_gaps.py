@@ -587,7 +587,7 @@ class TestTransformerKataGoIncompatibility:
         from keisei.training.models.transformer import TransformerModel, TransformerParams
 
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
-        ppo = KataGoPPOAlgorithm(KataGoPPOParams(), model)
+        ppo = KataGoPPOAlgorithm(KataGoPPOParams(), model)  # type: ignore[arg-type]
 
         obs = torch.randn(2, 50, 9, 9)
         legal_masks = torch.ones(2, 11259, dtype=torch.bool)

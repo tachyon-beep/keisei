@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -14,7 +14,7 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
-def _numpy_rng_to_safe(state: tuple) -> dict[str, Any]:
+def _numpy_rng_to_safe(state: tuple[Any, ...]) -> dict[str, Any]:
     """Convert numpy RNG state to torch-safe types for weights_only loading.
 
     np.random.get_state() returns ('MT19937', ndarray, int, int, float).
@@ -31,7 +31,7 @@ def _numpy_rng_to_safe(state: tuple) -> dict[str, Any]:
     }
 
 
-def _safe_to_numpy_rng(d: dict[str, Any]) -> tuple:
+def _safe_to_numpy_rng(d: dict[str, Any]) -> tuple[Any, ...]:
     """Inverse of _numpy_rng_to_safe."""
     return (
         d["name"],
@@ -62,7 +62,7 @@ def save_checkpoint(
         "world_size": world_size,
         "rng_states": {
             "python": random.getstate(),
-            "numpy": _numpy_rng_to_safe(np.random.get_state()),
+            "numpy": _numpy_rng_to_safe(cast(tuple[Any, ...], np.random.get_state())),
             "torch_cpu": torch.random.get_rng_state(),
         },
     }

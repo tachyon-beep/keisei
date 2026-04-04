@@ -9,7 +9,7 @@ def _make_algo(lambda_entropy=0.01, entropy_decay_epochs=0, warmup_epochs=10, wa
     params = KataGoPPOParams(lambda_entropy=lambda_entropy, entropy_decay_epochs=entropy_decay_epochs)
     # Minimal real model — just needs parameters() to satisfy Adam init.
     model = nn.Linear(1, 1)
-    return KataGoPPOAlgorithm(params, model, warmup_epochs=warmup_epochs, warmup_entropy=warmup_entropy)
+    return KataGoPPOAlgorithm(params, model, warmup_epochs=warmup_epochs, warmup_entropy=warmup_entropy)  # type: ignore[arg-type]
 
 
 class TestEntropyAnnealing:

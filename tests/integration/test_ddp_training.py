@@ -31,7 +31,7 @@ def _find_free_port() -> int:
     """Find a free TCP port for MASTER_PORT to avoid collisions in CI."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        return s.getsockname()[1]  # type: ignore[no-any-return]
 
 
 def _make_mock_vecenv(num_envs: int = 2, seed: int = 42) -> MagicMock:
@@ -119,7 +119,7 @@ def test_ddp_two_ranks():
     """End-to-end: 2-rank DDP training produces synchronized weights."""
     port = _find_free_port()
     with tempfile.TemporaryDirectory() as tmp_dir:
-        mp.spawn(_worker, args=(2, tmp_dir, port), nprocs=2, join=True)
+        mp.spawn(_worker, args=(2, tmp_dir, port), nprocs=2, join=True)  # type: ignore[attr-defined]
 
         w0 = torch.load(Path(tmp_dir) / "weights_rank0.pt", weights_only=True)
         w1 = torch.load(Path(tmp_dir) / "weights_rank1.pt", weights_only=True)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast  # type: ignore[attr-defined]  # stubs lag behind PyTorch 2.x
 from torch.utils.data import DataLoader, get_worker_info
 
 from keisei.sl.dataset import SLDataset

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from keisei.config import AppConfig, load_config
 
 if TYPE_CHECKING:
+    from keisei.training.models.katago_base import KataGoBaseModel
     from keisei.training.value_adapter import ValueHeadAdapter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -423,7 +424,7 @@ class KataGoTrainingLoop:
                 f"(one of {_KATAGO_ARCHITECTURES}), got '{config.model.architecture}'"
             )
 
-        self.model = build_model(config.model.architecture, config.model.params)
+        self.model: torch.nn.Module = build_model(config.model.architecture, config.model.params)
         self.model = self.model.to(self.device)
 
         if self.dist_ctx.is_distributed:
@@ -461,9 +462,9 @@ class KataGoTrainingLoop:
 
         # Extract nested config sections BEFORE validate_algorithm_params,
         # which constructs KataGoPPOParams(**params) and rejects unknown keys.
-        algo_params = dict(config.training.algorithm_params)
-        lr_config = algo_params.pop("lr_schedule", {})
-        rl_warmup_config = algo_params.pop("rl_warmup", {})
+        algo_params: dict[str, Any] = dict(config.training.algorithm_params)
+        lr_config: dict[str, Any] = algo_params.pop("lr_schedule", {})
+        rl_warmup_config: dict[str, Any] = algo_params.pop("rl_warmup", {})
 
         ppo_params = validate_algorithm_params(
             config.training.algorithm, algo_params
@@ -478,7 +479,7 @@ class KataGoTrainingLoop:
         self._original_warmup_duration = rl_warmup_epochs  # fixed; used in _rotate_seat
 
         self.ppo = KataGoPPOAlgorithm(
-            ppo_params, self._base_model, forward_model=self.model,
+            ppo_params, cast("KataGoBaseModel", self._base_model), forward_model=self.model,
             warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
         )
 
@@ -510,7 +511,7 @@ class KataGoTrainingLoop:
         else:
             from shogi_gym import VecEnv
 
-            self.vecenv = VecEnv(
+            self.vecenv = VecEnv(  # type: ignore[call-arg]  # PyO3 kwargs not visible to mypy
                 num_envs=config.training.num_games,
                 max_ply=config.training.max_ply,
                 observation_mode="katago",
@@ -608,7 +609,9 @@ class KataGoTrainingLoop:
     @property
     def _base_model(self) -> torch.nn.Module:
         """Unwrap DataParallel/DDP wrapper if present."""
-        return self.model.module if hasattr(self.model, "module") else self.model
+        if hasattr(self.model, "module"):
+            return cast(torch.nn.Module, self.model.module)
+        return self.model
 
     def _check_resume(self) -> None:
         # NOTE: When resuming from an SL checkpoint into RL training, the SL
@@ -761,6 +764,7 @@ class KataGoTrainingLoop:
                 opp_device = opp_device_cfg or str(self.device)
 
                 # Cache entries once — reused for sampling AND opponent loading
+                assert self.pool is not None  # sampler implies pool
                 self._cached_entries = self.pool.list_entries()
                 self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
 
@@ -866,6 +870,7 @@ class KataGoTrainingLoop:
                 and self.config.league.color_randomization
                 and self._current_opponent is not None
             )
+            learner_side: int | np.ndarray
             if use_color_rand:
                 learner_side = np.random.randint(0, 2, size=self.num_envs, dtype=np.uint8)
                 learner_side_t = torch.from_numpy(learner_side.copy()).to(self.device)
@@ -897,7 +902,11 @@ class KataGoTrainingLoop:
                     pre_players = current_players.copy()
                     # GPU copy of pre_players avoids .cpu().numpy() sync for indexing
                     pre_players_t = torch.from_numpy(pre_players).to(self.device)
-                    learner_moved = pre_players_t == (learner_side_t if use_color_rand else learner_side)
+                    if use_color_rand:
+                        assert learner_side_t is not None
+                        learner_moved = pre_players_t.eq(learner_side_t)
+                    else:
+                        learner_moved = pre_players_t == learner_side  # type: ignore[assignment]  # Tensor.__eq__ returns Tensor at runtime
 
                     # Split-merge: learner vs opponent
                     if self._opponent_models and self._env_opponent_ids is not None:
@@ -925,15 +934,19 @@ class KataGoTrainingLoop:
 
                     current_players = np.asarray(step_result.current_players)
                     current_players_t = torch.from_numpy(current_players).to(self.device)
-                    learner_next = current_players_t == (learner_side_t if use_color_rand else learner_side)
+                    if use_color_rand:
+                        assert learner_side_t is not None
+                        learner_next = current_players_t.eq(learner_side_t)
+                    else:
+                        learner_next = current_players_t == learner_side  # type: ignore[assignment]
 
                     rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
                     terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminated_count += terminated.bool().sum().item()
-                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
+                    terminated_count += int(terminated.bool().sum().item())
+                    truncated_count += int((truncated.bool() & ~terminated.bool()).sum().item())
 
                     # Convert rewards to learner perspective
                     learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
@@ -1074,6 +1087,7 @@ class KataGoTrainingLoop:
                                     self._opponent_results[opp_id][2] += 1  # draw
 
                             # Re-sample opponent for next game
+                            assert self.sampler is not None
                             new_entry = self.sampler.sample_from(self._cached_entries)
                             self._env_opponent_ids[env_i] = new_entry.id
 
@@ -1082,6 +1096,8 @@ class KataGoTrainingLoop:
                     # pending transition finalization and Elo attribution.
                     if use_color_rand and any_done:
                         assert done_np is not None and done_idx_np is not None
+                        assert learner_side_t is not None  # set when use_color_rand
+                        assert isinstance(learner_side, np.ndarray)  # ndarray when use_color_rand
                         new_sides = np.random.randint(
                             0, 2, size=int(done_np.sum()), dtype=np.uint8,
                         )
@@ -1112,8 +1128,8 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminated_count += terminated.bool().sum().item()
-                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
+                    terminated_count += int(terminated.bool().sum().item())
+                    truncated_count += int((truncated.bool() & ~terminated.bool()).sum().item())
 
                     terminal_mask = terminated.bool()
                     if terminal_mask.any():
@@ -1292,6 +1308,7 @@ class KataGoTrainingLoop:
                     # from dict iteration order.
                     # K is normalized by active opponent count to prevent cumulative
                     # amplification (20 opponents × K=32 = 640 pts without normalization).
+                    assert self._learner_entry_id is not None  # set when pool exists
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         base_learner_elo = learner_entry.elo_rating
@@ -1343,6 +1360,7 @@ class KataGoTrainingLoop:
                 elif (self.pool is not None
                         and self._current_opponent_entry is not None
                         and total_games > 0
+                        and self._learner_entry_id is not None
                         and self._learner_entry_id != self._current_opponent_entry.id):
                     # Legacy single-opponent Elo update
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
@@ -1498,6 +1516,7 @@ class KataGoTrainingLoop:
         # continuous. That must be preserved. This method only handles
         # rotation — new snapshots enter at the DB default of 1000.0.
 
+        assert self.pool is not None  # _rotate_seat only called in league mode
         new_entry = self.pool.add_snapshot(
             self._base_model, self.config.model.architecture,
             dict(self.config.model.params), epoch=epoch + 1,
@@ -1513,8 +1532,8 @@ class KataGoTrainingLoop:
 
         # B1 fix: recreate LR scheduler pointing at the NEW optimizer
         if self.lr_scheduler is not None and self.config.league is not None:
-            algo_params = dict(self.config.training.algorithm_params)
-            lr_config = algo_params.get("lr_schedule", {})
+            algo_params: dict[str, Any] = dict(self.config.training.algorithm_params)
+            lr_config: dict[str, Any] = algo_params.get("lr_schedule", {})
             self.lr_scheduler = create_lr_scheduler(
                 self.ppo.optimizer,
                 schedule_type=lr_config.get("type", "plateau"),

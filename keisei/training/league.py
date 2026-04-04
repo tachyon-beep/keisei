@@ -204,7 +204,7 @@ class OpponentPool:
         epoch: int,
     ) -> OpponentEntry:
         """Save a checkpoint snapshot and add it to the pool."""
-        raw_model = model.module if hasattr(model, "module") else model
+        raw_model: torch.nn.Module = model.module if hasattr(model, "module") else model  # type: ignore[assignment]
 
         with self._lock:
             # Insert a placeholder row first to get a unique entry_id for the filename.
@@ -221,6 +221,7 @@ class OpponentPool:
                 (display_name, json.dumps(flavour_facts), architecture, json.dumps(model_params), "", epoch),
             )
             entry_id = cursor.lastrowid
+            assert entry_id is not None
 
             # Build unique filename using entry_id
             ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}_id{entry_id}.pt"

@@ -69,7 +69,7 @@ def write_shard(
     buf.tofile(path)
 
 
-class SLDataset(Dataset):
+class SLDataset(Dataset[dict[str, torch.Tensor]]):
     """Memory-mapped dataset reading from binary shard files."""
 
     def __init__(

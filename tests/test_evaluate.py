@@ -131,7 +131,7 @@ def _make_mock_model():
         return (policy, value)
 
     model.side_effect = _forward
-    model.__call__ = _forward
+    model.__call__ = _forward  # type: ignore[method-assign]
     return model
 
 
@@ -177,7 +177,7 @@ def _run_games_with_mock(
             )
     finally:
         if had_module:
-            sys.modules["shogi_gym"] = old_module
+            sys.modules["shogi_gym"] = old_module  # type: ignore[assignment]
         else:
             sys.modules.pop("shogi_gym", None)
 
@@ -323,7 +323,7 @@ class TestRewardPerspectiveCorrection:
                 )
         finally:
             if had_module:
-                sys.modules["shogi_gym"] = old_module
+                sys.modules["shogi_gym"] = old_module  # type: ignore[assignment]
             else:
                 sys.modules.pop("shogi_gym", None)
 
@@ -418,7 +418,7 @@ class TestRawStateDictFallback:
                 )
         finally:
             if had_module:
-                sys.modules["shogi_gym"] = old_module
+                sys.modules["shogi_gym"] = old_module  # type: ignore[assignment]
             else:
                 sys.modules.pop("shogi_gym", None)
 
@@ -466,7 +466,7 @@ class TestRawStateDictFallback:
                 )
         finally:
             if had_module:
-                sys.modules["shogi_gym"] = old_module
+                sys.modules["shogi_gym"] = old_module  # type: ignore[assignment]
             else:
                 sys.modules.pop("shogi_gym", None)
 

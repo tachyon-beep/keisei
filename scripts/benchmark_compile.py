@@ -49,6 +49,7 @@ def fill_buffer(
             values=torch.randn(num_envs),
             rewards=torch.randn(num_envs) * 0.1,
             dones=torch.full((num_envs,), is_last, dtype=torch.float32),
+            terminated=torch.full((num_envs,), is_last, dtype=torch.float32),
             legal_masks=torch.ones(num_envs, action_space, dtype=torch.bool),
             value_categories=torch.where(
                 torch.tensor([is_last] * num_envs),
@@ -85,6 +86,7 @@ def run_epoch(
             values=values,
             rewards=torch.randn(num_envs) * 0.1,
             dones=torch.zeros(num_envs),
+            terminated=torch.zeros(num_envs),
             legal_masks=legal_masks,
             value_categories=torch.full((num_envs,), -1),
             score_targets=torch.randn(num_envs).clamp(-1.5, 1.5),
