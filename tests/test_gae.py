@@ -277,7 +277,7 @@ class TestGAETruncationBootstrap:
         #      delta[1] = 0 + 0.99 * 0.7 - 0.6 = 0.093
         #      gae[2]   = 1.0 + 0.99*0.8 - 0.7 = 1.092
         #      adv_new[1,0] ~= 0.093 + 0.99*0.95*1.092 ~= 1.120
-        assert abs(adv_old[1, 0].item() - (-0.6)) < 0.15
+        assert abs(adv_old[1, 0].item() - (-0.6)) < 0.01
         assert abs(adv_new[1, 0].item() - 1.120) < 0.05
         assert abs(adv_new[1, 0].item() - adv_old[1, 0].item()) > 0.5
 
@@ -292,6 +292,20 @@ class TestGAETruncationBootstrap:
 
         dones_merged = torch.tensor([[1.0], [0.0]])
         adv_dones = compute_gae_gpu(rewards, values, dones_merged, next_value, gamma=0.99, lam=0.95)
+
+        assert not torch.allclose(adv_terminated, adv_dones)
+
+    def test_cpu_gae_truncation_bootstrap(self):
+        """CPU compute_gae also bootstraps correctly for truncated positions."""
+        rewards = torch.tensor([0.0, 0.0])
+        values = torch.tensor([0.5, 0.5])
+        next_value = torch.tensor(0.8)
+
+        terminated = torch.tensor([0.0, 0.0])
+        adv_terminated = compute_gae(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+
+        dones_merged = torch.tensor([1.0, 0.0])
+        adv_dones = compute_gae(rewards, values, dones_merged, next_value, gamma=0.99, lam=0.95)
 
         assert not torch.allclose(adv_terminated, adv_dones)
 

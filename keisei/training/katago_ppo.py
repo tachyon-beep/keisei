@@ -140,7 +140,7 @@ class KataGoRolloutBuffer:
         terminated_cpu = terminated.detach().cpu()
 
         # Guard: terminated must be a subset of dones (can't be terminated without being done)
-        if not (terminated_cpu <= dones_cpu + 1e-6).all():
+        if (terminated_cpu.bool() & ~dones_cpu.bool()).any():
             raise AssertionError(
                 "terminated must be a subset of dones: every terminated position must also be done. "
                 "Got terminated=True where dones=False — likely a call site passing the merged signal."
