@@ -57,7 +57,9 @@
 
   .pieces {
     display: flex;
+    align-items: center;
     gap: 4px;
+    min-height: 32px;
   }
 
   .hand-piece {

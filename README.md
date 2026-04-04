@@ -331,3 +331,10 @@ uv run mypy keisei/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Third-Party Assets
+
+The shogi piece icon (`images/shogi.svg`, used as the WebUI favicon) is
+[Shogi gyokusho](https://commons.wikimedia.org/wiki/File:Shogi_gyokusho%28svg%29.svg)
+by [Hari Seldon](https://commons.wikimedia.org/wiki/User:Hari_Seldon), licensed
+under [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/deed.en).
