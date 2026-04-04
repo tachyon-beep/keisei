@@ -191,8 +191,13 @@
     color: var(--text-muted);
     font-size: 13px;
     font-weight: 600;
+    text-decoration: none;
   }
-  .sort-btn:hover { color: var(--text-primary); }
+  .sort-btn:hover {
+    color: var(--text-primary);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
   .sort-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
   tbody tr {
