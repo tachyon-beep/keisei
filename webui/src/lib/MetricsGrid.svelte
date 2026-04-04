@@ -16,9 +16,7 @@
       { label: '☗ Black', data: c.blackWinRate, color: '#e8e0d4' },
       { label: '☖ White', data: c.whiteWinRate, color: '#7eb8d4' },
       { label: 'Draw', data: c.drawRate, color: '#c8962e' },
-      { label: 'Agg Win', data: c.winRate, color: '#6b9e6b', dash: [6, 3] },
-      { label: 'Agg Loss', data: c.lossRate, color: '#d4657e', dash: [6, 3] },
-    ], annotation: 'Solid = per-color, dashed = aggregate. Black has first-move advantage.' },
+    ], annotation: 'Black has first-move advantage in shogi' },
     { title: 'Avg Episode Length', xKey: 'epochs', xLabel: 'Epoch', series: (c) => [
       { label: 'Episode Length', data: c.avgEpLen, color: '#4db8a8' },
     ], annotation: 'Longer games = more strategic play' },
