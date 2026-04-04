@@ -70,6 +70,7 @@
   <h2 class="section-header">Elo Leaderboard {#if placeholderCount > 0}<span class="slot-count">{sorted.length} / {totalSlots}</span>{/if}</h2>
     <div class="table-scroll">
       <table>
+        <caption class="sr-only">Elo leaderboard, sorted by {sortColumn} {sortAsc ? 'ascending' : 'descending'}</caption>
         <thead>
           <tr>
             <th class="num" aria-sort="none">#</th>

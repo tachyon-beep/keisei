@@ -21,6 +21,7 @@
     <p class="empty">No matches recorded</p>
   {:else}
     <table>
+      <caption class="sr-only">Match history for selected entry</caption>
       <thead>
         <tr>
           <th>Epoch</th>
