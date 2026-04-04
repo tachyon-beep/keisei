@@ -11,7 +11,8 @@
       {#each $leagueEvents as event}
         <div class="event" class:arrival={event.type === 'arrival'} class:departure={event.type === 'departure'} class:promotion={event.type === 'promotion'} class:demotion={event.type === 'demotion'}>
           <span class="event-time">{event.time}</span>
-          <span class="event-icon">{event.icon}</span>
+          <span class="event-icon" aria-hidden="true">{event.icon}</span>
+          <span class="sr-only">{event.type}</span>
           <span class="event-name">{event.name}</span>
           <span class="event-detail">{event.detail}</span>
         </div>
