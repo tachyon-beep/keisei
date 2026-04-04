@@ -1082,27 +1082,43 @@ with:
 
 - [ ] **Step 3: Add per-env opponent re-sampling and Elo tracking on dones**
 
-After the color re-randomization block added in Task 6 (and after the pending transition finalization), add:
+This block must be inserted **BEFORE** the color re-randomization block from Task 6, and **AFTER** the pending transition finalization (the existing `if imm_terminal.any():` block around line 905). The required order within the dones processing section is:
+
+1. Pending transition finalization (existing — steps 1-4 in the protocol)
+2. **Per-opponent Elo result tracking + re-sample opponent** ← this block
+3. Color re-randomization (Task 6) ← already added, must come AFTER this
+
+If the Task 6 color re-randomization block is currently positioned before this insertion point, **move it below** this new block.
+
+Add between the pending transition finalization and the color re-randomization:
 
 ```python
+                    # --- Dones processing order (Changes 2+3) ---
+                    # 1. Finalize pending transitions (above — existing protocol)
+                    # 2. Per-opponent Elo result tracking + re-sample opponent
+                    # 3. Re-randomize learner color
+                    # Steps 2-3 set up state for the NEXT game. Step 1 consumes
+                    # state from the COMPLETED game. Do not reorder.
+
                     # Per-env opponent: track results and re-sample on done (Change 3).
-                    # Must happen AFTER pending transition finalization, BEFORE
-                    # color re-randomization sets up the next game.
                     if (self._opponent_results is not None
                             and self._env_opponent_ids is not None
                             and dones.bool().any()):
                         done_mask = dones.bool()
-                        terminal_mask_np = terminated.bool().cpu().numpy()
-                        done_indices_np = done_mask.cpu().numpy()
+                        done_indices_np = np.flatnonzero(done_mask.cpu().numpy())
 
-                        for env_i in range(self.num_envs):
-                            if not done_indices_np[env_i]:
-                                continue
-                            opp_id = int(self._env_opponent_ids[env_i])
+                        # Batch-extract rewards to avoid per-env GPU syncs.
+                        # One .cpu() call instead of N .item() calls.
+                        done_rewards_np = learner_rewards[done_mask].cpu().numpy()
+                        done_terminal_np = terminated.bool().cpu().numpy()[done_indices_np]
+                        done_opp_ids = self._env_opponent_ids[done_indices_np]
+
+                        for i, env_i in enumerate(done_indices_np):
+                            opp_id = int(done_opp_ids[i])
                             if opp_id not in self._opponent_results:
                                 continue
-                            if terminal_mask_np[env_i]:
-                                lr = learner_rewards[env_i].item()
+                            if done_terminal_np[i]:
+                                lr = done_rewards_np[i]
                                 if lr > 0:
                                     self._opponent_results[opp_id][0] += 1  # win
                                 elif lr < 0:
@@ -1156,9 +1172,16 @@ with:
                         and self._opponent_results is not None
                         and self._cached_entries_by_id
                         and total_games > 0):
-                    # Per-opponent Elo updates (Change 3)
+                    # Per-opponent Elo updates (Change 3).
+                    # Freeze the starting learner Elo — all opponent updates are
+                    # computed against this SAME base value, then the cumulative
+                    # delta is applied once. This prevents path-dependent Elo drift
+                    # from dict iteration order.
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
+                        base_learner_elo = learner_entry.elo_rating
+                        cumulative_learner_delta = 0.0
+
                         for opp_id, (w, l, d) in self._opponent_results.items():
                             opp_total = w + l + d
                             if opp_total == 0:
@@ -1169,26 +1192,33 @@ with:
                             if opp_entry is None:
                                 continue
                             result_score = (w + 0.5 * d) / opp_total
-                            # Re-read learner Elo each iteration (it changes)
-                            learner_entry = self.pool._get_entry(self._learner_entry_id)
-                            if learner_entry is None:
-                                break
                             new_learner_elo, new_opp_elo = compute_elo_update(
-                                learner_entry.elo_rating,
-                                opp_entry.elo_rating,
+                                base_learner_elo, opp_entry.elo_rating,
                                 result=result_score, k=k,
                             )
-                            self.pool.update_elo(
-                                learner_entry.id, new_learner_elo, epoch=self.epoch,
-                            )
+                            learner_delta = new_learner_elo - base_learner_elo
+                            cumulative_learner_delta += learner_delta
+                            # Update opponent Elo immediately (each opponent is independent)
                             self.pool.update_elo(opp_id, new_opp_elo, epoch=self.epoch)
                             logger.info(
-                                "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f "
-                                "| W=%d L=%d D=%d",
-                                learner_entry.elo_rating, new_learner_elo,
+                                "Elo: learner base=%.0f delta=%.1f, "
+                                "opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                                base_learner_elo, learner_delta,
                                 opp_id, opp_entry.elo_rating, new_opp_elo,
                                 w, l, d,
                             )
+
+                        # Apply cumulative learner Elo change once
+                        final_learner_elo = base_learner_elo + cumulative_learner_delta
+                        self.pool.update_elo(
+                            self._learner_entry_id, final_learner_elo, epoch=self.epoch,
+                        )
+                        logger.info(
+                            "Elo: learner %.0f->%.0f (cumulative from %d opponents)",
+                            base_learner_elo, final_learner_elo,
+                            sum(1 for w, l, d in self._opponent_results.values()
+                                if w + l + d > 0),
+                        )
 
                 elif (self.pool is not None
                         and self._current_opponent_entry is not None
@@ -1220,12 +1250,45 @@ with:
                         )
 ```
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 5: Fix chart-continuity carry-forward `played_ids` for multi-opponent mode**
+
+The existing chart-continuity block (lines 1112-1122) builds `played_ids` from only `_learner_entry_id` and `_current_opponent_entry.id`. With per-env opponents, all opponents that played during the epoch must be included, otherwise the carry-forward loop will overwrite the Elo updates we just applied for those opponents.
+
+Find the block (around line 1114-1122):
+
+```python
+            if self.dist_ctx.is_main and self.pool is not None:
+                played_ids = set()
+                if self._learner_entry_id is not None:
+                    played_ids.add(self._learner_entry_id)
+                if self._current_opponent_entry is not None:
+                    played_ids.add(self._current_opponent_entry.id)
+```
+
+Replace with:
+
+```python
+            if self.dist_ctx.is_main and self.pool is not None:
+                played_ids = set()
+                if self._learner_entry_id is not None:
+                    played_ids.add(self._learner_entry_id)
+                if self._current_opponent_entry is not None:
+                    played_ids.add(self._current_opponent_entry.id)
+                # Change 3: include all opponents that had games this epoch.
+                # Without this, the carry-forward loop below would overwrite
+                # the per-opponent Elo updates with stale pre-epoch values.
+                if self._opponent_results is not None:
+                    for opp_id, (w, l, d) in self._opponent_results.items():
+                        if w + l + d > 0:
+                            played_ids.add(opp_id)
+```
+
+- [ ] **Step 6: Run full test suite**
 
 Run: `uv run pytest tests/ -v`
 Expected: All pass. Existing tests hit the legacy path because they either have no league config or a single opponent.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add keisei/training/katago_loop.py
@@ -1234,46 +1297,27 @@ git commit -m "feat(loop): per-env sticky opponents with frozen pool view and pe
 
 ---
 
-### Task 9: Dones Processing Order Fix
+### Task 9: Verify Dones Processing Order
 
 **Files:**
-- Modify: `keisei/training/katago_loop.py` (step loop dones block)
+- Read: `keisei/training/katago_loop.py` (step loop dones block)
 
-The color re-randomization (Task 6, Step 3) and opponent re-sampling (Task 8, Step 3) must happen in the correct order. Verify and adjust the ordering in the dones processing block.
+Task 8 Step 3 placed the opponent tracking block BEFORE the color re-randomization block (Task 6 Step 3), and added the ordering comment. This task is verification-only.
 
 - [ ] **Step 1: Verify ordering in the step loop**
 
-Read the step loop and confirm the dones processing order is:
+Read the step loop dones processing section and confirm this exact order exists:
 1. Pending transition finalization (existing — steps 1-4 in the protocol)
-2. Per-env opponent result tracking and re-sampling (Task 8)
-3. Color re-randomization (Task 6)
+2. `# --- Dones processing order (Changes 2+3) ---` comment block
+3. Per-env opponent result tracking and re-sampling (`if self._opponent_results ...`)
+4. Color re-randomization (`if use_color_rand ...`)
 
-If the blocks were added in reverse order, swap them so opponent tracking (which reads `learner_rewards` and `env_opponent_ids` from the *completed* game) runs before color re-randomization (which sets up the *next* game).
+If the order is wrong, fix it now. The opponent tracking block reads `learner_rewards` and `env_opponent_ids` from the *completed* game and must run before color re-randomization changes `learner_side` for the *next* game.
 
-- [ ] **Step 2: Add ordering comment**
-
-At the top of the dones processing block, add:
-
-```python
-                    # --- Dones processing order (Changes 2+3) ---
-                    # 1. Finalize pending transitions (above — existing protocol)
-                    # 2. Per-opponent Elo result tracking + re-sample opponent
-                    # 3. Re-randomize learner color
-                    # Steps 2-3 set up state for the NEXT game. Step 1 consumes
-                    # state from the COMPLETED game. Do not reorder.
-```
-
-- [ ] **Step 3: Run tests**
+- [ ] **Step 2: Run tests**
 
 Run: `uv run pytest tests/ -v`
 Expected: All pass
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add keisei/training/katago_loop.py
-git commit -m "fix(loop): enforce correct dones processing order for Changes 2+3"
-```
 
 ---
 
@@ -1355,8 +1399,20 @@ class TestFairnessInteractions:
         """Smoke test: training loop completes with all fairness changes active."""
         mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
         loop = KataGoTrainingLoop(fairness_config, vecenv=mock_env)
-        # Should not crash
         loop.run(num_epochs=1, steps_per_epoch=10)
+
+        # Behavioral assertions — not just "didn't crash"
+        assert loop.pool is not None
+        entries = loop.pool.list_entries()
+        assert len(entries) >= 1, "Pool should have at least the initial entry"
+
+        # If per_env_opponents was active, opponent_results should exist
+        if loop._opponent_results is not None:
+            # At least some games should have completed in 10 steps
+            total = sum(w + l + d for w, l, d in loop._opponent_results.values())
+            # total may be 0 if mock env doesn't produce terminated games,
+            # but the structure should exist
+            assert isinstance(loop._opponent_results, dict)
 ```
 
 - [ ] **Step 2: Run the interaction tests**
