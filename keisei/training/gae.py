@@ -32,6 +32,8 @@ def compute_gae(
         Advantage estimates, same shape as rewards
     """
     T = rewards.shape[0]
+    compute_dtype = values.dtype  # always float — safe for GAE math
+    rewards = rewards.to(dtype=compute_dtype)
     advantages = torch.zeros_like(rewards)
     last_gae = torch.zeros_like(next_value)
 
@@ -78,6 +80,8 @@ def compute_gae_padded(
         (T_max, N) advantages — only [:lengths[i], i] are meaningful per env
     """
     T_max, N = rewards.shape
+    compute_dtype = values.dtype
+    rewards = rewards.to(dtype=compute_dtype)
     advantages = torch.zeros_like(rewards)
     last_gae = torch.zeros_like(next_values)
 
@@ -142,6 +146,8 @@ def compute_gae_gpu(
         )
 
     T, N = rewards.shape
+    compute_dtype = values.dtype
+    rewards = rewards.to(dtype=compute_dtype)
 
     # Step 1: vectorized delta and decay (no Python loop)
     # next_values[t] = values[t+1] for t < T-1, next_value for t == T-1
@@ -155,7 +161,7 @@ def compute_gae_gpu(
     # This is faster than CPU GAE because each step operates on N envs in parallel
     # without Python-level tensor ops or CPU-GPU round-trips.
     advantages = torch.empty_like(rewards)
-    last_gae = torch.zeros(N, device=rewards.device, dtype=rewards.dtype)
+    last_gae = torch.zeros(N, device=rewards.device, dtype=compute_dtype)
     for t in reversed(range(T)):
         last_gae = delta[t] + decay[t] * last_gae
         advantages[t] = last_gae

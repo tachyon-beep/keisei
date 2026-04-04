@@ -343,3 +343,59 @@ class TestGAEPaddedTruncation:
                                  gamma=0.99, lam=0.95)
         # Env 0, step 1: delta = 0.0 + 0.99 * 0.3 - 0.4 = -0.103
         assert abs(adv[1, 0].item() - (-0.103)) < 0.05
+
+
+class TestGAEIntegerRewardDtype:
+    """Regression: integer reward tensors must produce float advantages.
+
+    GAE math is inherently fractional (gamma, lambda, value bootstraps).
+    If the output buffer inherits an integer dtype from rewards, the
+    fractional values are silently truncated on assignment.
+    """
+
+    def test_compute_gae_integer_rewards(self):
+        """compute_gae with integer rewards must return float advantages."""
+        rewards = torch.tensor([1, 2, 3], dtype=torch.long)
+        values = torch.tensor([0.5, 0.5, 0.5])
+        terminated = torch.zeros(3, dtype=torch.bool)
+        next_value = torch.tensor(0.0)
+
+        adv = compute_gae(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert adv.dtype.is_floating_point, f"Expected float dtype, got {adv.dtype}"
+
+        # Compare against float reference
+        ref = compute_gae(rewards.float(), values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert torch.allclose(adv, ref, atol=1e-5), (
+            f"Integer rewards gave wrong values: {adv} vs {ref}"
+        )
+
+    def test_compute_gae_gpu_integer_rewards(self):
+        """compute_gae_gpu with integer rewards must return float advantages."""
+        rewards = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
+        values = torch.tensor([[0.5, 0.5], [0.5, 0.5]])
+        terminated = torch.zeros(2, 2)
+        next_value = torch.tensor([0.0, 0.0])
+
+        adv = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert adv.dtype.is_floating_point, f"Expected float dtype, got {adv.dtype}"
+
+        ref = compute_gae_gpu(rewards.float(), values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert torch.allclose(adv, ref, atol=1e-5)
+
+    def test_compute_gae_padded_integer_rewards(self):
+        """compute_gae_padded with integer rewards must return float advantages."""
+        from keisei.training.gae import compute_gae_padded
+
+        rewards = torch.tensor([[1, 0], [2, 1]], dtype=torch.long)
+        values = torch.tensor([[0.5, 0.3], [0.4, 0.6]])
+        terminated = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
+        next_values = torch.tensor([0.0, 0.0])
+        lengths = torch.tensor([2, 2])
+
+        adv = compute_gae_padded(rewards, values, terminated, next_values, lengths,
+                                 gamma=0.99, lam=0.95)
+        assert adv.dtype.is_floating_point, f"Expected float dtype, got {adv.dtype}"
+
+        ref = compute_gae_padded(rewards.float(), values, terminated, next_values, lengths,
+                                 gamma=0.99, lam=0.95)
+        assert torch.allclose(adv, ref, atol=1e-5)
