@@ -47,7 +47,9 @@ from keisei.training.katago_ppo import (
 
 # scalar_value is used in split_merge_step to keep value computation
 # centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
-from keisei.training.league import OpponentEntry, OpponentPool, OpponentSampler, compute_elo_update
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
+from keisei.training.tiered_pool import TieredPool
+from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.model_registry import build_model
 from keisei.training.tournament import LeagueTournament
 
@@ -550,8 +552,9 @@ class KataGoTrainingLoop:
         self._last_heartbeat = time.monotonic()
 
         # League setup (optional — only if [league] config is present)
-        self.pool: OpponentPool | None = None
-        self.sampler: OpponentSampler | None = None
+        self.store: OpponentStore | None = None
+        self.tiered_pool: TieredPool | None = None
+        self.scheduler: MatchScheduler | None = None
         self._current_opponent: torch.nn.Module | None = None
         self._current_opponent_entry: OpponentEntry | None = None
         self._learner_entry_id: int | None = None
@@ -566,24 +569,20 @@ class KataGoTrainingLoop:
 
         if config.league is not None:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
-            self.pool = OpponentPool(
-                self.db_path, league_dir, max_pool_size=config.league.max_pool_size,
-            )
-            self.sampler = OpponentSampler(
-                self.pool,
-                historical_ratio=config.league.historical_ratio,
-                current_best_ratio=config.league.current_best_ratio,
-                elo_floor=config.league.elo_floor,
-            )
+            self.store = OpponentStore(self.db_path, league_dir)
+            self.tiered_pool = TieredPool(self.store, config.league)
+            self.scheduler = MatchScheduler(config.league.scheduler)
             # Bootstrap snapshot so pool is never empty
-            bootstrap_entry = self.pool.add_snapshot(
+            bootstrap_entry = self.tiered_pool.snapshot_learner(
                 self._base_model, config.model.architecture,
                 dict(config.model.params), epoch=0,
             )
             self._learner_entry_id = bootstrap_entry.id
             logger.info(
-                "League initialized: pool_size=%d, snapshot_interval=%d",
-                config.league.max_pool_size, config.league.snapshot_interval,
+                "Tiered league initialized: %d frontier, %d recent, %d dynamic slots",
+                config.league.frontier.slots,
+                config.league.recent.slots,
+                config.league.dynamic.slots,
             )
 
             # Background tournament for Elo calibration (optional)
@@ -594,8 +593,8 @@ class KataGoTrainingLoop:
                     or str(self.device)
                 )
                 self._tournament = LeagueTournament(
-                    db_path=self.db_path,
-                    league_dir=league_dir,
+                    store=self.store,
+                    scheduler=self.scheduler,
                     device=tournament_device,
                     num_envs=config.league.tournament_num_envs,
                     games_per_match=config.league.tournament_games_per_match,
@@ -738,8 +737,8 @@ class KataGoTrainingLoop:
             self.epoch = epoch_i
 
             # Sample opponent for this epoch (if league enabled)
-            if self.sampler is not None:
-                self._current_opponent_entry = self.sampler.sample()
+            if self.scheduler is not None:
+                self._current_opponent_entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
                 opp_device_cfg = (
                     self.config.league.opponent_device
                     if self.config.league and self.config.league.opponent_device
@@ -764,8 +763,8 @@ class KataGoTrainingLoop:
                 opp_device = opp_device_cfg or str(self.device)
 
                 # Cache entries once — reused for sampling AND opponent loading
-                assert self.pool is not None  # sampler implies pool
-                self._cached_entries = self.pool.list_entries()
+                assert self.store is not None
+                self._cached_entries = self.store.list_entries()
                 self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
 
                 use_per_env_opps = (
@@ -784,7 +783,7 @@ class KataGoTrainingLoop:
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
-                    self._opponent_models = self.pool.load_all_opponents(device=opp_device)
+                    self._opponent_models = self.store.load_all_opponents(device=opp_device)
 
                     # Filter cached entries to only those whose models loaded.
                     # Without this, sample_from could assign an entry whose
@@ -797,7 +796,7 @@ class KataGoTrainingLoop:
                     # Per-env opponent assignment
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
                     for env_i in range(self.num_envs):
-                        entry = self.sampler.sample_from(self._cached_entries)
+                        entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
                         self._env_opponent_ids[env_i] = entry.id
 
                     # Per-opponent W/L/D tracking for epoch-end Elo update
@@ -818,7 +817,7 @@ class KataGoTrainingLoop:
                     self._opponent_models = None
                     self._env_opponent_ids = None
                     self._opponent_results = None
-                    self._current_opponent = self.pool.load_opponent(
+                    self._current_opponent = self.store.load_opponent(
                         self._current_opponent_entry, device=opp_device,
                     )
 
@@ -1087,8 +1086,8 @@ class KataGoTrainingLoop:
                                     self._opponent_results[opp_id][2] += 1  # draw
 
                             # Re-sample opponent for next game
-                            assert self.sampler is not None
-                            new_entry = self.sampler.sample_from(self._cached_entries)
+                            assert self.scheduler is not None
+                            new_entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
                             self._env_opponent_ids[env_i] = new_entry.id
 
                     # Re-randomize learner color for completed games (Change 2).
@@ -1297,7 +1296,7 @@ class KataGoTrainingLoop:
                 total_games = win_count + loss_count + draw_count
                 k = self.config.league.elo_k_factor if self.config.league else 32.0
 
-                if (self.pool is not None
+                if (self.store is not None
                         and self._opponent_results is not None
                         and self._cached_entries_by_id
                         and total_games > 0):
@@ -1308,8 +1307,8 @@ class KataGoTrainingLoop:
                     # from dict iteration order.
                     # K is normalized by active opponent count to prevent cumulative
                     # amplification (20 opponents × K=32 = 640 pts without normalization).
-                    assert self._learner_entry_id is not None  # set when pool exists
-                    learner_entry = self.pool._get_entry(self._learner_entry_id)
+                    assert self._learner_entry_id is not None  # set when store exists
+                    learner_entry = self.store._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         base_learner_elo = learner_entry.elo_rating
                         cumulative_learner_delta = 0.0
@@ -1336,7 +1335,7 @@ class KataGoTrainingLoop:
                             learner_delta = new_learner_elo - base_learner_elo
                             cumulative_learner_delta += learner_delta
                             # Update opponent Elo immediately (each opponent is independent)
-                            self.pool.update_elo(opp_id, new_opp_elo, epoch=self.epoch)
+                            self.store.update_elo(opp_id, new_opp_elo, epoch=self.epoch)
                             logger.info(
                                 "Elo: learner base=%.0f delta=%.1f, "
                                 "opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
@@ -1347,7 +1346,7 @@ class KataGoTrainingLoop:
 
                         # Apply cumulative learner Elo change once
                         final_learner_elo = base_learner_elo + cumulative_learner_delta
-                        self.pool.update_elo(
+                        self.store.update_elo(
                             self._learner_entry_id, final_learner_elo, epoch=self.epoch,
                         )
                         logger.info(
@@ -1357,13 +1356,13 @@ class KataGoTrainingLoop:
                                 if w + los + d > 0),
                         )
 
-                elif (self.pool is not None
+                elif (self.store is not None
                         and self._current_opponent_entry is not None
                         and total_games > 0
                         and self._learner_entry_id is not None
                         and self._learner_entry_id != self._current_opponent_entry.id):
                     # Legacy single-opponent Elo update
-                    learner_entry = self.pool._get_entry(self._learner_entry_id)
+                    learner_entry = self.store._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         result_score = (win_count + 0.5 * draw_count) / total_games
                         new_learner_elo, new_opp_elo = compute_elo_update(
@@ -1371,10 +1370,10 @@ class KataGoTrainingLoop:
                             self._current_opponent_entry.elo_rating,
                             result=result_score, k=k,
                         )
-                        self.pool.update_elo(
+                        self.store.update_elo(
                             learner_entry.id, new_learner_elo, epoch=self.epoch,
                         )
-                        self.pool.update_elo(
+                        self.store.update_elo(
                             self._current_opponent_entry.id, new_opp_elo,
                             epoch=self.epoch,
                         )
@@ -1389,7 +1388,7 @@ class KataGoTrainingLoop:
 
             # Carry forward Elo for entries that didn't play this epoch,
             # so the Elo chart has continuous lines with no gaps.
-            if self.dist_ctx.is_main and self.pool is not None:
+            if self.dist_ctx.is_main and self.store is not None:
                 played_ids = set()
                 if self._learner_entry_id is not None:
                     played_ids.add(self._learner_entry_id)
@@ -1402,27 +1401,30 @@ class KataGoTrainingLoop:
                     for opp_id, (w, los, d) in self._opponent_results.items():
                         if w + los + d > 0:
                             played_ids.add(opp_id)
-                for entry in self.pool.list_entries():
+                for entry in self.store.list_entries():
                     if entry.id not in played_ids:
-                        self.pool.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
+                        self.store.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
 
             if self.dist_ctx.is_main:
                 # Seat rotation (takes priority — includes its own snapshot)
                 rotating_this_epoch = (
-                    self.config.league is not None and self.pool is not None
+                    self.config.league is not None and self.tiered_pool is not None
                     and (epoch_i + 1) % self.config.league.epochs_per_seat == 0
                 )
                 if rotating_this_epoch:
                     self._rotate_seat(epoch_i)
 
                 # Periodic pool snapshot (skip if rotation already snapshotted)
-                if (self.pool is not None and self.config.league is not None
+                if (self.tiered_pool is not None and self.config.league is not None
                         and (epoch_i + 1) % self.config.league.snapshot_interval == 0
                         and not rotating_this_epoch):
-                    self.pool.add_snapshot(
+                    self.tiered_pool.snapshot_learner(
                         self._base_model, self.config.model.architecture,
                         dict(self.config.model.params), epoch=epoch_i + 1,
                     )
+
+                if self.tiered_pool is not None:
+                    self.tiered_pool.on_epoch_end(epoch_i)
 
             if self.dist_ctx.is_main:
                 # Metrics and logging
@@ -1516,8 +1518,8 @@ class KataGoTrainingLoop:
         # continuous. That must be preserved. This method only handles
         # rotation — new snapshots enter at the DB default of 1000.0.
 
-        assert self.pool is not None  # _rotate_seat only called in league mode
-        new_entry = self.pool.add_snapshot(
+        assert self.tiered_pool is not None  # _rotate_seat only called in league mode
+        new_entry = self.tiered_pool.snapshot_learner(
             self._base_model, self.config.model.architecture,
             dict(self.config.model.params), epoch=epoch + 1,
         )

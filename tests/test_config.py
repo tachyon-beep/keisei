@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from keisei.config import AppConfig, load_config
+from keisei.config import (
+    AppConfig,
+    DynamicConfig,
+    FrontierStaticConfig,
+    LeagueConfig,
+    MatchSchedulerConfig,
+    RecentFixedConfig,
+    load_config,
+)
 
 
 @pytest.fixture
@@ -214,42 +222,79 @@ def test_unknown_algorithm_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestLeagueConfigRatioTolerance:
-    """H5: LeagueConfig.__post_init__ validates ratio sum with 1e-6 tolerance."""
+class TestTierConfigs:
+    def test_frontier_static_defaults(self):
+        cfg = FrontierStaticConfig()
+        assert cfg.slots == 5
+        assert cfg.review_interval_epochs == 250
+        assert cfg.min_tenure_epochs == 100
+        assert cfg.promotion_margin_elo == 50.0
 
-    def test_ratios_sum_to_exactly_one(self) -> None:
-        """Ratios that sum to exactly 1.0 should pass validation."""
-        from keisei.config import LeagueConfig
-        config = LeagueConfig(historical_ratio=0.8, current_best_ratio=0.2)
-        assert abs(config.historical_ratio + config.current_best_ratio - 1.0) < 1e-6
+    def test_recent_fixed_defaults(self):
+        cfg = RecentFixedConfig()
+        assert cfg.slots == 5
+        assert cfg.min_games_for_review == 32
+        assert cfg.min_unique_opponents == 6
+        assert cfg.promotion_margin_elo == 25.0
+        assert cfg.soft_overflow == 1
 
-    def test_ratios_sum_to_0_99_rejected(self) -> None:
-        """Ratios that sum to 0.99 should raise ValueError."""
-        from keisei.config import LeagueConfig
-        with pytest.raises(ValueError, match="ratio sum must be 1.0"):
-            LeagueConfig(historical_ratio=0.79, current_best_ratio=0.2)
+    def test_dynamic_defaults(self):
+        cfg = DynamicConfig()
+        assert cfg.slots == 10
+        assert cfg.protection_matches == 24
+        assert cfg.min_games_before_eviction == 40
+        assert cfg.training_enabled is False
+
+    def test_match_scheduler_defaults(self):
+        cfg = MatchSchedulerConfig()
+        assert cfg.learner_dynamic_ratio == 0.50
+        assert cfg.learner_frontier_ratio == 0.30
+        assert cfg.learner_recent_ratio == 0.20
+
+
+class TestLeagueConfigValidation:
+    def test_learner_ratios_must_sum_to_one(self):
+        bad_sched = MatchSchedulerConfig(
+            learner_dynamic_ratio=0.5,
+            learner_frontier_ratio=0.5,
+            learner_recent_ratio=0.5,
+        )
+        with pytest.raises(ValueError, match="learner.*ratio.*sum"):
+            LeagueConfig(scheduler=bad_sched)
+
+    def test_valid_config_passes(self):
+        cfg = LeagueConfig()
+        assert cfg.frontier.slots + cfg.recent.slots + cfg.dynamic.slots == 20
 
     def test_ratios_within_1e6_tolerance_pass(self) -> None:
         """Ratios within 1e-6 of 1.0 should pass validation."""
-        from keisei.config import LeagueConfig
-        # 0.8 + 0.2000005 = 1.0000005, which is within 1e-6
-        config = LeagueConfig(
-            historical_ratio=0.8, current_best_ratio=0.2 + 5e-7,
+        sched = MatchSchedulerConfig(
+            learner_dynamic_ratio=0.50,
+            learner_frontier_ratio=0.30,
+            learner_recent_ratio=0.20 + 5e-7,
         )
-        assert config is not None
+        cfg = LeagueConfig(scheduler=sched)
+        assert cfg is not None
 
     def test_ratios_outside_1e6_tolerance_rejected(self) -> None:
         """Ratios outside 1e-6 of 1.0 should raise ValueError."""
-        from keisei.config import LeagueConfig
-        # 0.8 + 0.2001 = 1.0001, well outside tolerance
-        with pytest.raises(ValueError, match="ratio sum must be 1.0"):
-            LeagueConfig(historical_ratio=0.8, current_best_ratio=0.2001)
+        bad_sched = MatchSchedulerConfig(
+            learner_dynamic_ratio=0.50,
+            learner_frontier_ratio=0.30,
+            learner_recent_ratio=0.2001,
+        )
+        with pytest.raises(ValueError, match="learner.*ratio.*sum"):
+            LeagueConfig(scheduler=bad_sched)
 
     def test_ratios_sum_over_one_rejected(self) -> None:
         """Ratios summing to more than 1.0 should raise ValueError."""
-        from keisei.config import LeagueConfig
-        with pytest.raises(ValueError, match="ratio sum must be 1.0"):
-            LeagueConfig(historical_ratio=0.6, current_best_ratio=0.6)
+        bad_sched = MatchSchedulerConfig(
+            learner_dynamic_ratio=0.6,
+            learner_frontier_ratio=0.6,
+            learner_recent_ratio=0.6,
+        )
+        with pytest.raises(ValueError, match="learner.*ratio.*sum"):
+            LeagueConfig(scheduler=bad_sched)
 
 
 def test_training_use_amp_must_be_bool(tmp_path: Path) -> None:

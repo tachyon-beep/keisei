@@ -1,7 +1,7 @@
 """Tests for keisei.training.tournament — round-robin Elo calibration.
 
-Covers: _generate_round pairing logic, _record_result Elo writes,
-lifecycle (start/stop), bye carry-forward, DB helpers.
+Covers: lifecycle (start/stop), _current_epoch, _load_model, _run_loop
+integration with OpponentStore and MatchScheduler.
 """
 
 from __future__ import annotations
@@ -10,12 +10,14 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from keisei.config import MatchSchedulerConfig
 from keisei.db import init_db
-from keisei.training.league import OpponentEntry
+from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.tournament import LeagueTournament
 
 # ---------------------------------------------------------------------------
@@ -44,11 +46,19 @@ def _make_entry(
     )
 
 
-def _make_tournament(db_path: str, league_dir: str, **kwargs) -> LeagueTournament:
+def _make_scheduler() -> MatchScheduler:
+    """Create a MatchScheduler with default config."""
+    config = MatchSchedulerConfig()
+    return MatchScheduler(config)
+
+
+def _make_tournament(store: OpponentStore, scheduler: MatchScheduler | None = None, **kwargs) -> LeagueTournament:
     """Create a LeagueTournament with CPU device to avoid GPU requirement."""
+    if scheduler is None:
+        scheduler = _make_scheduler()
     defaults: dict[str, object] = dict(device="cpu", num_envs=1, games_per_match=1)
     defaults.update(kwargs)
-    return LeagueTournament(db_path, league_dir, **defaults)  # type: ignore[arg-type]
+    return LeagueTournament(store=store, scheduler=scheduler, **defaults)  # type: ignore[arg-type]
 
 
 def _insert_entry(conn: sqlite3.Connection, entry: OpponentEntry) -> None:
@@ -87,99 +97,73 @@ def league_dir(tmp_path: Path) -> str:
     return str(d)
 
 
+@pytest.fixture
+def store(tournament_db: str, league_dir: str) -> OpponentStore:
+    return OpponentStore(tournament_db, league_dir)
+
+
 # ===========================================================================
-# _generate_round — pairing logic
+# MatchScheduler.generate_round — pairing logic (formerly _generate_round)
 # ===========================================================================
 
 
 class TestGenerateRound:
-    """Test the round-robin pairing algorithm."""
+    """Test the round-robin pairing algorithm via MatchScheduler."""
 
-    def test_even_pool_produces_n_over_2_pairings(self, tournament_db, league_dir):
-        """4 entries → 2 pairings, no bye."""
-        t = _make_tournament(tournament_db, league_dir)
+    def test_even_pool_produces_full_round_robin(self, store):
+        """4 entries → 6 pairings (full round-robin, N*(N-1)/2)."""
+        scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 5)]
-        pairings, bye = t._generate_round(entries)
-        assert len(pairings) == 2
-        assert bye is None
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) == 6  # 4*3/2
 
-    def test_odd_pool_produces_bye(self, tournament_db, league_dir):
-        """3 entries → 1 pairing + 1 bye."""
-        t = _make_tournament(tournament_db, league_dir)
-        entries = [_make_entry(i) for i in range(1, 4)]
-        pairings, bye = t._generate_round(entries)
-        assert len(pairings) == 1
-        assert bye is not None
-        # Bye entry should not appear in any pairing
-        paired_ids = {e.id for pair in pairings for e in pair}
-        assert bye.id not in paired_ids
-
-    def test_two_entries_produces_one_pairing(self, tournament_db, league_dir):
+    def test_two_entries_produces_one_pairing(self, store):
         """Minimum viable pool: 2 entries → 1 pairing."""
-        t = _make_tournament(tournament_db, league_dir)
+        scheduler = _make_scheduler()
         entries = [_make_entry(1), _make_entry(2)]
-        pairings, bye = t._generate_round(entries)
+        pairings = scheduler.generate_round(entries)
         assert len(pairings) == 1
-        assert bye is None
         ids = {pairings[0][0].id, pairings[0][1].id}
         assert ids == {1, 2}
 
-    def test_single_entry_produces_no_pairings(self, tournament_db, league_dir):
-        """1 entry → no pairings (need at least 2 distinct IDs)."""
-        t = _make_tournament(tournament_db, league_dir)
+    def test_single_entry_produces_no_pairings(self, store):
+        """1 entry → no pairings."""
+        scheduler = _make_scheduler()
         entries = [_make_entry(1)]
-        pairings, bye = t._generate_round(entries)
+        pairings = scheduler.generate_round(entries)
         assert pairings == []
-        assert bye is None
 
-    def test_empty_pool_produces_no_pairings(self, tournament_db, league_dir):
-        t = _make_tournament(tournament_db, league_dir)
-        pairings, bye = t._generate_round([])
+    def test_empty_pool_produces_no_pairings(self, store):
+        scheduler = _make_scheduler()
+        pairings = scheduler.generate_round([])
         assert pairings == []
-        assert bye is None
 
-    def test_no_self_matches(self, tournament_db, league_dir):
+    def test_no_self_matches(self, store):
         """No entry should be paired with itself."""
-        t = _make_tournament(tournament_db, league_dir)
+        scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 9)]
-        # Run multiple times since shuffle is random
-        for _ in range(20):
-            pairings, _ = t._generate_round(entries)
-            for a, b in pairings:
-                assert a.id != b.id, f"Self-match: {a.id} vs {b.id}"
+        pairings = scheduler.generate_round(entries)
+        for a, b in pairings:
+            assert a.id != b.id, f"Self-match: {a.id} vs {b.id}"
 
-    def test_duplicate_ids_filtered(self, tournament_db, league_dir):
-        """If entries list has duplicate IDs (e.g. from DB restart bug),
-        self-matches are filtered out."""
-        t = _make_tournament(tournament_db, league_dir)
-        # Two entries with the same ID
-        entries = [_make_entry(1), _make_entry(1)]
-        pairings, bye = t._generate_round(entries)
-        # Only 1 unique ID → no valid pairings
-        assert pairings == []
-
-    def test_large_pool_all_entries_paired_or_bye(self, tournament_db, league_dir):
-        """With N entries, exactly N-1 or N entries are used (depending on parity)."""
-        t = _make_tournament(tournament_db, league_dir)
+    def test_large_pool_all_pairs_covered(self, store):
+        """With N entries, exactly N*(N-1)/2 pairings are generated."""
+        scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 11)]  # 10 entries
-        pairings, bye = t._generate_round(entries)
-        paired_ids = {e.id for pair in pairings for e in pair}
-        if bye:
-            paired_ids.add(bye.id)
-        # All entries should be accounted for (paired or bye)
-        assert paired_ids == {e.id for e in entries}
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) == 45  # 10*9/2
 
 
 # ===========================================================================
-# _record_result — Elo writes
+# Store-based result recording (replaces _record_result tests)
 # ===========================================================================
 
 
 class TestRecordResult:
-    """Test Elo recording and DB writes."""
+    """Test Elo recording via OpponentStore."""
 
-    def test_elo_updates_written_correctly(self, tournament_db, league_dir):
-        """After recording a result, both entries' Elo ratings should change."""
+    def test_elo_updates_via_store(self, store, tournament_db):
+        """After recording a result via store, both entries' Elo ratings should change."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
         entry_a = _make_entry(1, elo=1000.0)
@@ -188,24 +172,33 @@ class TestRecordResult:
         _insert_entry(conn, entry_b)
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir, k_factor=32.0)
-        conn = t._open_connection()
+        # Compute Elo update: A wins all games
+        result_score = 1.0  # A wins everything
+        new_a, new_b = compute_elo_update(1000.0, 1000.0, result=result_score, k=32.0)
 
-        # A wins all games
-        t._record_result(conn, entry_a, entry_b, wins_a=10, wins_b=0, draws=0, epoch=5)
+        store.record_result(
+            epoch=5, learner_id=1, opponent_id=2,
+            wins=10, losses=0, draws=0,
+            elo_delta_a=round(new_a - 1000.0, 1),
+            elo_delta_b=round(new_b - 1000.0, 1),
+        )
+        store.update_elo(1, new_a, epoch=5)
+        store.update_elo(2, new_b, epoch=5)
 
-        row_a = conn.execute(
+        # Verify via direct DB query
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+        row_a = check_conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = ?", (1,)
         ).fetchone()
-        row_b = conn.execute(
+        row_b = check_conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = ?", (2,)
         ).fetchone()
-
         assert row_a["elo_rating"] > 1000.0, "Winner's Elo should increase"
         assert row_b["elo_rating"] < 1000.0, "Loser's Elo should decrease"
-        conn.close()
+        check_conn.close()
 
-    def test_league_results_row_inserted(self, tournament_db, league_dir):
+    def test_league_results_row_inserted(self, store, tournament_db):
         """A league_results row should be inserted with win/loss/draw counts."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
@@ -213,22 +206,22 @@ class TestRecordResult:
         _insert_entry(conn, _make_entry(2))
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        t._record_result(
-            conn, _make_entry(1), _make_entry(2),
-            wins_a=5, wins_b=3, draws=2, epoch=10,
+        store.record_result(
+            epoch=10, learner_id=1, opponent_id=2,
+            wins=5, losses=3, draws=2,
         )
 
-        row = conn.execute("SELECT * FROM league_results").fetchone()
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+        row = check_conn.execute("SELECT * FROM league_results").fetchone()
         assert row is not None
         assert row["wins"] == 5
         assert row["losses"] == 3
         assert row["draws"] == 2
         assert row["epoch"] == 10
-        conn.close()
+        check_conn.close()
 
-    def test_elo_history_rows_inserted(self, tournament_db, league_dir):
+    def test_elo_history_rows_inserted(self, store, tournament_db):
         """Both entries should get elo_history rows at the given epoch."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
@@ -236,22 +229,20 @@ class TestRecordResult:
         _insert_entry(conn, _make_entry(2))
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        t._record_result(
-            conn, _make_entry(1), _make_entry(2),
-            wins_a=5, wins_b=5, draws=0, epoch=7,
-        )
+        store.update_elo(1, 1010.0, epoch=7)
+        store.update_elo(2, 990.0, epoch=7)
 
-        rows = conn.execute(
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+        rows = check_conn.execute(
             "SELECT * FROM elo_history WHERE epoch = ?", (7,)
         ).fetchall()
         assert len(rows) == 2
         entry_ids = {r["entry_id"] for r in rows}
         assert entry_ids == {1, 2}
-        conn.close()
+        check_conn.close()
 
-    def test_games_played_incremented(self, tournament_db, league_dir):
+    def test_games_played_incremented(self, store, tournament_db):
         """games_played should increase by total games for both entries."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
@@ -259,44 +250,24 @@ class TestRecordResult:
         _insert_entry(conn, _make_entry(2))
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        t._record_result(
-            conn, _make_entry(1), _make_entry(2),
-            wins_a=3, wins_b=4, draws=1, epoch=1,
+        store.record_result(
+            epoch=1, learner_id=1, opponent_id=2,
+            wins=3, losses=4, draws=1,
         )
 
-        row_a = conn.execute(
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+        row_a = check_conn.execute(
             "SELECT games_played FROM league_entries WHERE id = 1"
         ).fetchone()
-        row_b = conn.execute(
+        row_b = check_conn.execute(
             "SELECT games_played FROM league_entries WHERE id = 2"
         ).fetchone()
         assert row_a["games_played"] == 8  # 3 + 4 + 1
         assert row_b["games_played"] == 8
-        conn.close()
+        check_conn.close()
 
-    def test_evicted_entry_graceful_skip(self, tournament_db, league_dir):
-        """If an entry was evicted mid-match, _record_result should not crash."""
-        conn = sqlite3.connect(tournament_db)
-        conn.row_factory = sqlite3.Row
-        # Only insert entry 1, not entry 2
-        _insert_entry(conn, _make_entry(1))
-        conn.close()
-
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        # Should not raise — entry_b doesn't exist
-        t._record_result(
-            conn, _make_entry(1), _make_entry(2),
-            wins_a=5, wins_b=0, draws=0, epoch=1,
-        )
-        # No league_results row should be written
-        row = conn.execute("SELECT COUNT(*) as cnt FROM league_results").fetchone()
-        assert row["cnt"] == 0
-        conn.close()
-
-    def test_draw_result_elo_changes_minimal(self, tournament_db, league_dir):
+    def test_draw_result_elo_changes_minimal(self, store, tournament_db):
         """Equal-rated opponents drawing should have near-zero Elo change."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
@@ -304,19 +275,18 @@ class TestRecordResult:
         _insert_entry(conn, _make_entry(2, elo=1000.0))
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir, k_factor=16.0)
-        conn = t._open_connection()
-        t._record_result(
-            conn, _make_entry(1), _make_entry(2),
-            wins_a=5, wins_b=5, draws=0, epoch=1,
-        )
+        result_score = 0.5
+        new_a, new_b = compute_elo_update(1000.0, 1000.0, result=result_score, k=16.0)
+        store.update_elo(1, new_a, epoch=1)
 
-        row_a = conn.execute(
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+        row_a = check_conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = 1"
         ).fetchone()
         # 50/50 result between equal-rated players → minimal Elo change
         assert abs(row_a["elo_rating"] - 1000.0) < 1.0
-        conn.close()
+        check_conn.close()
 
 
 # ===========================================================================
@@ -325,9 +295,9 @@ class TestRecordResult:
 
 
 class TestDBHelpers:
-    """Test _current_epoch, _load_entries, _open_connection."""
+    """Test _current_epoch and store.list_entries."""
 
-    def test_current_epoch_from_training_state(self, tournament_db, league_dir):
+    def test_current_epoch_from_training_state(self, store, tournament_db):
         """_current_epoch should read from training_state table."""
         from keisei.db import write_training_state
 
@@ -340,34 +310,24 @@ class TestDBHelpers:
             "current_epoch": 42,
         })
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        assert t._current_epoch(conn) == 42
-        conn.close()
+        t = _make_tournament(store)
+        assert t._current_epoch() == 42
 
-    def test_current_epoch_returns_zero_when_no_state(self, tournament_db, league_dir):
+    def test_current_epoch_returns_zero_when_no_state(self, store):
         """_current_epoch should return 0 when no training_state row exists."""
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        assert t._current_epoch(conn) == 0
-        conn.close()
+        t = _make_tournament(store)
+        assert t._current_epoch() == 0
 
-    def test_load_entries_returns_opponent_entries(self, tournament_db, league_dir):
-        """_load_entries should return OpponentEntry objects from the DB."""
+    def test_list_entries_returns_opponent_entries(self, store, tournament_db):
+        """store.list_entries should return OpponentEntry objects from the DB."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
         _insert_entry(conn, _make_entry(1, elo=1200.0))
         _insert_entry(conn, _make_entry(2, elo=800.0))
         conn.close()
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
-        entries = t._load_entries(conn)
+        entries = store.list_entries()
         assert len(entries) == 2
-        # Should be ordered by elo_rating DESC
-        assert entries[0].elo_rating == 1200.0
-        assert entries[1].elo_rating == 800.0
-        conn.close()
 
 
 # ===========================================================================
@@ -378,9 +338,9 @@ class TestDBHelpers:
 class TestLifecycle:
     """Test thread start/stop behavior."""
 
-    def test_start_stop_lifecycle(self, tournament_db, league_dir):
+    def test_start_stop_lifecycle(self, store):
         """start() should spawn a thread; stop() should join it."""
-        t = _make_tournament(tournament_db, league_dir)
+        t = _make_tournament(store)
         assert not t.is_running
 
         # Mock _run_loop to avoid needing VecEnv
@@ -390,9 +350,9 @@ class TestLifecycle:
             t.stop(timeout=2.0)
             assert not t.is_running
 
-    def test_double_start_is_idempotent(self, tournament_db, league_dir):
+    def test_double_start_is_idempotent(self, store):
         """Calling start() twice should not spawn a second thread."""
-        t = _make_tournament(tournament_db, league_dir)
+        t = _make_tournament(store)
 
         with patch.object(t, "_run_loop", side_effect=lambda: t._stop_event.wait()):
             t.start()
@@ -401,14 +361,14 @@ class TestLifecycle:
             assert t._thread is thread1
             t.stop(timeout=2.0)
 
-    def test_stop_without_start(self, tournament_db, league_dir):
+    def test_stop_without_start(self, store):
         """stop() when no thread is running should not raise."""
-        t = _make_tournament(tournament_db, league_dir)
+        t = _make_tournament(store)
         t.stop()  # no-op, should not raise
 
-    def test_is_running_reflects_thread_state(self, tournament_db, league_dir):
+    def test_is_running_reflects_thread_state(self, store):
         """is_running should be False after the thread naturally exits."""
-        t = _make_tournament(tournament_db, league_dir)
+        t = _make_tournament(store)
         exit_event = threading.Event()
 
         def quick_exit():
@@ -425,41 +385,35 @@ class TestLifecycle:
 
 
 # ===========================================================================
-# Bye carry-forward (integration-level, but no VecEnv)
+# Constructor validation
 # ===========================================================================
 
 
-class TestByeCarryForward:
-    """Test that bye entries get their Elo recorded in elo_history."""
+class TestConstructor:
+    """Test that the new constructor accepts store and scheduler."""
 
-    def test_bye_elo_history_written(self, tournament_db, league_dir):
-        """When a bye entry exists, its current Elo should be inserted
-        into elo_history at the current epoch."""
-        conn = sqlite3.connect(tournament_db)
-        conn.row_factory = sqlite3.Row
-        bye_entry = _make_entry(3, elo=1100.0)
-        _insert_entry(conn, bye_entry)
-        conn.close()
+    def test_constructor_stores_references(self, store):
+        scheduler = _make_scheduler()
+        t = LeagueTournament(store=store, scheduler=scheduler, device="cpu")
+        assert t.store is store
+        assert t.scheduler is scheduler
 
-        t = _make_tournament(tournament_db, league_dir)
-        conn = t._open_connection()
+    def test_constructor_defaults(self, store):
+        scheduler = _make_scheduler()
+        t = LeagueTournament(store=store, scheduler=scheduler, device="cpu")
+        assert t.num_envs == 64
+        assert t.max_ply == 512
+        assert t.games_per_match == 64
+        assert t.k_factor == 16.0
+        assert t.pause_seconds == 5.0
+        assert t.min_pool_size == 3
 
-        # Simulate the bye carry-forward from _run_loop
-        epoch = 10
-        row = conn.execute(
-            "SELECT elo_rating FROM league_entries WHERE id = ?", (bye_entry.id,)
-        ).fetchone()
-        assert row is not None
-        conn.execute(
-            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (bye_entry.id, epoch, row["elo_rating"]),
+    def test_constructor_overrides(self, store):
+        scheduler = _make_scheduler()
+        t = LeagueTournament(
+            store=store, scheduler=scheduler, device="cpu",
+            num_envs=8, games_per_match=16, k_factor=32.0,
         )
-        conn.commit()
-
-        history = conn.execute(
-            "SELECT * FROM elo_history WHERE entry_id = ? AND epoch = ?",
-            (bye_entry.id, epoch),
-        ).fetchone()
-        assert history is not None
-        assert history["elo_rating"] == 1100.0
-        conn.close()
+        assert t.num_envs == 8
+        assert t.games_per_match == 16
+        assert t.k_factor == 32.0

@@ -41,25 +41,58 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class FrontierStaticConfig:
+    slots: int = 5
+    review_interval_epochs: int = 250
+    min_tenure_epochs: int = 100
+    promotion_margin_elo: float = 50.0
+
+
+@dataclass(frozen=True)
+class RecentFixedConfig:
+    slots: int = 5
+    min_games_for_review: int = 32
+    min_unique_opponents: int = 6
+    promotion_margin_elo: float = 25.0
+    soft_overflow: int = 1
+
+
+@dataclass(frozen=True)
+class DynamicConfig:
+    slots: int = 10
+    protection_matches: int = 24
+    min_games_before_eviction: int = 40
+    training_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class MatchSchedulerConfig:
+    learner_dynamic_ratio: float = 0.50
+    learner_frontier_ratio: float = 0.30
+    learner_recent_ratio: float = 0.20
+    tournament_games_per_pair: int = 3  # best-of-3 round-robin
+
+
+@dataclass(frozen=True)
 class LeagueConfig:
-    max_pool_size: int = 20
     snapshot_interval: int = 10
     epochs_per_seat: int = 50
-    historical_ratio: float = 0.8
-    current_best_ratio: float = 0.2
     initial_elo: float = 1000.0
     elo_k_factor: float = 32.0
     elo_floor: float = 500.0
-    color_randomization: bool = True     # Per-game color randomization (Change 2)
-    per_env_opponents: bool = True       # Per-env sticky opponents (Change 3)
-    opponent_device: str | None = None  # e.g. "cuda:1" — defaults to learner device
-    # Background round-robin tournament for Elo calibration
+    color_randomization: bool = True
+    per_env_opponents: bool = True
+    opponent_device: str | None = None
     tournament_enabled: bool = False
-    tournament_device: str | None = None  # defaults to opponent_device
+    tournament_device: str | None = None
     tournament_num_envs: int = 64
     tournament_games_per_match: int = 64
     tournament_k_factor: float = 16.0
     tournament_pause_seconds: float = 5.0
+    frontier: FrontierStaticConfig = FrontierStaticConfig()
+    recent: RecentFixedConfig = RecentFixedConfig()
+    dynamic: DynamicConfig = DynamicConfig()
+    scheduler: MatchSchedulerConfig = MatchSchedulerConfig()
 
     def __post_init__(self) -> None:
         if self.epochs_per_seat < 1:
@@ -70,11 +103,15 @@ class LeagueConfig:
             raise ValueError(
                 f"league.snapshot_interval must be >= 1, got {self.snapshot_interval}"
             )
-        ratio_sum = self.historical_ratio + self.current_best_ratio
-        if abs(ratio_sum - 1.0) > 1e-6:
+        s = self.scheduler
+        learner_sum = s.learner_dynamic_ratio + s.learner_frontier_ratio + s.learner_recent_ratio
+        if abs(learner_sum - 1.0) > 1e-6:
             raise ValueError(
-                f"League ratio sum must be 1.0, got "
-                f"{self.historical_ratio} + {self.current_best_ratio} = {ratio_sum}"
+                f"learner mix ratio sum must be 1.0, got {learner_sum}"
+            )
+        if self.scheduler.tournament_games_per_pair < 1:
+            raise ValueError(
+                f"tournament_games_per_pair must be >= 1, got {self.scheduler.tournament_games_per_pair}"
             )
 
 
@@ -182,7 +219,22 @@ def load_config(path: Path) -> AppConfig:
 
     league_config = None
     if "league" in raw:
-        league_config = LeagueConfig(**raw["league"])  # ratio validation in __post_init__
+        lg = dict(raw["league"])
+        frontier_raw = lg.pop("frontier", {})
+        recent_raw = lg.pop("recent", {})
+        dynamic_raw = lg.pop("dynamic", {})
+        scheduler_raw = lg.pop("scheduler", {})
+        # Strip legacy keys removed during tiered-pool migration
+        _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
+        for key in _legacy_league_keys:
+            lg.pop(key, None)
+        league_config = LeagueConfig(
+            **lg,
+            frontier=FrontierStaticConfig(**frontier_raw),
+            recent=RecentFixedConfig(**recent_raw),
+            dynamic=DynamicConfig(**dynamic_raw),
+            scheduler=MatchSchedulerConfig(**scheduler_raw),
+        )
 
     demo_config = None
     if "demonstrator" in raw:

@@ -1,0 +1,159 @@
+"""TieredPool -- orchestrator for the tiered opponent league."""
+
+from __future__ import annotations
+
+import logging
+
+from keisei.config import LeagueConfig
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
+from keisei.training.tier_managers import (
+    DynamicManager,
+    FrontierManager,
+    RecentFixedManager,
+    ReviewOutcome,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class TieredPool:
+    """High-level orchestrator tying together the three tier managers."""
+
+    def __init__(self, store: OpponentStore, config: LeagueConfig) -> None:
+        self.store = store
+        self.config = config
+        self.frontier_manager = FrontierManager(store, config.frontier)
+        self.recent_manager = RecentFixedManager(store, config.recent)
+        self.dynamic_manager = DynamicManager(store, config.dynamic)
+        self.recent_manager.set_weakest_elo_fn(self.dynamic_manager.weakest_elo)
+
+    # ------------------------------------------------------------------
+    # Snapshot
+    # ------------------------------------------------------------------
+
+    def snapshot_learner(
+        self, model: object, arch: str, params: dict, epoch: int
+    ) -> OpponentEntry:
+        """Take a learner snapshot and admit it to the Recent Fixed tier.
+
+        If the tier overflows, the oldest entry is reviewed for promotion
+        to Dynamic or retirement.
+        """
+        entry = self.recent_manager.admit(model, arch, params, epoch)
+
+        if self.recent_manager.count() > self.config.recent.slots:
+            outcome, oldest = self.recent_manager.review_oldest()
+            if outcome is ReviewOutcome.PROMOTE:
+                with self.store.transaction():
+                    self.dynamic_manager.admit(oldest)
+                    self.store.retire_entry(oldest.id, "promoted to dynamic")
+            elif outcome is ReviewOutcome.RETIRE:
+                self.store.retire_entry(oldest.id, "did not qualify for dynamic")
+            # DELAY: do nothing, let it sit in overflow
+
+        return entry
+
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
+
+    def entries_by_role(self) -> dict[Role, list[OpponentEntry]]:
+        """Return active entries grouped by role."""
+        return {
+            Role.FRONTIER_STATIC: self.store.list_by_role(Role.FRONTIER_STATIC),
+            Role.RECENT_FIXED: self.store.list_by_role(Role.RECENT_FIXED),
+            Role.DYNAMIC: self.store.list_by_role(Role.DYNAMIC),
+        }
+
+    def list_all_active(self) -> list[OpponentEntry]:
+        """Return all active entries across all tiers."""
+        return self.store.list_entries()
+
+    # ------------------------------------------------------------------
+    # Epoch hooks
+    # ------------------------------------------------------------------
+
+    def on_epoch_end(self, epoch: int) -> None:
+        """Run end-of-epoch maintenance (frontier review, etc.)."""
+        if self.frontier_manager.is_due_for_review(epoch):
+            self.frontier_manager.review(epoch)
+
+    # ------------------------------------------------------------------
+    # Bootstrap
+    # ------------------------------------------------------------------
+
+    def bootstrap_from_flat_pool(self) -> None:
+        """One-time migration: assign roles to UNASSIGNED entries.
+
+        Allocation order:
+        1. Recent Fixed -- most recent N entries by epoch
+        2. Frontier Static -- Elo-spread quintile selection from remaining
+        3. Dynamic -- everything left, sorted by Elo descending
+        """
+        with self.store.transaction():
+            if self.store.is_bootstrapped():
+                logger.info("Bootstrap already complete, skipping")
+                return
+
+            entries = [
+                e for e in self.store.list_entries() if e.role is Role.UNASSIGNED
+            ]
+            if not entries:
+                self.store.set_bootstrapped()
+                return
+
+            n = len(entries)
+
+            # --- Recent Fixed: most recent N by epoch ---
+            n_recent = max(1, round(n * 0.25)) if n >= 3 else (1 if n >= 2 else 0)
+            entries_by_epoch = sorted(
+                entries, key=lambda e: e.created_epoch, reverse=True
+            )
+            recent_selected = entries_by_epoch[:n_recent]
+            recent_ids = {e.id for e in recent_selected}
+            for e in recent_selected:
+                self.store.update_role(
+                    e.id, Role.RECENT_FIXED, "bootstrap: recent fixed"
+                )
+
+            # --- Frontier Static: quintile Elo spread from remaining ---
+            remaining_after_recent = [e for e in entries if e.id not in recent_ids]
+            n_frontier = (
+                max(1, round(n * 0.25)) if n >= 3 else (1 if n >= 1 else 0)
+            )
+            frontier_selected = self.frontier_manager.select_initial(
+                remaining_after_recent, count=n_frontier
+            )
+            frontier_ids = {e.id for e in frontier_selected}
+            for e in frontier_selected:
+                self.store.update_role(
+                    e.id, Role.FRONTIER_STATIC, "bootstrap: frontier static"
+                )
+
+            # --- Dynamic: rest, sorted by Elo descending ---
+            assigned_ids = recent_ids | frontier_ids
+            n_dynamic = n - len(recent_selected) - len(frontier_selected)
+            dynamic_candidates = sorted(
+                [e for e in entries if e.id not in assigned_ids],
+                key=lambda e: e.elo_rating,
+                reverse=True,
+            )
+            for e in dynamic_candidates[:n_dynamic]:
+                self.store.update_role(e.id, Role.DYNAMIC, "bootstrap: dynamic")
+
+            # Retire any remainder (shouldn't happen, but defensive)
+            dynamic_ids = {e.id for e in dynamic_candidates[:n_dynamic]}
+            for e in entries:
+                if e.id not in assigned_ids and e.id not in dynamic_ids:
+                    self.store.retire_entry(
+                        e.id, "bootstrap: excess entry retired"
+                    )
+
+            self.store.set_bootstrapped()
+
+        logger.info(
+            "Bootstrap complete: %d recent, %d frontier, %d dynamic",
+            len(recent_selected),
+            len(frontier_selected),
+            min(n_dynamic, len(dynamic_candidates)),
+        )

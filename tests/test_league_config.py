@@ -59,7 +59,6 @@ def test_load_config_with_league(tmp_path):
     toml_file.write_text(LEAGUE_TOML)
     config = load_config(toml_file)
     assert config.league is not None
-    assert config.league.max_pool_size == 20
     assert config.league.elo_floor == 500
 
 
@@ -74,7 +73,6 @@ def test_load_config_with_demonstrator(tmp_path):
 
 def test_league_config_defaults():
     lc = LeagueConfig()
-    assert lc.max_pool_size == 20
     assert lc.snapshot_interval == 10
     assert lc.epochs_per_seat == 50
     assert lc.elo_floor == 500
@@ -103,9 +101,9 @@ def test_load_config_without_league_section(tmp_path):
     assert config.demonstrator is None
 
 
-def test_league_ratio_validation(tmp_path):
-    """historical_ratio + current_best_ratio must equal 1.0."""
-    bad_toml = LEAGUE_TOML.replace("historical_ratio = 0.8", "historical_ratio = 0.6")
+def test_league_scheduler_ratio_validation(tmp_path):
+    """learner mix ratios must sum to 1.0."""
+    bad_toml = LEAGUE_TOML + "\n[league.scheduler]\nlearner_dynamic_ratio = 0.9\n"
     toml_file = tmp_path / "badratio.toml"
     toml_file.write_text(bad_toml)
     with pytest.raises(ValueError, match="ratio"):
