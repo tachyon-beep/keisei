@@ -48,28 +48,14 @@ Keisei's neural network design draws heavily from two published systems:
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────┐
-│  Python Training Harness (keisei)                 │
-│  ┌────────────┐ ┌───────────┐ ┌────────────────┐  │
-│  │ PPO / GAE  │ │ Models    │ │ Training Loop  │  │
-│  │ KataGo-PPO │ │ SE-ResNet │ │ Config, DB,    │  │
-│  │ Value      │ │ ResNet    │ │ Checkpoints,   │  │
-│  │ Adapters   │ │ MLP       │ │ SL Warmup      │  │
-│  │            │ │ Transf.   │ │                │  │
-│  └────────────┘ └───────────┘ └────────────────┘  │
-│                      │                             │
-│               PyO3 bindings                        │
-├───────────────────────────────────────────────────┤
-│  Rust Engine (shogi-engine)                       │
-│  ┌──────────────────────┐ ┌─────────────────────┐ │
-│  │ shogi-core           │ │ shogi-gym           │ │
-│  │ Board, Pieces,       │ │ VecEnv, Obs (46/50  │ │
-│  │ Move Generation,     │ │ channel), Action     │ │
-│  │ Rules, SFEN, Zobrist │ │ Mapping, Spectator  │ │
-│  └──────────────────────┘ └─────────────────────┘ │
-└───────────────────────────────────────────────────┘
-```
+| Layer | Component | Description |
+|-------|-----------|-------------|
+| **Python Training Harness** (`keisei`) | PPO / GAE | KataGo-PPO, Value Adapters |
+| | Models | SE-ResNet, ResNet, MLP, Transformer |
+| | Training Loop | Config, DB, Checkpoints, SL Warmup |
+| | | *PyO3 bindings* |
+| **Rust Engine** (`shogi-engine`) | shogi-core | Board, Pieces, Move Generation, Rules, SFEN, Zobrist |
+| | shogi-gym | VecEnv, Obs (46/50 channel), Action Mapping, Spectator |
 
 ### Rust Engine (`shogi-engine/`)
 
@@ -224,7 +210,7 @@ Two algorithm variants:
 L = lambda_policy * L_policy + lambda_value * L_value + lambda_score * L_score - lambda_entropy * H(pi)
 ```
 
-Default weights: `lambda_policy=1.0`, `lambda_value=1.5`, `lambda_score=0.02`,
+Default weights: `lambda_policy=1.0`, `lambda_value=1.5`, `lambda_score=0.1`,
 `lambda_entropy=0.01`. The higher weight on value reflects the priority of
 accurate position evaluation in early training — good advantage estimates
 require good value predictions.
@@ -289,7 +275,7 @@ provided:
 |                               | `epochs_per_batch`    | 4           | PPO update epochs per rollout        |
 |                               | `batch_size`          | 256         | Mini-batch size                      |
 |                               | `lambda_value`        | 1.5         | Value loss weight                    |
-|                               | `lambda_score`        | 0.02        | Score loss weight                    |
+|                               | `lambda_score`        | 0.1         | Score loss weight                    |
 |                               | `lambda_entropy`      | 0.01        | Entropy bonus weight                 |
 |                               | `grad_clip`           | 1.0         | Global gradient norm clip            |
 | `[model]`                     | `architecture`        | `se_resnet` | SE-ResNet with KataGo-style heads    |
@@ -322,10 +308,10 @@ uv run mypy keisei/
 
 ## Testing
 
-- **304 Python tests** covering config loading, database operations,
+- **674 Python tests** covering config loading, database operations,
   checkpointing, all four model architectures, both PPO variants, value
   adapters, the training loop, and supervised learning preparation.
-- **111 Rust tests** across shogi-core (move generation, rules, SFEN, position
+- **363 Rust tests** across shogi-core (move generation, rules, SFEN, position
   logic) and shogi-gym (observations, action mapping, VecEnv, spectator data).
 
 ## License
