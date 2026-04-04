@@ -904,6 +904,153 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // piece_value — direct tests for all combinations
+    // -----------------------------------------------------------------------
+
+    /// All (PieceType, promoted) combinations return the expected values.
+    #[test]
+    fn test_piece_value_all_combinations() {
+        // Unpromoted
+        assert_eq!(piece_value(PieceType::Pawn, false), 1, "Pawn unpromoted");
+        assert_eq!(piece_value(PieceType::Lance, false), 3, "Lance unpromoted");
+        assert_eq!(piece_value(PieceType::Knight, false), 4, "Knight unpromoted");
+        assert_eq!(piece_value(PieceType::Silver, false), 5, "Silver unpromoted");
+        assert_eq!(piece_value(PieceType::Gold, false), 6, "Gold");
+        assert_eq!(piece_value(PieceType::Bishop, false), 8, "Bishop unpromoted");
+        assert_eq!(piece_value(PieceType::Rook, false), 10, "Rook unpromoted");
+        assert_eq!(piece_value(PieceType::King, false), 0, "King unpromoted");
+
+        // Promoted
+        assert_eq!(piece_value(PieceType::Pawn, true), 7, "Tokin (promoted pawn)");
+        assert_eq!(piece_value(PieceType::Lance, true), 6, "Promoted lance");
+        assert_eq!(piece_value(PieceType::Knight, true), 6, "Promoted knight");
+        assert_eq!(piece_value(PieceType::Silver, true), 6, "Promoted silver");
+        // Gold cannot promote in standard Shogi; this arm is a defensive fallback,
+        // intentionally equal to the unpromoted value.
+        assert_eq!(piece_value(PieceType::Gold, true), 6, "Gold (promoted arm — defensive fallback)");
+        assert_eq!(piece_value(PieceType::Bishop, true), 10, "Horse (promoted bishop)");
+        assert_eq!(piece_value(PieceType::Rook, true), 12, "Dragon (promoted rook)");
+        assert_eq!(piece_value(PieceType::King, true), 0, "King promoted arm");
+    }
+
+    /// Promoted pieces are worth strictly more than unpromoted for all promotable types.
+    /// Gold is excluded because it cannot promote in standard Shogi.
+    /// King is excluded because it has value 0 in both states.
+    #[test]
+    fn test_piece_value_promotion_increases_value() {
+        for &pt in &[PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+                     PieceType::Silver, PieceType::Bishop, PieceType::Rook] {
+            assert!(
+                piece_value(pt, true) > piece_value(pt, false),
+                "{:?}: promoted value should exceed unpromoted",
+                pt
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // material_balance — direct tests
+    // -----------------------------------------------------------------------
+
+    /// Starting position is perfectly symmetric: balance = 0 for both sides.
+    #[test]
+    fn test_material_balance_startpos_is_zero() {
+        let pos = Position::startpos();
+        let black_balance = material_balance(&pos, Color::Black);
+        let white_balance = material_balance(&pos, Color::White);
+        assert_eq!(black_balance, 0, "Black material balance at startpos should be 0");
+        assert_eq!(white_balance, 0, "White material balance at startpos should be 0");
+    }
+
+    /// Perspective antisymmetry: balance(pos, Black) == -balance(pos, White).
+    /// Tested on a genuinely asymmetric position (startpos trivially passes as 0 == -0).
+    #[test]
+    fn test_material_balance_perspective_negation() {
+        // Use an asymmetric position so the property is non-trivially exercised
+        let mut pos2 = Position::empty();
+        pos2.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos2.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+        // Black has an extra rook
+        pos2.set_piece(Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false));
+        pos2.hash = pos2.compute_hash();
+        assert_eq!(
+            material_balance(&pos2, Color::Black),
+            -material_balance(&pos2, Color::White),
+            "material_balance must negate for asymmetric position"
+        );
+    }
+
+    /// Black advantage: Black has extra rook (+10), White has no compensating material.
+    #[test]
+    fn test_material_balance_black_has_extra_rook() {
+        let mut pos = Position::empty();
+        pos.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+        pos.set_piece(Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false));
+        pos.hash = pos.compute_hash();
+
+        let bal = material_balance(&pos, Color::Black);
+        assert_eq!(bal, piece_value(PieceType::Rook, false),
+            "Black with extra rook should have balance = rook value");
+    }
+
+    /// Hand pieces count toward material balance.
+    #[test]
+    fn test_material_balance_hand_pieces_counted() {
+        let mut pos = Position::empty();
+        pos.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+        // Give Black a gold in hand
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 1);
+        pos.hash = pos.compute_hash();
+
+        let bal = material_balance(&pos, Color::Black);
+        assert_eq!(bal, piece_value(PieceType::Gold, false),
+            "Gold in hand should contribute its value to material balance");
+    }
+
+    /// Promoted pieces use promoted value, not base value.
+    #[test]
+    fn test_material_balance_promoted_piece_uses_promoted_value() {
+        let mut pos = Position::empty();
+        pos.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+        // Black has a Dragon (promoted rook) on board
+        pos.set_piece(Square::from_row_col(4, 0).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, true));
+        pos.hash = pos.compute_hash();
+
+        let bal = material_balance(&pos, Color::Black);
+        assert_eq!(bal, piece_value(PieceType::Rook, true),
+            "Dragon (promoted rook) should be valued at promoted rook value (12), not 10");
+    }
+
+    /// King is excluded from material balance.
+    #[test]
+    fn test_material_balance_king_excluded() {
+        let mut pos = Position::empty();
+        pos.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+        pos.hash = pos.compute_hash();
+
+        // Only kings on board — balance must be 0 (kings excluded)
+        assert_eq!(material_balance(&pos, Color::Black), 0,
+            "Kings-only position should have balance 0");
+    }
+
+    // -----------------------------------------------------------------------
     // Impasse (CSA 24-point rule) — Gap #4
     // -----------------------------------------------------------------------
 
@@ -1030,6 +1177,158 @@ mod tests {
             }
             other => panic!("Expected Impasse, got {:?}", other),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Impasse winner cases (one side >= 24, other < 24)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a position where both kings have entered the opponent's camp
+    /// and both sides have 10+ pieces in their promotion zone, with configurable
+    /// piece counts so we can tune the score to any value.
+    ///
+    /// Black king at (0,4), White king at (8,4).
+    /// Black gets `black_pawns` pawns in rows 0-2 plus its king (so black_count = 1 + black_pawns).
+    /// White gets `white_pawns` pawns in rows 6-8 plus its king (so white_count = 1 + white_pawns).
+    fn make_impasse_position(
+        black_pawns: u8,
+        black_hand_rooks: u8, // rooks in hand for Black (5 impasse pts each)
+        white_pawns: u8,
+        white_hand_rooks: u8, // rooks in hand for White (5 impasse pts each)
+    ) -> Position {
+        // 3 rows x 9 cols minus 1 king square = 26 available squares per side
+        assert!(black_pawns <= 26, "Cannot place {} Black pawns (max 26)", black_pawns);
+        assert!(white_pawns <= 26, "Cannot place {} White pawns (max 26)", white_pawns);
+
+        let mut pos = Position::empty();
+        // Kings already in opponent's camp
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        pos.set_piece(Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+
+        // Black pawns scattered across rows 0-2 (avoiding col 4 where king is)
+        let mut black_placed = 0u8;
+        'outer_b: for r in 0u8..3 {
+            for c in 0u8..9 {
+                if r == 0 && c == 4 { continue; } // king's square
+                if black_placed >= black_pawns { break 'outer_b; }
+                pos.set_piece(Square::from_row_col(r, c).unwrap(),
+                    Piece::new(PieceType::Pawn, Color::Black, false));
+                black_placed += 1;
+            }
+        }
+        assert_eq!(black_placed, black_pawns,
+            "Failed to place all Black pawns: placed {}, wanted {}", black_placed, black_pawns);
+
+        // White pawns scattered across rows 6-8 (avoiding col 4 where king is)
+        let mut white_placed = 0u8;
+        'outer_w: for r in 6u8..9 {
+            for c in 0u8..9 {
+                if r == 8 && c == 4 { continue; } // king's square
+                if white_placed >= white_pawns { break 'outer_w; }
+                pos.set_piece(Square::from_row_col(r, c).unwrap(),
+                    Piece::new(PieceType::Pawn, Color::White, false));
+                white_placed += 1;
+            }
+        }
+        assert_eq!(white_placed, white_pawns,
+            "Failed to place all White pawns: placed {}, wanted {}", white_placed, white_pawns);
+
+        // Extra rooks in hand to tune the score
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, black_hand_rooks);
+        pos.set_hand_count(Color::White, HandPieceType::Rook, white_hand_rooks);
+
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+        pos
+    }
+
+    /// Black >= 24, White < 24 → Black wins.
+    ///
+    /// Black: King + 9 pawns (board) = 9 pts + 3 rooks in hand (15 pts) = 24 pts.
+    /// White: King + 9 pawns = 9 pts < 24. White count in zone = 10 (king+9 pawns).
+    /// But wait — check_impasse requires both sides to have 10+ pieces in zone.
+    /// King itself counts as 1, so 9 pawns + king = 10 for both. Good.
+    #[test]
+    fn test_check_impasse_black_wins() {
+        // Black: 9 board pawns + 3 hand rooks = 9 + 15 = 24
+        // White: 9 board pawns + 0 hand = 9 < 24
+        let pos = make_impasse_position(9, 3, 9, 0);
+
+        // Verify zone counts
+        let black_in_zone = count_pieces_in_promotion_zone(&pos, Color::Black);
+        let white_in_zone = count_pieces_in_promotion_zone(&pos, Color::White);
+        assert!(black_in_zone >= 10,
+            "Black needs 10+ pieces in zone, got {}", black_in_zone);
+        assert!(white_in_zone >= 10,
+            "White needs 10+ pieces in zone, got {}", white_in_zone);
+
+        let black_score = compute_impasse_score(&pos, Color::Black);
+        let white_score = compute_impasse_score(&pos, Color::White);
+        assert!(black_score >= 24,
+            "Black score should be >= 24, got {}", black_score);
+        assert!(white_score < 24,
+            "White score should be < 24, got {}", white_score);
+
+        let gs = GameState::from_position(pos, 500);
+        let result = check_impasse(&gs);
+        assert!(result.is_some(), "Impasse should trigger");
+        match result.unwrap() {
+            GameResult::Impasse { winner: Some(Color::Black) } => {}
+            other => panic!("Expected Impasse {{ winner: Some(Black) }}, got {:?}", other),
+        }
+    }
+
+    /// White >= 24, Black < 24 → White wins.
+    ///
+    /// White: King + 9 pawns + 3 hand rooks = 9 + 15 = 24.
+    /// Black: King + 9 pawns = 9 < 24.
+    #[test]
+    fn test_check_impasse_white_wins() {
+        // Black: 9 board pawns + 0 hand = 9 < 24
+        // White: 9 board pawns + 3 hand rooks = 9 + 15 = 24
+        let pos = make_impasse_position(9, 0, 9, 3);
+
+        // Verify zone counts (symmetric with Black-wins test)
+        let black_in_zone = count_pieces_in_promotion_zone(&pos, Color::Black);
+        let white_in_zone = count_pieces_in_promotion_zone(&pos, Color::White);
+        assert!(black_in_zone >= 10,
+            "Black needs 10+ pieces in zone, got {}", black_in_zone);
+        assert!(white_in_zone >= 10,
+            "White needs 10+ pieces in zone, got {}", white_in_zone);
+
+        let black_score = compute_impasse_score(&pos, Color::Black);
+        let white_score = compute_impasse_score(&pos, Color::White);
+        assert!(white_score >= 24,
+            "White score should be >= 24, got {}", white_score);
+        assert!(black_score < 24,
+            "Black score should be < 24, got {}", black_score);
+
+        let gs = GameState::from_position(pos, 500);
+        let result = check_impasse(&gs);
+        assert!(result.is_some(), "Impasse should trigger");
+        match result.unwrap() {
+            GameResult::Impasse { winner: Some(Color::White) } => {}
+            other => panic!("Expected Impasse {{ winner: Some(White) }}, got {:?}", other),
+        }
+    }
+
+    /// Neither side reaches the 24-point score threshold → check_impasse returns
+    /// None even though both kings have entered and both have 10+ pieces in zone.
+    #[test]
+    fn test_check_impasse_neither_reaches_score_threshold_returns_none() {
+        // Both sides: 9 pawns = 9 pts each, well below 24
+        let pos = make_impasse_position(9, 0, 9, 0);
+
+        let black_score = compute_impasse_score(&pos, Color::Black);
+        let white_score = compute_impasse_score(&pos, Color::White);
+        assert!(black_score < 24, "Black score should be < 24, got {}", black_score);
+        assert!(white_score < 24, "White score should be < 24, got {}", white_score);
+
+        let gs = GameState::from_position(pos, 500);
+        assert_eq!(check_impasse(&gs), None,
+            "Neither side >= 24 should not trigger impasse");
     }
 
     // -----------------------------------------------------------------------
@@ -1613,161 +1912,36 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Material balance tests
+    // Impasse: one king entered, one not — should NOT trigger
     // -----------------------------------------------------------------------
 
+    /// Impasse requires BOTH kings to have entered the opponent's camp.
+    /// Here only Black's king has entered; White's king stays home.
     #[test]
-    fn test_piece_value_exhaustive() {
-        assert_eq!(piece_value(PieceType::Pawn, false), 1);
-        assert_eq!(piece_value(PieceType::Pawn, true), 7);
-        assert_eq!(piece_value(PieceType::Lance, false), 3);
-        assert_eq!(piece_value(PieceType::Lance, true), 6);
-        assert_eq!(piece_value(PieceType::Knight, false), 4);
-        assert_eq!(piece_value(PieceType::Knight, true), 6);
-        assert_eq!(piece_value(PieceType::Silver, false), 5);
-        assert_eq!(piece_value(PieceType::Silver, true), 6);
-        assert_eq!(piece_value(PieceType::Gold, false), 6);
-        assert_eq!(piece_value(PieceType::Gold, true), 6);
-        assert_eq!(piece_value(PieceType::Bishop, false), 8);
-        assert_eq!(piece_value(PieceType::Bishop, true), 10);
-        assert_eq!(piece_value(PieceType::Rook, false), 10);
-        assert_eq!(piece_value(PieceType::Rook, true), 12);
-        assert_eq!(piece_value(PieceType::King, false), 0);
-        assert_eq!(piece_value(PieceType::King, true), 0);
-    }
-
-    #[test]
-    fn test_material_balance_startpos() {
-        let state = GameState::new();
-        let black = material_balance(&state.position, Color::Black);
-        let white = material_balance(&state.position, Color::White);
-        assert_eq!(black, 0, "Startpos should have zero material balance");
-        assert_eq!(white, 0);
-    }
-
-    #[test]
-    fn test_material_balance_perspective_antisymmetric() {
-        // Test antisymmetry on a position with actual imbalance (not just zero)
-        use crate::types::HandPieceType;
+    fn test_check_impasse_only_one_king_entered_returns_none() {
         let mut pos = Position::empty();
-        pos.set_piece(
-            Square::from_row_col(0, 4).unwrap(),
-            Piece::new(PieceType::King, Color::White, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(8, 4).unwrap(),
-            Piece::new(PieceType::King, Color::Black, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(4, 4).unwrap(),
-            Piece::new(PieceType::Rook, Color::Black, false),
-        );
-        pos.set_hand_count(Color::White, HandPieceType::Pawn, 3);
+        // Black king entered White's camp (row 0)
+        pos.set_piece(Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false));
+        // White king has NOT entered — still in own territory (row 0 = White's home)
+        pos.set_piece(Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::White, false));
+
+        // Give Black 9 pawns in zone + 3 hand rooks = 24 pts (would qualify)
+        for c in [0u8, 1, 2, 3, 5, 6, 7, 8] {
+            pos.set_piece(Square::from_row_col(1, c).unwrap(),
+                Piece::new(PieceType::Pawn, Color::Black, false));
+        }
+        pos.set_piece(Square::from_row_col(2, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false));
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, 3);
+
+        // White has no pieces in Black's camp at all
         pos.current_player = Color::Black;
         pos.hash = pos.compute_hash();
 
-        let black = material_balance(&pos, Color::Black);
-        let white = material_balance(&pos, Color::White);
-        assert_eq!(black, 7);  // Rook(10) - 3 Pawns(3) = 7
-        assert_eq!(white, -7);
-        assert_eq!(black, -white, "Antisymmetry must hold on non-zero balance");
-    }
-
-    #[test]
-    fn test_material_balance_after_capture() {
-        use crate::types::HandPieceType;
-        let mut pos = Position::empty();
-        pos.set_piece(
-            Square::from_row_col(0, 4).unwrap(),
-            Piece::new(PieceType::King, Color::White, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(8, 4).unwrap(),
-            Piece::new(PieceType::King, Color::Black, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(4, 4).unwrap(),
-            Piece::new(PieceType::Rook, Color::Black, false),
-        );
-        pos.current_player = Color::Black;
-        pos.hash = pos.compute_hash();
-
-        assert_eq!(material_balance(&pos, Color::Black), 10);
-        assert_eq!(material_balance(&pos, Color::White), -10);
-    }
-
-    #[test]
-    fn test_material_balance_with_hand_pieces() {
-        use crate::types::HandPieceType;
-        let mut pos = Position::empty();
-        pos.set_piece(
-            Square::from_row_col(0, 4).unwrap(),
-            Piece::new(PieceType::King, Color::White, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(8, 4).unwrap(),
-            Piece::new(PieceType::King, Color::Black, false),
-        );
-        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 2);
-        pos.set_hand_count(Color::White, HandPieceType::Gold, 1);
-        pos.current_player = Color::Black;
-        pos.hash = pos.compute_hash();
-
-        assert_eq!(material_balance(&pos, Color::Black), -4); // 2 - 6
-        assert_eq!(material_balance(&pos, Color::White), 4);  // antisymmetric
-    }
-
-    #[test]
-    fn test_material_balance_mixed_board_and_hand() {
-        use crate::types::HandPieceType;
-        let mut pos = Position::empty();
-        pos.set_piece(
-            Square::from_row_col(0, 4).unwrap(),
-            Piece::new(PieceType::King, Color::White, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(8, 4).unwrap(),
-            Piece::new(PieceType::King, Color::Black, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(4, 4).unwrap(),
-            Piece::new(PieceType::Rook, Color::Black, false),
-        );
-        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
-        pos.set_piece(
-            Square::from_row_col(4, 0).unwrap(),
-            Piece::new(PieceType::Bishop, Color::White, false),
-        );
-        pos.set_hand_count(Color::White, HandPieceType::Lance, 2);
-        pos.current_player = Color::Black;
-        pos.hash = pos.compute_hash();
-
-        assert_eq!(material_balance(&pos, Color::Black), -3); // 11 - 14
-        assert_eq!(material_balance(&pos, Color::White), 3);
-    }
-
-    #[test]
-    fn test_material_balance_promoted_pieces() {
-        let mut pos = Position::empty();
-        pos.set_piece(
-            Square::from_row_col(0, 4).unwrap(),
-            Piece::new(PieceType::King, Color::White, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(8, 4).unwrap(),
-            Piece::new(PieceType::King, Color::Black, false),
-        );
-        pos.set_piece(
-            Square::from_row_col(4, 4).unwrap(),
-            Piece::new(PieceType::Rook, Color::Black, true), // Dragon = 12
-        );
-        pos.set_piece(
-            Square::from_row_col(4, 0).unwrap(),
-            Piece::new(PieceType::Rook, Color::White, false), // Rook = 10
-        );
-        pos.current_player = Color::Black;
-        pos.hash = pos.compute_hash();
-
-        assert_eq!(material_balance(&pos, Color::Black), 2); // 12 - 10
+        let gs = GameState::from_position(pos, 500);
+        assert_eq!(check_impasse(&gs), None,
+            "Impasse must not trigger when only one king has entered opponent's camp");
     }
 }

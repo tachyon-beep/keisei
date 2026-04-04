@@ -9,6 +9,7 @@ build/
 target/
 *.so
 *.dylib
+.cargo/
 
 # Environments
 .venv/
