@@ -12,7 +12,7 @@ import torch
 
 from keisei.config import AppConfig, DisplayConfig, LeagueConfig, ModelConfig, TrainingConfig
 from keisei.db import update_training_progress
-from keisei.training.distributed import DistributedContext, setup_distributed, cleanup_distributed
+from keisei.training.distributed import DistributedContext
 from keisei.training.katago_loop import KataGoTrainingLoop
 
 
@@ -621,7 +621,7 @@ class TestCheckResume:
         mock_env2 = _make_mock_katago_vecenv(num_envs=2)
         with patch("keisei.training.katago_loop.load_checkpoint") as mock_load:
             mock_load.return_value = {"epoch": 7, "step": 42}
-            loop2 = KataGoTrainingLoop(katago_config, vecenv=mock_env2, resume_mode="sl")
+            _loop2 = KataGoTrainingLoop(katago_config, vecenv=mock_env2, resume_mode="sl")
 
             # Verify load_checkpoint was called with skip_optimizer=True
             mock_load.assert_called_once()
@@ -634,7 +634,6 @@ class TestRotateSeatIsolation:
 
     def _make_loop_with_league(self, katago_config, tmp_path):
         """Helper: create a loop with league enabled and LR scheduler."""
-        import torch
 
         # Add lr_schedule to algorithm_params so LR scheduler is created
         algo_params = dict(katago_config.training.algorithm_params)
@@ -705,6 +704,7 @@ class TestCreateLrSchedulerUnknownType:
     def test_unknown_schedule_type_raises(self):
         """Passing an unknown schedule_type should raise ValueError."""
         import torch
+
         from keisei.training.katago_loop import create_lr_scheduler
 
         dummy_model = torch.nn.Linear(10, 10)
@@ -1097,8 +1097,6 @@ class TestRotateSeat:
         """Warmup should be extended relative to the rotation epoch."""
         mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
-        original_warmup = loop.ppo.warmup_epochs
-
         loop._rotate_seat(epoch=10)
         # warmup should be epoch+1 + original_duration
         assert loop.ppo.warmup_epochs == 11 + loop._original_warmup_duration
@@ -1205,7 +1203,7 @@ class TestSLToRLCheckpointHandoff:
 
         sl_model.eval()
         with torch.no_grad():
-            sl_output = sl_model(obs)
+            _sl_output = sl_model(obs)
 
         # Save SL checkpoint
         ckpt_path = tmp_path / "checkpoints" / "sl_checkpoint.pt"
@@ -1355,7 +1353,7 @@ class TestDDPDBInit:
              patch("keisei.training.katago_loop.DDP", side_effect=lambda m, **kw: m), \
              patch("keisei.training.katago_loop.dist.barrier"), \
              patch("keisei.training.katago_loop.dist.broadcast_object_list"):
-            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+            _loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
             mock_init.assert_not_called()
 
     def test_main_rank_calls_db_init(self):
@@ -1366,7 +1364,7 @@ class TestDDPDBInit:
         with patch("keisei.training.katago_loop.init_db") as mock_init, \
              patch("keisei.training.katago_loop.read_training_state", return_value=None), \
              patch("keisei.training.katago_loop.write_training_state"):
-            loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
+            _loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
             mock_init.assert_called_once()
 
 
@@ -1500,7 +1498,6 @@ class TestFairnessInteractions:
 
     def test_per_opponent_elo_isolation(self, fairness_config):
         """Per-opponent Elo attribution should not cross-contaminate between opponents."""
-        from keisei.training.league import compute_elo_update
 
         mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
         loop = KataGoTrainingLoop(fairness_config, vecenv=mock_env)
@@ -1531,10 +1528,5 @@ class TestFairnessInteractions:
 
         # Check that the two opponents get different Elo updates
         # (A should go down since learner won, B should go up since learner lost)
-        learner_entry = loop.pool._get_entry(loop._learner_entry_id)
-        base_elo = learner_entry.elo_rating if learner_entry else 1000.0
-        opp_a_elo_before = entries[0].elo_rating
-        opp_b_elo_before = entries[1].elo_rating if len(entries) > 1 else 1000.0
-
         # The results dict should have different contents for each opponent
         assert loop._opponent_results[opp_a_id] != loop._opponent_results.get(opp_b_id, None) or opp_a_id == opp_b_id

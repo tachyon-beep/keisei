@@ -734,7 +734,11 @@ class KataGoPPOAlgorithm:
                 acc_value_loss += value_loss.detach()
                 acc_score_loss += score_loss.detach()
                 acc_entropy += entropy.detach()
-                acc_grad_norm += grad_norm.detach() if isinstance(grad_norm, torch.Tensor) else torch.tensor(float(grad_norm), device=device)
+                acc_grad_norm += (
+                    grad_norm.detach()
+                    if isinstance(grad_norm, torch.Tensor)
+                    else torch.tensor(float(grad_norm), device=device)
+                )
                 num_updates += 1
 
                 # Save last mini-batch for value metrics (replaces extra eval pass)

@@ -1,9 +1,9 @@
 """Tests for the split-merge step logic in the unified training loop."""
 
-import numpy as np
-import pytest
-import torch
 from unittest.mock import MagicMock
+
+import numpy as np
+import torch
 
 from keisei.training.katago_loop import split_merge_step
 

@@ -1,12 +1,12 @@
 # tests/test_katago_model.py
 """Tests for the KataGo model architecture."""
 
-import torch
 import pytest
+import torch
 
+from keisei.training.model_registry import VALID_ARCHITECTURES, build_model, validate_model_params
 from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
-from keisei.training.models.se_resnet import SEResNetParams, GlobalPoolBiasBlock, SEResNetModel
-from keisei.training.model_registry import build_model, validate_model_params, VALID_ARCHITECTURES
+from keisei.training.models.se_resnet import GlobalPoolBiasBlock, SEResNetModel, SEResNetParams
 
 
 def test_katago_output_fields():

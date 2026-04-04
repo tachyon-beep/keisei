@@ -18,6 +18,9 @@ from keisei.config import AppConfig, load_config
 
 if TYPE_CHECKING:
     from keisei.training.value_adapter import ValueHeadAdapter
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 from keisei.db import (
     init_db,
     read_training_state,
@@ -28,18 +31,19 @@ from keisei.db import (
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-
 from keisei.training.distributed import (
-    DistributedContext, get_distributed_context,
-    setup_distributed, cleanup_distributed, seed_all_ranks,
+    DistributedContext,
+    cleanup_distributed,
+    get_distributed_context,
+    seed_all_ranks,
+    setup_distributed,
 )
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
     KataGoRolloutBuffer,
 )
+
 # scalar_value is used in split_merge_step to keep value computation
 # centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
 from keisei.training.league import OpponentEntry, OpponentPool, OpponentSampler, compute_elo_update
@@ -1293,13 +1297,13 @@ class KataGoTrainingLoop:
                         base_learner_elo = learner_entry.elo_rating
                         cumulative_learner_delta = 0.0
                         n_active = sum(
-                            1 for w, l, d in self._opponent_results.values()
-                            if w + l + d > 0
+                            1 for w, los, d in self._opponent_results.values()
+                            if w + los + d > 0
                         )
                         k_per_opp = k / max(1, n_active)
 
-                        for opp_id, (w, l, d) in self._opponent_results.items():
-                            opp_total = w + l + d
+                        for opp_id, (w, los, d) in self._opponent_results.items():
+                            opp_total = w + los + d
                             if opp_total == 0:
                                 continue
                             if opp_id == self._learner_entry_id:
@@ -1321,7 +1325,7 @@ class KataGoTrainingLoop:
                                 "opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
                                 base_learner_elo, learner_delta,
                                 opp_id, opp_entry.elo_rating, new_opp_elo,
-                                w, l, d,
+                                w, los, d,
                             )
 
                         # Apply cumulative learner Elo change once
@@ -1332,8 +1336,8 @@ class KataGoTrainingLoop:
                         logger.info(
                             "Elo: learner %.0f->%.0f (cumulative from %d opponents)",
                             base_learner_elo, final_learner_elo,
-                            sum(1 for w, l, d in self._opponent_results.values()
-                                if w + l + d > 0),
+                            sum(1 for w, los, d in self._opponent_results.values()
+                                if w + los + d > 0),
                         )
 
                 elif (self.pool is not None
@@ -1377,8 +1381,8 @@ class KataGoTrainingLoop:
                 # Without this, the carry-forward loop below would overwrite
                 # the per-opponent Elo updates with stale pre-epoch values.
                 if self._opponent_results is not None:
-                    for opp_id, (w, l, d) in self._opponent_results.items():
-                        if w + l + d > 0:
+                    for opp_id, (w, los, d) in self._opponent_results.items():
+                        if w + los + d > 0:
                             played_ids.add(opp_id)
                 for entry in self.pool.list_entries():
                     if entry.id not in played_ids:

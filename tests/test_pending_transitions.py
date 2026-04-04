@@ -5,8 +5,10 @@ import pytest
 import torch
 
 from keisei.training.katago_loop import (
-    to_learner_perspective, sign_correct_bootstrap, PendingTransitions,
+    PendingTransitions,
     _compute_value_cats,
+    sign_correct_bootstrap,
+    to_learner_perspective,
 )
 
 
@@ -802,7 +804,6 @@ class TestColorReRandomizationInvariant:
 
     def test_non_done_envs_unchanged_after_rerandomization(self):
         """learner_side for non-done envs must not change during re-randomization."""
-        num_envs = 4
         learner_side = np.array([0, 1, 0, 1], dtype=np.uint8)
         original = learner_side.copy()
 

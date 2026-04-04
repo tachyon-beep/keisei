@@ -10,13 +10,13 @@ import torch
 
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.gae import compute_gae
+from keisei.training.katago_loop import split_merge_step
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
     KataGoRolloutBuffer,
     compute_value_metrics,
 )
-from keisei.training.katago_loop import split_merge_step
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 
@@ -563,8 +563,8 @@ class TestTransformerKataGoIncompatibility:
     def test_transformer_returns_tuple_not_katago_output(self):
         """TransformerModel.forward() returns (policy, value) tuple,
         not KataGoOutput — it's incompatible with KataGoPPOAlgorithm."""
-        from keisei.training.models.transformer import TransformerModel, TransformerParams
         from keisei.training.models.katago_base import KataGoOutput
+        from keisei.training.models.transformer import TransformerModel, TransformerParams
 
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
         obs = torch.randn(2, 50, 9, 9)
@@ -576,8 +576,8 @@ class TestTransformerKataGoIncompatibility:
 
     def test_transformer_not_katago_base_model(self):
         """TransformerModel should not be a KataGoBaseModel subclass."""
-        from keisei.training.models.transformer import TransformerModel
         from keisei.training.models.katago_base import KataGoBaseModel
+        from keisei.training.models.transformer import TransformerModel
 
         assert not issubclass(TransformerModel, KataGoBaseModel)
 

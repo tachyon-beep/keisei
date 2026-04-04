@@ -6,12 +6,12 @@ from shogi_gym._native import (
     DefaultActionMapper,
     DefaultObservationGenerator,
     KataGoObservationGenerator,
-    SpatialActionMapper,
-    VecEnv,
-    SpectatorEnv,
-    StepResult,
     ResetResult,
+    SpatialActionMapper,
+    SpectatorEnv,
     StepMetadata,
+    StepResult,
+    VecEnv,
 )
 
 

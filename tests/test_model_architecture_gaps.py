@@ -11,10 +11,9 @@ import pytest
 import torch
 
 from keisei.training.models.base import BaseModel
-from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
+from keisei.training.models.katago_base import KataGoOutput
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 from keisei.training.models.transformer import TransformerModel, TransformerParams
-
 
 # ===========================================================================
 # SE-ResNet — param configuration variants

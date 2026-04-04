@@ -1,19 +1,19 @@
 # tests/test_katago_ppo.py
 """Tests for the KataGo multi-head PPO algorithm."""
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
-from unittest.mock import patch
-
+from keisei.training.algorithm_registry import VALID_ALGORITHMS, validate_algorithm_params
+from keisei.training.gae import compute_gae
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
     KataGoRolloutBuffer,
     compute_value_metrics,
 )
-from keisei.training.gae import compute_gae
-from keisei.training.algorithm_registry import validate_algorithm_params, VALID_ALGORITHMS
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 from keisei.training.value_adapter import MultiHeadValueAdapter
 

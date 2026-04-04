@@ -1,7 +1,7 @@
 """Tests for value-head adapters (scalar vs multi-head)."""
 
-import torch
 import pytest
+import torch
 
 from keisei.training.value_adapter import (
     MultiHeadValueAdapter,

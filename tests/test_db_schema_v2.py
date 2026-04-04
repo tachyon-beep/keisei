@@ -2,8 +2,6 @@
 
 import sqlite3
 
-import pytest
-
 from keisei.db import init_db
 
 

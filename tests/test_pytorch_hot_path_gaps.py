@@ -10,12 +10,12 @@ import torch
 from torch.amp import GradScaler
 
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
+from keisei.training.katago_loop import split_merge_step
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
     KataGoRolloutBuffer,
 )
-from keisei.training.katago_loop import split_merge_step
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 from keisei.training.value_adapter import MultiHeadValueAdapter
 

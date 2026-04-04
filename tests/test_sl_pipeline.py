@@ -11,8 +11,6 @@ from keisei.sl.dataset import SLDataset, write_shard
 from keisei.sl.parsers import (
     CSAParser,
     GameOutcome,
-    GameRecord,
-    ParsedMove,
     SFENParser,
 )
 
@@ -220,7 +218,6 @@ class TestCRLFLineEndings:
         fail, then having chardet detect Shift-JIS. Without the CRLF
         normalization fix, this produces 1 merged game instead of 2.
         """
-        import keisei.sl.parsers as parsers_mod
 
         csa_content = (
             "V2.2\r\nN+A\r\nN-B\r\n+\r\n"
@@ -242,10 +239,10 @@ class TestCRLFLineEndings:
 
     def test_sfen_crlf_defense_in_depth(self, tmp_path, monkeypatch):
         """SFEN normalization works even if read_text() didn't normalize."""
-        from keisei.sl.parsers import SFENParser
-
         # Monkeypatch read_text to return raw CRLF (bypassing universal newlines)
         from pathlib import Path
+
+        from keisei.sl.parsers import SFENParser
         original_read = Path.read_text
         crlf_text = (
             "result:win_black\r\nstartpos\r\n7g7f\r\n3c3d\r\n"
@@ -646,6 +643,7 @@ class TestSLTrainerSchedulerAndClipping:
     def test_scheduler_not_called_on_empty_dataset(self, small_model, tmp_path):
         """scheduler.step() should NOT be called when there is no data."""
         from unittest.mock import patch
+
         from keisei.sl.trainer import SLConfig, SLTrainer
 
         config = SLConfig(
@@ -736,7 +734,7 @@ class TestSLTrainerSchedulerAndClipping:
         loss.backward()
 
         # Measure total grad norm BEFORE clipping
-        norm_before = torch.nn.utils.clip_grad_norm_(
+        _norm_before = torch.nn.utils.clip_grad_norm_(
             trainer.model.parameters(), float("inf")
         )
 
@@ -756,7 +754,7 @@ class TestSLTrainerSchedulerAndClipping:
         trainer.optimizer.zero_grad()
         loss2.backward()
 
-        total_norm = torch.nn.utils.clip_grad_norm_(
+        _total_norm = torch.nn.utils.clip_grad_norm_(
             trainer.model.parameters(), small_clip
         )
 
@@ -837,8 +835,8 @@ class TestSLTrainerWithBinaryShards:
 
     def test_train_epoch_with_binary_shards(self, tmp_path, small_model):
         """Full pipeline using the actual binary shard format."""
-        from keisei.sl.dataset import write_shard, OBS_SIZE, SLDataset
-        from keisei.sl.trainer import SLTrainer, SLConfig
+        from keisei.sl.dataset import OBS_SIZE, SLDataset, write_shard
+        from keisei.sl.trainer import SLConfig, SLTrainer
 
         n_positions = 16
         rng = np.random.default_rng(42)
@@ -900,7 +898,7 @@ class TestSLTrainerExtended:
         return SEResNetModel(params)
 
     def _write_binary_shard(self, shard_dir, n_positions=16):
-        from keisei.sl.dataset import write_shard, OBS_SIZE
+        from keisei.sl.dataset import OBS_SIZE, write_shard
         rng = np.random.default_rng(42)
         observations = rng.standard_normal((n_positions, OBS_SIZE)).astype(np.float32)
         policy_targets = rng.integers(0, 11259, size=n_positions).astype(np.int64)
@@ -911,7 +909,7 @@ class TestSLTrainerExtended:
 
     def test_multi_epoch_lr_decreases(self, tmp_path, small_model):
         """CosineAnnealingLR should decrease LR over multiple epochs."""
-        from keisei.sl.trainer import SLTrainer, SLConfig
+        from keisei.sl.trainer import SLConfig, SLTrainer
         self._write_binary_shard(tmp_path)
         config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-3,
                           total_epochs=10, num_workers=0, lambda_policy=1.0,
@@ -926,7 +924,7 @@ class TestSLTrainerExtended:
 
     def test_empty_dataset_returns_zero_loss(self, tmp_path, small_model):
         """Training with no shards should return zero losses without error."""
-        from keisei.sl.trainer import SLTrainer, SLConfig
+        from keisei.sl.trainer import SLConfig, SLTrainer
         config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-3,
                           total_epochs=10, num_workers=0, lambda_policy=1.0,
                           lambda_value=1.5, lambda_score=0.02, grad_clip=1.0)
@@ -938,7 +936,7 @@ class TestSLTrainerExtended:
 
     def test_gradient_clipping_finite_metrics(self, tmp_path, small_model):
         """Training with tight gradient clipping should still produce finite metrics."""
-        from keisei.sl.trainer import SLTrainer, SLConfig
+        from keisei.sl.trainer import SLConfig, SLTrainer
         self._write_binary_shard(tmp_path)
         config = SLConfig(data_dir=str(tmp_path), batch_size=4, learning_rate=1e-1,
                           total_epochs=10, num_workers=0, lambda_policy=1.0,
@@ -1061,7 +1059,7 @@ class TestSLDatasetMultiShard:
 
     def test_cross_shard_boundary_access(self, tmp_path):
         """Access positions at shard boundary — verify no off-by-one."""
-        from keisei.sl.dataset import write_shard, OBS_SIZE, SLDataset
+        from keisei.sl.dataset import OBS_SIZE, SLDataset, write_shard
 
         rng = np.random.default_rng(42)
         n_per_shard = 5

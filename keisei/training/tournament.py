@@ -18,7 +18,6 @@ import logging
 import random
 import sqlite3
 import threading
-import time
 from pathlib import Path
 
 import numpy as np

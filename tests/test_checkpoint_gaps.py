@@ -9,7 +9,6 @@ import torch
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.models.resnet import ResNetModel, ResNetParams
 
-
 # ===================================================================
 # H4 — Optimizer state (momentum buffers, step counts) restored after load
 # ===================================================================

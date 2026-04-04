@@ -9,14 +9,20 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 import torch
-import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from keisei.config import (
-    AppConfig, DisplayConfig, DistributedConfig, ModelConfig, TrainingConfig,
+    AppConfig,
+    DisplayConfig,
+    DistributedConfig,
+    ModelConfig,
+    TrainingConfig,
 )
 from keisei.training.distributed import (
-    DistributedContext, setup_distributed, cleanup_distributed, seed_all_ranks,
+    DistributedContext,
+    cleanup_distributed,
+    seed_all_ranks,
+    setup_distributed,
 )
 from keisei.training.katago_loop import KataGoTrainingLoop
 

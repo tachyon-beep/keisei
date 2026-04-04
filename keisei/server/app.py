@@ -15,10 +15,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from keisei.db import (
+    read_elo_history,
     read_game_snapshots,
     read_game_snapshots_since,
     read_league_data,
-    read_elo_history,
     read_metrics_since,
     read_training_state,
 )
@@ -51,7 +51,6 @@ def _db_accessible(db_path: str) -> bool:
 
 def _get_system_stats() -> dict:
     """Get CPU and GPU utilization stats."""
-    import shutil
     stats = {}
     try:
         import psutil

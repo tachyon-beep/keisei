@@ -182,8 +182,9 @@ class TestOpponentPool:
 
     def test_load_opponent_missing_checkpoint_raises(self, league_db, league_dir):
         """load_opponent() should raise FileNotFoundError for deleted checkpoints."""
-        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
         import dataclasses
+
+        from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
         params = SEResNetParams(num_blocks=2, channels=32, se_reduction=8,
                                 global_pool_channels=16, policy_channels=8,
                                 value_fc_size=32, score_fc_size=16, obs_channels=50)

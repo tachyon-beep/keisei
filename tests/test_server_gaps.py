@@ -19,12 +19,10 @@ from keisei.db import (
     write_training_state,
 )
 from keisei.server.app import (
-    HEARTBEAT_STALE_S,
     TEST_ALLOWED_HOSTS,
     _training_alive,
     create_app,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

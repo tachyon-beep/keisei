@@ -1,11 +1,9 @@
 """Tests for league and demonstrator config extensions."""
 
-from pathlib import Path
 
 import pytest
 
 from keisei.config import DemonstratorConfig, LeagueConfig, load_config
-
 
 LEAGUE_TOML = """
 [model]

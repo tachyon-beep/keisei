@@ -7,7 +7,6 @@ import torch
 from keisei.training.models.mlp import MLPModel, MLPParams
 from keisei.training.models.resnet import ResNetModel, ResNetParams
 
-
 # ===================================================================
 # M1 — ResNet with num_layers=0
 # ===================================================================

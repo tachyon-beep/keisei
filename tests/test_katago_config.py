@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from keisei.config import load_config
-
+from keisei.config import DistributedConfig, load_config
 
 KATAGO_TOML = """
 [model]
@@ -82,8 +81,6 @@ def test_invalid_algorithm_rejected(tmp_path):
     with pytest.raises(ValueError, match="Unknown algorithm"):
         load_config(toml_file)
 
-
-from keisei.config import DistributedConfig
 
 
 class TestDistributedConfig:

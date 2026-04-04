@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-import torch
-import torch.nn as nn
 from pathlib import Path
 
-from keisei.training.checkpoint import save_checkpoint, load_checkpoint
+import torch
+import torch.nn as nn
+
+from keisei.training.checkpoint import load_checkpoint, save_checkpoint
+from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
+from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 
 class _TinyModel(nn.Module):
@@ -70,9 +73,6 @@ class TestGradScalerCheckpoint:
 
         assert scaler2.get_scale() == original_scale
 
-
-from keisei.training.katago_ppo import KataGoPPOParams, KataGoPPOAlgorithm, KataGoRolloutBuffer
-from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 
 def _make_ppo(use_amp: bool = False) -> KataGoPPOAlgorithm:

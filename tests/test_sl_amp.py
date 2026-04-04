@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pytest
 import torch
 
 from keisei.sl.dataset import OBS_SIZE, write_shard

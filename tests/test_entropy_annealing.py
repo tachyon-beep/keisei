@@ -1,7 +1,7 @@
 """Tests for smooth entropy annealing (R5)."""
 
-import torch
 import torch.nn as nn
+
 from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams
 
 

@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from keisei.sl.dataset import SCORE_NORMALIZATION, SLDataset
-from keisei.sl.parsers import GameOutcome
 from keisei.sl.prepare import prepare_sl_data
 
 

@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from keisei.training.algorithm_registry import validate_algorithm_params
-from keisei.training.model_registry import build_model, validate_model_params
-
+from keisei.training.model_registry import build_model
 
 # ===================================================================
 # H6 — PPOParams with extra/unknown kwargs and degenerate values

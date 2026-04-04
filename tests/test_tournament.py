@@ -10,14 +10,13 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from keisei.db import init_db
-from keisei.training.league import OpponentEntry, compute_elo_update
+from keisei.training.league import OpponentEntry
 from keisei.training.tournament import LeagueTournament
-
 
 # ---------------------------------------------------------------------------
 # Helpers

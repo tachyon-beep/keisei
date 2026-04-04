@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from keisei.training.checkpoint import save_checkpoint, load_checkpoint
+from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 

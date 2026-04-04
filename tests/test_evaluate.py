@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 import torch
 
 from keisei.training.evaluate import EvalResult, _play_evaluation_games, run_evaluation

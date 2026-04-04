@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 import torch
 
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
-from keisei.training.distributed import setup_distributed, DistributedContext
+from keisei.training.distributed import DistributedContext, setup_distributed
 from keisei.training.models.base import BaseModel
 from keisei.training.models.transformer import TransformerModel, TransformerParams
-
 
 # ---------------------------------------------------------------------------
 # Bug: Distributed resume restores rank-0 RNG to all ranks
@@ -239,7 +238,7 @@ class TestSEResNetParamsValidation:
 class TestShardSortOrder:
     def test_numeric_sort_order(self, tmp_path: Path) -> None:
         """Shards 9, 10, 11 should be in numeric order, not lex order."""
-        from keisei.sl.dataset import SLDataset, RECORD_SIZE
+        from keisei.sl.dataset import RECORD_SIZE, SLDataset
 
         # Create shards with names that would mis-sort lexicographically
         for idx in [9, 10, 11, 100]:

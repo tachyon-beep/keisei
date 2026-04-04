@@ -6,17 +6,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from keisei.db import (
-    init_db,
     read_game_snapshots,
     read_game_snapshots_since,
     read_training_state,
     update_heartbeat,
     write_game_snapshots,
 )
-
 
 # ===================================================================
 # H2 — write_game_snapshots with empty list
