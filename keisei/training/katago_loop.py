@@ -283,7 +283,7 @@ def split_merge_step(
         learner_log_probs = l_dist.log_prob(l_actions)
 
         if value_adapter is not None:
-            learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
+            learner_values = value_adapter.scalar_value_blended(l_output.value_logits, l_output.score_lead)
         else:
             learner_values = KataGoPPOAlgorithm.scalar_value(l_output.value_logits)
 
@@ -444,6 +444,15 @@ class KataGoTrainingLoop:
         self.ppo = KataGoPPOAlgorithm(
             ppo_params, self._base_model, forward_model=self.model,
             warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
+        )
+
+        from keisei.training.value_adapter import get_value_adapter
+        _model_contract = "multi_head" if config.model.architecture in _KATAGO_ARCHITECTURES else "scalar"
+        self.value_adapter = get_value_adapter(
+            model_contract=_model_contract,
+            lambda_value=ppo_params.lambda_value,
+            lambda_score=ppo_params.lambda_score,
+            score_blend_alpha=ppo_params.score_blend_alpha,
         )
 
         # LR scheduler (optional — only if lr_schedule config is present)
@@ -780,6 +789,7 @@ class KataGoTrainingLoop:
                         learner_model=self.model,
                         opponent_model=self._current_opponent,
                         learner_side=learner_side,
+                        value_adapter=self.value_adapter,
                     )
                     actions = sm_result.actions
                     action_list = actions.tolist()
@@ -894,7 +904,9 @@ class KataGoTrainingLoop:
                                 )
                 else:
                     # No opponent: all envs are learner (original behavior)
-                    actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
+                    actions, log_probs, values = self.ppo.select_actions(
+                        obs, legal_masks, value_adapter=self.value_adapter,
+                    )
                     self.latest_values = values.tolist()
                     action_list = actions.tolist()
                     pre_players = current_players.copy()
@@ -985,7 +997,9 @@ class KataGoTrainingLoop:
             self.ppo.forward_model.eval()
             with torch.no_grad():
                 output = self.ppo.forward_model(obs)
-                next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
+                next_values = self.value_adapter.scalar_value_blended(
+                    output.value_logits, output.score_lead,
+                )
             self.ppo.forward_model.train()
 
             # Sign-correct bootstrap for split-merge mode: the value network
@@ -1014,6 +1028,7 @@ class KataGoTrainingLoop:
             self._force_heartbeat()
             losses = self.ppo.update(
                 self.buffer, next_values,
+                value_adapter=self.value_adapter,
                 heartbeat_fn=self._maybe_update_heartbeat,
             )
             self._phase = "rollout"

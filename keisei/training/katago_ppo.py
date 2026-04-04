@@ -367,6 +367,7 @@ class KataGoPPOAlgorithm:
     @torch.no_grad()
     def select_actions(
         self, obs: torch.Tensor, legal_masks: torch.Tensor,
+        value_adapter: Any | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select actions for rollout collection.
 
@@ -421,8 +422,13 @@ class KataGoPPOAlgorithm:
             actions = dist.sample()
             log_probs = dist.log_prob(actions)
 
-            # Scalar value for GAE — uses shared projection method
-            scalar_values = self.scalar_value(output.value_logits)
+            # Scalar value for GAE — uses blended projection when adapter provided
+            if value_adapter is not None:
+                scalar_values = value_adapter.scalar_value_blended(
+                    output.value_logits, output.score_lead,
+                )
+            else:
+                scalar_values = self.scalar_value(output.value_logits)
 
             return actions, log_probs, scalar_values
         finally:
