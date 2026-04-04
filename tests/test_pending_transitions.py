@@ -188,7 +188,7 @@ class TestPendingTransitions:
         # Finalize envs 0 and 2 (terminal)
         finalize_mask = torch.tensor([True, False, True], dtype=torch.bool)
         dones = torch.tensor([True, False, True])
-        result = pt.finalize(finalize_mask, dones)
+        result = pt.finalize(finalize_mask, dones, dones)
 
         assert result is not None
         assert result["env_ids"].shape == (2,)
@@ -216,7 +216,7 @@ class TestPendingTransitions:
 
         finalize_mask = torch.tensor([True, False], dtype=torch.bool)
         dones = torch.tensor([False, False])
-        result = pt.finalize(finalize_mask, dones)
+        result = pt.finalize(finalize_mask, dones, dones)
 
         assert result is not None
         assert result["dones"][0].item() == 0.0
@@ -225,7 +225,7 @@ class TestPendingTransitions:
         pt = self._make_pending(num_envs=2)
         finalize_mask = torch.tensor([False, False], dtype=torch.bool)
         dones = torch.tensor([False, False])
-        result = pt.finalize(finalize_mask, dones)
+        result = pt.finalize(finalize_mask, dones, dones)
         assert result is None
 
     def test_finalize_mask_on_invalid_env_is_safe(self):
@@ -235,7 +235,7 @@ class TestPendingTransitions:
         # No pending created — both are invalid
         finalize_mask = torch.tensor([True, True], dtype=torch.bool)
         dones = torch.tensor([True, True])
-        result = pt.finalize(finalize_mask, dones)
+        result = pt.finalize(finalize_mask, dones, dones)
         assert result is None
 
 
@@ -275,7 +275,7 @@ class TestSplitMergeCollection:
             dones_1.bool()
             | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_1)
+        result = pt.finalize(finalize_mask, dones_1, dones_1)
         assert result is None
 
         # Create pending for learner's move
@@ -306,7 +306,7 @@ class TestSplitMergeCollection:
             dones_2.bool()
             | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_2)
+        result = pt.finalize(finalize_mask, dones_2, dones_2)
 
         assert result is not None
         assert result["env_ids"].tolist() == [0]
@@ -348,7 +348,7 @@ class TestSplitMergeCollection:
             dones.bool()
             | torch.tensor(current_players_after == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones)
+        result = pt.finalize(finalize_mask, dones, dones)
         assert result is None
 
         # Create pending
@@ -359,7 +359,7 @@ class TestSplitMergeCollection:
 
         # Immediate terminal finalize
         imm_terminal = learner_moved & dones.bool()
-        result = pt.finalize(imm_terminal, dones)
+        result = pt.finalize(imm_terminal, dones, dones)
 
         assert result is not None
         assert result["rewards"][0].item() == pytest.approx(1.0)
@@ -397,6 +397,7 @@ class TestSplitMergeCollection:
                 | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
             ),
             dones_1,
+            dones_1,
         )
         learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
         pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
@@ -416,7 +417,7 @@ class TestSplitMergeCollection:
             dones_2.bool()
             | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_2)
+        result = pt.finalize(finalize_mask, dones_2, dones_2)
 
         assert result is not None
         assert result["dones"][0].item() == 0.0
@@ -454,6 +455,7 @@ class TestSplitMergeCollection:
                 | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
             ),
             dones_1,
+            dones_1,
         )
         learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
         pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
@@ -474,7 +476,7 @@ class TestSplitMergeCollection:
             dones_2.bool()
             | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_2)
+        result = pt.finalize(finalize_mask, dones_2, dones_2)
 
         assert result is not None
         assert result["env_ids"].tolist() == [0, 1]
@@ -519,7 +521,7 @@ class TestSplitMergeCollection:
         # Epoch ends — no more steps. Flush remaining pending.
         remaining_mask = pt.valid.clone()
         remaining_dones = torch.zeros(num_envs)
-        result = pt.finalize(remaining_mask, remaining_dones)
+        result = pt.finalize(remaining_mask, remaining_dones, remaining_dones)
 
         assert result is not None
         assert result["env_ids"].tolist() == [0, 1]
@@ -585,6 +587,7 @@ class TestLearnerSideOne:
                 | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
             ),
             dones_1,
+            dones_1,
         )
         learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
         pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
@@ -604,7 +607,7 @@ class TestLearnerSideOne:
             dones_2.bool()
             | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_2)
+        result = pt.finalize(finalize_mask, dones_2, dones_2)
 
         assert result is not None
         assert result["rewards"][0].item() == pytest.approx(-1.0)
@@ -654,6 +657,7 @@ class TestDrawTerminal:
                 | torch.tensor(current_players_after_1 == learner_side, dtype=torch.bool)
             ),
             dones_1,
+            dones_1,
         )
         learner_moved = torch.tensor(pre_players_1 == learner_side, dtype=torch.bool)
         pt.create(learner_moved, obs_1, actions_1, log_probs_1, values_1,
@@ -673,8 +677,66 @@ class TestDrawTerminal:
             dones_2.bool()
             | torch.tensor(current_players_after_2 == learner_side, dtype=torch.bool)
         )
-        result = pt.finalize(finalize_mask, dones_2)
+        result = pt.finalize(finalize_mask, dones_2, dones_2)
 
         assert result is not None
         assert result["rewards"][0].item() == pytest.approx(0.0)
         assert result["dones"][0].item() == 1.0
+
+
+class TestComputeValueCatsTerminated:
+    """R1: _compute_value_cats must use terminated, not dones."""
+
+    def test_truncated_gets_draw_under_dones_but_ignore_under_terminated(self):
+        from keisei.training.katago_loop import _compute_value_cats
+        device = torch.device("cpu")
+        rewards = torch.tensor([0.0, 1.0, 0.0])
+
+        # With merged dones: truncated game (reward=0) gets labeled as draw — WRONG
+        dones_merged = torch.tensor([True, True, False])
+        cats_wrong = _compute_value_cats(rewards, dones_merged, device)
+        assert cats_wrong[0].item() == 1  # WRONG: labeled as draw
+
+        # With terminated only: truncated game (not terminated) gets ignored — CORRECT
+        terminated = torch.tensor([False, True, False])
+        cats_correct = _compute_value_cats(rewards, terminated, device)
+        assert cats_correct[0].item() == -1  # CORRECT: ignored
+        assert cats_correct[1].item() == 0   # win
+        assert cats_correct[2].item() == -1  # still playing
+
+
+class TestPendingTransitionsTerminated:
+    """R1: finalize() must return terminated separately from dones."""
+
+    def test_finalize_three_populations(self):
+        from keisei.training.katago_loop import PendingTransitions
+        device = torch.device("cpu")
+        pt = PendingTransitions(num_envs=3, obs_shape=(4, 9, 9), action_space=100, device=device)
+
+        env_mask = torch.ones(3, dtype=torch.bool, device=device)
+        pt.create(
+            env_mask,
+            obs=torch.zeros(3, 4, 9, 9, device=device),
+            actions=torch.zeros(3, dtype=torch.long, device=device),
+            log_probs=torch.zeros(3, device=device),
+            values=torch.zeros(3, device=device),
+            legal_masks=torch.zeros(3, 100, dtype=torch.bool, device=device),
+            rewards=torch.zeros(3, device=device),
+            score_targets=torch.zeros(3, device=device),
+        )
+
+        # A: terminated (game ended), B: truncated (max_ply), C: epoch flush
+        dones = torch.tensor([1.0, 1.0, 0.0], device=device)
+        terminated = torch.tensor([1.0, 0.0, 0.0], device=device)
+
+        finalize_mask = torch.ones(3, dtype=torch.bool, device=device)
+        result = pt.finalize(finalize_mask, dones, terminated)
+
+        assert result is not None
+        assert "terminated" in result
+        assert result["terminated"][0].item() == 1.0  # A: terminated
+        assert result["terminated"][1].item() == 0.0  # B: truncated
+        assert result["terminated"][2].item() == 0.0  # C: flush
+        assert result["dones"][0].item() == 1.0
+        assert result["dones"][1].item() == 1.0
+        assert result["dones"][2].item() == 0.0

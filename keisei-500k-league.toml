@@ -42,10 +42,17 @@ epochs_per_batch = 4
 batch_size = 2048
 lambda_policy = 1.0
 lambda_value = 1.5
-lambda_score = 0.02
+lambda_score = 0.1              # R3: was 0.02, 5x increase for dense score signal
 lambda_entropy = 0.01
 score_normalization = 76.0
 grad_clip = 1.0
+use_terminated_for_gae = true   # R1: truncated games bootstrap V(s_next)
+score_blend_alpha = 0.1         # R2: conservative start, increase to 0.3 once score head is healthy
+entropy_decay_epochs = 200      # R5: linear decay from warmup to base entropy
+
+[training.algorithm_params.rl_warmup]
+epochs = 50
+entropy_bonus = 0.05
 
 [display]
 moves_per_minute = 30

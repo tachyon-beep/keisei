@@ -63,19 +63,20 @@ class SplitMergeResult:
 
 def _compute_value_cats(
     rewards: torch.Tensor,
-    dones_bool: torch.Tensor,
+    terminal_mask: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
     """Assign value-head categories from terminal rewards.
 
     Returns a tensor of {-1=ignore, 0=win, 1=draw, 2=loss}.
+    Only genuinely terminal positions (not truncated) receive labels.
     Engine produces exact integer-valued rewards (0.0 for draws, ±1.0
     for wins/losses), so float equality with == 0 is safe here.
     """
     cats = torch.full((rewards.numel(),), -1, dtype=torch.long, device=device)
-    cats[dones_bool & (rewards > 0)] = 0
-    cats[dones_bool & (rewards == 0)] = 1
-    cats[dones_bool & (rewards < 0)] = 2
+    cats[terminal_mask & (rewards > 0)] = 0
+    cats[terminal_mask & (rewards == 0)] = 1
+    cats[terminal_mask & (rewards < 0)] = 2
     return cats
 
 
@@ -199,13 +200,14 @@ class PendingTransitions:
         self,
         finalize_mask: torch.Tensor,
         dones: torch.Tensor,
+        terminated: torch.Tensor,
     ) -> dict[str, torch.Tensor] | None:
         """Close pending transitions and return data for buffer insertion.
 
         Returns None if no transitions need finalizing. Otherwise returns
         a dict with keys: obs, actions, log_probs, values, rewards, dones,
-        legal_masks, score_targets, env_ids. All tensors are indexed by
-        the finalized subset (not full num_envs).
+        terminated, legal_masks, score_targets, env_ids. All tensors are
+        indexed by the finalized subset (not full num_envs).
 
         The finalize_mask may include envs where valid=False — these are
         safely skipped via the internal `to_finalize = finalize_mask & self.valid`
@@ -223,6 +225,7 @@ class PendingTransitions:
             "values": self.values[indices],
             "rewards": self.rewards[indices],
             "dones": dones[indices].float(),
+            "terminated": terminated[indices].float(),
             "legal_masks": self.legal_masks[indices],
             "score_targets": self.score_targets[indices],
             "env_ids": indices,
@@ -281,7 +284,7 @@ def split_merge_step(
         learner_log_probs = l_dist.log_prob(l_actions)
 
         if value_adapter is not None:
-            learner_values = value_adapter.scalar_value_from_output(l_output.value_logits)
+            learner_values = value_adapter.scalar_value_blended(l_output.value_logits, l_output.score_lead)
         else:
             learner_values = KataGoPPOAlgorithm.scalar_value(l_output.value_logits)
 
@@ -442,6 +445,15 @@ class KataGoTrainingLoop:
         self.ppo = KataGoPPOAlgorithm(
             ppo_params, self._base_model, forward_model=self.model,
             warmup_epochs=rl_warmup_epochs, warmup_entropy=rl_warmup_entropy,
+        )
+
+        from keisei.training.value_adapter import get_value_adapter
+        _model_contract = "multi_head" if config.model.architecture in _KATAGO_ARCHITECTURES else "scalar"
+        self.value_adapter = get_value_adapter(
+            model_contract=_model_contract,
+            lambda_value=ppo_params.lambda_value,
+            lambda_score=ppo_params.lambda_score,
+            score_blend_alpha=ppo_params.score_blend_alpha,
         )
 
         # LR scheduler (optional — only if lr_schedule config is present)
@@ -742,6 +754,8 @@ class KataGoTrainingLoop:
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            terminated_count = 0
+            truncated_count = 0
             # Per-color win counters (black=0, white=1)
             black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
             white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
@@ -776,6 +790,7 @@ class KataGoTrainingLoop:
                         learner_model=self.model,
                         opponent_model=self._current_opponent,
                         learner_side=learner_side,
+                        value_adapter=self.value_adapter,
                     )
                     actions = sm_result.actions
                     action_list = actions.tolist()
@@ -790,11 +805,14 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
+                    terminated_count += terminated.bool().sum().item()
+                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
+
                     # Convert rewards to learner perspective
                     learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
 
                     # Track wins/losses/draws from learner perspective
-                    terminal_mask = dones.bool()
+                    terminal_mask = terminated.bool()
                     if terminal_mask.any():
                         t_rewards = learner_rewards[terminal_mask]
                         # Engine produces exact integer-valued rewards (±1.0 or 0.0),
@@ -830,16 +848,17 @@ class KataGoTrainingLoop:
                     #    - Terminal: game ended (on any player's move)
                     #    - Non-terminal return: opponent moved, turn returns to learner
                     finalize_mask = pending.valid & (dones.bool() | learner_next)
-                    finalized = pending.finalize(finalize_mask, dones)
+                    finalized = pending.finalize(finalize_mask, dones, terminated)
 
                     if finalized is not None:
                         f_value_cats = _compute_value_cats(
-                            finalized["rewards"], finalized["dones"].bool(), self.device,
+                            finalized["rewards"], finalized["terminated"].bool(), self.device,
                         )
                         self.buffer.add(
                             finalized["obs"], finalized["actions"],
                             finalized["log_probs"], finalized["values"],
                             finalized["rewards"], finalized["dones"],
+                            finalized["terminated"],
                             finalized["legal_masks"], f_value_cats,
                             finalized["score_targets"],
                             env_ids=finalized["env_ids"],
@@ -869,23 +888,26 @@ class KataGoTrainingLoop:
                         # 4. Immediately finalize if learner's own move was terminal
                         imm_terminal = learner_moved & dones.bool()
                         if imm_terminal.any():
-                            imm_finalized = pending.finalize(imm_terminal, dones)
+                            imm_finalized = pending.finalize(imm_terminal, dones, terminated)
                             if imm_finalized is not None:
                                 imm_value_cats = _compute_value_cats(
-                                    imm_finalized["rewards"], imm_finalized["dones"].bool(),
+                                    imm_finalized["rewards"], imm_finalized["terminated"].bool(),
                                     self.device,
                                 )
                                 self.buffer.add(
                                     imm_finalized["obs"], imm_finalized["actions"],
                                     imm_finalized["log_probs"], imm_finalized["values"],
                                     imm_finalized["rewards"], imm_finalized["dones"],
+                                    imm_finalized["terminated"],
                                     imm_finalized["legal_masks"], imm_value_cats,
                                     imm_finalized["score_targets"],
                                     env_ids=imm_finalized["env_ids"],
                                 )
                 else:
                     # No opponent: all envs are learner (original behavior)
-                    actions, log_probs, values = self.ppo.select_actions(obs, legal_masks)
+                    actions, log_probs, values = self.ppo.select_actions(
+                        obs, legal_masks, value_adapter=self.value_adapter,
+                    )
                     self.latest_values = values.tolist()
                     action_list = actions.tolist()
                     pre_players = current_players.copy()
@@ -898,7 +920,10 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminal_mask = dones.bool()
+                    terminated_count += terminated.bool().sum().item()
+                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
+
+                    terminal_mask = terminated.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
                         # Engine produces exact integer-valued rewards (±1.0 or 0.0),
@@ -933,7 +958,7 @@ class KataGoTrainingLoop:
 
                     self.buffer.add(
                         obs, actions, log_probs, values, rewards, dones,
-                        legal_masks, value_cats, score_targets,
+                        terminated, legal_masks, value_cats, score_targets,
                     )
 
                 obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
@@ -948,7 +973,8 @@ class KataGoTrainingLoop:
                 flush_count = pending.valid.sum().item()
                 remaining_mask = pending.valid.clone()
                 remaining_dones = torch.zeros(self.num_envs, device=self.device)
-                remaining = pending.finalize(remaining_mask, remaining_dones)
+                remaining_terminated = torch.zeros(self.num_envs, device=self.device)
+                remaining = pending.finalize(remaining_mask, remaining_dones, remaining_terminated)
                 if remaining is not None:
                     remaining_value_cats = torch.full(
                         (remaining["env_ids"].numel(),), -1,
@@ -958,6 +984,7 @@ class KataGoTrainingLoop:
                         remaining["obs"], remaining["actions"],
                         remaining["log_probs"], remaining["values"],
                         remaining["rewards"], remaining["dones"],
+                        remaining["terminated"],
                         remaining["legal_masks"], remaining_value_cats,
                         remaining["score_targets"],
                         env_ids=remaining["env_ids"],
@@ -971,7 +998,9 @@ class KataGoTrainingLoop:
             self.ppo.forward_model.eval()
             with torch.no_grad():
                 output = self.ppo.forward_model(obs)
-                next_values = KataGoPPOAlgorithm.scalar_value(output.value_logits)
+                next_values = self.value_adapter.scalar_value_blended(
+                    output.value_logits, output.score_lead,
+                )
             self.ppo.forward_model.train()
 
             # Sign-correct bootstrap for split-merge mode: the value network
@@ -982,8 +1011,14 @@ class KataGoTrainingLoop:
                     next_values, current_players, learner_side,
                 )
 
+            logger.info(
+                "Epoch %d: %d terminated, %d truncated (bootstrapped)",
+                epoch_i, terminated_count, truncated_count,
+            )
+
             # Set epoch-dependent entropy coefficient
             self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
+            logger.info("Epoch %d: entropy_coeff=%.4f", epoch_i, self.ppo.current_entropy_coeff)
             if epoch_i == 0 or epoch_i == self.ppo.warmup_epochs:
                 logger.info(
                     "Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
@@ -994,6 +1029,7 @@ class KataGoTrainingLoop:
             self._force_heartbeat()
             losses = self.ppo.update(
                 self.buffer, next_values,
+                value_adapter=self.value_adapter,
                 heartbeat_fn=self._maybe_update_heartbeat,
             )
             self._phase = "rollout"
@@ -1013,23 +1049,27 @@ class KataGoTrainingLoop:
                     logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
 
             if self.lr_scheduler is not None:
-                monitor_value = losses.get("value_loss")
-                if monitor_value is not None:
-                    # Synchronize monitor value across ranks so all schedulers
-                    # step identically and maintain the same LR state.
-                    if self.dist_ctx.is_distributed:
-                        monitor_tensor = torch.tensor(
-                            monitor_value, device=self.device,
-                        )
-                        dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
-                        monitor_value = monitor_tensor.item()
+                monitor_value = losses.get("policy_loss")
+                if monitor_value is None:
+                    raise RuntimeError(
+                        "LR scheduler expects 'policy_loss' in losses dict but it was absent. "
+                        "Check that ppo.update() returns 'policy_loss'."
+                    )
+                # Synchronize monitor value across ranks so all schedulers
+                # step identically and maintain the same LR state.
+                if self.dist_ctx.is_distributed:
+                    monitor_tensor = torch.tensor(
+                        monitor_value, device=self.device,
+                    )
+                    dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
+                    monitor_value = monitor_tensor.item()
 
-                    old_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    self.lr_scheduler.step(monitor_value)
-                    new_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    if new_lr != old_lr and self.dist_ctx.is_main:
-                        logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
-                                    old_lr, new_lr, monitor_value)
+                old_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                self.lr_scheduler.step(monitor_value)
+                new_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                if new_lr != old_lr and self.dist_ctx.is_main:
+                    logger.info("LR reduced: %.6f -> %.6f (monitor=policy_loss, value=%.4f)",
+                                old_lr, new_lr, monitor_value)
 
             # Materialise GPU counters → CPU once per epoch (all ranks, to release GPU memory)
             win_count = win_acc.item()

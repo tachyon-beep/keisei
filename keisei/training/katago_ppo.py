@@ -68,6 +68,9 @@ class KataGoPPOParams:
     use_amp: bool = False
     compile_mode: str | None = None    # None, "default", "reduce-overhead", "max-autotune"
     compile_dynamic: bool = True       # dynamic shapes — True for league/split-merge safety
+    entropy_decay_epochs: int = 0    # R5: 0 = instant transition; >0 = linear decay
+    score_blend_alpha: float = 0.0   # R2: 0.0 = pure WDL; >0 blends score_lead into GAE value
+    use_terminated_for_gae: bool = True   # R1: correctness fix, False only for emergency rollback
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
@@ -93,6 +96,7 @@ class KataGoRolloutBuffer:
         self.values: list[torch.Tensor] = []
         self.rewards: list[torch.Tensor] = []
         self.dones: list[torch.Tensor] = []
+        self.terminated: list[torch.Tensor] = []
         self.legal_masks: list[torch.Tensor] = []
         self.value_categories: list[torch.Tensor] = []
         self.score_targets: list[torch.Tensor] = []
@@ -110,6 +114,7 @@ class KataGoRolloutBuffer:
         values: torch.Tensor,
         rewards: torch.Tensor,
         dones: torch.Tensor,
+        terminated: torch.Tensor,
         legal_masks: torch.Tensor,
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
@@ -132,6 +137,14 @@ class KataGoRolloutBuffer:
         values_cpu = values.detach().cpu()
         rewards_cpu = rewards.detach().cpu()
         dones_cpu = dones.detach().cpu()
+        terminated_cpu = terminated.detach().cpu()
+
+        # Guard: terminated must be a subset of dones (can't be terminated without being done)
+        if (terminated_cpu.bool() & ~dones_cpu.bool()).any():
+            raise AssertionError(
+                "terminated must be a subset of dones: every terminated position must also be done. "
+                "Got terminated=True where dones=False — likely a call site passing the merged signal."
+            )
         legal_masks_cpu = legal_masks.detach().cpu()
         value_cats_cpu = value_categories.detach().cpu()
         score_cpu = score_targets.detach().cpu()
@@ -173,6 +186,7 @@ class KataGoRolloutBuffer:
         self.values.append(values_cpu)
         self.rewards.append(rewards_cpu)
         self.dones.append(dones_cpu)
+        self.terminated.append(terminated_cpu)
         self.legal_masks.append(legal_masks_cpu)
         self.value_categories.append(value_cats_cpu)
         self.score_targets.append(score_cpu)
@@ -193,6 +207,7 @@ class KataGoRolloutBuffer:
             "values": torch.cat(self.values, dim=0).reshape(-1),
             "rewards": torch.cat(self.rewards, dim=0).reshape(-1),
             "dones": torch.cat(self.dones, dim=0).reshape(-1),
+            "terminated": torch.cat(self.terminated, dim=0).reshape(-1),
             "legal_masks": torch.cat(self.legal_masks, dim=0).reshape(-1, self.action_space),
             "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
             "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
@@ -309,12 +324,20 @@ class KataGoPPOAlgorithm:
     def get_entropy_coeff(self, epoch: int) -> float:
         """Return the entropy coefficient for the current epoch.
 
-        During the first `warmup_epochs` epochs of RL (after SL warmup),
-        uses elevated entropy to soften the overconfident SL policy.
+        During warmup: elevated entropy to soften overconfident SL policy.
+        After warmup: linear decay from warmup_entropy to lambda_entropy
+        over entropy_decay_epochs (0 = instant transition).
         """
         if epoch < self.warmup_epochs:
             return self.warmup_entropy
-        return self.params.lambda_entropy
+        decay_epochs = self.params.entropy_decay_epochs
+        if decay_epochs <= 0:
+            return self.params.lambda_entropy
+        elapsed = epoch - self.warmup_epochs
+        if elapsed >= decay_epochs:
+            return self.params.lambda_entropy
+        t = elapsed / decay_epochs
+        return self.warmup_entropy + t * (self.params.lambda_entropy - self.warmup_entropy)
 
     def flush_timings(self) -> None:
         """Convert accumulated CUDA event pairs to elapsed-time floats.
@@ -344,6 +367,7 @@ class KataGoPPOAlgorithm:
     @torch.no_grad()
     def select_actions(
         self, obs: torch.Tensor, legal_masks: torch.Tensor,
+        value_adapter: Any | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select actions for rollout collection.
 
@@ -398,8 +422,13 @@ class KataGoPPOAlgorithm:
             actions = dist.sample()
             log_probs = dist.log_prob(actions)
 
-            # Scalar value for GAE — uses shared projection method
-            scalar_values = self.scalar_value(output.value_logits)
+            # Scalar value for GAE — uses blended projection when adapter provided
+            if value_adapter is not None:
+                scalar_values = value_adapter.scalar_value_blended(
+                    output.value_logits, output.score_lead,
+                )
+            else:
+                scalar_values = self.scalar_value(output.value_logits)
 
             return actions, log_probs, scalar_values
         finally:
@@ -436,6 +465,8 @@ class KataGoPPOAlgorithm:
         total_samples = data["rewards"].numel()
         device = next(self.model.parameters()).device
 
+        gae_dones_key = "terminated" if self.params.use_terminated_for_gae else "dones"
+
         # GAE computation — runs on CPU (buffer stores data on CPU).
         next_values_cpu = next_values.detach().cpu()
 
@@ -443,7 +474,7 @@ class KataGoPPOAlgorithm:
             # Vectorized path: batched GAE over (T, N) grid
             rewards_2d = data["rewards"].reshape(T, N)
             values_2d = data["values"].reshape(T, N)
-            dones_2d = data["dones"].reshape(T, N)
+            terminated_2d = data[gae_dones_key].reshape(T, N)
 
             if device.type == "cuda":
                 _gae_start = torch.cuda.Event(enable_timing=True)
@@ -457,12 +488,12 @@ class KataGoPPOAlgorithm:
                 # Memory: ~3 MB for T=128, N=512 (negligible on 4060/H200).
                 advantages = compute_gae_gpu(
                     rewards_2d.to(device), values_2d.to(device),
-                    dones_2d.to(device), next_values.detach(),
+                    terminated_2d.to(device), next_values.detach(),
                     gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1).cpu()
             else:
                 advantages = compute_gae(
-                    rewards_2d, values_2d, dones_2d,
+                    rewards_2d, values_2d, terminated_2d,
                     next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1)
 
@@ -481,7 +512,7 @@ class KataGoPPOAlgorithm:
             # Collect per-env data and pad into (T_max, N_env) tensors
             env_rewards = []
             env_values = []
-            env_dones = []
+            env_terminated = []
             env_lengths = []
             env_masks = []
 
@@ -489,7 +520,7 @@ class KataGoPPOAlgorithm:
                 mask = env_ids == env_id
                 env_rewards.append(data["rewards"][mask])
                 env_values.append(data["values"][mask])
-                env_dones.append(data["dones"][mask])
+                env_terminated.append(data[gae_dones_key][mask])
                 env_lengths.append(mask.sum().item())
                 env_masks.append(mask)
 
@@ -498,7 +529,7 @@ class KataGoPPOAlgorithm:
 
             rewards_pad = torch.zeros(max_T, N_env)
             values_pad = torch.zeros(max_T, N_env)
-            dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
+            terminated_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
             nv = torch.zeros(N_env)
 
             if unique_envs.max() >= next_values_cpu.shape[0]:
@@ -509,12 +540,12 @@ class KataGoPPOAlgorithm:
             for i, L in enumerate(env_lengths):
                 rewards_pad[:L, i] = env_rewards[i]
                 values_pad[:L, i] = env_values[i]
-                dones_pad[:L, i] = env_dones[i]
+                terminated_pad[:L, i] = env_terminated[i]
                 nv[i] = next_values_cpu[unique_envs[i]]
 
             lengths_t = torch.tensor(env_lengths)
             padded_adv = compute_gae_padded(
-                rewards_pad, values_pad, dones_pad, nv, lengths_t,
+                rewards_pad, values_pad, terminated_pad, nv, lengths_t,
                 gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
@@ -524,7 +555,7 @@ class KataGoPPOAlgorithm:
             # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
             bootstrap = next_values_cpu.mean()
             advantages = compute_gae(
-                data["rewards"], data["values"], data["dones"],
+                data["rewards"], data["values"], data[gae_dones_key],
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 

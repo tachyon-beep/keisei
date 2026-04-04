@@ -46,6 +46,7 @@ def _filled_buffer(num_envs=4, steps=3, action_space=11259):
                 torch.zeros(num_envs),
             ),
             dones=torch.tensor([is_last] * num_envs),
+            terminated=torch.tensor([is_last] * num_envs),
             legal_masks=torch.ones(num_envs, action_space, dtype=torch.bool),
             value_categories=torch.where(
                 torch.tensor([is_last] * num_envs),
@@ -350,6 +351,7 @@ class TestSingleElementAdvantageNormalization:
             values=torch.randn(1),
             rewards=torch.tensor([1.0]),
             dones=torch.tensor([True]),
+            terminated=torch.tensor([True]),
             legal_masks=torch.ones(1, 11259, dtype=torch.bool),
             value_categories=torch.tensor([0]),  # W
             score_targets=torch.tensor([0.5]),

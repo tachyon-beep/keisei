@@ -46,6 +46,7 @@ def _filled_buffer(num_envs=4, steps=3, action_space=11259):
                 torch.zeros(num_envs),
             ),
             dones=torch.tensor([is_last] * num_envs),
+            terminated=torch.tensor([is_last] * num_envs),
             legal_masks=torch.ones(num_envs, action_space, dtype=torch.bool),
             value_categories=torch.where(
                 torch.tensor([is_last] * num_envs),
@@ -263,6 +264,7 @@ class TestNumericalStability:
             buf.add(
                 obs=obs, actions=actions, log_probs=log_probs, values=values,
                 rewards=torch.zeros(4), dones=torch.zeros(4, dtype=torch.bool),
+                terminated=torch.zeros(4, dtype=torch.bool),
                 legal_masks=legal_masks,
                 value_categories=torch.full((4,), -1, dtype=torch.long),
                 score_targets=torch.randn(4).clamp(-1.5, 1.5),
@@ -399,6 +401,7 @@ class TestPerEnvGAEFallback:
                 values=torch.randn(n),
                 rewards=torch.zeros(n),
                 dones=torch.zeros(n, dtype=torch.bool),
+                terminated=torch.zeros(n, dtype=torch.bool),
                 legal_masks=torch.ones(n, 11259, dtype=torch.bool),
                 value_categories=torch.full((n,), -1, dtype=torch.long),
                 score_targets=torch.randn(n).clamp(-1.5, 1.5),
@@ -451,6 +454,7 @@ class TestValueLossZeroEdgeCase:
                 values=torch.randn(4),
                 rewards=torch.zeros(4),
                 dones=torch.zeros(4, dtype=torch.bool),
+                terminated=torch.zeros(4, dtype=torch.bool),
                 legal_masks=torch.ones(4, 11259, dtype=torch.bool),
                 value_categories=torch.full((4,), -1, dtype=torch.long),  # all ignore
                 score_targets=torch.randn(4).clamp(-1.5, 1.5),
@@ -481,6 +485,7 @@ class TestValueLossZeroEdgeCase:
                 values=torch.randn(4),
                 rewards=torch.zeros(4),
                 dones=torch.zeros(4, dtype=torch.bool),
+                terminated=torch.zeros(4, dtype=torch.bool),
                 legal_masks=torch.ones(4, 11259, dtype=torch.bool),
                 value_categories=torch.full((4,), -1, dtype=torch.long),
                 score_targets=torch.randn(4).clamp(-1.5, 1.5),

@@ -33,6 +33,12 @@ class ValueHeadAdapter(ABC):
         """Compute value loss appropriate for the model contract."""
         ...
 
+    def scalar_value_blended(
+        self, value_logits: torch.Tensor, score_lead: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blend W/D/L value with score for GAE. Default: ignore score_lead."""
+        return self.scalar_value_from_output(value_logits)
+
 
 class ScalarValueAdapter(ValueHeadAdapter):
     """For BaseModel: tanh-activated scalar value, MSE loss vs returns."""
@@ -56,14 +62,30 @@ class ScalarValueAdapter(ValueHeadAdapter):
 class MultiHeadValueAdapter(ValueHeadAdapter):
     """For KataGoBaseModel: W/D/L cross-entropy + score MSE."""
 
-    def __init__(self, lambda_value: float = 1.5, lambda_score: float = 0.02) -> None:
+    def __init__(self, lambda_value: float = 1.5, lambda_score: float = 0.02,
+                 score_blend_alpha: float = 0.0) -> None:
         self.lambda_value = lambda_value
         self.lambda_score = lambda_score
+        self.score_blend_alpha = score_blend_alpha
 
     def scalar_value_from_output(self, value_output: torch.Tensor) -> torch.Tensor:
         # value_output is value_logits (batch, 3) — W/D/L
         value_probs = F.softmax(value_output, dim=-1)
         return value_probs[:, 0] - value_probs[:, 2]  # P(W) - P(L)
+
+    def scalar_value_blended(
+        self, value_logits: torch.Tensor, score_lead: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blend W/D/L value with score prediction for GAE.
+
+        score_lead: (batch, 1) squeezed to (batch,), clamped to [-1, 1].
+        """
+        wdl_value = self.scalar_value_from_output(value_logits)
+        score_value = score_lead.squeeze(-1).clamp(-1, 1)
+        alpha = self.score_blend_alpha
+        if alpha == 0.0:
+            return wdl_value
+        return (1 - alpha) * wdl_value + alpha * score_value
 
     def compute_value_loss(
         self,
@@ -100,11 +122,15 @@ def get_value_adapter(
     model_contract: str,
     lambda_value: float = 1.5,
     lambda_score: float = 0.02,
+    score_blend_alpha: float = 0.0,
 ) -> ValueHeadAdapter:
     """Return the appropriate adapter for a model contract type."""
     if model_contract == "scalar":
         return ScalarValueAdapter()
     elif model_contract == "multi_head":
-        return MultiHeadValueAdapter(lambda_value=lambda_value, lambda_score=lambda_score)
+        return MultiHeadValueAdapter(
+            lambda_value=lambda_value, lambda_score=lambda_score,
+            score_blend_alpha=score_blend_alpha,
+        )
     else:
         raise ValueError(f"Unknown model contract: {model_contract}")
