@@ -1013,23 +1013,27 @@ class KataGoTrainingLoop:
                     logger.info("LR scheduler fully reset at warmup boundary (epoch %d)", epoch_i)
 
             if self.lr_scheduler is not None:
-                monitor_value = losses.get("value_loss")
-                if monitor_value is not None:
-                    # Synchronize monitor value across ranks so all schedulers
-                    # step identically and maintain the same LR state.
-                    if self.dist_ctx.is_distributed:
-                        monitor_tensor = torch.tensor(
-                            monitor_value, device=self.device,
-                        )
-                        dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
-                        monitor_value = monitor_tensor.item()
+                monitor_value = losses.get("policy_loss")
+                if monitor_value is None:
+                    raise RuntimeError(
+                        "LR scheduler expects 'policy_loss' in losses dict but it was absent. "
+                        "Check that ppo.update() returns 'policy_loss'."
+                    )
+                # Synchronize monitor value across ranks so all schedulers
+                # step identically and maintain the same LR state.
+                if self.dist_ctx.is_distributed:
+                    monitor_tensor = torch.tensor(
+                        monitor_value, device=self.device,
+                    )
+                    dist.all_reduce(monitor_tensor, op=dist.ReduceOp.AVG)
+                    monitor_value = monitor_tensor.item()
 
-                    old_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    self.lr_scheduler.step(monitor_value)
-                    new_lr = self.ppo.optimizer.param_groups[0]["lr"]
-                    if new_lr != old_lr and self.dist_ctx.is_main:
-                        logger.info("LR reduced: %.6f -> %.6f (value_loss=%.4f)",
-                                    old_lr, new_lr, monitor_value)
+                old_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                self.lr_scheduler.step(monitor_value)
+                new_lr = self.ppo.optimizer.param_groups[0]["lr"]
+                if new_lr != old_lr and self.dist_ctx.is_main:
+                    logger.info("LR reduced: %.6f -> %.6f (monitor=policy_loss, value=%.4f)",
+                                old_lr, new_lr, monitor_value)
 
             # Materialise GPU counters → CPU once per epoch (all ranks, to release GPU memory)
             win_count = win_acc.item()
