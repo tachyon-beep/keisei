@@ -101,8 +101,19 @@ describe('toJapanese', () => {
     expect(toJapanese('S-4d=')).toBe('S-４四=')
   })
 
-  it('converts disambiguated move', () => {
-    expect(toJapanese('G6g-5h')).toBe('G６七-５八')
+  it('converts file-disambiguated move', () => {
+    // File-only disambig: "G6-5f" — bare "6" is not a coordinate, only "5f" converts
+    expect(toJapanese('G6-5f')).toBe('G6-５六')
+  })
+
+  it('converts rank-disambiguated move', () => {
+    // Rank-only disambig: "Gf-5g" — bare "f" is not a coordinate, only "5g" converts
+    expect(toJapanese('Gf-5g')).toBe('Gf-５七')
+  })
+
+  it('converts full-square-disambiguated move', () => {
+    // Full square disambig: "G6g-5f" — both "6g" and "5f" are coordinates
+    expect(toJapanese('G6g-5f')).toBe('G６七-５六')
   })
 
   it('returns empty string for empty input', () => {

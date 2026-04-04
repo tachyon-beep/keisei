@@ -108,29 +108,41 @@ pub fn move_notation(mv: Move, position: &Position, legal_moves: &[Move]) -> Str
                 format!("{}", piece_char(pt))
             };
 
-            // Disambiguation: check if another legal board move by same piece type
-            // (and same promoted status) targets the same destination
+            // Minimal disambiguation: file if sufficient, rank if not, full square as last resort
             let disambig = if pt == PieceType::King {
                 String::new()
             } else {
-                let ambiguous = legal_moves.iter().any(|other| {
+                // Collect source squares of other same-type pieces targeting the same destination
+                let others: Vec<Square> = legal_moves.iter().filter_map(|other| {
                     if let Move::Board { from: of, to: ot, .. } = other {
-                        *ot == to && *of != from && {
+                        if *ot == to && *of != from {
                             if let Some(other_piece) = position.piece_at(*of) {
-                                other_piece.piece_type() == pt
+                                if other_piece.piece_type() == pt
                                     && other_piece.is_promoted() == promoted
-                            } else {
-                                false
+                                {
+                                    return Some(*of);
+                                }
                             }
                         }
-                    } else {
-                        false
                     }
-                });
-                if ambiguous {
-                    square_notation(from)
-                } else {
+                    None
+                }).collect();
+
+                if others.is_empty() {
                     String::new()
+                } else {
+                    let same_file = others.iter().any(|sq| sq.col() == from.col());
+                    let same_rank = others.iter().any(|sq| sq.row() == from.row());
+                    if !same_file {
+                        // File alone disambiguates
+                        format!("{}", 9 - from.col())
+                    } else if !same_rank {
+                        // Rank alone disambiguates
+                        format!("{}", (b'a' + from.row()) as char)
+                    } else {
+                        // Need full square
+                        square_notation(from)
+                    }
                 }
             };
 
@@ -448,17 +460,61 @@ mod tests {
     }
 
     #[test]
-    fn test_notation_disambiguation() {
-        let from1 = Square::from_row_col(6, 3).unwrap();
-        let from2 = Square::from_row_col(6, 5).unwrap();
-        let to = Square::from_row_col(5, 4).unwrap();
+    fn test_notation_disambig_by_file() {
+        // Two golds on same rank (row=6), different files — file alone disambiguates
+        let from1 = Square::from_row_col(6, 3).unwrap(); // 6g
+        let from2 = Square::from_row_col(6, 5).unwrap(); // 4g
+        let to = Square::from_row_col(5, 4).unwrap();    // 5f
         let gold = Piece::new(PieceType::Gold, Color::Black, false);
         let pos = position_with_pieces(&[(from1, gold), (from2, gold)]);
         let mv1 = Move::Board { from: from1, to, promote: false };
         let mv2 = Move::Board { from: from2, to, promote: false };
         let legal = vec![mv1, mv2];
-        assert_eq!(move_notation(mv1, &pos, &legal), "G6g-5f");
-        assert_eq!(move_notation(mv2, &pos, &legal), "G4g-5f");
+        assert_eq!(move_notation(mv1, &pos, &legal), "G6-5f");
+        assert_eq!(move_notation(mv2, &pos, &legal), "G4-5f");
+    }
+
+    #[test]
+    fn test_notation_disambig_by_rank() {
+        // Two golds on same file (col=4), different ranks — rank alone disambiguates
+        let from1 = Square::from_row_col(5, 4).unwrap(); // 5f
+        let from2 = Square::from_row_col(7, 4).unwrap(); // 5h
+        let to = Square::from_row_col(6, 4).unwrap();    // 5g
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from1, gold), (from2, gold)]);
+        let mv1 = Move::Board { from: from1, to, promote: false };
+        let mv2 = Move::Board { from: from2, to, promote: false };
+        let legal = vec![mv1, mv2];
+        assert_eq!(move_notation(mv1, &pos, &legal), "Gf-5g");
+        assert_eq!(move_notation(mv2, &pos, &legal), "Gh-5g");
+    }
+
+    #[test]
+    fn test_notation_disambig_full_square() {
+        // Three golds: two share the same file, forcing full-square for those two.
+        // from1 and from3 share file 5 (col=4), so file alone won't disambiguate them.
+        // from1 and from3 also share neither rank, but the key is:
+        // from1 at 5f (row=5,col=4), from3 at 5h (row=7,col=4) — same file.
+        // from2 at 4g (row=6,col=5) — different file from both.
+        // For from1: others are from2 (diff file) and from3 (same file) → same_file=true,
+        //   same_rank=false → rank disambiguates: "Gf-5g"
+        // For from3: others are from1 (same file) and from2 (diff file) → same_file=true,
+        //   same_rank=false → rank disambiguates: "Gh-5g"
+        // For from2: others are from1 (diff file) and from3 (diff file) → same_file=false
+        //   → file disambiguates: "G4-5g"
+        let from1 = Square::from_row_col(5, 4).unwrap(); // 5f
+        let from2 = Square::from_row_col(6, 5).unwrap(); // 4g
+        let from3 = Square::from_row_col(7, 4).unwrap(); // 5h
+        let to = Square::from_row_col(6, 4).unwrap();    // 5g
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from1, gold), (from2, gold), (from3, gold)]);
+        let mv1 = Move::Board { from: from1, to, promote: false };
+        let mv2 = Move::Board { from: from2, to, promote: false };
+        let mv3 = Move::Board { from: from3, to, promote: false };
+        let legal = vec![mv1, mv2, mv3];
+        assert_eq!(move_notation(mv1, &pos, &legal), "Gf-5g");  // rank disambig (shares file with from3)
+        assert_eq!(move_notation(mv2, &pos, &legal), "G4-5g");  // file disambig (unique file)
+        assert_eq!(move_notation(mv3, &pos, &legal), "Gh-5g");  // rank disambig (shares file with from1)
     }
 
     #[test]
