@@ -451,6 +451,8 @@ class KataGoPPOAlgorithm:
         total_samples = data["rewards"].numel()
         device = next(self.model.parameters()).device
 
+        gae_dones_key = "terminated" if self.params.use_terminated_for_gae else "dones"
+
         # GAE computation — runs on CPU (buffer stores data on CPU).
         next_values_cpu = next_values.detach().cpu()
 
@@ -458,7 +460,7 @@ class KataGoPPOAlgorithm:
             # Vectorized path: batched GAE over (T, N) grid
             rewards_2d = data["rewards"].reshape(T, N)
             values_2d = data["values"].reshape(T, N)
-            dones_2d = data["dones"].reshape(T, N)
+            terminated_2d = data[gae_dones_key].reshape(T, N)
 
             if device.type == "cuda":
                 _gae_start = torch.cuda.Event(enable_timing=True)
@@ -472,12 +474,12 @@ class KataGoPPOAlgorithm:
                 # Memory: ~3 MB for T=128, N=512 (negligible on 4060/H200).
                 advantages = compute_gae_gpu(
                     rewards_2d.to(device), values_2d.to(device),
-                    dones_2d.to(device), next_values.detach(),
+                    terminated_2d.to(device), next_values.detach(),
                     gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1).cpu()
             else:
                 advantages = compute_gae(
-                    rewards_2d, values_2d, dones_2d,
+                    rewards_2d, values_2d, terminated_2d,
                     next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1)
 
@@ -496,7 +498,7 @@ class KataGoPPOAlgorithm:
             # Collect per-env data and pad into (T_max, N_env) tensors
             env_rewards = []
             env_values = []
-            env_dones = []
+            env_terminated = []
             env_lengths = []
             env_masks = []
 
@@ -504,7 +506,7 @@ class KataGoPPOAlgorithm:
                 mask = env_ids == env_id
                 env_rewards.append(data["rewards"][mask])
                 env_values.append(data["values"][mask])
-                env_dones.append(data["dones"][mask])
+                env_terminated.append(data[gae_dones_key][mask])
                 env_lengths.append(mask.sum().item())
                 env_masks.append(mask)
 
@@ -513,7 +515,7 @@ class KataGoPPOAlgorithm:
 
             rewards_pad = torch.zeros(max_T, N_env)
             values_pad = torch.zeros(max_T, N_env)
-            dones_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
+            terminated_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
             nv = torch.zeros(N_env)
 
             if unique_envs.max() >= next_values_cpu.shape[0]:
@@ -524,12 +526,12 @@ class KataGoPPOAlgorithm:
             for i, L in enumerate(env_lengths):
                 rewards_pad[:L, i] = env_rewards[i]
                 values_pad[:L, i] = env_values[i]
-                dones_pad[:L, i] = env_dones[i]
+                terminated_pad[:L, i] = env_terminated[i]
                 nv[i] = next_values_cpu[unique_envs[i]]
 
             lengths_t = torch.tensor(env_lengths)
             padded_adv = compute_gae_padded(
-                rewards_pad, values_pad, dones_pad, nv, lengths_t,
+                rewards_pad, values_pad, terminated_pad, nv, lengths_t,
                 gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
@@ -539,7 +541,7 @@ class KataGoPPOAlgorithm:
             # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
             bootstrap = next_values_cpu.mean()
             advantages = compute_gae(
-                data["rewards"], data["values"], data["dones"],
+                data["rewards"], data["values"], data[gae_dones_key],
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
