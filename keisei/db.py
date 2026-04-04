@@ -62,7 +62,7 @@ def init_db(db_path: str) -> None:
                 game_type         TEXT NOT NULL DEFAULT 'live',
                 demo_slot         INTEGER,
                 opponent_id       INTEGER REFERENCES league_entries(id),
-                updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
             CREATE TABLE IF NOT EXISTS training_state (
                 id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -183,10 +183,11 @@ def write_game_snapshots(db_path: str, snapshots: list[dict[str, Any]]) -> None:
                 """INSERT OR REPLACE INTO game_snapshots
                    (game_id, board_json, hands_json, current_player, ply,
                     is_over, result, sfen, in_check, move_history_json,
-                    value_estimate, game_type, demo_slot, opponent_id)
+                    value_estimate, game_type, demo_slot, opponent_id, updated_at)
                    VALUES (:game_id, :board_json, :hands_json, :current_player,
                     :ply, :is_over, :result, :sfen, :in_check, :move_history_json,
-                    :value_estimate, :game_type, :demo_slot, :opponent_id)""",
+                    :value_estimate, :game_type, :demo_slot, :opponent_id,
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))""",
                 {
                     "game_id": snap["game_id"],
                     "board_json": snap["board_json"],

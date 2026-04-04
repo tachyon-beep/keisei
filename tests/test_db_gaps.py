@@ -180,3 +180,17 @@ class TestReadGameSnapshotsSince:
         rows, max_ts = read_game_snapshots_since(str(db), "2026-01-01T00:00:00Z")
         assert rows == []
         assert max_ts == "2026-01-01T00:00:00Z"
+
+    def test_write_produces_fractional_second_timestamps(self, db: Path) -> None:
+        """write_game_snapshots must set updated_at with sub-second precision.
+
+        Without fractional seconds, back-to-back writes within the same wall
+        second share the same timestamp, so a strict '>' cursor permanently
+        misses the later write.
+        """
+        path = str(db)
+        write_game_snapshots(path, [_make_snapshot(0)])
+        rows = read_game_snapshots(path)
+        ts = rows[0]["updated_at"]
+        # Fractional format: ...T12:34:56.789Z  (dot + digits before Z)
+        assert "." in ts, f"updated_at lacks fractional seconds: {ts!r}"
