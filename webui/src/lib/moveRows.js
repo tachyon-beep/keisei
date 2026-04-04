@@ -20,10 +20,10 @@ export function parseMoves(moveHistoryJson) {
  * black's move, white's move, and whether it's the latest row.
  *
  * @param {Array} moves - Array of move objects with .notation
- * @param {'coord'|'japanese'} style - Notation style
+ * @param {'western'|'japanese'} style - Notation style
  * @returns {Array<{ num: number, black: string, white: string, isLatest: boolean }>}
  */
-export function buildMoveRows(moves, style = 'coord') {
+export function buildMoveRows(moves, style = 'western') {
   const fmt = style === 'japanese' ? toJapanese : (s) => s
   const result = []
   for (let i = 0; i < moves.length; i += 2) {
@@ -41,9 +41,9 @@ const RANK_KANJI = { a: '一', b: '二', c: '三', d: '四', e: '五', f: '六',
 const FILE_FULL = { '1': '１', '2': '２', '3': '３', '4': '４', '5': '５', '6': '６', '7': '７', '8': '８', '9': '９' }
 
 /**
- * Convert coordinate notation "9g→9f" to Japanese "９七→９六"
+ * Convert Hodges notation coordinates to Japanese: "P-7f" → "P-７六"
  */
-function toJapanese(notation) {
+export function toJapanese(notation) {
   if (!notation) return ''
   return notation.replace(/([1-9])([a-i])/g, (_, file, rank) => {
     return (FILE_FULL[file] || file) + (RANK_KANJI[rank] || rank)

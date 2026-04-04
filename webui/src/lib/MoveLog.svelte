@@ -6,10 +6,10 @@
   export let currentPlayer = 'black'
 
   let scrollContainer
-  let notationStyle = 'coord'
+  let notationStyle = 'western'
 
   function toggleNotation() {
-    notationStyle = notationStyle === 'coord' ? 'japanese' : 'coord'
+    notationStyle = notationStyle === 'western' ? 'japanese' : 'western'
   }
 
   $: moves = parseMoves(moveHistoryJson)
@@ -26,7 +26,7 @@
   <div class="header-row">
     <h2 class="header">Move Log</h2>
     <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style">
-      {notationStyle === 'coord' ? '漢' : 'abc'}
+      {notationStyle === 'western' ? '漢' : 'W'}
     </button>
   </div>
   <div class="table-container" role="log" aria-label="Move history" tabindex="0" bind:this={scrollContainer}>

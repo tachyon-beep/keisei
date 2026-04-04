@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseMoves, buildMoveRows } from './moveRows.js'
+import { parseMoves, buildMoveRows, toJapanese } from './moveRows.js'
 
 describe('parseMoves', () => {
   it('parses valid JSON string', () => {
@@ -73,5 +73,50 @@ describe('buildMoveRows', () => {
     expect(rows).toEqual([
       { num: 1, black: '', white: 'P-34', isLatest: true },
     ])
+  })
+})
+
+describe('toJapanese', () => {
+  it('converts simple Hodges move', () => {
+    expect(toJapanese('P-7f')).toBe('P-７六')
+  })
+
+  it('converts capture notation', () => {
+    expect(toJapanese('Bx3c')).toBe('Bx３三')
+  })
+
+  it('converts promoted piece move', () => {
+    expect(toJapanese('+R-5a')).toBe('+R-５一')
+  })
+
+  it('converts drop notation', () => {
+    expect(toJapanese('P*5e')).toBe('P*５五')
+  })
+
+  it('converts promotion suffix', () => {
+    expect(toJapanese('Nx7c+')).toBe('Nx７三+')
+  })
+
+  it('converts declined promotion suffix', () => {
+    expect(toJapanese('S-4d=')).toBe('S-４四=')
+  })
+
+  it('converts file-disambiguated move', () => {
+    // File-only disambig: "G6-5f" — bare "6" is not a coordinate, only "5f" converts
+    expect(toJapanese('G6-5f')).toBe('G6-５六')
+  })
+
+  it('converts rank-disambiguated move', () => {
+    // Rank-only disambig: "Gf-5g" — bare "f" is not a coordinate, only "5g" converts
+    expect(toJapanese('Gf-5g')).toBe('Gf-５七')
+  })
+
+  it('converts full-square-disambiguated move', () => {
+    // Full square disambig: "G6g-5f" — both "6g" and "5f" are coordinates
+    expect(toJapanese('G6g-5f')).toBe('G６七-５六')
+  })
+
+  it('returns empty string for empty input', () => {
+    expect(toJapanese('')).toBe('')
   })
 })

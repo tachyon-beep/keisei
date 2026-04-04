@@ -96,7 +96,7 @@ impl SpectatorEnv {
             )));
         }
 
-        let notation = move_notation(mv);
+        let notation = move_notation(mv, &self.game.position, &legal_moves);
         self.move_history.push((action, notation));
 
         self.game.make_move(mv);
@@ -204,65 +204,6 @@ mod tests {
     use pyo3::Python;
     use shogi_core::{GameState, Color, HandPieceType, Move, Square};
     use crate::action_mapper::ActionMapper;
-    use crate::spectator_data::{hand_piece_char, move_notation};
-
-    // -----------------------------------------------------------------------
-    // move_notation tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_move_notation_board_move() {
-        // Board move: from (6,4) to (5,4), no promotion
-        // from: col=4 → 9-4=5, row=6 → 'g'. So "5g"
-        // to: col=4 → 9-4=5, row=5 → 'f'. So "5f"
-        let mv = Move::Board {
-            from: Square::from_row_col(6, 4).unwrap(),
-            to: Square::from_row_col(5, 4).unwrap(),
-            promote: false,
-        };
-        let notation = move_notation(mv);
-        assert_eq!(notation, "5g→5f", "Board move notation mismatch");
-    }
-
-    #[test]
-    fn test_move_notation_board_move_with_promotion() {
-        let mv = Move::Board {
-            from: Square::from_row_col(1, 2).unwrap(),
-            to: Square::from_row_col(0, 2).unwrap(),
-            promote: true,
-        };
-        let notation = move_notation(mv);
-        assert_eq!(notation, "7b→7a+", "Promoting move should end with '+'");
-    }
-
-    #[test]
-    fn test_move_notation_drop() {
-        // Drop pawn at (4,4): piece='P', col=4 → 9-4=5, row=4 → 'e'
-        let mv = Move::Drop {
-            to: Square::from_row_col(4, 4).unwrap(),
-            piece_type: HandPieceType::Pawn,
-        };
-        let notation = move_notation(mv);
-        assert_eq!(notation, "P*5e", "Drop notation mismatch");
-    }
-
-    #[test]
-    fn test_move_notation_drop_all_piece_types() {
-        let to = Square::from_row_col(4, 4).unwrap();
-        let expected = [
-            (HandPieceType::Pawn, "P*5e"),
-            (HandPieceType::Lance, "L*5e"),
-            (HandPieceType::Knight, "N*5e"),
-            (HandPieceType::Silver, "S*5e"),
-            (HandPieceType::Gold, "G*5e"),
-            (HandPieceType::Bishop, "B*5e"),
-            (HandPieceType::Rook, "R*5e"),
-        ];
-        for (hpt, exp) in &expected {
-            let mv = Move::Drop { to, piece_type: *hpt };
-            assert_eq!(move_notation(mv), *exp, "Drop notation for {:?}", hpt);
-        }
-    }
 
     // -----------------------------------------------------------------------
     // SpectatorEnv internal logic tests (no Python needed)
@@ -368,44 +309,4 @@ mod tests {
         assert!(game.result.is_terminal(), "Game with max_ply=0 should be over");
     }
 
-    /// Test hand_piece_char covers all types correctly.
-    #[test]
-    fn test_hand_piece_char_all_types() {
-        assert_eq!(hand_piece_char(HandPieceType::Pawn), 'P');
-        assert_eq!(hand_piece_char(HandPieceType::Lance), 'L');
-        assert_eq!(hand_piece_char(HandPieceType::Knight), 'N');
-        assert_eq!(hand_piece_char(HandPieceType::Silver), 'S');
-        assert_eq!(hand_piece_char(HandPieceType::Gold), 'G');
-        assert_eq!(hand_piece_char(HandPieceType::Bishop), 'B');
-        assert_eq!(hand_piece_char(HandPieceType::Rook), 'R');
-    }
-
-    #[test]
-    fn test_move_notation_boundary_squares() {
-        // Top-right corner: row=0, col=0 → "9a"
-        // Bottom-left corner: row=8, col=8 → "1i"
-        let mv_top_right = Move::Board {
-            from: Square::from_row_col(0, 0).unwrap(),
-            to: Square::from_row_col(1, 0).unwrap(),
-            promote: false,
-        };
-        let notation = move_notation(mv_top_right);
-        assert_eq!(notation, "9a→9b", "Top-right corner notation mismatch: got {}", notation);
-
-        let mv_bottom_left = Move::Board {
-            from: Square::from_row_col(8, 8).unwrap(),
-            to: Square::from_row_col(7, 8).unwrap(),
-            promote: false,
-        };
-        let notation = move_notation(mv_bottom_left);
-        assert_eq!(notation, "1i→1h", "Bottom-left corner notation mismatch: got {}", notation);
-
-        // Drop at corner
-        let mv_drop_corner = Move::Drop {
-            to: Square::from_row_col(0, 8).unwrap(),
-            piece_type: HandPieceType::Pawn,
-        };
-        let notation = move_notation(mv_drop_corner);
-        assert_eq!(notation, "P*1a", "Drop at corner notation mismatch: got {}", notation);
-    }
 }

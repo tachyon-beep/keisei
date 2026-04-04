@@ -95,7 +95,7 @@ def test_game_snapshots_round_trip(db: Path) -> None:
     board = [None] * 81
     board[0] = {"type": "king", "color": "black", "promoted": False, "row": 0, "col": 0}
     hands = {"black": {"pawn": 2}, "white": {"pawn": 0}}
-    history = [{"action": 42, "notation": "7g-7f"}]
+    history = [{"action": 42, "notation": "P-7f"}]
     snapshots = [{
         "game_id": 0,
         "board_json": json.dumps(board),

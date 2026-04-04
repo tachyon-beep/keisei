@@ -1,6 +1,46 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, PieceType, Square};
+use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, Piece, PieceType, Position, Square};
+
+/// Single-letter piece abbreviation for Hodges notation.
+pub fn piece_char(pt: PieceType) -> char {
+    match pt {
+        PieceType::King   => 'K',
+        PieceType::Rook   => 'R',
+        PieceType::Bishop => 'B',
+        PieceType::Gold   => 'G',
+        PieceType::Silver => 'S',
+        PieceType::Knight => 'N',
+        PieceType::Lance  => 'L',
+        PieceType::Pawn   => 'P',
+    }
+}
+
+/// Format a square as Hodges coordinates: file (1-9) + rank (a-i).
+/// Example: row=6, col=4 → file=5, rank='g' → "5g"
+pub fn square_notation(sq: Square) -> String {
+    let file = 9 - sq.col();
+    let rank = (b'a' + sq.row()) as char;
+    format!("{}{}", file, rank)
+}
+
+/// Check if a square is in the promotion zone for the given color.
+/// Black: rows 0-2 (ranks a-c). White: rows 6-8 (ranks g-i).
+pub fn in_promotion_zone(sq: Square, color: Color) -> bool {
+    match color {
+        Color::Black => sq.row() <= 2,
+        Color::White => sq.row() >= 6,
+    }
+}
+
+/// Check if a piece could promote on this move (but hasn't necessarily chosen to).
+/// True when: piece type can promote, piece is not already promoted,
+/// and either source or destination is in the promotion zone.
+pub fn could_promote(piece: Piece, from: Square, to: Square) -> bool {
+    piece.piece_type().can_promote()
+        && !piece.is_promoted()
+        && (in_promotion_zone(from, piece.color()) || in_promotion_zone(to, piece.color()))
+}
 
 pub fn piece_type_name(pt: PieceType) -> &'static str {
     match pt {
@@ -35,40 +75,96 @@ pub fn game_result_str(r: &GameResult) -> &'static str {
 
 /// Encode a drop piece char: P, L, N, S, G, B, R
 pub fn hand_piece_char(hpt: HandPieceType) -> char {
-    match hpt {
-        HandPieceType::Pawn   => 'P',
-        HandPieceType::Lance  => 'L',
-        HandPieceType::Knight => 'N',
-        HandPieceType::Silver => 'S',
-        HandPieceType::Gold   => 'G',
-        HandPieceType::Bishop => 'B',
-        HandPieceType::Rook   => 'R',
-    }
+    piece_char(hpt.to_piece_type())
 }
 
-/// Build move notation string from a Move.
-/// Board: `"9a→8a+"` format: `{9-from_col}{chr(a+from_row)}→{9-to_col}{chr(a+to_row)}{+ if promote}`
-/// Drop:  `"P*5e"` format: `{piece_char}*{9-to_col}{chr(a+to_row)}`
-pub fn move_notation(mv: Move) -> String {
+/// Check if promotion is forced for this piece reaching the destination.
+/// Pawn/Lance on last rank, Knight on last two ranks.
+/// Check if promotion is forced for this piece reaching the destination.
+/// Delegates to `movegen::must_promote` — single source of truth for promotion rules.
+fn is_forced_promotion(pt: PieceType, to: Square, color: Color) -> bool {
+    shogi_core::movegen::must_promote(pt, to.row(), color)
+}
+
+/// Build Hodges notation string from a Move, a Position, and the legal moves list.
+///
+/// Board: `"P-7f"`, `"Bx3c"`, `"Nx7c+"`, `"S-4d="`, `"+R-5a"`, `"G6g-5h"`
+/// Drop:  `"P*5e"`
+pub fn move_notation(mv: Move, position: &Position, legal_moves: &[Move]) -> String {
     match mv {
         Move::Board { from, to, promote } => {
-            let from_col_shogi = 9 - from.col();
-            let from_row_char = (b'a' + from.row()) as char;
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            let promo_str = if promote { "+" } else { "" };
-            format!(
-                "{}{}→{}{}{}",
-                from_col_shogi, from_row_char,
-                to_col_shogi, to_row_char,
-                promo_str
-            )
+            let piece = match position.piece_at(from) {
+                Some(p) => p,
+                None => return format!("?{}-{}", square_notation(from), square_notation(to)),
+            };
+            let pt = piece.piece_type();
+            let color = piece.color();
+            let promoted = piece.is_promoted();
+
+            // Piece prefix: "+R" if promoted, "R" if not
+            let prefix = if promoted {
+                format!("+{}", piece_char(pt))
+            } else {
+                format!("{}", piece_char(pt))
+            };
+
+            // Minimal disambiguation: file if sufficient, rank if not, full square as last resort
+            let disambig = if pt == PieceType::King {
+                String::new()
+            } else {
+                // Collect source squares of other same-type pieces targeting the same destination
+                let others: Vec<Square> = legal_moves.iter().filter_map(|other| {
+                    if let Move::Board { from: of, to: ot, .. } = other {
+                        if *ot == to && *of != from {
+                            if let Some(other_piece) = position.piece_at(*of) {
+                                if other_piece.piece_type() == pt
+                                    && other_piece.is_promoted() == promoted
+                                {
+                                    return Some(*of);
+                                }
+                            }
+                        }
+                    }
+                    None
+                }).collect();
+
+                if others.is_empty() {
+                    String::new()
+                } else {
+                    let same_file = others.iter().any(|sq| sq.col() == from.col());
+                    let same_rank = others.iter().any(|sq| sq.row() == from.row());
+                    if !same_file {
+                        // File alone disambiguates
+                        format!("{}", 9 - from.col())
+                    } else if !same_rank {
+                        // Rank alone disambiguates
+                        format!("{}", (b'a' + from.row()) as char)
+                    } else {
+                        // Need full square
+                        square_notation(from)
+                    }
+                }
+            };
+
+            // Capture or move separator
+            let sep = if position.piece_at(to).is_some() { "x" } else { "-" };
+
+            // Destination
+            let dest = square_notation(to);
+
+            // Promotion suffix
+            let suffix = if promote || is_forced_promotion(pt, to, color) {
+                "+"
+            } else if could_promote(piece, from, to) {
+                "="
+            } else {
+                ""
+            };
+
+            format!("{}{}{}{}{}", prefix, disambig, sep, dest, suffix)
         }
         Move::Drop { to, piece_type } => {
-            let piece_char = hand_piece_char(piece_type);
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            format!("{}*{}{}", piece_char, to_col_shogi, to_row_char)
+            format!("{}*{}", piece_char(piece_type.to_piece_type()), square_notation(to))
         }
     }
 }
@@ -127,6 +223,7 @@ pub fn build_spectator_dict(py: Python<'_>, game: &GameState) -> PyResult<Py<PyD
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_core::{Piece, Position};
 
     #[test]
     fn test_piece_type_name_all() {
@@ -167,5 +264,372 @@ mod tests {
             "impasse"
         );
         assert_eq!(game_result_str(&GameResult::MaxMoves), "max_moves");
+    }
+
+    #[test]
+    fn test_piece_char_all() {
+        assert_eq!(piece_char(PieceType::King), 'K');
+        assert_eq!(piece_char(PieceType::Rook), 'R');
+        assert_eq!(piece_char(PieceType::Bishop), 'B');
+        assert_eq!(piece_char(PieceType::Gold), 'G');
+        assert_eq!(piece_char(PieceType::Silver), 'S');
+        assert_eq!(piece_char(PieceType::Knight), 'N');
+        assert_eq!(piece_char(PieceType::Lance), 'L');
+        assert_eq!(piece_char(PieceType::Pawn), 'P');
+    }
+
+    #[test]
+    fn test_square_notation_corners_and_center() {
+        // Top-right (row=0, col=0): file=9-0=9, rank='a'+0='a' → "9a"
+        assert_eq!(square_notation(Square::from_row_col(0, 0).unwrap()), "9a");
+        // Bottom-left (row=8, col=8): file=9-8=1, rank='a'+8='i' → "1i"
+        assert_eq!(square_notation(Square::from_row_col(8, 8).unwrap()), "1i");
+        // Center (row=4, col=4): file=9-4=5, rank='a'+4='e' → "5e"
+        assert_eq!(square_notation(Square::from_row_col(4, 4).unwrap()), "5e");
+        // Top-left (row=0, col=8): file=9-8=1, rank='a'+0='a' → "1a"
+        assert_eq!(square_notation(Square::from_row_col(0, 8).unwrap()), "1a");
+        // Bottom-right (row=8, col=0): file=9-0=9, rank='a'+8='i' → "9i"
+        assert_eq!(square_notation(Square::from_row_col(8, 0).unwrap()), "9i");
+    }
+
+    #[test]
+    fn test_hand_piece_char_delegates_to_piece_char() {
+        for &hpt in &HandPieceType::ALL {
+            assert_eq!(
+                hand_piece_char(hpt),
+                piece_char(hpt.to_piece_type()),
+                "hand_piece_char and piece_char disagree for {:?}",
+                hpt
+            );
+        }
+    }
+
+    #[test]
+    fn test_in_promotion_zone_black() {
+        // Black promotion zone: rows 0, 1, 2 (ranks a, b, c)
+        let col = 4;
+        assert!(in_promotion_zone(Square::from_row_col(0, col).unwrap(), Color::Black));
+        assert!(in_promotion_zone(Square::from_row_col(1, col).unwrap(), Color::Black));
+        assert!(in_promotion_zone(Square::from_row_col(2, col).unwrap(), Color::Black));
+        // Row 3 is NOT in zone
+        assert!(!in_promotion_zone(Square::from_row_col(3, col).unwrap(), Color::Black));
+        // Nor is row 8
+        assert!(!in_promotion_zone(Square::from_row_col(8, col).unwrap(), Color::Black));
+    }
+
+    #[test]
+    fn test_in_promotion_zone_white() {
+        // White promotion zone: rows 6, 7, 8 (ranks g, h, i)
+        let col = 4;
+        assert!(in_promotion_zone(Square::from_row_col(6, col).unwrap(), Color::White));
+        assert!(in_promotion_zone(Square::from_row_col(7, col).unwrap(), Color::White));
+        assert!(in_promotion_zone(Square::from_row_col(8, col).unwrap(), Color::White));
+        // Row 5 is NOT in zone
+        assert!(!in_promotion_zone(Square::from_row_col(5, col).unwrap(), Color::White));
+        // Nor is row 0
+        assert!(!in_promotion_zone(Square::from_row_col(0, col).unwrap(), Color::White));
+    }
+
+    #[test]
+    fn test_could_promote_all_conditions() {
+        let from_outside = Square::from_row_col(5, 4).unwrap(); // row 5 = rank f
+        let to_inside = Square::from_row_col(2, 4).unwrap();    // row 2 = rank c (Black zone)
+        let from_inside = Square::from_row_col(2, 4).unwrap();
+        let to_outside = Square::from_row_col(5, 4).unwrap();
+
+        let silver_black = Piece::new(PieceType::Silver, Color::Black, false);
+        let gold_black = Piece::new(PieceType::Gold, Color::Black, false);
+        let promoted_silver = Piece::new(PieceType::Silver, Color::Black, true);
+        let king_black = Piece::new(PieceType::King, Color::Black, false);
+
+        // Silver moving INTO zone: can promote
+        assert!(could_promote(silver_black, from_outside, to_inside));
+        // Silver moving OUT OF zone: can promote
+        assert!(could_promote(silver_black, from_inside, to_outside));
+        // Gold: cannot promote (type doesn't allow)
+        assert!(!could_promote(gold_black, from_outside, to_inside));
+        // King: cannot promote
+        assert!(!could_promote(king_black, from_outside, to_inside));
+        // Already promoted silver: cannot promote again
+        assert!(!could_promote(promoted_silver, from_outside, to_inside));
+        // Silver moving entirely outside zone: cannot promote
+        let other_outside = Square::from_row_col(6, 4).unwrap();
+        assert!(!could_promote(silver_black, from_outside, other_outside));
+    }
+
+    // -----------------------------------------------------------------------
+    // move_notation tests — Hodges format
+    // -----------------------------------------------------------------------
+
+    fn position_with_pieces(pieces: &[(Square, Piece)]) -> Position {
+        let mut pos = Position::empty();
+        for &(sq, piece) in pieces {
+            pos.set_piece(sq, piece);
+        }
+        pos
+    }
+
+    #[test]
+    fn test_notation_simple_move() {
+        let from = Square::from_row_col(6, 2).unwrap();
+        let to = Square::from_row_col(5, 2).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        let pos = position_with_pieces(&[(from, pawn)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "P-7f");
+    }
+
+    #[test]
+    fn test_notation_capture() {
+        let from = Square::from_row_col(7, 1).unwrap();
+        let to = Square::from_row_col(2, 6).unwrap();
+        let bishop = Piece::new(PieceType::Bishop, Color::Black, false);
+        let enemy_pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        let pos = position_with_pieces(&[(from, bishop), (to, enemy_pawn)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "Bx3c=");
+    }
+
+    #[test]
+    fn test_notation_promotion() {
+        let from = Square::from_row_col(3, 1).unwrap();
+        let to = Square::from_row_col(1, 2).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::Black, false);
+        let enemy = Piece::new(PieceType::Gold, Color::White, false);
+        let pos = position_with_pieces(&[(from, knight), (to, enemy)]);
+        let mv = Move::Board { from, to, promote: true };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "Nx7b+");
+    }
+
+    #[test]
+    fn test_notation_declined_promotion() {
+        let from = Square::from_row_col(3, 5).unwrap();
+        let to = Square::from_row_col(2, 5).unwrap();
+        let silver = Piece::new(PieceType::Silver, Color::Black, false);
+        let pos = position_with_pieces(&[(from, silver)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "S-4c=");
+    }
+
+    #[test]
+    fn test_notation_white_declined_promotion() {
+        // White silver at 6f (row=5, col=3) moves into White zone at 6g (row=6, col=3)
+        let from = Square::from_row_col(5, 3).unwrap();
+        let to = Square::from_row_col(6, 3).unwrap();
+        let silver = Piece::new(PieceType::Silver, Color::White, false);
+        let pos = position_with_pieces(&[(from, silver)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "S-6g=");
+    }
+
+    #[test]
+    fn test_notation_promoted_piece_moving() {
+        let from = Square::from_row_col(0, 4).unwrap();
+        let to = Square::from_row_col(1, 4).unwrap();
+        let dragon = Piece::new(PieceType::Rook, Color::Black, true);
+        let pos = position_with_pieces(&[(from, dragon)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "+R-5b");
+    }
+
+    #[test]
+    fn test_notation_drop() {
+        let to = Square::from_row_col(4, 4).unwrap();
+        let pos = Position::empty();
+        let mv = Move::Drop { to, piece_type: HandPieceType::Pawn };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "P*5e");
+    }
+
+    #[test]
+    fn test_notation_drop_all_piece_types() {
+        let to = Square::from_row_col(4, 4).unwrap();
+        let pos = Position::empty();
+        let expected = [
+            (HandPieceType::Pawn,   "P*5e"),
+            (HandPieceType::Lance,  "L*5e"),
+            (HandPieceType::Knight, "N*5e"),
+            (HandPieceType::Silver, "S*5e"),
+            (HandPieceType::Gold,   "G*5e"),
+            (HandPieceType::Bishop, "B*5e"),
+            (HandPieceType::Rook,   "R*5e"),
+        ];
+        for (hpt, exp) in &expected {
+            let mv = Move::Drop { to, piece_type: *hpt };
+            assert_eq!(move_notation(mv, &pos, &[mv]), *exp, "Drop for {:?}", hpt);
+        }
+    }
+
+    #[test]
+    fn test_notation_disambig_by_file() {
+        // Two golds on same rank (row=6), different files — file alone disambiguates
+        let from1 = Square::from_row_col(6, 3).unwrap(); // 6g
+        let from2 = Square::from_row_col(6, 5).unwrap(); // 4g
+        let to = Square::from_row_col(5, 4).unwrap();    // 5f
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from1, gold), (from2, gold)]);
+        let mv1 = Move::Board { from: from1, to, promote: false };
+        let mv2 = Move::Board { from: from2, to, promote: false };
+        let legal = vec![mv1, mv2];
+        assert_eq!(move_notation(mv1, &pos, &legal), "G6-5f");
+        assert_eq!(move_notation(mv2, &pos, &legal), "G4-5f");
+    }
+
+    #[test]
+    fn test_notation_disambig_by_rank() {
+        // Two golds on same file (col=4), different ranks — rank alone disambiguates
+        let from1 = Square::from_row_col(5, 4).unwrap(); // 5f
+        let from2 = Square::from_row_col(7, 4).unwrap(); // 5h
+        let to = Square::from_row_col(6, 4).unwrap();    // 5g
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from1, gold), (from2, gold)]);
+        let mv1 = Move::Board { from: from1, to, promote: false };
+        let mv2 = Move::Board { from: from2, to, promote: false };
+        let legal = vec![mv1, mv2];
+        assert_eq!(move_notation(mv1, &pos, &legal), "Gf-5g");
+        assert_eq!(move_notation(mv2, &pos, &legal), "Gh-5g");
+    }
+
+    #[test]
+    fn test_notation_disambig_full_square() {
+        // Three golds: two share the same file, forcing full-square for those two.
+        // from1 and from3 share file 5 (col=4), so file alone won't disambiguate them.
+        // from1 and from3 also share neither rank, but the key is:
+        // from1 at 5f (row=5,col=4), from3 at 5h (row=7,col=4) — same file.
+        // from2 at 4g (row=6,col=5) — different file from both.
+        // For from1: others are from2 (diff file) and from3 (same file) → same_file=true,
+        //   same_rank=false → rank disambiguates: "Gf-5g"
+        // For from3: others are from1 (same file) and from2 (diff file) → same_file=true,
+        //   same_rank=false → rank disambiguates: "Gh-5g"
+        // For from2: others are from1 (diff file) and from3 (diff file) → same_file=false
+        //   → file disambiguates: "G4-5g"
+        let from1 = Square::from_row_col(5, 4).unwrap(); // 5f
+        let from2 = Square::from_row_col(6, 5).unwrap(); // 4g
+        let from3 = Square::from_row_col(7, 4).unwrap(); // 5h
+        let to = Square::from_row_col(6, 4).unwrap();    // 5g
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from1, gold), (from2, gold), (from3, gold)]);
+        let mv1 = Move::Board { from: from1, to, promote: false };
+        let mv2 = Move::Board { from: from2, to, promote: false };
+        let mv3 = Move::Board { from: from3, to, promote: false };
+        let legal = vec![mv1, mv2, mv3];
+        assert_eq!(move_notation(mv1, &pos, &legal), "Gf-5g");  // rank disambig (shares file with from3)
+        assert_eq!(move_notation(mv2, &pos, &legal), "G4-5g");  // file disambig (unique file)
+        assert_eq!(move_notation(mv3, &pos, &legal), "Gh-5g");  // rank disambig (shares file with from1)
+    }
+
+    #[test]
+    fn test_notation_no_disambiguation_single_piece() {
+        let from = Square::from_row_col(6, 3).unwrap();
+        let to = Square::from_row_col(7, 4).unwrap();
+        let gold = Piece::new(PieceType::Gold, Color::Black, false);
+        let pos = position_with_pieces(&[(from, gold)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "G-5h");
+    }
+
+    #[test]
+    fn test_notation_king_never_disambiguated() {
+        let from = Square::from_row_col(8, 4).unwrap();
+        let to = Square::from_row_col(7, 4).unwrap();
+        let king = Piece::new(PieceType::King, Color::Black, false);
+        let pos = position_with_pieces(&[(from, king)]);
+        let mv = Move::Board { from, to, promote: false };
+        let fake = Move::Board {
+            from: Square::from_row_col(7, 3).unwrap(),
+            to,
+            promote: false,
+        };
+        assert_eq!(move_notation(mv, &pos, &[mv, fake]), "K-5h");
+    }
+
+    #[test]
+    fn test_notation_forced_promotion_pawn_last_rank() {
+        let from = Square::from_row_col(1, 2).unwrap();
+        let to = Square::from_row_col(0, 2).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        let pos = position_with_pieces(&[(from, pawn)]);
+        let mv = Move::Board { from, to, promote: true };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "P-7a+");
+        // Guard: forced promotion even if promote=false
+        let mv_bad = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv_bad, &pos, &[mv_bad]), "P-7a+");
+    }
+
+    #[test]
+    fn test_notation_forced_promotion_knight_last_two_ranks() {
+        let from = Square::from_row_col(3, 2).unwrap();
+        let to = Square::from_row_col(1, 1).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::Black, false);
+        let pos = position_with_pieces(&[(from, knight)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "N-8b+");
+    }
+
+    #[test]
+    fn test_notation_forced_promotion_lance_last_rank() {
+        let from = Square::from_row_col(1, 4).unwrap();
+        let to = Square::from_row_col(0, 4).unwrap();
+        let lance = Piece::new(PieceType::Lance, Color::Black, false);
+        let pos = position_with_pieces(&[(from, lance)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "L-5a+");
+    }
+
+    #[test]
+    fn test_notation_white_forced_promotion() {
+        let from = Square::from_row_col(7, 6).unwrap();
+        let to = Square::from_row_col(8, 6).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        let pos = position_with_pieces(&[(from, pawn)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "P-3i+");
+    }
+
+    #[test]
+    fn test_notation_white_knight_forced_promotion() {
+        let from = Square::from_row_col(6, 6).unwrap();
+        let to = Square::from_row_col(8, 7).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::White, false);
+        let pos = position_with_pieces(&[(from, knight)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "N-2i+");
+    }
+
+    #[test]
+    fn test_notation_missing_piece_fallback() {
+        // Empty board — no piece at source. Should produce fallback, not panic.
+        let from = Square::from_row_col(4, 4).unwrap();
+        let to = Square::from_row_col(3, 4).unwrap();
+        let pos = Position::empty();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "?5e-5d");
+    }
+
+    #[test]
+    fn test_notation_boundary_top_right_king() {
+        let from = Square::from_row_col(0, 0).unwrap();
+        let to = Square::from_row_col(1, 0).unwrap();
+        let king = Piece::new(PieceType::King, Color::Black, false);
+        let pos = position_with_pieces(&[(from, king)]);
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "K-9b");
+    }
+
+    #[test]
+    fn test_notation_boundary_bottom_left_king() {
+        let from = Square::from_row_col(8, 8).unwrap();
+        let to = Square::from_row_col(7, 8).unwrap();
+        let king = Piece::new(PieceType::King, Color::White, false);
+        let pos = position_with_pieces(&[(from, king)]);
+        let mv = Move::Board { from: from, to: to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "K-1h");
+    }
+
+    #[test]
+    fn test_notation_boundary_drop_corner() {
+        let drop_sq = Square::from_row_col(0, 8).unwrap();
+        let pos = Position::empty();
+        let mv = Move::Drop { to: drop_sq, piece_type: HandPieceType::Pawn };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "P*1a");
     }
 }
