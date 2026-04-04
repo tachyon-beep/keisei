@@ -7,10 +7,14 @@ license = "MIT"
 
 [lib]
 name = "shogi_gym"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 shogi-core = { path = "../shogi-core" }
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = "0.23"
 numpy = "0.23"
 rayon = "1.10"
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
