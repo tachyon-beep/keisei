@@ -345,7 +345,7 @@ Runs inside a single `store.transaction()` so a crash leaves the DB unchanged:
 
 ### MatchScheduler
 
-Replaces `OpponentSampler`. Role-aware weighted selection.
+Replaces `OpponentSampler`. Handles learner opponent selection (weighted by tier) and tournament round generation (deterministic round-robin).
 
 **Config:**
 
@@ -357,12 +357,8 @@ class MatchSchedulerConfig:
     learner_frontier_ratio: float = 0.30
     learner_recent_ratio: float = 0.20
 
-    # Tournament match class weights
-    match_dynamic_dynamic: float = 0.40
-    match_dynamic_recent: float = 0.25
-    match_dynamic_frontier: float = 0.20
-    match_recent_frontier: float = 0.10
-    match_recent_recent: float = 0.05
+    # Tournament format
+    tournament_games_per_pair: int = 3  # best-of-3 per pair per round
 ```
 
 **Interface:**
@@ -370,7 +366,7 @@ class MatchSchedulerConfig:
 | Method | Description |
 |---|---|
 | `sample_for_learner(entries_by_role)` | Pick one opponent using learner tier mix |
-| `sample_tournament_pair(entries_by_role)` | Pick a (entry_a, entry_b) pair using match class weights |
+| `generate_round(entries)` | Generate all N*(N-1)/2 pairings for a full round-robin round |
 | `effective_ratios(entries_by_role)` | Returns the actual ratios after empty-tier redistribution (for logging) |
 
 **`sample_for_learner` algorithm:**
@@ -379,13 +375,15 @@ class MatchSchedulerConfig:
 2. If the selected role's tier is empty, redistribute weight proportionally to non-empty tiers.
 3. Pick uniformly at random within the selected tier.
 
-**`sample_tournament_pair` algorithm:**
+**`generate_round` algorithm:**
 
-1. Pre-filter match classes to those where both required tiers are non-empty.
-2. Normalize remaining weights to sum to 1.0.
-3. Roll against filtered weights to pick a match class.
-4. Pick two distinct entries from the relevant tiers (or two from the same tier for intra-tier classes).
-5. Phase 1 simplified priority: penalize repeat pairings (track recent H2H counts), prefer under-sampled entries. Full priority scoring (uncertainty bonus, lineage penalty) deferred to Phase 4.
+Deterministic full round-robin: every active entry plays every other active entry once per round. Each pairing plays `tournament_games_per_pair` games (default 3 — best-of-3). With 20 entries this produces 190 pairings × 3 games = 570 games per round. This is fewer total games than the previous format (10 random pairings × 64 games = 640) but gives uniform calibration coverage across all pairs.
+
+Advantages over stochastic pairing:
+- Every entry's Elo is equally well-calibrated (no pair starvation)
+- `unique_opponents` promotion threshold is trivially satisfied after one round
+- `min_games_for_review` is cleared predictably (19 opponents × 3 = 57 games per entry per round)
+- Eviction decisions use uniformly-calibrated Elo (reduces noise-driven mis-eviction)
 
 ---
 
@@ -421,11 +419,7 @@ class MatchSchedulerConfig:
     learner_dynamic_ratio: float = 0.50
     learner_frontier_ratio: float = 0.30
     learner_recent_ratio: float = 0.20
-    match_dynamic_dynamic: float = 0.40
-    match_dynamic_recent: float = 0.25
-    match_dynamic_frontier: float = 0.20
-    match_recent_frontier: float = 0.10
-    match_recent_recent: float = 0.05
+    tournament_games_per_pair: int = 3  # best-of-3 round-robin
 
 @dataclass(frozen=True)
 class LeagueConfig:
@@ -455,7 +449,7 @@ class LeagueConfig:
 **Validation in `__post_init__`:**
 
 - `scheduler.learner_dynamic_ratio + scheduler.learner_frontier_ratio + scheduler.learner_recent_ratio` must equal 1.0 (within float tolerance)
-- Sum of all `scheduler.match_*` weights must equal 1.0 (within float tolerance)
+- `scheduler.tournament_games_per_pair` must be >= 1
 - Total pool capacity is derived: `frontier.slots + recent.slots + dynamic.slots`
 
 The old `max_pool_size`, `historical_ratio`, and `current_best_ratio` fields are removed (no live users to break).
@@ -482,7 +476,7 @@ The tournament runner must be refactored to use `OpponentStore` for all DB opera
 | Current code | Phase 1 change |
 |---|---|
 | Own DB connection + raw SQL | Uses `OpponentStore` for all reads/writes |
-| Random round-robin pairing | `scheduler.sample_tournament_pair(entries_by_role)` |
+| Random 10-pair round-robin | `scheduler.generate_round(entries)` — deterministic full round-robin, best-of-3 per pair |
 | Direct Elo updates | `store.update_elo()` / `store.record_result()` |
 
 ### DemonstratorRunner
@@ -498,7 +492,7 @@ The systems review identified several feedback dynamics to monitor during Phase 
 1. **RETIRE vs PROMOTE ratio** — if RETIRE dominates within the first 500 epochs, the calibration rate is too slow for the snapshot cadence. Tune `snapshot_interval` or `min_games_for_review`.
 2. **Dynamic tier Elo standard deviation** — if it narrows below ~30 points, the tier is concentrating into a homogeneous band (R2 ratchet). Diversity-aware eviction (Phase 4) may need to be pulled forward.
 3. **Frontier Static Elo vs learner Elo** — if the learner exceeds the Frontier ceiling by >100 points, the benchmark anchor has drifted. Phase 3's Frontier review should be prioritized.
-4. **`unique_opponents` at review time** — if consistently below 6, tournament throughput is the bottleneck, not snapshot quality.
+4. **`unique_opponents` at review time** — with round-robin tournaments, this should be trivially satisfied after one round (19 opponents × 3 games = 57 games). If it's still low, the tournament isn't running frequently enough.
 
 These are logged to the DB via existing `elo_history` and `league_results` tables. No new observability infrastructure is needed — the dashboard can query these directly.
 

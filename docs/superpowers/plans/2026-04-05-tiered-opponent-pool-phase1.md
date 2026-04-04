@@ -56,6 +56,15 @@ Recent Fixed is assigned FIRST (most recent by epoch), THEN Frontier Static
 (Elo-spread quintile from remaining entries). This preserves the "fresh blood"
 semantic -- the most recent snapshots always go to Recent Fixed, not to Frontier.
 
+### Tournament Format
+
+The tournament uses deterministic full round-robin: every active entry plays every other
+active entry once per round, with best-of-3 games per pair. With 20 entries this is
+190 pairings × 3 games = 570 games per round. This replaces the old format of 10 random
+pairings × 64 games = 640 games per round. Fewer total games, but every pair is calibrated
+every round — this eliminates pair starvation and makes promotion criteria (unique_opponents,
+min_games_for_review) predictably satisfiable.
+
 ---
 
 ## File Map
@@ -144,18 +153,6 @@ class TestLeagueConfigValidation:
         with pytest.raises(ValueError, match="learner.*ratio.*sum"):
             LeagueConfig(scheduler=bad_sched)
 
-    def test_match_weights_must_sum_to_one(self):
-        import pytest
-        bad_sched = MatchSchedulerConfig(
-            match_dynamic_dynamic=0.10,
-            match_dynamic_recent=0.10,
-            match_dynamic_frontier=0.10,
-            match_recent_frontier=0.10,
-            match_recent_recent=0.10,
-        )
-        with pytest.raises(ValueError, match="match.*weight.*sum"):
-            LeagueConfig(scheduler=bad_sched)
-
     def test_valid_config_passes(self):
         cfg = LeagueConfig()
         assert cfg.frontier.slots + cfg.recent.slots + cfg.dynamic.slots == 20
@@ -201,11 +198,7 @@ class MatchSchedulerConfig:
     learner_dynamic_ratio: float = 0.50
     learner_frontier_ratio: float = 0.30
     learner_recent_ratio: float = 0.20
-    match_dynamic_dynamic: float = 0.40
-    match_dynamic_recent: float = 0.25
-    match_dynamic_frontier: float = 0.20
-    match_recent_frontier: float = 0.10
-    match_recent_recent: float = 0.05
+    tournament_games_per_pair: int = 3  # best-of-3 round-robin
 ```
 
 Then replace the existing `LeagueConfig` with:
@@ -247,14 +240,9 @@ class LeagueConfig:
             raise ValueError(
                 f"learner mix ratio sum must be 1.0, got {learner_sum}"
             )
-        match_sum = (
-            s.match_dynamic_dynamic + s.match_dynamic_recent
-            + s.match_dynamic_frontier + s.match_recent_frontier
-            + s.match_recent_recent
-        )
-        if abs(match_sum - 1.0) > 1e-6:
+        if self.scheduler.tournament_games_per_pair < 1:
             raise ValueError(
-                f"match class weight sum must be 1.0, got {match_sum}"
+                f"tournament_games_per_pair must be >= 1, got {self.scheduler.tournament_games_per_pair}"
             )
 ```
 
@@ -1230,35 +1218,39 @@ class TestSampleForLearner:
             sched.sample_for_learner(entries)
 
 
-class TestSampleTournamentPair:
-    def test_produces_two_different_entries(self, full_entries):
+class TestGenerateRound:
+    def test_produces_all_pairs(self):
         sched = MatchScheduler(MatchSchedulerConfig())
-        for _ in range(50):
-            a, b = sched.sample_tournament_pair(full_entries)
+        entries = [_make_entry(i, Role.DYNAMIC) for i in range(5)]
+        pairings = sched.generate_round(entries)
+        # 5 entries = 10 unique pairs
+        assert len(pairings) == 10
+        # All pairs are distinct
+        pair_ids = {(min(a.id, b.id), max(a.id, b.id)) for a, b in pairings}
+        assert len(pair_ids) == 10
+
+    def test_no_self_matches(self):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = [_make_entry(i, Role.DYNAMIC) for i in range(5)]
+        pairings = sched.generate_round(entries)
+        for a, b in pairings:
             assert a.id != b.id
 
-    def test_match_class_distribution(self, full_entries):
+    def test_single_entry_produces_no_pairings(self):
         sched = MatchScheduler(MatchSchedulerConfig())
-        classes = Counter()
-        for _ in range(1000):
-            a, b = sched.sample_tournament_pair(full_entries)
-            key = tuple(sorted([a.role, b.role]))
-            classes[key] += 1
-        # Dynamic-Dynamic should be most common (~40%)
-        dd = classes.get((Role.DYNAMIC, Role.DYNAMIC), 0)
-        assert dd > 300
+        entries = [_make_entry(1, Role.DYNAMIC)]
+        pairings = sched.generate_round(entries)
+        assert len(pairings) == 0
 
-    def test_empty_tier_skips_match_class(self):
+    def test_mixed_roles_all_paired(self):
         sched = MatchScheduler(MatchSchedulerConfig())
-        entries = {
-            Role.FRONTIER_STATIC: [_make_entry(1, Role.FRONTIER_STATIC), _make_entry(2, Role.FRONTIER_STATIC)],
-            Role.RECENT_FIXED: [_make_entry(3, Role.RECENT_FIXED), _make_entry(4, Role.RECENT_FIXED)],
-            Role.DYNAMIC: [],  # empty
-        }
-        for _ in range(50):
-            a, b = sched.sample_tournament_pair(entries)
-            assert a.role != Role.DYNAMIC
-            assert b.role != Role.DYNAMIC
+        entries = [
+            _make_entry(1, Role.FRONTIER_STATIC),
+            _make_entry(2, Role.RECENT_FIXED),
+            _make_entry(3, Role.DYNAMIC),
+        ]
+        pairings = sched.generate_round(entries)
+        assert len(pairings) == 3  # 3 choose 2
 
 
 class TestEffectiveRatios:
@@ -1318,22 +1310,20 @@ class MatchScheduler:
         chosen_role = random.choices(roles, weights=weights, k=1)[0]
         return random.choice(entries_by_role[chosen_role])
 
-    def sample_tournament_pair(
-        self, entries_by_role: dict[Role, list[OpponentEntry]],
-    ) -> tuple[OpponentEntry, OpponentEntry]:
-        match_classes = self._available_match_classes(entries_by_role)
-        if not match_classes:
-            raise ValueError("No valid match classes available")
-        classes = list(match_classes.keys())
-        weights = [match_classes[c] for c in classes]
-        role_a, role_b = random.choices(classes, weights=weights, k=1)[0]
-        if role_a == role_b:
-            pool = entries_by_role[role_a]
-            a, b = random.sample(pool, 2)
-        else:
-            a = random.choice(entries_by_role[role_a])
-            b = random.choice(entries_by_role[role_b])
-        return a, b
+    def generate_round(
+        self, entries: list[OpponentEntry],
+    ) -> list[tuple[OpponentEntry, OpponentEntry]]:
+        """Generate all N*(N-1)/2 pairings for a full round-robin round.
+        
+        Each pair plays tournament_games_per_pair games (default 3 — best-of-3).
+        With 20 entries: 190 pairings × 3 games = 570 games per round.
+        """
+        pairings = []
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                pairings.append((entries[i], entries[j]))
+        random.shuffle(pairings)  # randomize order to avoid position bias
+        return pairings
 
     def effective_ratios(
         self, entries_by_role: dict[Role, list[OpponentEntry]],
@@ -1355,32 +1345,6 @@ class MatchScheduler:
                 result[role] = 0.0
         return result
 
-    def _available_match_classes(
-        self, entries_by_role: dict[Role, list[OpponentEntry]],
-    ) -> dict[tuple[Role, Role], float]:
-        cfg = self.config
-        all_classes = {
-            (Role.DYNAMIC, Role.DYNAMIC): cfg.match_dynamic_dynamic,
-            (Role.DYNAMIC, Role.RECENT_FIXED): cfg.match_dynamic_recent,
-            (Role.DYNAMIC, Role.FRONTIER_STATIC): cfg.match_dynamic_frontier,
-            (Role.RECENT_FIXED, Role.FRONTIER_STATIC): cfg.match_recent_frontier,
-            (Role.RECENT_FIXED, Role.RECENT_FIXED): cfg.match_recent_recent,
-        }
-        available = {}
-        for (ra, rb), weight in all_classes.items():
-            pool_a = entries_by_role.get(ra, [])
-            pool_b = entries_by_role.get(rb, [])
-            if ra == rb:
-                if len(pool_a) >= 2:
-                    available[(ra, rb)] = weight
-            else:
-                if pool_a and pool_b:
-                    available[(ra, rb)] = weight
-        # Normalize
-        total = sum(available.values())
-        if total > 0:
-            available = {k: v / total for k, v in available.items()}
-        return available
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1839,7 +1803,30 @@ Add `store: OpponentStore` and `scheduler: MatchScheduler` as constructor parame
 In `_run_loop`:
 - Replace `conn = self._open_connection()` -> remove (store manages connection)
 - Replace `self._load_entries(conn)` -> `self.store.list_entries()`
-- Replace `self._generate_round(entries)` with `self.scheduler.sample_tournament_pair(entries_by_role)` for each pairing. The tournament loop should generate `len(entries) // 2` pairings per round (matching the old round-robin count), using `scheduler.sample_tournament_pair()` for each pairing. This preserves the existing calibration volume per epoch.
+- Replace the old `_generate_round` method and the inner pairing loop with `scheduler.generate_round(entries)`. The tournament main loop becomes:
+
+```python
+entries = self.store.list_entries()
+if len(entries) < self.min_pool_size:
+    self._stop_event.wait(self.pause_seconds * 2)
+    continue
+
+pairings = self.scheduler.generate_round(entries)
+for entry_a, entry_b in pairings:
+    if self._stop_event.is_set():
+        break
+    try:
+        wins_a, wins_b, draws = self._play_match(entry_a, entry_b)
+    except Exception:
+        logger.exception("Match failed: %s vs %s", entry_a.display_name, entry_b.display_name)
+        continue
+    if wins_a + wins_b + draws > 0:
+        self.store.record_result(...)
+        self.store.update_elo(...)
+    self._stop_event.wait(self.pause_seconds)
+```
+
+The `_play_match` method is updated to play `self.scheduler.config.tournament_games_per_pair` games instead of `self.games_per_match`. The `games_per_match` parameter is removed from the constructor -- it's now controlled by `MatchSchedulerConfig.tournament_games_per_pair`.
 - Replace `self._record_result(conn, ...)` -> use `self.store.record_result(...)` and `self.store.update_elo(...)`
 - Remove `self._open_connection`, `_load_entries`, `_record_result` methods
 - Keep `_play_match`, `_play_batch` unchanged
