@@ -550,6 +550,13 @@ class KataGoTrainingLoop:
         self._learner_entry_id: int | None = None
         self._tournament: LeagueTournament | None = None
 
+        # Per-env opponent state (Change 3) — initialized at epoch start when enabled
+        self._opponent_models: dict[int, torch.nn.Module] | None = None
+        self._env_opponent_ids: np.ndarray | None = None
+        self._cached_entries: list[OpponentEntry] = []
+        self._cached_entries_by_id: dict[int, OpponentEntry] = {}
+        self._opponent_results: dict[int, list[int]] | None = None
+
         if config.league is not None:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
             self.pool = OpponentPool(
@@ -746,9 +753,56 @@ class KataGoTrainingLoop:
                     except ValueError:
                         opp_device_cfg = None
                 opp_device = opp_device_cfg or str(self.device)
-                self._current_opponent = self.pool.load_opponent(
-                    self._current_opponent_entry, device=opp_device,
+
+                # Cache entries once — reused for sampling AND opponent loading
+                self._cached_entries = self.pool.list_entries()
+                self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
+
+                use_per_env_opps = (
+                    self.config.league is not None
+                    and self.config.league.per_env_opponents
+                    and len(self._cached_entries) > 0
                 )
+
+                if use_per_env_opps:
+                    # Memory cleanup: release previous epoch's models.
+                    # Safe at epoch start: ppo.update() backward pass is a
+                    # CUDA sync point, so all prior kernels have completed.
+                    if self._opponent_models is not None:
+                        del self._opponent_models
+                        self._opponent_models = None
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                    self._opponent_models = self.pool.load_all_opponents(device=opp_device)
+
+                    # Per-env opponent assignment
+                    self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
+                    for env_i in range(self.num_envs):
+                        entry = self.sampler.sample_from(self._cached_entries)
+                        self._env_opponent_ids[env_i] = entry.id
+
+                    # Per-opponent W/L/D tracking for epoch-end Elo update
+                    self._opponent_results = {
+                        eid: [0, 0, 0] for eid in self._opponent_models
+                    }
+
+                    # Reuse an already-loaded model for _current_opponent (used by
+                    # PendingTransitions guard, sign_correct_bootstrap, etc.).
+                    # Do NOT call load_opponent again — saves 14MB VRAM + disk I/O.
+                    opp_entry_id = self._current_opponent_entry.id
+                    if opp_entry_id in self._opponent_models:
+                        self._current_opponent = self._opponent_models[opp_entry_id]
+                    else:
+                        # Entry's checkpoint was corrupt/missing — use any loaded model
+                        self._current_opponent = next(iter(self._opponent_models.values()))
+                else:
+                    self._opponent_models = None
+                    self._env_opponent_ids = None
+                    self._opponent_results = None
+                    self._current_opponent = self.pool.load_opponent(
+                        self._current_opponent_entry, device=opp_device,
+                    )
 
             # One-time LR scheduler reset for league mode to prevent value-loss
             # spike from triggering premature LR reduction after reward-collection
@@ -831,14 +885,25 @@ class KataGoTrainingLoop:
                     learner_moved = pre_players_t == (learner_side_t if use_color_rand else learner_side)
 
                     # Split-merge: learner vs opponent
-                    sm_result = split_merge_step(
-                        obs=obs, legal_masks=legal_masks,
-                        current_players=current_players,
-                        learner_model=self.model,
-                        opponent_model=self._current_opponent,
-                        learner_side=learner_side,
-                        value_adapter=self.value_adapter,
-                    )
+                    if self._opponent_models and self._env_opponent_ids is not None:
+                        sm_result = split_merge_step(
+                            obs=obs, legal_masks=legal_masks,
+                            current_players=current_players,
+                            learner_model=self.model,
+                            opponent_models=self._opponent_models,
+                            env_opponent_ids=self._env_opponent_ids,
+                            learner_side=learner_side,
+                            value_adapter=self.value_adapter,
+                        )
+                    else:
+                        sm_result = split_merge_step(
+                            obs=obs, legal_masks=legal_masks,
+                            current_players=current_players,
+                            learner_model=self.model,
+                            opponent_model=self._current_opponent,
+                            learner_side=learner_side,
+                            value_adapter=self.value_adapter,
+                        )
                     actions = sm_result.actions
                     action_list = actions.tolist()
                     step_result = self.vecenv.step(action_list)
@@ -951,10 +1016,46 @@ class KataGoTrainingLoop:
                                     env_ids=imm_finalized["env_ids"],
                                 )
 
+                    # --- Dones processing order (Changes 2+3) ---
+                    # 1. Finalize pending transitions (above — existing protocol)
+                    # 2. Per-opponent Elo result tracking + re-sample opponent
+                    # 3. Re-randomize learner color
+                    # Steps 2-3 set up state for the NEXT game. Step 1 consumes
+                    # state from the COMPLETED game. Do not reorder.
+
+                    # Per-env opponent: track results and re-sample on done (Change 3).
+                    if (self._opponent_results is not None
+                            and self._env_opponent_ids is not None
+                            and dones.bool().any()):
+                        done_mask = dones.bool()
+                        done_indices_np = np.flatnonzero(done_mask.cpu().numpy())
+
+                        # Batch-extract rewards to avoid per-env GPU syncs.
+                        # One .cpu() call instead of N .item() calls.
+                        done_rewards_np = learner_rewards[done_mask].cpu().numpy()
+                        done_terminal_np = terminated.bool().cpu().numpy()[done_indices_np]
+                        done_opp_ids = self._env_opponent_ids[done_indices_np]
+
+                        for i, env_i in enumerate(done_indices_np):
+                            opp_id = int(done_opp_ids[i])
+                            if opp_id not in self._opponent_results:
+                                continue
+                            if done_terminal_np[i]:
+                                lr = done_rewards_np[i]
+                                if lr > 0:
+                                    self._opponent_results[opp_id][0] += 1  # win
+                                elif lr < 0:
+                                    self._opponent_results[opp_id][1] += 1  # loss
+                                else:
+                                    self._opponent_results[opp_id][2] += 1  # draw
+
+                            # Re-sample opponent for next game
+                            new_entry = self.sampler.sample_from(self._cached_entries)
+                            self._env_opponent_ids[env_i] = new_entry.id
+
                     # Re-randomize learner color for completed games (Change 2).
                     # This sets up state for the NEXT game — must happen AFTER
-                    # pending transition finalization and Elo attribution
-                    # (see Task 8 for opponent tracking which runs BEFORE this).
+                    # pending transition finalization and Elo attribution.
                     if use_color_rand and dones.bool().any():
                         done_np = dones.bool().cpu().numpy()
                         new_sides = np.random.randint(
@@ -1154,22 +1255,83 @@ class KataGoTrainingLoop:
             # for sampling, but no result row is written.
             if self.dist_ctx.is_main:
                 total_games = win_count + loss_count + draw_count
-                if (self.pool is not None and self._current_opponent_entry is not None
+                k = self.config.league.elo_k_factor if self.config.league else 32.0
+
+                if (self.pool is not None
+                        and self._opponent_results is not None
+                        and self._cached_entries_by_id
+                        and total_games > 0):
+                    # Per-opponent Elo updates (Change 3).
+                    # Freeze the starting learner Elo — all opponent updates are
+                    # computed against this SAME base value, then the cumulative
+                    # delta is applied once. This prevents path-dependent Elo drift
+                    # from dict iteration order.
+                    learner_entry = self.pool._get_entry(self._learner_entry_id)
+                    if learner_entry is not None:
+                        base_learner_elo = learner_entry.elo_rating
+                        cumulative_learner_delta = 0.0
+
+                        for opp_id, (w, l, d) in self._opponent_results.items():
+                            opp_total = w + l + d
+                            if opp_total == 0:
+                                continue
+                            if opp_id == self._learner_entry_id:
+                                continue
+                            opp_entry = self._cached_entries_by_id.get(opp_id)
+                            if opp_entry is None:
+                                continue
+                            result_score = (w + 0.5 * d) / opp_total
+                            new_learner_elo, new_opp_elo = compute_elo_update(
+                                base_learner_elo, opp_entry.elo_rating,
+                                result=result_score, k=k,
+                            )
+                            learner_delta = new_learner_elo - base_learner_elo
+                            cumulative_learner_delta += learner_delta
+                            # Update opponent Elo immediately (each opponent is independent)
+                            self.pool.update_elo(opp_id, new_opp_elo, epoch=self.epoch)
+                            logger.info(
+                                "Elo: learner base=%.0f delta=%.1f, "
+                                "opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                                base_learner_elo, learner_delta,
+                                opp_id, opp_entry.elo_rating, new_opp_elo,
+                                w, l, d,
+                            )
+
+                        # Apply cumulative learner Elo change once
+                        final_learner_elo = base_learner_elo + cumulative_learner_delta
+                        self.pool.update_elo(
+                            self._learner_entry_id, final_learner_elo, epoch=self.epoch,
+                        )
+                        logger.info(
+                            "Elo: learner %.0f->%.0f (cumulative from %d opponents)",
+                            base_learner_elo, final_learner_elo,
+                            sum(1 for w, l, d in self._opponent_results.values()
+                                if w + l + d > 0),
+                        )
+
+                elif (self.pool is not None
+                        and self._current_opponent_entry is not None
                         and total_games > 0
                         and self._learner_entry_id != self._current_opponent_entry.id):
+                    # Legacy single-opponent Elo update
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         result_score = (win_count + 0.5 * draw_count) / total_games
-                        k = self.config.league.elo_k_factor if self.config.league else 32.0
                         new_learner_elo, new_opp_elo = compute_elo_update(
                             learner_entry.elo_rating,
                             self._current_opponent_entry.elo_rating,
                             result=result_score, k=k,
                         )
-                        self.pool.update_elo(learner_entry.id, new_learner_elo, epoch=self.epoch)
-                        self.pool.update_elo(self._current_opponent_entry.id, new_opp_elo, epoch=self.epoch)
+                        self.pool.update_elo(
+                            learner_entry.id, new_learner_elo, epoch=self.epoch,
+                        )
+                        self.pool.update_elo(
+                            self._current_opponent_entry.id, new_opp_elo,
+                            epoch=self.epoch,
+                        )
                         logger.info(
-                            "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
+                            "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f "
+                            "| W=%d L=%d D=%d",
                             learner_entry.elo_rating, new_learner_elo,
                             self._current_opponent_entry.id,
                             self._current_opponent_entry.elo_rating, new_opp_elo,
@@ -1184,6 +1346,13 @@ class KataGoTrainingLoop:
                     played_ids.add(self._learner_entry_id)
                 if self._current_opponent_entry is not None:
                     played_ids.add(self._current_opponent_entry.id)
+                # Change 3: include all opponents that had games this epoch.
+                # Without this, the carry-forward loop below would overwrite
+                # the per-opponent Elo updates with stale pre-epoch values.
+                if self._opponent_results is not None:
+                    for opp_id, (w, l, d) in self._opponent_results.items():
+                        if w + l + d > 0:
+                            played_ids.add(opp_id)
                 for entry in self.pool.list_entries():
                     if entry.id not in played_ids:
                         self.pool.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
