@@ -36,8 +36,9 @@
         isTrainer: true,
       })
     }
-    // Pad to totalSlots with placeholders
-    while (p.length < totalSlots) {
+    // Show a few placeholder slots to hint at pool capacity, not the full 20
+    const targetSize = Math.min(p.length + 3, totalSlots)
+    while (p.length < targetSize) {
       const slot = p.length + 1
       p.push({
         id: `empty-${slot}`,
