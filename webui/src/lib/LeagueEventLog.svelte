@@ -5,7 +5,7 @@
 <div class="event-log">
   <h2 class="section-header">Event Log</h2>
   {#if $leagueEvents.length === 0}
-    <p class="empty">No matches yet.</p>
+    <p class="empty">No league events yet.</p>
   {:else}
     <div class="feed">
       {#each $leagueEvents as event}

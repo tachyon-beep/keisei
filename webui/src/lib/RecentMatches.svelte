@@ -75,7 +75,7 @@
 <div class="recent-card">
   <h2 class="section-header">Recent Matches</h2>
   {#if items.length === 0}
-    <p class="empty">No matches yet.</p>
+    <p class="empty">No matches played yet.</p>
   {:else}
     <div class="feed">
       {#each items as item}
