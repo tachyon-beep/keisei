@@ -48,6 +48,16 @@ score_normalization = 76.0
 grad_clip = 1.0
 use_terminated_for_gae = true
 
+# Phase 2 — enable after Phase 1 validation (50-100 epochs, value_loss > 0.05 by epoch 30-50):
+# See docs/superpowers/specs/2026-04-04-value-head-collapse-remediation-design.md
+# score_blend_alpha = 0.3     # R2: blend score_lead into GAE value
+# lambda_score = 0.1          # R3: 5x increase in score head gradient weight
+# entropy_decay_epochs = 200  # R5: linear decay from warmup to base entropy
+
+[training.algorithm_params.rl_warmup]
+epochs = 50
+entropy_bonus = 0.05
+
 [display]
 moves_per_minute = 30
 db_path = "data/keisei-500k-league.db"
