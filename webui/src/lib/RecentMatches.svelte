@@ -129,16 +129,6 @@
     flex: 1;
   }
 
-  .section-header {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 10px;
-    flex-shrink: 0;
-  }
-
   .feed {
     overflow-y: scroll;
     min-height: 0;

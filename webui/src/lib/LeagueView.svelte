@@ -184,15 +184,6 @@
     overflow: hidden;
   }
 
-  .section-header {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 10px;
-  }
-
   .empty {
     color: var(--text-muted);
     font-size: 13px;

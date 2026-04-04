@@ -170,16 +170,6 @@
     flex-direction: column;
   }
 
-  .section-header {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 10px;
-    flex-shrink: 0;
-  }
-
   .table-scroll {
     flex: 1;
     overflow-y: scroll;
