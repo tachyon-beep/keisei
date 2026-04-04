@@ -224,6 +224,10 @@ def load_config(path: Path) -> AppConfig:
         recent_raw = lg.pop("recent", {})
         dynamic_raw = lg.pop("dynamic", {})
         scheduler_raw = lg.pop("scheduler", {})
+        # Strip legacy keys removed during tiered-pool migration
+        _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
+        for key in _legacy_league_keys:
+            lg.pop(key, None)
         league_config = LeagueConfig(
             **lg,
             frontier=FrontierStaticConfig(**frontier_raw),
