@@ -581,3 +581,67 @@ class TestDeleteEntryCleansGameSnapshots:
         assert row[0] is None, (
             f"opponent_id should be NULL after eviction, got {row[0]}"
         )
+
+
+class TestLoadAllOpponents:
+    """Tests for OpponentPool.load_all_opponents."""
+
+    def test_loads_all_entries(self, league_db, league_dir):
+        """Should return a dict with one model per pool entry."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        for i in range(3):
+            pool.add_snapshot(model, "resnet", {"hidden_size": 16, "num_layers": 2}, epoch=i)
+
+        with patch("keisei.training.league.build_model") as mock_build:
+            mock_build.side_effect = lambda arch, params: torch.nn.Linear(10, 10)
+            models = pool.load_all_opponents(device="cpu")
+
+        entries = pool.list_entries()
+        assert len(models) == 3
+        for entry in entries:
+            assert entry.id in models
+            assert isinstance(models[entry.id], torch.nn.Module)
+
+    def test_skips_corrupt_checkpoint(self, league_db, league_dir):
+        """Corrupt checkpoint should be skipped with a warning, not crash."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {"hidden_size": 16, "num_layers": 2}, epoch=0)
+        pool.add_snapshot(model, "resnet", {"hidden_size": 16, "num_layers": 2}, epoch=1)
+
+        # Corrupt the first entry's checkpoint
+        entries = pool.list_entries()
+        Path(entries[0].checkpoint_path).write_text("not a valid checkpoint")
+
+        with patch("keisei.training.league.build_model") as mock_build:
+            mock_build.side_effect = lambda arch, params: torch.nn.Linear(10, 10)
+            models = pool.load_all_opponents(device="cpu")
+
+        assert len(models) == 1
+        assert entries[1].id in models
+        assert entries[0].id not in models
+
+    def test_skips_missing_checkpoint(self, league_db, league_dir):
+        """Missing checkpoint file should be skipped, not crash."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {"hidden_size": 16, "num_layers": 2}, epoch=0)
+        pool.add_snapshot(model, "resnet", {"hidden_size": 16, "num_layers": 2}, epoch=1)
+
+        # Delete the first entry's checkpoint
+        entries = pool.list_entries()
+        Path(entries[0].checkpoint_path).unlink()
+
+        with patch("keisei.training.league.build_model") as mock_build:
+            mock_build.side_effect = lambda arch, params: torch.nn.Linear(10, 10)
+            models = pool.load_all_opponents(device="cpu")
+
+        assert len(models) == 1
+        assert entries[1].id in models
+
+    def test_empty_pool_returns_empty_dict(self, league_db, league_dir):
+        """Empty pool should return empty dict."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        models = pool.load_all_opponents(device="cpu")
+        assert models == {}

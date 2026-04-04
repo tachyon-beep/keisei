@@ -312,6 +312,21 @@ class OpponentPool:
         model.eval()
         return model
 
+    def load_all_opponents(self, device: str = "cpu") -> dict[int, torch.nn.Module]:
+        """Load all pool entries. Skips entries with missing/corrupt checkpoints."""
+        import pickle
+
+        models: dict[int, torch.nn.Module] = {}
+        for entry in self.list_entries():
+            try:
+                models[entry.id] = self.load_opponent(entry, device=device)
+            except (FileNotFoundError, RuntimeError, pickle.UnpicklingError) as e:
+                logger.warning(
+                    "Skipping pool entry id=%d (epoch %d): %s",
+                    entry.id, entry.created_epoch, e,
+                )
+        return models
+
     def update_elo(self, entry_id: int, new_elo: float, epoch: int = 0) -> None:
         self._conn.execute(
             "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
