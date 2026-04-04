@@ -243,22 +243,37 @@ def split_merge_step(
     legal_masks: torch.Tensor,
     current_players: np.ndarray,
     learner_model: torch.nn.Module,
-    opponent_model: torch.nn.Module,
+    opponent_model: torch.nn.Module | None = None,
+    opponent_models: dict[int, torch.nn.Module] | None = None,
+    env_opponent_ids: np.ndarray | None = None,
     learner_side: int | np.ndarray = 0,
     value_adapter: ValueHeadAdapter | None = None,
 ) -> SplitMergeResult:
     """Execute one step with split learner/opponent forward passes.
 
+    Supports both single-opponent (legacy) and multi-opponent (cohort) modes:
+    - Legacy: pass opponent_model=<model>
+    - Cohort: pass opponent_models={id: model, ...} and env_opponent_ids=<array>
+
     Returns only learner-side data (log_probs, values, indices). The caller
     stores ONLY learner transitions in the rollout buffer.
     """
+    # Normalize to multi-opponent path
+    if opponent_models is None and opponent_model is not None:
+        active_opponents: dict[int, torch.nn.Module] = {0: opponent_model}
+        active_env_ids: np.ndarray | None = None
+    elif opponent_models is not None:
+        active_opponents = opponent_models
+        active_env_ids = env_opponent_ids
+    else:
+        raise ValueError("Must provide either opponent_model or opponent_models")
+
     num_envs = obs.shape[0]
     device = obs.device
 
     learner_mask = torch.tensor(current_players == learner_side, device=device)
     opponent_mask = ~learner_mask
     learner_indices = learner_mask.nonzero(as_tuple=True)[0]
-    opponent_indices = opponent_mask.nonzero(as_tuple=True)[0]
 
     actions = torch.zeros(num_envs, dtype=torch.long, device=device)
     learner_log_probs = torch.zeros(0, device=device)
@@ -284,22 +299,36 @@ def split_merge_step(
         learner_log_probs = l_dist.log_prob(l_actions)
 
         if value_adapter is not None:
-            learner_values = value_adapter.scalar_value_blended(l_output.value_logits, l_output.score_lead)
+            learner_values = value_adapter.scalar_value_blended(
+                l_output.value_logits, l_output.score_lead,
+            )
         else:
             learner_values = KataGoPPOAlgorithm.scalar_value(l_output.value_logits)
 
         actions[learner_indices] = l_actions
 
-    # Opponent forward pass (always no_grad, eval mode).
+    # Opponent forward passes (always no_grad, eval mode).
     # When the opponent lives on a different GPU (e.g. cuda:1), move
     # observations there for inference, then move actions back.
-    if opponent_indices.numel() > 0:
-        o_obs = obs[opponent_indices]
-        o_masks = legal_masks[opponent_indices]
+    opponent_mask_np = opponent_mask.cpu().numpy()
+    for opp_id, model in active_opponents.items():
+        if active_env_ids is not None:
+            opp_env_mask = (active_env_ids == opp_id) & opponent_mask_np
+        else:
+            opp_env_mask = opponent_mask_np
+
+        if not opp_env_mask.any():
+            continue
+
+        indices = np.flatnonzero(opp_env_mask)
+        idx_tensor = torch.from_numpy(indices.astype(np.int64)).to(device)
+
+        o_obs = obs[idx_tensor]
+        o_masks = legal_masks[idx_tensor]
 
         # Detect cross-device opponent (e.g. learner on cuda:0, opponent on cuda:1)
         try:
-            opp_device = next(opponent_model.parameters()).device
+            opp_device = next(model.parameters()).device
         except (StopIteration, AttributeError):
             opp_device = device  # fallback: assume same device
         cross_device = isinstance(opp_device, torch.device) and opp_device != device
@@ -307,9 +336,9 @@ def split_merge_step(
             o_obs = o_obs.to(opp_device)
             o_masks = o_masks.to(opp_device)
 
-        opponent_model.eval()
+        model.eval()
         with torch.no_grad():
-            o_output = opponent_model(o_obs)
+            o_output = model(o_obs)
 
         o_flat = o_output.policy_logits.reshape(o_obs.shape[0], -1)
         o_masked = o_flat.masked_fill(~o_masks, float("-inf"))
@@ -319,7 +348,7 @@ def split_merge_step(
 
         if cross_device:
             o_actions = o_actions.to(device)
-        actions[opponent_indices] = o_actions
+        actions[idx_tensor] = o_actions
 
     return SplitMergeResult(
         actions=actions,
