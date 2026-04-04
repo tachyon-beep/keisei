@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 
 from keisei.config import LeagueConfig
+from keisei.training.historical_library import HistoricalLibrary, HistoricalSlot
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
+from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tier_managers import (
     DynamicManager,
     FrontierManager,
@@ -26,6 +28,8 @@ class TieredPool:
         self.recent_manager = RecentFixedManager(store, config.recent)
         self.dynamic_manager = DynamicManager(store, config.dynamic)
         self.recent_manager.set_weakest_elo_fn(self.dynamic_manager.weakest_elo)
+        self.historical_library = HistoricalLibrary(store, config.history)
+        self.role_elo_tracker = RoleEloTracker(store, config.role_elo)
 
     # ------------------------------------------------------------------
     # Snapshot
@@ -76,9 +80,13 @@ class TieredPool:
     # ------------------------------------------------------------------
 
     def on_epoch_end(self, epoch: int) -> None:
-        """Run end-of-epoch maintenance (frontier review, etc.)."""
+        """Run end-of-epoch maintenance (frontier review, historical refresh, etc.)."""
         if self.frontier_manager.is_due_for_review(epoch):
             self.frontier_manager.review(epoch)
+
+    def get_historical_slots(self) -> list[HistoricalSlot]:
+        """Delegate to the historical library."""
+        return self.historical_library.get_slots()
 
     # ------------------------------------------------------------------
     # Bootstrap

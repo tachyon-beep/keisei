@@ -47,7 +47,9 @@ from keisei.training.katago_ppo import (
 
 # scalar_value is used in split_merge_step to keep value computation
 # centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
+from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
+from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tiered_pool import TieredPool
 from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.model_registry import build_model
@@ -593,6 +595,19 @@ class KataGoTrainingLoop:
                     or config.league.opponent_device
                     or str(self.device)
                 )
+
+                # Phase 2: create gauntlet if enabled
+                gauntlet: HistoricalGauntlet | None = None
+                if config.league.gauntlet.enabled:
+                    gauntlet = HistoricalGauntlet(
+                        store=self.store,
+                        role_elo_tracker=self.tiered_pool.role_elo_tracker,
+                        config=config.league.gauntlet,
+                        device=tournament_device,
+                        num_envs=config.league.tournament_num_envs,
+                        max_ply=config.training.max_ply,
+                    )
+
                 self._tournament = LeagueTournament(
                     store=self.store,
                     scheduler=self.scheduler,
@@ -602,6 +617,9 @@ class KataGoTrainingLoop:
                     k_factor=config.league.tournament_k_factor,
                     pause_seconds=config.league.tournament_pause_seconds,
                     max_ply=config.training.max_ply,
+                    learner_entry_id=self._learner_entry_id,
+                    historical_library=self.tiered_pool.historical_library,
+                    gauntlet=gauntlet,
                 )
 
         self._check_resume()
@@ -1318,7 +1336,7 @@ class KataGoTrainingLoop:
                     # K is normalized by active opponent count to prevent cumulative
                     # amplification (20 opponents × K=32 = 640 pts without normalization).
                     assert self._learner_entry_id is not None  # set when store exists
-                    learner_entry = self.store._get_entry(self._learner_entry_id)
+                    learner_entry = self.store.get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         base_learner_elo = learner_entry.elo_rating
                         cumulative_learner_delta = 0.0
@@ -1372,7 +1390,7 @@ class KataGoTrainingLoop:
                         and self._learner_entry_id is not None
                         and self._learner_entry_id != self._current_opponent_entry.id):
                     # Legacy single-opponent Elo update
-                    learner_entry = self.store._get_entry(self._learner_entry_id)
+                    learner_entry = self.store.get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         result_score = (win_count + 0.5 * draw_count) / total_games
                         new_learner_elo, new_opp_elo = compute_elo_update(
@@ -1536,6 +1554,9 @@ class KataGoTrainingLoop:
 
         # B5 fix: update learner entry ID so Elo tracks the current snapshot
         self._learner_entry_id = new_entry.id
+        # Keep tournament's learner_entry_id in sync for gauntlet
+        if self._tournament is not None:
+            self._tournament.learner_entry_id = new_entry.id
 
         # Reset optimizer (fresh Adam — old momentum fights new gradient signal)
         self.ppo.optimizer = torch.optim.Adam(

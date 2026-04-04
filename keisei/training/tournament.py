@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 
+from keisei.training.historical_gauntlet import HistoricalGauntlet
+from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.match_utils import play_match, release_models
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, compute_elo_update
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,9 @@ class LeagueTournament:
         k_factor: float = 16.0,
         pause_seconds: float = 5.0,
         min_pool_size: int = 3,
+        learner_entry_id: int | None = None,
+        historical_library: HistoricalLibrary | None = None,
+        gauntlet: HistoricalGauntlet | None = None,
     ) -> None:
         """
         Args:
@@ -56,6 +59,9 @@ class LeagueTournament:
                       these are calibration matches, not primary evaluations.
             pause_seconds: Sleep between matches to avoid starving the main loop.
             min_pool_size: Don't run matches until pool has at least this many entries.
+            learner_entry_id: Entry ID of the learner (needed for gauntlet).
+            historical_library: The milestone library instance (Phase 2).
+            gauntlet: The gauntlet runner instance (Phase 2).
         """
         self.store = store
         self.scheduler = scheduler
@@ -66,9 +72,23 @@ class LeagueTournament:
         self.k_factor = k_factor
         self.pause_seconds = pause_seconds
         self.min_pool_size = min_pool_size
+        self._learner_entry_id = learner_entry_id
+        self._learner_lock = threading.Lock()
+        self.historical_library = historical_library
+        self.gauntlet = gauntlet
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+
+    @property
+    def learner_entry_id(self) -> int | None:
+        with self._learner_lock:
+            return self._learner_entry_id
+
+    @learner_entry_id.setter
+    def learner_entry_id(self, value: int | None) -> None:
+        with self._learner_lock:
+            self._learner_entry_id = value
 
     # ── Lifecycle ────────────────────────────────────────────
 
@@ -78,6 +98,8 @@ class LeagueTournament:
             logger.warning("Tournament thread already running")
             return
         self._stop_event.clear()
+        if self.gauntlet is not None:
+            self.gauntlet.set_stop_event(self._stop_event)
         self._thread = threading.Thread(
             target=self._run_loop, name="league-tournament", daemon=True,
         )
@@ -157,8 +179,8 @@ class LeagueTournament:
                         # Re-read current Elo from DB — entries in the pairing
                         # list are stale if this entry already played earlier
                         # in the same round-robin round.
-                        current_a = self.store._get_entry(entry_a.id)
-                        current_b = self.store._get_entry(entry_b.id)
+                        current_a = self.store.get_entry(entry_a.id)
+                        current_b = self.store.get_entry(entry_b.id)
                         if current_a is None or current_b is None:
                             continue  # entry retired mid-round
                         result_score = (wins_a + 0.5 * draws) / total
@@ -183,6 +205,25 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds)
 
                 logger.info("Tournament round E%d complete", epoch)
+
+                # Run historical gauntlet if due (Phase 2)
+                if (
+                    self.gauntlet
+                    and self.learner_entry_id
+                    and self.historical_library
+                    and self.gauntlet.is_due(epoch)
+                    and not self._stop_event.is_set()
+                ):
+                    try:
+                        self.historical_library.refresh(epoch)
+                        slots = self.historical_library.get_slots()
+                        learner_entry = self.store.get_entry(self.learner_entry_id)
+                        if learner_entry and slots:
+                            self.gauntlet.run_gauntlet(
+                                epoch, learner_entry, slots, vecenv=vecenv,
+                            )
+                    except Exception:
+                        logger.exception("Gauntlet failed at epoch %d", epoch)
         except Exception:
             logger.exception("Tournament thread crashed")
         finally:
@@ -191,117 +232,27 @@ class LeagueTournament:
     # ── Helpers ──────────────────────────────────────────────
 
     def _current_epoch(self) -> int:
-        """Read the current training epoch from the DB via the store's connection."""
-        try:
-            row = self.store._conn.execute(
-                "SELECT current_epoch FROM training_state WHERE id = 1"
-            ).fetchone()
-            return row["current_epoch"] if row else 0
-        except Exception:
-            return 0
+        """Read the current training epoch from the DB."""
+        return self.store.get_current_epoch()
 
     # ── Match execution ──────────────────────────────────────
 
     def _play_match(
         self,
-        vecenv: Any,
+        vecenv: object,
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
     ) -> tuple[int, int, int]:
         """Play a set of games between two frozen models. Returns (a_wins, b_wins, draws)."""
-        model_a = self._load_model(entry_a)
-        model_b = self._load_model(entry_b)
+        model_a = self.store.load_opponent(entry_a, device=str(self.device))
+        model_b = self.store.load_opponent(entry_b, device=str(self.device))
 
-        total_a_wins = 0
-        total_b_wins = 0
-        total_draws = 0
-
-        # Run enough batches to hit games_per_match total completed games
-        games_remaining = self.games_per_match
-        while games_remaining > 0 and not self._stop_event.is_set():
-            a_wins, b_wins, draws = self._play_batch(vecenv, model_a, model_b)
-            total_a_wins += a_wins
-            total_b_wins += b_wins
-            total_draws += draws
-            games_remaining -= (a_wins + b_wins + draws)
-
-        # Clean up GPU memory
-        del model_a, model_b
-        torch.cuda.empty_cache()
-
-        return total_a_wins, total_b_wins, total_draws
-
-    def _play_batch(
-        self,
-        vecenv: Any,
-        model_a: torch.nn.Module,
-        model_b: torch.nn.Module,
-    ) -> tuple[int, int, int]:
-        """Play one batch of games (num_envs concurrent). Returns (a_wins, b_wins, draws)."""
-        reset_result = vecenv.reset()
-        obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
-        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(self.device)
-        current_players = np.zeros(self.num_envs, dtype=np.uint8)
-
-        a_wins = 0
-        b_wins = 0
-        draws = 0
-
-        for _ply in range(self.max_ply):
-            if self._stop_event.is_set():
-                break
-
-            # Player A = side 0 (black), Player B = side 1 (white)
-            player_a_mask = torch.tensor(current_players == 0, device=self.device)
-            player_b_mask = ~player_a_mask
-
-            actions = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-
-            # Model A forward
-            a_indices = player_a_mask.nonzero(as_tuple=True)[0]
-            if a_indices.numel() > 0:
-                with torch.no_grad():
-                    a_out = model_a(obs[a_indices])
-                a_logits = a_out.policy_logits.reshape(a_indices.numel(), -1)
-                a_masked = a_logits.masked_fill(~legal_masks[a_indices], float("-inf"))
-                a_probs = F.softmax(a_masked, dim=-1)
-                actions[a_indices] = torch.distributions.Categorical(a_probs).sample()
-
-            # Model B forward
-            b_indices = player_b_mask.nonzero(as_tuple=True)[0]
-            if b_indices.numel() > 0:
-                with torch.no_grad():
-                    b_out = model_b(obs[b_indices])
-                b_logits = b_out.policy_logits.reshape(b_indices.numel(), -1)
-                b_masked = b_logits.masked_fill(~legal_masks[b_indices], float("-inf"))
-                b_probs = F.softmax(b_masked, dim=-1)
-                actions[b_indices] = torch.distributions.Categorical(b_probs).sample()
-
-            step_result = vecenv.step(actions.cpu().numpy())
-            obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
-            legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
-            current_players = np.asarray(step_result.current_players, dtype=np.uint8)
-            rewards = np.asarray(step_result.rewards)
-            terminated = np.asarray(step_result.terminated)
-            truncated = np.asarray(step_result.truncated)
-
-            # Count results from finished games
-            for i in range(self.num_envs):
-                if terminated[i] or truncated[i]:
-                    r = rewards[i]
-                    if r > 0:
-                        a_wins += 1  # black (A) wins
-                    elif r < 0:
-                        b_wins += 1  # white (B) wins
-                    else:
-                        draws += 1
-
-            # If all envs have finished at least once, we have enough data
-            if a_wins + b_wins + draws >= self.num_envs:
-                break
-
-        return a_wins, b_wins, draws
-
-    def _load_model(self, entry: OpponentEntry) -> torch.nn.Module:
-        """Load a frozen model for inference."""
-        return self.store.load_opponent(entry, device=str(self.device))
+        try:
+            return play_match(
+                vecenv, model_a, model_b,
+                device=self.device, num_envs=self.num_envs,
+                max_ply=self.max_ply, games_target=self.games_per_match,
+                stop_event=self._stop_event,
+            )
+        finally:
+            release_models(model_a, model_b, device_type=self.device.type)

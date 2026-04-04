@@ -35,6 +35,13 @@ class EntryStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class EloColumn(StrEnum):
+    FRONTIER = "elo_frontier"
+    DYNAMIC = "elo_dynamic"
+    RECENT = "elo_recent"
+    HISTORICAL = "elo_historical"
+
+
 # Themed name pool for league entries — Japanese shogi/martial arts themed.
 LEAGUE_NAMES: list[str] = [
     # Batch 1 — warriors and strategists
@@ -133,6 +140,10 @@ class OpponentEntry:
     lineage_group: str | None = None
     protection_remaining: int = 0
     last_match_at: str | None = None
+    elo_frontier: float = 1000.0
+    elo_dynamic: float = 1000.0
+    elo_recent: float = 1000.0
+    elo_historical: float = 1000.0
 
     @classmethod
     def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
@@ -155,6 +166,10 @@ class OpponentEntry:
             lineage_group=row["lineage_group"] if "lineage_group" in keys else None,
             protection_remaining=row["protection_remaining"] if "protection_remaining" in keys else 0,
             last_match_at=row["last_match_at"] if "last_match_at" in keys else None,
+            elo_frontier=row["elo_frontier"] if "elo_frontier" in keys else 1000.0,
+            elo_dynamic=row["elo_dynamic"] if "elo_dynamic" in keys else 1000.0,
+            elo_recent=row["elo_recent"] if "elo_recent" in keys else 1000.0,
+            elo_historical=row["elo_historical"] if "elo_historical" in keys else 1000.0,
         )
 
 
@@ -366,11 +381,39 @@ class OpponentStore:
     # Queries
     # ------------------------------------------------------------------
 
+    def get_entry(self, entry_id: int) -> OpponentEntry | None:
+        """Look up a single entry by ID."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM league_entries WHERE id = ?", (entry_id,),
+            ).fetchone()
+            return OpponentEntry.from_db_row(row) if row else None
+
+    # Keep _get_entry as internal alias (no lock, for use inside locked blocks)
     def _get_entry(self, entry_id: int) -> OpponentEntry | None:
         row = self._conn.execute(
             "SELECT * FROM league_entries WHERE id = ?", (entry_id,),
         ).fetchone()
         return OpponentEntry.from_db_row(row) if row else None
+
+    def list_all_entries(self) -> list[OpponentEntry]:
+        """List all entries regardless of status, ordered by created_epoch."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM league_entries ORDER BY created_epoch ASC",
+            ).fetchall()
+            return [OpponentEntry.from_db_row(r) for r in rows]
+
+    def get_current_epoch(self) -> int:
+        """Read the current training epoch from training_state."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT current_epoch FROM training_state WHERE id = 1"
+                ).fetchone()
+                return row["current_epoch"] if row else 0
+            except Exception:
+                return 0
 
     def _list_entries_unlocked(self) -> list[OpponentEntry]:
         """Internal: list active entries without acquiring the lock."""
@@ -522,6 +565,7 @@ class OpponentStore:
         self, epoch: int, learner_id: int, opponent_id: int,
         wins: int, losses: int, draws: int,
         elo_delta_a: float = 0.0, elo_delta_b: float = 0.0,
+        *, match_context: str | None = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
@@ -552,5 +596,97 @@ class OpponentStore:
             self.decrement_protection(learner_id)
             if opponent_id != learner_id:
                 self.decrement_protection(opponent_id)
+            if not self._in_transaction:
+                self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Role-specific Elo
+    # ------------------------------------------------------------------
+
+    _ROLE_ELO_SQL: dict[EloColumn, str] = {
+        EloColumn.FRONTIER: "UPDATE league_entries SET elo_frontier = ? WHERE id = ?",
+        EloColumn.DYNAMIC: "UPDATE league_entries SET elo_dynamic = ? WHERE id = ?",
+        EloColumn.RECENT: "UPDATE league_entries SET elo_recent = ? WHERE id = ?",
+        EloColumn.HISTORICAL: "UPDATE league_entries SET elo_historical = ? WHERE id = ?",
+    }
+
+    def update_role_elo(self, entry_id: int, column: EloColumn, new_elo: float) -> None:
+        """Update a specific role Elo column for an entry."""
+        sql = self._ROLE_ELO_SQL.get(column)
+        if sql is None:
+            raise ValueError(f"Invalid Elo column: {column!r}")
+        with self._lock:
+            self._conn.execute(sql, (new_elo, entry_id))
+            if not self._in_transaction:
+                self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Historical Library
+    # ------------------------------------------------------------------
+
+    def upsert_historical_slot(
+        self,
+        slot_index: int,
+        target_epoch: int,
+        entry_id: int | None,
+        actual_epoch: int | None,
+        selection_mode: str,
+    ) -> None:
+        """Insert or update a historical library slot."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO historical_library
+                   (slot_index, target_epoch, entry_id, actual_epoch, selected_at, selection_mode)
+                   VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)
+                   ON CONFLICT(slot_index) DO UPDATE SET
+                     target_epoch = excluded.target_epoch,
+                     entry_id = excluded.entry_id,
+                     actual_epoch = excluded.actual_epoch,
+                     selected_at = excluded.selected_at,
+                     selection_mode = excluded.selection_mode""",
+                (slot_index, target_epoch, entry_id, actual_epoch, selection_mode),
+            )
+            if not self._in_transaction:
+                self._conn.commit()
+
+    def get_historical_slots(self) -> list[dict[str, Any]]:
+        """Read all historical library slots joined with entry data."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT h.slot_index, h.target_epoch, h.entry_id, h.actual_epoch,
+                   h.selected_at, h.selection_mode,
+                   e.display_name, e.checkpoint_path, e.elo_rating, e.elo_historical
+                   FROM historical_library h
+                   LEFT JOIN league_entries e ON h.entry_id = e.id
+                   ORDER BY h.slot_index"""
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Gauntlet results
+    # ------------------------------------------------------------------
+
+    def record_gauntlet_result(
+        self,
+        epoch: int,
+        entry_id: int,
+        historical_slot: int,
+        historical_entry_id: int,
+        wins: int,
+        losses: int,
+        draws: int,
+        elo_before: float | None = None,
+        elo_after: float | None = None,
+    ) -> None:
+        """Record a gauntlet matchup result."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO gauntlet_results
+                   (epoch, entry_id, historical_slot, historical_entry_id,
+                    wins, losses, draws, elo_before, elo_after)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (epoch, entry_id, historical_slot, historical_entry_id,
+                 wins, losses, draws, elo_before, elo_after),
+            )
             if not self._in_transaction:
                 self._conn.commit()
