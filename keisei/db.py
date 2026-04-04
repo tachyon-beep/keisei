@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -95,7 +95,11 @@ def init_db(db_path: str) -> None:
                 parent_entry_id INTEGER REFERENCES league_entries(id),
                 lineage_group   TEXT,
                 protection_remaining INTEGER NOT NULL DEFAULT 0,
-                last_match_at   TEXT
+                last_match_at   TEXT,
+                elo_frontier    REAL NOT NULL DEFAULT 1000.0,
+                elo_dynamic     REAL NOT NULL DEFAULT 1000.0,
+                elo_recent      REAL NOT NULL DEFAULT 1000.0,
+                elo_historical  REAL NOT NULL DEFAULT 1000.0
             );
             CREATE TABLE IF NOT EXISTS league_results (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +140,28 @@ def init_db(db_path: str) -> None:
                 bootstrapped INTEGER NOT NULL DEFAULT 0
             );
             INSERT OR IGNORE INTO league_meta (id, bootstrapped) VALUES (1, 0);
+            CREATE TABLE IF NOT EXISTS historical_library (
+                slot_index     INTEGER NOT NULL PRIMARY KEY,
+                target_epoch   INTEGER NOT NULL,
+                entry_id       INTEGER REFERENCES league_entries(id),
+                actual_epoch   INTEGER,
+                selected_at    TEXT NOT NULL,
+                selection_mode TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS gauntlet_results (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                epoch               INTEGER NOT NULL,
+                entry_id            INTEGER NOT NULL REFERENCES league_entries(id),
+                historical_slot     INTEGER NOT NULL,
+                historical_entry_id INTEGER NOT NULL REFERENCES league_entries(id),
+                wins                INTEGER NOT NULL,
+                losses              INTEGER NOT NULL,
+                draws               INTEGER NOT NULL,
+                elo_before          REAL,
+                elo_after           REAL,
+                created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_gauntlet_epoch ON gauntlet_results(epoch);
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
@@ -182,6 +208,41 @@ def init_db(db_path: str) -> None:
                         bootstrapped INTEGER NOT NULL DEFAULT 0
                     );
                     INSERT OR IGNORE INTO league_meta (id, bootstrapped) VALUES (1, 0);
+                """)
+                conn.execute("UPDATE schema_version SET version = 4")
+            if db_version < 5:
+                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
+                if "elo_frontier" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_frontier REAL NOT NULL DEFAULT 1000.0")
+                if "elo_dynamic" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_dynamic REAL NOT NULL DEFAULT 1000.0")
+                if "elo_recent" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_recent REAL NOT NULL DEFAULT 1000.0")
+                if "elo_historical" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_historical REAL NOT NULL DEFAULT 1000.0")
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS historical_library (
+                        slot_index     INTEGER NOT NULL PRIMARY KEY,
+                        target_epoch   INTEGER NOT NULL,
+                        entry_id       INTEGER REFERENCES league_entries(id),
+                        actual_epoch   INTEGER,
+                        selected_at    TEXT NOT NULL,
+                        selection_mode TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS gauntlet_results (
+                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                        epoch               INTEGER NOT NULL,
+                        entry_id            INTEGER NOT NULL REFERENCES league_entries(id),
+                        historical_slot     INTEGER NOT NULL,
+                        historical_entry_id INTEGER NOT NULL REFERENCES league_entries(id),
+                        wins                INTEGER NOT NULL,
+                        losses              INTEGER NOT NULL,
+                        draws               INTEGER NOT NULL,
+                        elo_before          REAL,
+                        elo_after           REAL,
+                        created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_gauntlet_epoch ON gauntlet_results(epoch);
                 """)
                 conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         conn.commit()
@@ -367,13 +428,14 @@ def update_training_progress(
 
 
 def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
-    """Read all league entries and results."""
+    """Read all league entries, results, historical library, and gauntlet results."""
     conn = _connect(db_path)
     try:
         entries = conn.execute(
             "SELECT id, display_name, flavour_facts, model_params, architecture, "
             "elo_rating, games_played, created_epoch, created_at, "
-            "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at "
+            "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at, "
+            "elo_frontier, elo_dynamic, elo_recent, elo_historical "
             "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
@@ -383,15 +445,51 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
         parsed_entries = []
         for r in entries:
             e = dict(r)
-            # Parse JSON string fields for the frontend
             if isinstance(e.get("flavour_facts"), str):
                 e["flavour_facts"] = json.loads(e["flavour_facts"])
             if isinstance(e.get("model_params"), str):
                 e["model_params"] = json.loads(e["model_params"])
             parsed_entries.append(e)
+
+        # Historical library slots (5 rows max)
+        historical_slots: list[dict[str, Any]] = []
+        try:
+            rows = conn.execute(
+                "SELECT h.slot_index, h.target_epoch, h.entry_id, h.actual_epoch, "
+                "h.selected_at, h.selection_mode, e.display_name AS entry_name, "
+                "e.elo_rating AS entry_elo "
+                "FROM historical_library h "
+                "LEFT JOIN league_entries e ON h.entry_id = e.id "
+                "ORDER BY h.slot_index"
+            ).fetchall()
+            historical_slots = [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            pass  # table doesn't exist in pre-v5 DBs
+
+        # Recent gauntlet results (last 50 runs = 250 rows max)
+        gauntlet_results: list[dict[str, Any]] = []
+        try:
+            rows = conn.execute(
+                "SELECT g.id, g.epoch, g.entry_id, g.historical_slot, "
+                "g.historical_entry_id, g.wins, g.losses, g.draws, "
+                "g.elo_before, g.elo_after, g.created_at "
+                "FROM gauntlet_results g "
+                "WHERE g.epoch >= ("
+                "  SELECT COALESCE(MIN(epoch), 0) FROM ("
+                "    SELECT DISTINCT epoch FROM gauntlet_results ORDER BY epoch DESC LIMIT 50"
+                "  )"
+                ") "
+                "ORDER BY g.epoch DESC, g.historical_slot"
+            ).fetchall()
+            gauntlet_results = [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            pass  # table doesn't exist in pre-v5 DBs
+
         return {
             "entries": parsed_entries,
             "results": [dict(r) for r in results],
+            "historical_library": historical_slots,
+            "gauntlet_results": gauntlet_results,
         }
     finally:
         conn.close()

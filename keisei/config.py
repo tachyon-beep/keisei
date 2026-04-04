@@ -74,6 +74,28 @@ class MatchSchedulerConfig:
 
 
 @dataclass(frozen=True)
+class HistoricalLibraryConfig:
+    slots: int = 5
+    refresh_interval_epochs: int = 100
+    min_epoch_for_selection: int = 10
+
+
+@dataclass(frozen=True)
+class GauntletConfig:
+    enabled: bool = True
+    interval_epochs: int = 100
+    games_per_matchup: int = 16
+
+
+@dataclass(frozen=True)
+class RoleEloConfig:
+    frontier_k: float = 16.0
+    dynamic_k: float = 24.0
+    recent_k: float = 32.0
+    historical_k: float = 12.0
+
+
+@dataclass(frozen=True)
 class LeagueConfig:
     snapshot_interval: int = 10
     epochs_per_seat: int = 50
@@ -93,6 +115,9 @@ class LeagueConfig:
     recent: RecentFixedConfig = RecentFixedConfig()
     dynamic: DynamicConfig = DynamicConfig()
     scheduler: MatchSchedulerConfig = MatchSchedulerConfig()
+    history: HistoricalLibraryConfig = HistoricalLibraryConfig()
+    gauntlet: GauntletConfig = GauntletConfig()
+    role_elo: RoleEloConfig = RoleEloConfig()
 
     def __post_init__(self) -> None:
         if self.epochs_per_seat < 1:
@@ -224,6 +249,9 @@ def load_config(path: Path) -> AppConfig:
         recent_raw = lg.pop("recent", {})
         dynamic_raw = lg.pop("dynamic", {})
         scheduler_raw = lg.pop("scheduler", {})
+        history_raw = lg.pop("history", {})
+        gauntlet_raw = lg.pop("gauntlet", {})
+        role_elo_raw = lg.pop("role_elo", {})
         # Strip legacy keys removed during tiered-pool migration
         _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
         for key in _legacy_league_keys:
@@ -234,6 +262,9 @@ def load_config(path: Path) -> AppConfig:
             recent=RecentFixedConfig(**recent_raw),
             dynamic=DynamicConfig(**dynamic_raw),
             scheduler=MatchSchedulerConfig(**scheduler_raw),
+            history=HistoricalLibraryConfig(**history_raw),
+            gauntlet=GauntletConfig(**gauntlet_raw),
+            role_elo=RoleEloConfig(**role_elo_raw),
         )
 
     demo_config = None

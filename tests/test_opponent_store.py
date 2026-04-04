@@ -72,6 +72,50 @@ class TestOpponentEntry:
         assert entry.status is EntryStatus.ACTIVE
         assert entry.parent_entry_id is None
         assert entry.protection_remaining == 0
+        # Phase 2: role Elo columns
+        assert entry.elo_frontier == 1000.0
+        assert entry.elo_dynamic == 1000.0
+        assert entry.elo_recent == 1000.0
+        assert entry.elo_historical == 1000.0
+
+    def test_from_db_row_missing_elo_columns(self, tmp_path):
+        """Entries from a pre-v5 DB without Elo columns should default to 1000."""
+        db_path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        # Minimal table WITHOUT the Phase 2 columns
+        conn.execute("""
+            CREATE TABLE league_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL DEFAULT '',
+                flavour_facts TEXT NOT NULL DEFAULT '[]',
+                architecture TEXT NOT NULL,
+                model_params TEXT NOT NULL,
+                checkpoint_path TEXT NOT NULL,
+                elo_rating REAL NOT NULL DEFAULT 1000.0,
+                created_epoch INTEGER NOT NULL,
+                games_played INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'unassigned',
+                status TEXT NOT NULL DEFAULT 'active',
+                parent_entry_id INTEGER,
+                lineage_group TEXT,
+                protection_remaining INTEGER NOT NULL DEFAULT 0,
+                last_match_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES ('resnet', '{}', '/p', 10)"
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM league_entries WHERE id = 1").fetchone()
+        conn.close()
+        entry = OpponentEntry.from_db_row(row)
+        assert entry.elo_frontier == 1000.0
+        assert entry.elo_dynamic == 1000.0
+        assert entry.elo_recent == 1000.0
+        assert entry.elo_historical == 1000.0
 
 
 class TestOpponentStoreBasics:
