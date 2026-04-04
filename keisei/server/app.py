@@ -196,6 +196,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     last_league_entry_count = len(league_data["entries"])
     last_league_result_id = league_data["results"][0]["id"] if league_data["results"] else 0
     league_poll_elapsed = 0.0
+    total_episodes = sum(m.get("episodes_completed", 0) for m in metrics)
 
     # Poll loop
     while True:
@@ -233,6 +234,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 read_metrics_since, db_path, max(0, last_metrics_id - 1), 1
             )
             episodes = latest_metrics[-1].get("episodes_completed", 0) if latest_metrics else 0
+            total_episodes += episodes
             state = new_state
             await asyncio.wait_for(
                 ws.send_json({
@@ -242,7 +244,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                     "heartbeat_at": new_state.get("heartbeat_at"),
                     "epoch": new_state.get("current_epoch"),
                     "step": new_state.get("current_step"),
-                    "episodes": episodes,
+                    "episodes": total_episodes,
                     "config_json": new_state.get("config_json"),
                     "display_name": new_state.get("display_name"),
                     "model_arch": new_state.get("model_arch"),

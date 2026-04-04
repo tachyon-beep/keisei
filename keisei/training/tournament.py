@@ -137,12 +137,11 @@ class LeagueTournament:
                     continue
 
                 last_epoch = epoch
-                pairings = self._generate_round(entries)
+                pairings, bye = self._generate_round(entries)
                 if not pairings:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                bye = entries[len(entries) - 1] if len(entries) % 2 != 0 else None
                 if bye:
                     logger.info("Tournament round E%d: %d matches, bye=%s",
                                 epoch, len(pairings), bye.display_name)
@@ -176,6 +175,18 @@ class LeagueTournament:
                         )
 
                     self._stop_event.wait(self.pause_seconds)
+
+                # Carry forward Elo for bye entry so their chart line has no gap
+                if bye:
+                    row = conn.execute(
+                        "SELECT elo_rating FROM league_entries WHERE id = ?", (bye.id,)
+                    ).fetchone()
+                    if row:
+                        conn.execute(
+                            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
+                            (bye.id, epoch, row["elo_rating"]),
+                        )
+                        conn.commit()
 
                 logger.info("Tournament round E%d complete", epoch)
         except Exception:
@@ -212,8 +223,8 @@ class LeagueTournament:
 
     def _generate_round(
         self, entries: list[OpponentEntry],
-    ) -> list[tuple[OpponentEntry, OpponentEntry]]:
-        """Generate N/2 pairings for a full round. Odd entry gets a bye.
+    ) -> tuple[list[tuple[OpponentEntry, OpponentEntry]], OpponentEntry | None]:
+        """Generate N/2 pairings for a full round. Returns (pairings, bye_entry).
 
         Uses a rotating schedule so consecutive rounds produce different
         pairings. The rotation is seeded by the number of entries and
@@ -222,15 +233,16 @@ class LeagueTournament:
         # Need at least 2 entries with distinct IDs
         unique_ids = {e.id for e in entries}
         if len(unique_ids) < 2:
-            return []
+            return [], None
 
         # Shuffle to vary pairings round-to-round
         shuffled = list(entries)
         random.shuffle(shuffled)
 
         # If odd, last entry gets a bye (excluded from pairings)
+        bye = None
         if len(shuffled) % 2 != 0:
-            shuffled = shuffled[:-1]
+            bye = shuffled.pop()
 
         # Pair first with last, second with second-to-last, etc.
         # Filter out self-matches (same ID) as a safety net.
@@ -241,7 +253,7 @@ class LeagueTournament:
             if a.id != b.id:
                 pairings.append((a, b))
 
-        return pairings
+        return pairings, bye
 
     def _record_result(
         self,

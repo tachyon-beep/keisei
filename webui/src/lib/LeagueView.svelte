@@ -138,7 +138,7 @@
     flex: 0 1 auto;
     min-height: 0;
     overflow: hidden;
-    max-height: 40%;
+    max-height: 43%;
   }
 
   .chart-card {
