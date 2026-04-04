@@ -285,6 +285,22 @@ async def _keepalive(ws: WebSocket) -> None:
             raise WebSocketDisconnect()
 
 
+def create_app_from_env() -> FastAPI:
+    """Factory for uvicorn --factory mode. Reads KEISEI_CONFIG env var."""
+    import os
+
+    from keisei.config import load_config
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    config_path = os.environ.get("KEISEI_CONFIG", "keisei-league.toml")
+    config = load_config(Path(config_path))
+    return create_app(config.display.db_path)
+
+
 def main() -> None:
     """CLI entry point: keisei-serve."""
     import argparse
