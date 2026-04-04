@@ -645,3 +645,74 @@ class TestLoadAllOpponents:
         pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
         models = pool.load_all_opponents(device="cpu")
         assert models == {}
+
+
+class TestThreadSafety:
+    """Regression: OpponentPool must be usable from background threads."""
+
+    def test_cross_thread_list_entries(self, league_db, league_dir):
+        """list_entries() from a background thread must not raise."""
+        import threading
+
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+
+        result = {}
+
+        def worker():
+            try:
+                entries = pool.list_entries()
+                result["entries"] = entries
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=5)
+
+        assert "error" not in result, f"Background thread raised: {result.get('error')}"
+        assert len(result["entries"]) == 1
+
+    def test_cross_thread_pin_unpin(self, league_db, league_dir):
+        """pin/unpin from a background thread must not corrupt state."""
+        import threading
+
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        entry = pool.add_snapshot(model, "resnet", {}, epoch=0)
+
+        errors = []
+
+        def worker():
+            try:
+                pool.pin(entry.id)
+                pool.unpin(entry.id)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Threads raised: {errors}"
+
+
+class TestSnapshotFilenameUniqueness:
+    """Regression: snapshot filenames must be unique across restarts."""
+
+    def test_same_epoch_different_entries_get_unique_files(self, league_db, league_dir):
+        """Two snapshots at epoch=0 (e.g., restart) must not share a filename."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+
+        entry1 = pool.add_snapshot(model, "resnet", {}, epoch=0)
+        entry2 = pool.add_snapshot(model, "resnet", {}, epoch=0)
+
+        assert entry1.checkpoint_path != entry2.checkpoint_path, (
+            f"Both entries share checkpoint path: {entry1.checkpoint_path}"
+        )
+        assert Path(entry1.checkpoint_path).exists()
+        assert Path(entry2.checkpoint_path).exists()

@@ -7,6 +7,7 @@ import logging
 import pickle
 import random
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -173,12 +174,11 @@ class OpponentPool:
         # NOTE: Pins are in-memory only — lost on restart. This is a known
         # limitation; persisting to DB is tracked as keisei-76cc7fdc85.
         self._pinned: set[int] = set()
+        self._lock = threading.Lock()
         self._conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
-        # Single-thread-only: the held connection is not protected by a lock.
-        # Do not share an OpponentPool instance across threads.
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
@@ -187,7 +187,8 @@ class OpponentPool:
 
     def close(self) -> None:
         """Close the held database connection."""
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def __enter__(self) -> OpponentPool:
         return self
@@ -204,37 +205,47 @@ class OpponentPool:
     ) -> OpponentEntry:
         """Save a checkpoint snapshot and add it to the pool."""
         raw_model = model.module if hasattr(model, "module") else model
-        ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}.pt"
-        # Atomic write: save to .tmp first, then rename. A crash mid-write
-        # leaves the .tmp file (harmless) instead of a corrupt .pt file
-        # with a valid DB row pointing at it.
-        tmp_path = ckpt_path.with_suffix(".pt.tmp")
-        torch.save(raw_model.state_dict(), tmp_path)
-        tmp_path.rename(ckpt_path)
 
-        # Generate a unique themed name and flavour facts for this snapshot
-        existing_names = {e.display_name for e in self.list_entries()}
-        display_name = _generate_display_name(epoch, existing_names)
-        flavour_facts = _generate_flavour_facts(epoch)
+        with self._lock:
+            # Insert a placeholder row first to get a unique entry_id for the filename.
+            # This prevents filename collisions when the same (architecture, epoch)
+            # pair is reused across restarts.
+            existing_names = {e.display_name for e in self._list_entries_unlocked()}
+            display_name = _generate_display_name(epoch, existing_names)
+            flavour_facts = _generate_flavour_facts(epoch)
 
-        cursor = self._conn.execute(
-            """INSERT INTO league_entries
-               (display_name, flavour_facts, architecture, model_params, checkpoint_path, created_epoch)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (display_name, json.dumps(flavour_facts), architecture, json.dumps(model_params), str(ckpt_path), epoch),
-        )
-        entry_id = cursor.lastrowid
-        self._evict_if_needed()
-        self._conn.commit()
+            cursor = self._conn.execute(
+                """INSERT INTO league_entries
+                   (display_name, flavour_facts, architecture, model_params, checkpoint_path, created_epoch)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (display_name, json.dumps(flavour_facts), architecture, json.dumps(model_params), "", epoch),
+            )
+            entry_id = cursor.lastrowid
 
-        logger.info(
-            "Pool snapshot: %s (%s) epoch %d -> %s (id=%d)",
-            display_name, architecture, epoch, ckpt_path.name, entry_id,
-        )
+            # Build unique filename using entry_id
+            ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}_id{entry_id}.pt"
 
-        entry = self._get_entry(entry_id)
-        assert entry is not None
-        return entry
+            # Atomic write: save to .tmp first, then rename.
+            tmp_path = ckpt_path.with_suffix(".pt.tmp")
+            torch.save(raw_model.state_dict(), tmp_path)
+            tmp_path.rename(ckpt_path)
+
+            # Update the placeholder with the real checkpoint path
+            self._conn.execute(
+                "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
+                (str(ckpt_path), entry_id),
+            )
+            self._evict_if_needed()
+            self._conn.commit()
+
+            logger.info(
+                "Pool snapshot: %s (%s) epoch %d -> %s (id=%d)",
+                display_name, architecture, epoch, ckpt_path.name, entry_id,
+            )
+
+            entry = self._get_entry(entry_id)
+            assert entry is not None
+            return entry
 
     def _get_entry(self, entry_id: int) -> OpponentEntry | None:
         row = self._conn.execute(
@@ -242,20 +253,26 @@ class OpponentPool:
         ).fetchone()
         return OpponentEntry.from_db_row(row) if row else None
 
-    def list_entries(self) -> list[OpponentEntry]:
+    def _list_entries_unlocked(self) -> list[OpponentEntry]:
+        """Internal: list entries without acquiring the lock. Caller must hold _lock."""
         rows = self._conn.execute(
             "SELECT * FROM league_entries ORDER BY created_epoch ASC"
         ).fetchall()
         return [OpponentEntry.from_db_row(r) for r in rows]
 
+    def list_entries(self) -> list[OpponentEntry]:
+        with self._lock:
+            return self._list_entries_unlocked()
+
     def _evict_if_needed(self) -> None:
-        entries = self.list_entries()
+        """Internal: caller must hold _lock."""
+        entries = self._list_entries_unlocked()
         while len(entries) > self.max_pool_size:
             evicted = False
             for entry in entries:
                 if entry.id not in self._pinned:
                     self._delete_entry(entry)
-                    entries = self.list_entries()
+                    entries = self._list_entries_unlocked()
                     evicted = True
                     break
             if not evicted:
@@ -292,11 +309,13 @@ class OpponentPool:
 
     def pin(self, entry_id: int) -> None:
         """Pin an entry to prevent eviction."""
-        self._pinned.add(entry_id)
+        with self._lock:
+            self._pinned.add(entry_id)
 
     def unpin(self, entry_id: int) -> None:
         """Release a pin."""
-        self._pinned.discard(entry_id)
+        with self._lock:
+            self._pinned.discard(entry_id)
 
     def load_opponent(self, entry: OpponentEntry, device: str = "cpu") -> torch.nn.Module:
         """Load an opponent model from a pool entry."""
@@ -327,37 +346,39 @@ class OpponentPool:
         return models
 
     def update_elo(self, entry_id: int, new_elo: float, epoch: int = 0) -> None:
-        self._conn.execute(
-            "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
-            (new_elo, entry_id),
-        )
-        self._conn.execute(
-            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (entry_id, epoch, new_elo),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
+                (new_elo, entry_id),
+            )
+            self._conn.execute(
+                "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
+                (entry_id, epoch, new_elo),
+            )
+            self._conn.commit()
 
     def record_result(
         self, epoch: int, learner_id: int, opponent_id: int,
         wins: int, losses: int, draws: int,
         elo_delta_a: float = 0.0, elo_delta_b: float = 0.0,
     ) -> None:
-        self._conn.execute(
-            """INSERT INTO league_results
-               (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b),
-        )
-        total_games = wins + losses + draws
-        self._conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total_games, learner_id),
-        )
-        self._conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total_games, opponent_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO league_results
+                   (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b),
+            )
+            total_games = wins + losses + draws
+            self._conn.execute(
+                "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
+                (total_games, learner_id),
+            )
+            self._conn.execute(
+                "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
+                (total_games, opponent_id),
+            )
+            self._conn.commit()
 
 
 class OpponentSampler:
