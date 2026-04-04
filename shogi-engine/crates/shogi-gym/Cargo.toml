@@ -16,5 +16,4 @@ numpy = "0.23"
 rayon = "1.10"
 
 [features]
-default = ["extension-module"]
 extension-module = ["pyo3/extension-module"]
