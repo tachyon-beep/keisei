@@ -130,7 +130,7 @@
   }
 
   .feed {
-    overflow-y: scroll;
+    overflow-y: auto;
     min-height: 0;
     flex: 1;
     display: flex;
