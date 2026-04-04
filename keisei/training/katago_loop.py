@@ -1225,17 +1225,16 @@ class KataGoTrainingLoop:
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""
-        # Carry learner Elo to the new snapshot so it doesn't reset to 1000
-        old_entry = self.pool._get_entry(self._learner_entry_id)
-        old_elo = old_entry.elo_rating if old_entry else 1000.0
+        # NOTE: The chart-continuity carry-forward in the epoch loop (lines
+        # 1112-1122) is a SEPARATE mechanism that writes unchanged Elo to
+        # elo_history for entries that didn't play, keeping chart lines
+        # continuous. That must be preserved. This method only handles
+        # rotation — new snapshots enter at the DB default of 1000.0.
 
         new_entry = self.pool.add_snapshot(
             self._base_model, self.config.model.architecture,
             dict(self.config.model.params), epoch=epoch + 1,
         )
-
-        if old_elo != 1000.0:
-            self.pool.update_elo(new_entry.id, old_elo, epoch=epoch + 1)
 
         # B5 fix: update learner entry ID so Elo tracks the current snapshot
         self._learner_entry_id = new_entry.id

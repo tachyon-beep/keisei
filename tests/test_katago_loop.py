@@ -1105,6 +1105,72 @@ class TestRotateSeat:
         loop._rotate_seat(epoch=5)
         assert loop._learner_entry_id != old_id, "Learner entry ID should change after rotation"
 
+    def test_rotate_seat_new_entry_starts_at_default_elo(self, league_config):
+        """New entry after rotation should have the default Elo (1000.0), not the old Elo."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        # Artificially inflate the current learner's Elo
+        if loop.pool and loop._learner_entry_id:
+            loop.pool.update_elo(loop._learner_entry_id, 1650.0, epoch=0)
+
+        loop._rotate_seat(epoch=5)
+
+        # The NEW entry should start at the default 1000.0, not 1650.0
+        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        assert new_entry is not None
+        assert new_entry.elo_rating == 1000.0
+
+    def test_rotate_seat_old_entry_elo_preserved(self, league_config):
+        """Old entry's Elo should remain unchanged after rotation."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        old_id = loop._learner_entry_id
+        if loop.pool and old_id:
+            loop.pool.update_elo(old_id, 1200.0, epoch=0)
+
+        loop._rotate_seat(epoch=5)
+
+        old_entry = loop.pool._get_entry(old_id)
+        assert old_entry is not None
+        assert old_entry.elo_rating == 1200.0
+
+    def test_rotate_seat_no_elo_history_for_new_entry(self, league_config):
+        """New entry should have no elo_history rows immediately after rotation."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        loop._rotate_seat(epoch=5)
+
+        # Query elo_history directly for the new entry
+        import sqlite3
+        conn = sqlite3.connect(league_config.display.db_path)
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM elo_history WHERE entry_id = ?",
+            (loop._learner_entry_id,),
+        ).fetchone()
+        conn.close()
+        assert rows[0] == 0, "New entry should have no elo_history rows after rotation"
+
+    def test_rotate_seat_evicted_old_entry_still_resets(self, league_config):
+        """If old entry was evicted, new entry should still start at 1000.0."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        # Fill pool to max, forcing eviction of the original entry
+        for i in range(league_config.league.max_pool_size + 1):
+            loop.pool.add_snapshot(
+                loop._base_model, "se_resnet",
+                dict(league_config.model.params), epoch=100 + i,
+            )
+
+        # Old learner entry may have been evicted
+        loop._rotate_seat(epoch=200)
+        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        assert new_entry is not None
+        assert new_entry.elo_rating == 1000.0
+
 
 class TestSLToRLCheckpointHandoff:
     """T7: Verify SL checkpoint loads correctly into RL training."""
