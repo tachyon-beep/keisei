@@ -219,6 +219,11 @@ class TestCheckpointDirCreation:
         self, tmp_path: Path, sl_data_dir: Path, model_params, mock_vecenv,
     ) -> None:
         """If checkpoint_dir can't be created, error should propagate."""
+        import os
+
+        if os.getuid() == 0:
+            pytest.skip("cannot test permission errors as root")
+
         from keisei.training.transition import sl_to_rl
 
         # Use a path under a read-only parent

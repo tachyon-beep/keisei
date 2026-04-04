@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from keisei.training.models.katago_base import KataGoOutput
+from keisei.training.models.base import BaseModel
+from keisei.training.models.katago_base import KataGoBaseModel, KataGoOutput
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 from keisei.training.models.transformer import TransformerModel, TransformerParams
 
@@ -35,6 +36,7 @@ class TestSEResNetParamVariants:
     def test_default_params_output_shapes(self, default_params):
         """Verify output shapes with default test params."""
         model = SEResNetModel(default_params)
+        model.eval()
         obs = torch.randn(4, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -52,6 +54,7 @@ class TestSEResNetParamVariants:
             value_fc_size=8, score_fc_size=8, obs_channels=50,
         )
         model = SEResNetModel(params)
+        model.eval()
         obs = torch.randn(2, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -69,6 +72,7 @@ class TestSEResNetParamVariants:
             value_fc_size=32, score_fc_size=16, obs_channels=50,
         )
         model = SEResNetModel(params)
+        model.eval()
         obs = torch.randn(2, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -83,6 +87,7 @@ class TestSEResNetParamVariants:
             value_fc_size=32, score_fc_size=16, obs_channels=50,
         )
         model = SEResNetModel(params)
+        model.eval()
         obs = torch.randn(1, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -92,6 +97,7 @@ class TestSEResNetParamVariants:
     def test_wrong_obs_channels_raises(self, default_params):
         """Passing obs with wrong channel count should raise ValueError."""
         model = SEResNetModel(default_params)
+        model.eval()
         wrong_obs = torch.randn(2, 46, 9, 9)  # 46 != 50
         with pytest.raises(ValueError, match="Expected 50 input channels"):
             model(wrong_obs)
@@ -99,6 +105,7 @@ class TestSEResNetParamVariants:
     def test_batch_size_one(self, default_params):
         """Single-sample forward pass (inference mode)."""
         model = SEResNetModel(default_params)
+        model.eval()
         obs = torch.randn(1, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -110,6 +117,7 @@ class TestSEResNetParamVariants:
     def test_value_logits_are_raw(self, default_params):
         """Value logits should be raw (pre-softmax), not probabilities."""
         model = SEResNetModel(default_params)
+        model.eval()
         obs = torch.randn(2, 50, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -131,6 +139,7 @@ class TestSEResNetParamVariants:
             value_fc_size=32, score_fc_size=16, obs_channels=46,
         )
         model = SEResNetModel(params)
+        model.eval()
         obs = torch.randn(2, 46, 9, 9)
         with torch.no_grad():
             out = model(obs)
@@ -153,27 +162,30 @@ class TestTransformerEdgeCases:
     def test_batch_size_one(self, small_params):
         """Single-sample forward pass — catches reshape/mean dim bugs."""
         model = TransformerModel(small_params)
-        obs = torch.randn(1, 46, 9, 9)
+        model.eval()
+        obs = torch.randn(1, BaseModel.OBS_CHANNELS, 9, 9)
         with torch.no_grad():
             policy_logits, value = model(obs)
 
-        assert policy_logits.shape == (1, 13527)
+        assert policy_logits.shape == (1, BaseModel.ACTION_SPACE)
         assert value.shape == (1, 1)
 
     def test_batch_size_two(self, small_params):
         """Standard multi-sample forward pass."""
         model = TransformerModel(small_params)
-        obs = torch.randn(2, 46, 9, 9)
+        model.eval()
+        obs = torch.randn(2, BaseModel.OBS_CHANNELS, 9, 9)
         with torch.no_grad():
             policy_logits, value = model(obs)
 
-        assert policy_logits.shape == (2, 13527)
+        assert policy_logits.shape == (2, BaseModel.ACTION_SPACE)
         assert value.shape == (2, 1)
 
     def test_value_output_is_tanh_bounded(self, small_params):
         """Value output should be tanh-activated, so in [-1, 1]."""
         model = TransformerModel(small_params)
-        obs = torch.randn(8, 46, 9, 9)
+        model.eval()
+        obs = torch.randn(8, BaseModel.OBS_CHANNELS, 9, 9)
         with torch.no_grad():
             _, value = model(obs)
 
@@ -185,22 +197,24 @@ class TestTransformerEdgeCases:
         """Larger d_model should work without shape errors."""
         params = TransformerParams(d_model=64, nhead=8, num_layers=1)
         model = TransformerModel(params)
-        obs = torch.randn(2, 46, 9, 9)
+        model.eval()
+        obs = torch.randn(2, BaseModel.OBS_CHANNELS, 9, 9)
         with torch.no_grad():
             policy_logits, value = model(obs)
 
-        assert policy_logits.shape == (2, 13527)
+        assert policy_logits.shape == (2, BaseModel.ACTION_SPACE)
         assert value.shape == (2, 1)
 
-    def test_positional_encoding_device_transfer(self, small_params):
-        """Positional encoding buffers should move with the model."""
+    def test_positional_encoding_on_cpu(self, small_params):
+        """Positional encoding buffers should be on CPU and forward pass should work."""
         model = TransformerModel(small_params)
+        model.eval()
         # Buffers should be on CPU initially
         assert model._row_idx.device.type == "cpu"
         assert model._col_idx.device.type == "cpu"
 
         # Forward pass should work on CPU
-        obs = torch.randn(1, 46, 9, 9)
+        obs = torch.randn(1, BaseModel.OBS_CHANNELS, 9, 9)
         with torch.no_grad():
             policy_logits, value = model(obs)
-        assert policy_logits.shape == (1, 13527)
+        assert policy_logits.shape == (1, BaseModel.ACTION_SPACE)
