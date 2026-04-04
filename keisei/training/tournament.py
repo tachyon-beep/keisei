@@ -6,7 +6,7 @@ Models are loaded frozen (no gradients, no training). Results are written
 to the same league_results / elo_history tables used by the main loop.
 
 Usage:
-    tournament = LeagueTournament(db_path, league_dir, device="cuda:1")
+    tournament = LeagueTournament(store, scheduler, device="cuda:1")
     tournament.start()   # background thread
     ...
     tournament.stop()    # graceful shutdown
@@ -15,18 +15,15 @@ Usage:
 from __future__ import annotations
 
 import logging
-import random
-import sqlite3
 import threading
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from keisei.training.league import OpponentEntry, compute_elo_update
-from keisei.training.model_registry import build_model
+from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, compute_elo_update
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +33,8 @@ class LeagueTournament:
 
     def __init__(
         self,
-        db_path: str,
-        league_dir: str,
+        store: OpponentStore,
+        scheduler: MatchScheduler,
         *,
         device: str = "cuda:1",
         num_envs: int = 64,
@@ -49,8 +46,8 @@ class LeagueTournament:
     ) -> None:
         """
         Args:
-            db_path: Path to the shared SQLite database.
-            league_dir: Directory containing league checkpoint files.
+            store: OpponentStore managing pool entries and DB access.
+            scheduler: MatchScheduler for generating pairings.
             device: Torch device for inference (should be separate from trainer).
             num_envs: Number of concurrent environments per match.
             max_ply: Maximum ply per game before truncation.
@@ -60,8 +57,8 @@ class LeagueTournament:
             pause_seconds: Sleep between matches to avoid starving the main loop.
             min_pool_size: Don't run matches until pool has at least this many entries.
         """
-        self.db_path = db_path
-        self.league_dir = Path(league_dir)
+        self.store = store
+        self.scheduler = scheduler
         self.device = torch.device(device)
         self.num_envs = num_envs
         self.max_ply = max_ply
@@ -119,39 +116,31 @@ class LeagueTournament:
             action_mode="spatial",
         )
 
-        conn = self._open_connection()
         last_epoch = -1
 
         try:
             while not self._stop_event.is_set():
-                entries = self._load_entries(conn)
+                entries = self.store.list_entries()
                 if len(entries) < self.min_pool_size:
                     self._stop_event.wait(self.pause_seconds * 2)
                     continue
 
-                # Wait for a new epoch before running the next round.
-                # Skip early epochs — pool needs multiple distinct entries.
-                epoch = self._current_epoch(conn)
+                epoch = self._current_epoch()
                 if epoch < 5 or epoch == last_epoch:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
                 last_epoch = epoch
-                pairings, bye = self._generate_round(entries)
+                pairings = self.scheduler.generate_round(entries)
                 if not pairings:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                if bye:
-                    logger.info("Tournament round E%d: %d matches, bye=%s",
-                                epoch, len(pairings), bye.display_name)
-                else:
-                    logger.info("Tournament round E%d: %d matches", epoch, len(pairings))
+                logger.info("Tournament round E%d: %d pairings", epoch, len(pairings))
 
                 for entry_a, entry_b in pairings:
                     if self._stop_event.is_set():
                         break
-
                     try:
                         wins_a, wins_b, draws = self._play_match(
                             vecenv, entry_a, entry_b,
@@ -165,9 +154,19 @@ class LeagueTournament:
 
                     total = wins_a + wins_b + draws
                     if total > 0:
-                        self._record_result(
-                            conn, entry_a, entry_b, wins_a, wins_b, draws, epoch,
+                        result_score = (wins_a + 0.5 * draws) / total
+                        new_a_elo, new_b_elo = compute_elo_update(
+                            entry_a.elo_rating, entry_b.elo_rating,
+                            result=result_score, k=self.k_factor,
                         )
+                        self.store.record_result(
+                            epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
+                            wins=wins_a, losses=wins_b, draws=draws,
+                            elo_delta_a=round(new_a_elo - entry_a.elo_rating, 1),
+                            elo_delta_b=round(new_b_elo - entry_b.elo_rating, 1),
+                        )
+                        self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
+                        self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
                         logger.info(
                             "  %s vs %s — %dW %dL %dD",
                             entry_a.display_name, entry_b.display_name,
@@ -176,155 +175,23 @@ class LeagueTournament:
 
                     self._stop_event.wait(self.pause_seconds)
 
-                # Carry forward Elo for bye entry so their chart line has no gap
-                if bye:
-                    row = conn.execute(
-                        "SELECT elo_rating FROM league_entries WHERE id = ?", (bye.id,)
-                    ).fetchone()
-                    if row:
-                        conn.execute(
-                            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-                            (bye.id, epoch, row["elo_rating"]),
-                        )
-                        conn.commit()
-
                 logger.info("Tournament round E%d complete", epoch)
         except Exception:
             logger.exception("Tournament thread crashed")
         finally:
-            conn.close()
             logger.info("Tournament thread stopped")
 
-    # ── DB helpers ───────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────
 
-    def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
-
-    def _current_epoch(self, conn: sqlite3.Connection) -> int:
-        """Read the current training epoch from the DB."""
+    def _current_epoch(self) -> int:
+        """Read the current training epoch from the DB via the store's connection."""
         try:
-            row = conn.execute(
+            row = self.store._conn.execute(
                 "SELECT current_epoch FROM training_state WHERE id = 1"
             ).fetchone()
             return row["current_epoch"] if row else 0
         except Exception:
             return 0
-
-    def _load_entries(self, conn: sqlite3.Connection) -> list[OpponentEntry]:
-        rows = conn.execute(
-            "SELECT * FROM league_entries ORDER BY elo_rating DESC"
-        ).fetchall()
-        return [OpponentEntry.from_db_row(r) for r in rows]
-
-    def _generate_round(
-        self, entries: list[OpponentEntry],
-    ) -> tuple[list[tuple[OpponentEntry, OpponentEntry]], OpponentEntry | None]:
-        """Generate N/2 pairings for a full round. Returns (pairings, bye_entry).
-
-        Uses a rotating schedule so consecutive rounds produce different
-        pairings. The rotation is seeded by the number of entries and
-        the current time to avoid repeating the same round.
-        """
-        # Need at least 2 entries with distinct IDs
-        unique_ids = {e.id for e in entries}
-        if len(unique_ids) < 2:
-            return [], None
-
-        # Shuffle to vary pairings round-to-round
-        shuffled = list(entries)
-        random.shuffle(shuffled)
-
-        # If odd, last entry gets a bye (excluded from pairings)
-        bye = None
-        if len(shuffled) % 2 != 0:
-            bye = shuffled.pop()
-
-        # Pair first with last, second with second-to-last, etc.
-        # Filter out self-matches (same ID) as a safety net.
-        n = len(shuffled)
-        pairings = []
-        for i in range(n // 2):
-            a, b = shuffled[i], shuffled[n - 1 - i]
-            if a.id != b.id:
-                pairings.append((a, b))
-
-        return pairings, bye
-
-    def _record_result(
-        self,
-        conn: sqlite3.Connection,
-        entry_a: OpponentEntry,
-        entry_b: OpponentEntry,
-        wins_a: int,
-        wins_b: int,
-        draws: int,
-        epoch: int = 0,
-    ) -> None:
-        """Record match result and update Elo for both entries."""
-        total = wins_a + wins_b + draws
-
-        # Elo update (computed before INSERT so we can store deltas)
-        result_score = (wins_a + 0.5 * draws) / total
-        row_a = conn.execute(
-            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_a.id,)
-        ).fetchone()
-        row_b = conn.execute(
-            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_b.id,)
-        ).fetchone()
-        if row_a is None or row_b is None:
-            conn.commit()
-            return  # entry was evicted mid-match
-
-        elo_a, elo_b = row_a["elo_rating"], row_b["elo_rating"]
-        new_a, new_b = compute_elo_update(elo_a, elo_b, result_score, k=self.k_factor)
-        delta_a = round(new_a - elo_a, 1)
-        delta_b = round(new_b - elo_b, 1)
-
-        conn.execute(
-            """INSERT INTO league_results
-               (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (epoch, entry_a.id, entry_b.id, wins_a, wins_b, draws, delta_a, delta_b),
-        )
-
-        # Update games_played for both
-        conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total, entry_a.id),
-        )
-        conn.execute(
-            "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-            (total, entry_b.id),
-        )
-
-        conn.execute(
-            "UPDATE league_entries SET elo_rating = ? WHERE id = ?", (new_a, entry_a.id),
-        )
-        conn.execute(
-            "UPDATE league_entries SET elo_rating = ? WHERE id = ?", (new_b, entry_b.id),
-        )
-
-        # Record Elo history at current training epoch
-        conn.execute(
-            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (entry_a.id, epoch, new_a),
-        )
-        conn.execute(
-            "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
-            (entry_b.id, epoch, new_b),
-        )
-
-        conn.commit()
-        logger.info(
-            "Elo update: %s %.0f->%.0f, %s %.0f->%.0f",
-            entry_a.display_name, elo_a, new_a,
-            entry_b.display_name, elo_b, new_b,
-        )
 
     # ── Match execution ──────────────────────────────────────
 
@@ -430,12 +297,4 @@ class LeagueTournament:
 
     def _load_model(self, entry: OpponentEntry) -> torch.nn.Module:
         """Load a frozen model for inference."""
-        ckpt = Path(entry.checkpoint_path)
-        if not ckpt.exists():
-            raise FileNotFoundError(f"Checkpoint missing: {ckpt}")
-        model = build_model(entry.architecture, entry.model_params)
-        state_dict = torch.load(ckpt, map_location=self.device, weights_only=True)
-        model.load_state_dict(state_dict)
-        model = model.to(self.device)
-        model.eval()
-        return model
+        return self.store.load_opponent(entry, device=str(self.device))

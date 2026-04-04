@@ -593,8 +593,8 @@ class KataGoTrainingLoop:
                     or str(self.device)
                 )
                 self._tournament = LeagueTournament(
-                    db_path=self.db_path,
-                    league_dir=league_dir,
+                    store=self.store,
+                    scheduler=self.scheduler,
                     device=tournament_device,
                     num_envs=config.league.tournament_num_envs,
                     games_per_match=config.league.tournament_games_per_match,
