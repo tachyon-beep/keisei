@@ -74,28 +74,28 @@
           <tr>
             <th class="num" aria-sort="none">#</th>
             <th aria-sort={ariaSortValue('display_name')}>
-              <button class="sort-btn" on:click={() => toggleSort('display_name')}>Name{sortIndicator('display_name')}</button>
+              <button class="sort-btn" title="Sort by name" on:click={() => toggleSort('display_name')}>Name{sortIndicator('display_name')}</button>
             </th>
             <th class="num" aria-sort={ariaSortValue('elo_rating')}>
-              <button class="sort-btn" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button>
+              <button class="sort-btn" title="Sort by Elo rating" on:click={() => toggleSort('elo_rating')}>Elo{sortIndicator('elo_rating')}</button>
             </th>
             <th class="num" aria-sort={ariaSortValue('elo_delta')}>
-              <button class="sort-btn" on:click={() => toggleSort('elo_delta')}>±{sortIndicator('elo_delta')}</button>
+              <button class="sort-btn" title="Sort by Elo change" on:click={() => toggleSort('elo_delta')}>±{sortIndicator('elo_delta')}</button>
             </th>
             <th class="num" aria-sort={ariaSortValue('games_played')}>
-              <button class="sort-btn" on:click={() => toggleSort('games_played')}>GP{sortIndicator('games_played')}</button>
+              <button class="sort-btn" title="Sort by games played" on:click={() => toggleSort('games_played')}>GP{sortIndicator('games_played')}</button>
             </th>
             <th class="num wld-col" aria-sort={ariaSortValue('wins')}>
-              <button class="sort-btn" on:click={() => toggleSort('wins')}>W{sortIndicator('wins')}</button>
+              <button class="sort-btn" title="Sort by wins" on:click={() => toggleSort('wins')}>W{sortIndicator('wins')}</button>
             </th>
             <th class="num wld-col" aria-sort={ariaSortValue('losses')}>
-              <button class="sort-btn" on:click={() => toggleSort('losses')}>L{sortIndicator('losses')}</button>
+              <button class="sort-btn" title="Sort by losses" on:click={() => toggleSort('losses')}>L{sortIndicator('losses')}</button>
             </th>
             <th class="num wld-col" aria-sort={ariaSortValue('draws')}>
-              <button class="sort-btn" on:click={() => toggleSort('draws')}>D{sortIndicator('draws')}</button>
+              <button class="sort-btn" title="Sort by draws" on:click={() => toggleSort('draws')}>D{sortIndicator('draws')}</button>
             </th>
             <th class="num" aria-sort={ariaSortValue('created_epoch')}>
-              <button class="sort-btn" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button>
+              <button class="sort-btn" title="Sort by creation epoch" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button>
             </th>
           </tr>
         </thead>
