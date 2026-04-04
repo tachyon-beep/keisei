@@ -48,6 +48,8 @@ class LeagueConfig:
     initial_elo: float = 1000.0
     elo_k_factor: float = 32.0
     elo_floor: float = 500.0
+    color_randomization: bool = True     # Per-game color randomization (Change 2)
+    per_env_opponents: bool = True       # Per-env sticky opponents (Change 3)
     opponent_device: str | None = None  # e.g. "cuda:1" — defaults to learner device
     # Background round-robin tournament for Elo calibration
     tournament_enabled: bool = False

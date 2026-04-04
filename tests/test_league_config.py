@@ -82,6 +82,13 @@ def test_league_config_defaults():
     assert lc.elo_floor == 500
 
 
+def test_league_config_fairness_defaults():
+    """New fairness config fields should default to True."""
+    lc = LeagueConfig()
+    assert lc.color_randomization is True
+    assert lc.per_env_opponents is True
+
+
 def test_demonstrator_config_defaults():
     dc = DemonstratorConfig()
     assert dc.num_games == 3
