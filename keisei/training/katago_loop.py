@@ -199,13 +199,14 @@ class PendingTransitions:
         self,
         finalize_mask: torch.Tensor,
         dones: torch.Tensor,
+        terminated: torch.Tensor,
     ) -> dict[str, torch.Tensor] | None:
         """Close pending transitions and return data for buffer insertion.
 
         Returns None if no transitions need finalizing. Otherwise returns
         a dict with keys: obs, actions, log_probs, values, rewards, dones,
-        legal_masks, score_targets, env_ids. All tensors are indexed by
-        the finalized subset (not full num_envs).
+        terminated, legal_masks, score_targets, env_ids. All tensors are
+        indexed by the finalized subset (not full num_envs).
 
         The finalize_mask may include envs where valid=False — these are
         safely skipped via the internal `to_finalize = finalize_mask & self.valid`
@@ -223,6 +224,7 @@ class PendingTransitions:
             "values": self.values[indices],
             "rewards": self.rewards[indices],
             "dones": dones[indices].float(),
+            "terminated": terminated[indices].float(),
             "legal_masks": self.legal_masks[indices],
             "score_targets": self.score_targets[indices],
             "env_ids": indices,
@@ -830,7 +832,7 @@ class KataGoTrainingLoop:
                     #    - Terminal: game ended (on any player's move)
                     #    - Non-terminal return: opponent moved, turn returns to learner
                     finalize_mask = pending.valid & (dones.bool() | learner_next)
-                    finalized = pending.finalize(finalize_mask, dones)
+                    finalized = pending.finalize(finalize_mask, dones, terminated)
 
                     if finalized is not None:
                         f_value_cats = _compute_value_cats(
@@ -840,7 +842,7 @@ class KataGoTrainingLoop:
                             finalized["obs"], finalized["actions"],
                             finalized["log_probs"], finalized["values"],
                             finalized["rewards"], finalized["dones"],
-                            finalized["dones"],  # terminated=dones until R1-D wires real signal
+                            finalized["terminated"],
                             finalized["legal_masks"], f_value_cats,
                             finalized["score_targets"],
                             env_ids=finalized["env_ids"],
@@ -870,7 +872,7 @@ class KataGoTrainingLoop:
                         # 4. Immediately finalize if learner's own move was terminal
                         imm_terminal = learner_moved & dones.bool()
                         if imm_terminal.any():
-                            imm_finalized = pending.finalize(imm_terminal, dones)
+                            imm_finalized = pending.finalize(imm_terminal, dones, terminated)
                             if imm_finalized is not None:
                                 imm_value_cats = _compute_value_cats(
                                     imm_finalized["rewards"], imm_finalized["dones"].bool(),
@@ -880,7 +882,7 @@ class KataGoTrainingLoop:
                                     imm_finalized["obs"], imm_finalized["actions"],
                                     imm_finalized["log_probs"], imm_finalized["values"],
                                     imm_finalized["rewards"], imm_finalized["dones"],
-                                    imm_finalized["dones"],  # terminated=dones until R1-D wires real signal
+                                    imm_finalized["terminated"],
                                     imm_finalized["legal_masks"], imm_value_cats,
                                     imm_finalized["score_targets"],
                                     env_ids=imm_finalized["env_ids"],
@@ -950,7 +952,8 @@ class KataGoTrainingLoop:
                 flush_count = pending.valid.sum().item()
                 remaining_mask = pending.valid.clone()
                 remaining_dones = torch.zeros(self.num_envs, device=self.device)
-                remaining = pending.finalize(remaining_mask, remaining_dones)
+                remaining_terminated = torch.zeros(self.num_envs, device=self.device)
+                remaining = pending.finalize(remaining_mask, remaining_dones, remaining_terminated)
                 if remaining is not None:
                     remaining_value_cats = torch.full(
                         (remaining["env_ids"].numel(),), -1,
@@ -960,7 +963,7 @@ class KataGoTrainingLoop:
                         remaining["obs"], remaining["actions"],
                         remaining["log_probs"], remaining["values"],
                         remaining["rewards"], remaining["dones"],
-                        remaining["dones"],  # terminated=dones until R1-D wires real signal
+                        remaining["terminated"],
                         remaining["legal_masks"], remaining_value_cats,
                         remaining["score_targets"],
                         env_ids=remaining["env_ids"],
