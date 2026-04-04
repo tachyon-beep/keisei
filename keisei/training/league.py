@@ -362,8 +362,11 @@ class OpponentSampler:
         self.elo_floor = elo_floor
 
     def sample(self) -> OpponentEntry:
-        """Sample an opponent from the pool."""
-        entries = self.pool.list_entries()
+        """Sample an opponent from the pool (queries DB)."""
+        return self.sample_from(self.pool.list_entries())
+
+    def sample_from(self, entries: list[OpponentEntry]) -> OpponentEntry:
+        """Sample an opponent from a pre-fetched entries list."""
         if not entries:
             raise ValueError("Cannot sample from empty opponent pool")
         if len(entries) == 1:
@@ -379,7 +382,6 @@ class OpponentSampler:
         ]
 
         # If no historical entries above floor, sample current_best only.
-        # The fallback to all entries would defeat the floor's purpose.
         if not historical:
             return current_best
 

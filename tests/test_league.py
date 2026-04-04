@@ -338,6 +338,68 @@ class TestOpponentSampler:
             sampler.sample()
 
 
+class TestOpponentSamplerSampleFrom:
+    """Tests for sample_from() with pre-fetched entries."""
+
+    def test_sample_from_matches_sample(self, league_db, league_dir):
+        """sample_from(entries) should draw from both historical and current_best."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        for i in range(5):
+            pool.add_snapshot(model, "resnet", {}, epoch=i)
+
+        sampler = OpponentSampler(pool, historical_ratio=0.8, current_best_ratio=0.2)
+        entries = pool.list_entries()
+        pool_ids = {e.id for e in entries}
+
+        # Draw enough samples to confirm diversity (not always current_best)
+        seen_ids: set[int] = set()
+        for _ in range(200):
+            entry = sampler.sample_from(entries)
+            assert isinstance(entry, OpponentEntry)
+            assert entry.id in pool_ids
+            seen_ids.add(entry.id)
+        # With 5 entries and 200 draws at 80/20 split, we should see at least 2 distinct IDs
+        assert len(seen_ids) >= 2, f"Expected diversity, only saw {seen_ids}"
+
+    def test_sample_from_single_entry(self, league_db, league_dir):
+        """Single-entry list should always return that entry."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+
+        sampler = OpponentSampler(pool)
+        entries = pool.list_entries()
+        assert sampler.sample_from(entries).created_epoch == 0
+
+    def test_sample_from_empty_raises(self, league_db, league_dir):
+        """Empty entries list should raise ValueError."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        sampler = OpponentSampler(pool)
+        with pytest.raises(ValueError, match="empty"):
+            sampler.sample_from([])
+
+    def test_sample_from_respects_elo_floor(self, league_db, league_dir):
+        """Entries below elo_floor excluded from historical sampling."""
+        pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
+        model = torch.nn.Linear(10, 10)
+        pool.add_snapshot(model, "resnet", {}, epoch=0)
+        pool.add_snapshot(model, "resnet", {}, epoch=1)
+        pool.add_snapshot(model, "resnet", {}, epoch=2)
+
+        entries = pool.list_entries()
+        pool.update_elo(entries[0].id, 400.0)
+        # Refresh entries after Elo update
+        entries = pool.list_entries()
+
+        sampler = OpponentSampler(
+            pool, historical_ratio=1.0, current_best_ratio=0.0, elo_floor=500.0,
+        )
+        for _ in range(10):
+            entry = sampler.sample_from(entries)
+            assert entry.created_epoch != 0
+
+
 class TestDeleteEntryMissingFile:
     """H3: _delete_entry handles missing checkpoint file gracefully."""
 
