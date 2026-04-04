@@ -354,7 +354,12 @@ class TestGAEIntegerRewardDtype:
     """
 
     def test_compute_gae_integer_rewards(self):
-        """compute_gae with integer rewards must return float advantages."""
+        """compute_gae with integer rewards must return float advantages.
+
+        The dtype fix derives compute_dtype from values.dtype (always float
+        in practice since values come from a neural network). This test
+        validates that integer rewards are upcast to match.
+        """
         rewards = torch.tensor([1, 2, 3], dtype=torch.long)
         values = torch.tensor([0.5, 0.5, 0.5])
         terminated = torch.zeros(3, dtype=torch.bool)
@@ -383,14 +388,18 @@ class TestGAEIntegerRewardDtype:
         assert torch.allclose(adv, ref, atol=1e-5)
 
     def test_compute_gae_padded_integer_rewards(self):
-        """compute_gae_padded with integer rewards must return float advantages."""
+        """compute_gae_padded with integer rewards must return float advantages.
+
+        Uses non-terminal trajectories so the GAE accumulation path (bootstrap +
+        recursive last_gae carry) is exercised with fractional intermediate values.
+        """
         from keisei.training.gae import compute_gae_padded
 
-        rewards = torch.tensor([[1, 0], [2, 1]], dtype=torch.long)
-        values = torch.tensor([[0.5, 0.3], [0.4, 0.6]])
-        terminated = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
-        next_values = torch.tensor([0.0, 0.0])
-        lengths = torch.tensor([2, 2])
+        rewards = torch.tensor([[1, 0], [2, 1], [0, 3]], dtype=torch.long)
+        values = torch.tensor([[0.5, 0.3], [0.4, 0.6], [0.7, 0.2]])
+        terminated = torch.tensor([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+        next_values = torch.tensor([0.0, 0.8])
+        lengths = torch.tensor([3, 3])
 
         adv = compute_gae_padded(rewards, values, terminated, next_values, lengths,
                                  gamma=0.99, lam=0.95)

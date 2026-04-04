@@ -87,14 +87,19 @@ def _make_mock_env(reward: float, steps_before_done: int = 1):
 
     observations shape: (1, 46, 9, 9)  — katago observation
     legal_masks shape: (1, 11259)       — spatial action mask (9*9*139)
+
+    current_players returns the *next* player (post-step convention):
+    after step N, current_players = [N % 2].
     """
     obs = np.zeros((1, 46, 9, 9), dtype=np.float32)
     mask = np.ones((1, 11259), dtype=bool)
 
     env = MagicMock()
-    env.reset.return_value = _FakeResetResult(observations=obs, legal_masks=mask)
-
     call_count = {"n": 0}
+
+    def _reset():
+        call_count["n"] = 0
+        return _FakeResetResult(observations=obs, legal_masks=mask)
 
     def _step(actions):
         call_count["n"] += 1
@@ -108,6 +113,7 @@ def _make_mock_env(reward: float, steps_before_done: int = 1):
             current_players=np.array([call_count["n"] % 2]),
         )
 
+    env.reset.side_effect = _reset
     env.step.side_effect = _step
     return env
 
@@ -255,11 +261,15 @@ class TestRewardPerspectiveCorrection:
     win/loss attribution whenever the terminal move was by the "wrong" side.
     """
 
-    def _make_env_white_terminal(self, reward: float):
+    def _make_env_white_terminal(self, reward: float, *, truncated: bool = False):
         """Mock env where White (player 1) makes the terminal move.
 
         2 steps per game: Black moves (non-terminal), White moves (terminal).
         Resets call_count on env.reset() so multi-game runs work.
+
+        current_players returns the *next* player (post-step convention),
+        not the mover who just acted. The production code captures the mover
+        before calling env.step(), so this convention is correct.
         """
         obs = np.zeros((1, 46, 9, 9), dtype=np.float32)
         mask = np.ones((1, 11259), dtype=bool)
@@ -278,8 +288,8 @@ class TestRewardPerspectiveCorrection:
                 observations=obs,
                 legal_masks=mask,
                 rewards=np.array([reward if done else 0.0]),
-                terminated=np.array([done]),
-                truncated=np.array([False]),
+                terminated=np.array([done and not truncated]),
+                truncated=np.array([done and truncated]),
                 current_players=np.array([call_count["n"] % 2]),
             )
 
@@ -342,6 +352,12 @@ class TestRewardPerspectiveCorrection:
         # game 1: A=White, White won -> win
         assert result.wins == 1
         assert result.losses == 1
+
+    def test_truncated_game_perspective_correct(self):
+        """Truncation (max ply) should use the same mover-based perspective."""
+        env = self._make_env_white_terminal(reward=0.0, truncated=True)
+        result = self._run_with_env(env, games=1)
+        assert result.draws == 1
 
 
 class TestGetPolicyFlat:
