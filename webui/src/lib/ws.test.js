@@ -76,6 +76,55 @@ describe('handleMessage — game_update', () => {
     handleMessage({ type: 'game_update' })
     expect(get(games)).toEqual([])
   })
+
+  it('auto-switches away from ended game to an active game', () => {
+    selectedGameId.set(0)
+    handleMessage({
+      type: 'game_update',
+      snapshots: [
+        { game_id: 0, is_over: true },
+        { game_id: 1, is_over: false },
+      ],
+    })
+    expect(get(selectedGameId)).toBe(1)
+  })
+
+  it('stays on ended game when no active game exists', () => {
+    selectedGameId.set(0)
+    handleMessage({
+      type: 'game_update',
+      snapshots: [
+        { game_id: 0, is_over: true },
+        { game_id: 1, is_over: true },
+      ],
+    })
+    expect(get(selectedGameId)).toBe(0)
+  })
+
+  it('does not switch when selected game is still in progress', () => {
+    selectedGameId.set(0)
+    handleMessage({
+      type: 'game_update',
+      snapshots: [
+        { game_id: 0, is_over: false },
+        { game_id: 1, is_over: false },
+      ],
+    })
+    expect(get(selectedGameId)).toBe(0)
+  })
+
+  it('preserves selectedGameId when selected game is not in snapshots', () => {
+    selectedGameId.set(99)
+    handleMessage({
+      type: 'game_update',
+      snapshots: [
+        { game_id: 0, is_over: false },
+        { game_id: 1, is_over: false },
+      ],
+    })
+    // current is undefined (not found), so no auto-switch
+    expect(get(selectedGameId)).toBe(99)
+  })
 })
 
 describe('handleMessage — metrics_update', () => {
@@ -109,6 +158,38 @@ describe('handleMessage — training_status', () => {
     expect(state.status).toBe('completed')
     expect(state.current_epoch).toBe(42)
     expect(state.display_name).toBe('Bot') // preserved
+  })
+
+  it('preserves falsy 0 for episodes via ?? coalescing', () => {
+    trainingState.set({ episodes: 5 })
+    handleMessage({
+      type: 'training_status',
+      status: 'running',
+      episodes: 0,
+    })
+    const state = get(trainingState)
+    expect(state.episodes).toBe(0)
+  })
+
+  it('preserves falsy 0 for total_epochs via ?? coalescing', () => {
+    trainingState.set({ total_epochs: 100 })
+    handleMessage({
+      type: 'training_status',
+      status: 'running',
+      total_epochs: 0,
+    })
+    const state = get(trainingState)
+    expect(state.total_epochs).toBe(0)
+  })
+
+  it('falls back to previous episodes when field is absent (null/undefined)', () => {
+    trainingState.set({ episodes: 42 })
+    handleMessage({
+      type: 'training_status',
+      status: 'running',
+      // episodes not present → undefined ?? 42 = 42
+    })
+    expect(get(trainingState).episodes).toBe(42)
   })
 })
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { get } from 'svelte/store'
-import { metrics, latestMetrics } from './metrics.js'
+import { metrics, latestMetrics, appendMetrics } from './metrics.js'
 
 beforeEach(() => {
   metrics.set([])
@@ -40,6 +40,36 @@ describe('metrics store', () => {
     metrics.set([{ id: 1 }])
     metrics.update(current => [...current, { id: 2 }, { id: 3 }])
     expect(get(metrics)).toHaveLength(3)
+  })
+})
+
+describe('appendMetrics', () => {
+  it('appends rows to existing metrics', () => {
+    metrics.set([{ id: 1, step: 100 }])
+    appendMetrics([{ id: 2, step: 200 }])
+    const result = get(metrics)
+    expect(result).toHaveLength(2)
+    expect(result[1]).toEqual({ id: 2, step: 200 })
+  })
+
+  it('handles empty array (no-op)', () => {
+    metrics.set([{ id: 1 }])
+    appendMetrics([])
+    expect(get(metrics)).toHaveLength(1)
+  })
+
+  it('triggers pruning when total exceeds MAX_POINTS', () => {
+    // Fill to 9995 rows
+    const existing = Array.from({ length: 9995 }, (_, i) => ({ id: i, step: i }))
+    metrics.set(existing)
+    // Append 10 more → total 10005 > 10000 → prune to last 10000
+    const newRows = Array.from({ length: 10 }, (_, i) => ({ id: 10000 + i, step: 10000 + i }))
+    appendMetrics(newRows)
+    const result = get(metrics)
+    expect(result).toHaveLength(10000)
+    // Oldest rows should be dropped
+    expect(result[0].id).toBe(5)
+    expect(result[result.length - 1].id).toBe(10009)
   })
 })
 
