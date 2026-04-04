@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, PieceType, Square};
+use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, Piece, PieceType, Square};
 
 /// Single-letter piece abbreviation for Hodges notation.
 pub fn piece_char(pt: PieceType) -> char {
@@ -22,6 +22,24 @@ pub fn square_notation(sq: Square) -> String {
     let file = 9 - sq.col();
     let rank = (b'a' + sq.row()) as char;
     format!("{}{}", file, rank)
+}
+
+/// Check if a square is in the promotion zone for the given color.
+/// Black: rows 0-2 (ranks a-c). White: rows 6-8 (ranks g-i).
+pub fn in_promotion_zone(sq: Square, color: Color) -> bool {
+    match color {
+        Color::Black => sq.row() <= 2,
+        Color::White => sq.row() >= 6,
+    }
+}
+
+/// Check if a piece could promote on this move (but hasn't necessarily chosen to).
+/// True when: piece type can promote, piece is not already promoted,
+/// and either source or destination is in the promotion zone.
+pub fn could_promote(piece: Piece, from: Square, to: Square) -> bool {
+    piece.piece_type().can_promote()
+        && !piece.is_promoted()
+        && (in_promotion_zone(from, piece.color()) || in_promotion_zone(to, piece.color()))
 }
 
 pub fn piece_type_name(pt: PieceType) -> &'static str {
@@ -141,6 +159,7 @@ pub fn build_spectator_dict(py: Python<'_>, game: &GameState) -> PyResult<Py<PyD
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_core::Piece;
 
     #[test]
     fn test_piece_type_name_all() {
@@ -219,5 +238,58 @@ mod tests {
                 hpt
             );
         }
+    }
+
+    #[test]
+    fn test_in_promotion_zone_black() {
+        // Black promotion zone: rows 0, 1, 2 (ranks a, b, c)
+        let col = 4;
+        assert!(in_promotion_zone(Square::from_row_col(0, col).unwrap(), Color::Black));
+        assert!(in_promotion_zone(Square::from_row_col(1, col).unwrap(), Color::Black));
+        assert!(in_promotion_zone(Square::from_row_col(2, col).unwrap(), Color::Black));
+        // Row 3 is NOT in zone
+        assert!(!in_promotion_zone(Square::from_row_col(3, col).unwrap(), Color::Black));
+        // Nor is row 8
+        assert!(!in_promotion_zone(Square::from_row_col(8, col).unwrap(), Color::Black));
+    }
+
+    #[test]
+    fn test_in_promotion_zone_white() {
+        // White promotion zone: rows 6, 7, 8 (ranks g, h, i)
+        let col = 4;
+        assert!(in_promotion_zone(Square::from_row_col(6, col).unwrap(), Color::White));
+        assert!(in_promotion_zone(Square::from_row_col(7, col).unwrap(), Color::White));
+        assert!(in_promotion_zone(Square::from_row_col(8, col).unwrap(), Color::White));
+        // Row 5 is NOT in zone
+        assert!(!in_promotion_zone(Square::from_row_col(5, col).unwrap(), Color::White));
+        // Nor is row 0
+        assert!(!in_promotion_zone(Square::from_row_col(0, col).unwrap(), Color::White));
+    }
+
+    #[test]
+    fn test_could_promote_all_conditions() {
+        let from_outside = Square::from_row_col(5, 4).unwrap(); // row 5 = rank f
+        let to_inside = Square::from_row_col(2, 4).unwrap();    // row 2 = rank c (Black zone)
+        let from_inside = Square::from_row_col(2, 4).unwrap();
+        let to_outside = Square::from_row_col(5, 4).unwrap();
+
+        let silver_black = Piece::new(PieceType::Silver, Color::Black, false);
+        let gold_black = Piece::new(PieceType::Gold, Color::Black, false);
+        let promoted_silver = Piece::new(PieceType::Silver, Color::Black, true);
+        let king_black = Piece::new(PieceType::King, Color::Black, false);
+
+        // Silver moving INTO zone: can promote
+        assert!(could_promote(silver_black, from_outside, to_inside));
+        // Silver moving OUT OF zone: can promote
+        assert!(could_promote(silver_black, from_inside, to_outside));
+        // Gold: cannot promote (type doesn't allow)
+        assert!(!could_promote(gold_black, from_outside, to_inside));
+        // King: cannot promote
+        assert!(!could_promote(king_black, from_outside, to_inside));
+        // Already promoted silver: cannot promote again
+        assert!(!could_promote(promoted_silver, from_outside, to_inside));
+        // Silver moving entirely outside zone: cannot promote
+        let other_outside = Square::from_row_col(6, 4).unwrap();
+        assert!(!could_promote(silver_black, from_outside, other_outside));
     }
 }
