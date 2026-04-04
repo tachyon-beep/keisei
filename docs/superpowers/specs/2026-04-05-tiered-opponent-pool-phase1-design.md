@@ -545,3 +545,15 @@ These are logged to the DB via existing `elo_history` and `league_results` table
 - Advanced priority scoring (uncertainty, lineage penalties) → Phase 4
 - Dashboard role badges → separate UI task
 - Checkpoint file cleanup for retired entries → future housekeeping task
+
+---
+
+## Remaining Phases
+
+This spec covers Phase 1 only. Three more phases remain before the full Kenshi Mixed League design (`docs/concepts/tiered-opponent-pool.md`) is complete:
+
+- **Phase 2 — Historical Library:** 5-slot historical library with log-spaced milestone selection, periodic learner gauntlet, role-specific Elo tracking (frontier_benchmark_elo, dynamic_league_elo, recent_challenge_score, historical_gauntlet_score), historical dashboard panel.
+- **Phase 3 — Dynamic Training:** Enable optimizer state persistence for Dynamic entries, small PPO updates from league matches, update caps and checkpoint flush, protection windows with fault fallback, Frontier Static review activation (Dynamic → Frontier promotion).
+- **Phase 4 — League Concurrency:** Multiple simultaneous pairings on the league GPU, advanced scheduler priority scoring (uncertainty bonus, lineage penalty, diversity bonus), adaptive prioritization for Recent Fixed calibration bursts.
+
+Each phase should get its own spec → plan → implementation cycle, informed by observations from the preceding phase's test/calibration runs.
