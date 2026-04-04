@@ -117,3 +117,55 @@ class TestGetValueAdapter:
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown model contract"):
             get_value_adapter(model_contract="nonexistent")
+
+
+class TestScalarValueBlended:
+    def test_alpha_zero_matches_wdl_only(self):
+        adapter = MultiHeadValueAdapter(score_blend_alpha=0.0)
+        value_logits = torch.tensor([[2.0, 0.0, 0.0], [0.0, 0.0, 2.0]])
+        score_lead = torch.tensor([[0.5], [-0.3]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        wdl_only = adapter.scalar_value_from_output(value_logits)
+        assert torch.allclose(blended, wdl_only)
+
+    def test_alpha_one_uses_score_only(self):
+        adapter = MultiHeadValueAdapter(score_blend_alpha=1.0)
+        value_logits = torch.tensor([[2.0, 0.0, 0.0]])
+        score_lead = torch.tensor([[0.7]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        assert torch.allclose(blended, torch.tensor([0.7]))
+
+    def test_alpha_half_is_arithmetic_mean(self):
+        adapter = MultiHeadValueAdapter(score_blend_alpha=0.5)
+        value_logits = torch.tensor([[10.0, 0.0, 0.0]])
+        score_lead = torch.tensor([[0.0]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        wdl_value = adapter.scalar_value_from_output(value_logits)
+        expected = 0.5 * wdl_value + 0.5 * 0.0
+        assert torch.allclose(blended, expected, atol=1e-5)
+
+    def test_extreme_score_clamped(self):
+        adapter = MultiHeadValueAdapter(score_blend_alpha=1.0)
+        value_logits = torch.tensor([[0.0, 0.0, 0.0]])
+        score_lead = torch.tensor([[5.0]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        assert blended.item() == pytest.approx(1.0)
+
+    def test_negative_extreme_clamped(self):
+        adapter = MultiHeadValueAdapter(score_blend_alpha=1.0)
+        value_logits = torch.tensor([[0.0, 0.0, 0.0]])
+        score_lead = torch.tensor([[-5.0]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        assert blended.item() == pytest.approx(-1.0)
+
+    def test_scalar_adapter_inherits_default(self):
+        adapter = ScalarValueAdapter()
+        value_logits = torch.tensor([[0.5], [-0.3]])
+        score_lead = torch.tensor([[0.9], [0.1]])
+        blended = adapter.scalar_value_blended(value_logits, score_lead)
+        expected = adapter.scalar_value_from_output(value_logits)
+        assert torch.allclose(blended, expected)
+
+    def test_get_value_adapter_passes_alpha(self):
+        adapter = get_value_adapter("multi_head", score_blend_alpha=0.3)
+        assert adapter.score_blend_alpha == 0.3
