@@ -144,7 +144,7 @@
             {/if}
           {/each}
           {#each placeholders as slot}
-            <tr class="placeholder-row">
+            <tr class="placeholder-row" aria-hidden="true">
               <td class="num rank placeholder-text">{slot}</td>
               <td class="placeholder-text">—</td>
               <td class="num placeholder-text">—</td>
