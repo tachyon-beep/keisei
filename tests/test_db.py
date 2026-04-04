@@ -261,6 +261,48 @@ class TestLeagueDataReaders:
         assert history[1]["epoch"] == 6
 
 
+class TestSchemaV4:
+    def test_league_entries_has_role_column(self, tmp_path):
+        db_path = str(tmp_path / "v4.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
+        conn.close()
+        assert "role" in cols
+        assert "status" in cols
+        assert "parent_entry_id" in cols
+        assert "lineage_group" in cols
+        assert "protection_remaining" in cols
+        assert "last_match_at" in cols
+
+    def test_league_transitions_table_exists(self, tmp_path):
+        db_path = str(tmp_path / "v4.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        conn.close()
+        assert "league_transitions" in tables
+
+    def test_league_meta_table_exists(self, tmp_path):
+        db_path = str(tmp_path / "v4.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute("SELECT bootstrapped FROM league_meta WHERE id = 1").fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 0
+
+    def test_league_results_learner_index_exists(self, tmp_path):
+        db_path = str(tmp_path / "v4.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        indexes = [r[1] for r in conn.execute("PRAGMA index_list(league_results)").fetchall()]
+        conn.close()
+        assert "idx_league_results_learner" in indexes
+
+
 class TestForeignKeyEnforcement:
     """db.py._connect() must enable PRAGMA foreign_keys=ON so FK constraints
     are enforced on every connection, not just OpponentPool's."""

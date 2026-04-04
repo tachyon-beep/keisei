@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -89,7 +89,13 @@ def init_db(db_path: str) -> None:
                 elo_rating      REAL NOT NULL DEFAULT 1000.0,
                 created_epoch   INTEGER NOT NULL,
                 games_played    INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                role            TEXT NOT NULL DEFAULT 'unassigned',
+                status          TEXT NOT NULL DEFAULT 'active',
+                parent_entry_id INTEGER REFERENCES league_entries(id),
+                lineage_group   TEXT,
+                protection_remaining INTEGER NOT NULL DEFAULT 0,
+                last_match_at   TEXT
             );
             CREATE TABLE IF NOT EXISTS league_results (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,6 +119,23 @@ def init_db(db_path: str) -> None:
                 recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_elo_history_entry ON elo_history(entry_id);
+            CREATE TABLE IF NOT EXISTS league_transitions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                from_role   TEXT,
+                to_role     TEXT,
+                from_status TEXT,
+                to_status   TEXT,
+                reason      TEXT,
+                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_transitions_entry ON league_transitions(entry_id);
+            CREATE INDEX IF NOT EXISTS idx_league_results_learner ON league_results(learner_id);
+            CREATE TABLE IF NOT EXISTS league_meta (
+                id           INTEGER PRIMARY KEY CHECK (id = 1),
+                bootstrapped INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO league_meta (id, bootstrapped) VALUES (1, 0);
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
@@ -126,6 +149,40 @@ def init_db(db_path: str) -> None:
                     conn.execute("ALTER TABLE league_entries ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
                 if "flavour_facts" not in cols:
                     conn.execute("ALTER TABLE league_entries ADD COLUMN flavour_facts TEXT NOT NULL DEFAULT '[]'")
+                conn.execute("UPDATE schema_version SET version = 3")
+            if db_version < 4:
+                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
+                if "role" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN role TEXT NOT NULL DEFAULT 'unassigned'")
+                if "status" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+                if "parent_entry_id" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN parent_entry_id INTEGER REFERENCES league_entries(id)")
+                if "lineage_group" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN lineage_group TEXT")
+                if "protection_remaining" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN protection_remaining INTEGER NOT NULL DEFAULT 0")
+                if "last_match_at" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN last_match_at TEXT")
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS league_transitions (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                        from_role   TEXT,
+                        to_role     TEXT,
+                        from_status TEXT,
+                        to_status   TEXT,
+                        reason      TEXT,
+                        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_transitions_entry ON league_transitions(entry_id);
+                    CREATE INDEX IF NOT EXISTS idx_league_results_learner ON league_results(learner_id);
+                    CREATE TABLE IF NOT EXISTS league_meta (
+                        id           INTEGER PRIMARY KEY CHECK (id = 1),
+                        bootstrapped INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT OR IGNORE INTO league_meta (id, bootstrapped) VALUES (1, 0);
+                """)
                 conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         conn.commit()
     finally:
@@ -314,8 +371,10 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
     conn = _connect(db_path)
     try:
         entries = conn.execute(
-            "SELECT id, display_name, flavour_facts, model_params, architecture, elo_rating, games_played, created_epoch, created_at "
-            "FROM league_entries ORDER BY elo_rating DESC"
+            "SELECT id, display_name, flavour_facts, model_params, architecture, "
+            "elo_rating, games_played, created_epoch, created_at, "
+            "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at "
+            "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
             "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b, recorded_at "
