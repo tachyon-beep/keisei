@@ -112,7 +112,8 @@
             >
               <td class="num rank">
                 {#if entry.rank === 1}
-                  <span class="crown" aria-label="Rank 1">♛</span>
+                  <span class="crown" aria-hidden="true">♛</span>
+                  <span class="sr-only">1 (champion)</span>
                 {:else}
                   {entry.rank}
                 {/if}
