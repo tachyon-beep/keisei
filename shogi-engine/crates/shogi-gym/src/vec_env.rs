@@ -673,10 +673,14 @@ impl VecEnv {
             decoded_moves.push(mv);
         }
 
-        // Record move notations before apply (single-threaded, before state mutation)
+        // Record move notations before apply (single-threaded, before state mutation).
+        // Generate legal moves per-env for disambiguation. The mutable borrow for
+        // generate_legal_moves_into must end before we borrow position immutably.
+        let mut move_list = MoveList::new();
         for (i, mv) in decoded_moves.iter().enumerate() {
             let action_idx = actions[i] as usize;
-            let notation = move_notation(*mv);
+            self.games[i].generate_legal_moves_into(&mut move_list);
+            let notation = move_notation(*mv, &self.games[i].position, move_list.as_slice());
             self.move_histories[i].push((action_idx, notation));
         }
 

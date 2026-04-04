@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, Piece, PieceType, Square};
+use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, Piece, PieceType, Position, Square};
 
 /// Single-letter piece abbreviation for Hodges notation.
 pub fn piece_char(pt: PieceType) -> char {
@@ -78,29 +78,89 @@ pub fn hand_piece_char(hpt: HandPieceType) -> char {
     piece_char(hpt.to_piece_type())
 }
 
-/// Build move notation string from a Move.
-/// Board: `"9a→8a+"` format: `{9-from_col}{chr(a+from_row)}→{9-to_col}{chr(a+to_row)}{+ if promote}`
-/// Drop:  `"P*5e"` format: `{piece_char}*{9-to_col}{chr(a+to_row)}`
-pub fn move_notation(mv: Move) -> String {
+/// Check if promotion is forced for this piece reaching the destination.
+/// Pawn/Lance on last rank, Knight on last two ranks.
+fn is_forced_promotion(pt: PieceType, to: Square, color: Color) -> bool {
+    let dest_row = to.row();
+    match color {
+        Color::Black => match pt {
+            PieceType::Pawn | PieceType::Lance => dest_row == 0,
+            PieceType::Knight => dest_row <= 1,
+            _ => false,
+        },
+        Color::White => match pt {
+            PieceType::Pawn | PieceType::Lance => dest_row == 8,
+            PieceType::Knight => dest_row >= 7,
+            _ => false,
+        },
+    }
+}
+
+/// Build Hodges notation string from a Move, a Position, and the legal moves list.
+///
+/// Board: `"P-7f"`, `"Bx3c"`, `"Nx7c+"`, `"S-4d="`, `"+R-5a"`, `"G6g-5h"`
+/// Drop:  `"P*5e"`
+pub fn move_notation(mv: Move, position: &Position, legal_moves: &[Move]) -> String {
     match mv {
         Move::Board { from, to, promote } => {
-            let from_col_shogi = 9 - from.col();
-            let from_row_char = (b'a' + from.row()) as char;
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            let promo_str = if promote { "+" } else { "" };
-            format!(
-                "{}{}→{}{}{}",
-                from_col_shogi, from_row_char,
-                to_col_shogi, to_row_char,
-                promo_str
-            )
+            let piece = position.piece_at(from)
+                .expect("move_notation: no piece at source square");
+            let pt = piece.piece_type();
+            let color = piece.color();
+            let promoted = piece.is_promoted();
+
+            // Piece prefix: "+R" if promoted, "R" if not
+            let prefix = if promoted {
+                format!("+{}", piece_char(pt))
+            } else {
+                format!("{}", piece_char(pt))
+            };
+
+            // Disambiguation: check if another legal board move by same piece type
+            // (and same promoted status) targets the same destination
+            let disambig = if pt == PieceType::King {
+                String::new()
+            } else {
+                let ambiguous = legal_moves.iter().any(|other| {
+                    if let Move::Board { from: of, to: ot, .. } = other {
+                        *ot == to && *of != from && {
+                            if let Some(other_piece) = position.piece_at(*of) {
+                                other_piece.piece_type() == pt
+                                    && other_piece.is_promoted() == promoted
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                });
+                if ambiguous {
+                    square_notation(from)
+                } else {
+                    String::new()
+                }
+            };
+
+            // Capture or move separator
+            let sep = if position.piece_at(to).is_some() { "x" } else { "-" };
+
+            // Destination
+            let dest = square_notation(to);
+
+            // Promotion suffix
+            let suffix = if promote || is_forced_promotion(pt, to, color) {
+                "+"
+            } else if could_promote(piece, from, to) {
+                "="
+            } else {
+                ""
+            };
+
+            format!("{}{}{}{}{}", prefix, disambig, sep, dest, suffix)
         }
         Move::Drop { to, piece_type } => {
-            let piece_char = hand_piece_char(piece_type);
-            let to_col_shogi = 9 - to.col();
-            let to_row_char = (b'a' + to.row()) as char;
-            format!("{}*{}{}", piece_char, to_col_shogi, to_row_char)
+            format!("{}*{}", piece_char(piece_type.to_piece_type()), square_notation(to))
         }
     }
 }
