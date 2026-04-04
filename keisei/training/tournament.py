@@ -154,16 +154,23 @@ class LeagueTournament:
 
                     total = wins_a + wins_b + draws
                     if total > 0:
+                        # Re-read current Elo from DB — entries in the pairing
+                        # list are stale if this entry already played earlier
+                        # in the same round-robin round.
+                        current_a = self.store._get_entry(entry_a.id)
+                        current_b = self.store._get_entry(entry_b.id)
+                        if current_a is None or current_b is None:
+                            continue  # entry retired mid-round
                         result_score = (wins_a + 0.5 * draws) / total
                         new_a_elo, new_b_elo = compute_elo_update(
-                            entry_a.elo_rating, entry_b.elo_rating,
+                            current_a.elo_rating, current_b.elo_rating,
                             result=result_score, k=self.k_factor,
                         )
                         self.store.record_result(
                             epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
                             wins=wins_a, losses=wins_b, draws=draws,
-                            elo_delta_a=round(new_a_elo - entry_a.elo_rating, 1),
-                            elo_delta_b=round(new_b_elo - entry_b.elo_rating, 1),
+                            elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
+                            elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
                         )
                         self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
                         self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)

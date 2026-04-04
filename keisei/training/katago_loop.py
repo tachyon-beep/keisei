@@ -565,6 +565,7 @@ class KataGoTrainingLoop:
         self._env_opponent_ids: np.ndarray | None = None
         self._cached_entries: list[OpponentEntry] = []
         self._cached_entries_by_id: dict[int, OpponentEntry] = {}
+        self._loaded_by_role: dict[Role, list[OpponentEntry]] = {}
         self._opponent_results: dict[int, list[int]] | None = None
 
         if config.league is not None:
@@ -793,10 +794,18 @@ class KataGoTrainingLoop:
                     ]
                     self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
 
-                    # Per-env opponent assignment
+                    # Per-env opponent assignment — sample only from entries
+                    # whose models were successfully loaded (self._cached_entries),
+                    # NOT from the full DB which may include corrupt checkpoints.
+                    self._loaded_by_role: dict[Role, list[OpponentEntry]] = {
+                        role: [] for role in (Role.FRONTIER_STATIC, Role.RECENT_FIXED, Role.DYNAMIC)
+                    }
+                    for e in self._cached_entries:
+                        if e.role in self._loaded_by_role:
+                            self._loaded_by_role[e.role].append(e)
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
                     for env_i in range(self.num_envs):
-                        entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
+                        entry = self.scheduler.sample_for_learner(self._loaded_by_role)
                         self._env_opponent_ids[env_i] = entry.id
 
                     # Per-opponent W/L/D tracking for epoch-end Elo update
@@ -1085,9 +1094,10 @@ class KataGoTrainingLoop:
                                 else:
                                     self._opponent_results[opp_id][2] += 1  # draw
 
-                            # Re-sample opponent for next game
+                            # Re-sample opponent for next game — use loaded-only
+                            # entries to avoid sampling models that failed to load.
                             assert self.scheduler is not None
-                            new_entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
+                            new_entry = self.scheduler.sample_for_learner(self._loaded_by_role)
                             self._env_opponent_ids[env_i] = new_entry.id
 
                     # Re-randomize learner color for completed games (Change 2).

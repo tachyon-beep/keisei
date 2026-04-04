@@ -45,8 +45,10 @@ class TieredPool:
             outcome, oldest = self.recent_manager.review_oldest()
             if outcome is ReviewOutcome.PROMOTE:
                 with self.store.transaction():
-                    self.dynamic_manager.admit(oldest)
-                    self.store.retire_entry(oldest.id, "promoted to dynamic")
+                    clone = self.dynamic_manager.admit(oldest)
+                    if clone is not None:
+                        self.store.retire_entry(oldest.id, "promoted to dynamic")
+                    # else: Dynamic full and all protected — keep in Recent Fixed overflow
             elif outcome is ReviewOutcome.RETIRE:
                 self.store.retire_entry(oldest.id, "did not qualify for dynamic")
             # DELAY: do nothing, let it sit in overflow
