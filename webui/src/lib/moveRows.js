@@ -20,10 +20,10 @@ export function parseMoves(moveHistoryJson) {
  * black's move, white's move, and whether it's the latest row.
  *
  * @param {Array} moves - Array of move objects with .notation
- * @param {'coord'|'japanese'} style - Notation style
+ * @param {'western'|'japanese'} style - Notation style
  * @returns {Array<{ num: number, black: string, white: string, isLatest: boolean }>}
  */
-export function buildMoveRows(moves, style = 'coord') {
+export function buildMoveRows(moves, style = 'western') {
   const fmt = style === 'japanese' ? toJapanese : (s) => s
   const result = []
   for (let i = 0; i < moves.length; i += 2) {

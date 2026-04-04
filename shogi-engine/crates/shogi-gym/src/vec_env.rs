@@ -252,6 +252,10 @@ pub struct VecEnv {
     action_space: usize,       // cached: action_mode.action_space_size()
     num_channels: usize,       // cached: obs_mode.channels()
 
+    // Per-env legal moves cache: populated during mask generation, reused for
+    // move notation disambiguation without a second generate_legal_moves call.
+    legal_moves_cache: Vec<Vec<Move>>,
+
     // Per-env move history for spectator display (cleared on auto-reset)
     move_histories: Vec<Vec<(usize, String)>>,
 
@@ -281,6 +285,9 @@ impl VecEnv {
                 .expect("legal move must be encodable");
             mask_slice[idx] = true;
         }
+        // Cache legal moves for notation disambiguation (avoids re-generation in step)
+        self.legal_moves_cache[i].clear();
+        self.legal_moves_cache[i].extend(move_list.iter().copied());
     }
 
     /// Apply decoded moves to all environments, with panic isolation.
@@ -315,6 +322,7 @@ impl VecEnv {
         let ply_ptr = SendPtr::from_slice(&mut self.ply_buffer);
         let material_balance_ptr = SendPtr::from_slice(&mut self.material_balance_buffer);
         let current_players_ptr = SendPtr::from_slice(&mut self.current_players_buffer);
+        let legal_cache_ptr = SendPtr::from_slice(&mut self.legal_moves_cache);
 
         let ep_completed = &self.episodes_completed;
         let ep_drawn = &self.episodes_drawn;
@@ -437,6 +445,10 @@ impl VecEnv {
                     }.expect("legal move must be encodable");
                     mask_slice[idx] = true;
                 }
+                // Cache legal moves for notation disambiguation
+                let cache = &mut *legal_cache_ptr.offset(i);
+                cache.clear();
+                cache.extend(move_list.iter().copied());
 
                 // Record current player (after potential reset)
                 *current_players_ptr.offset(i) = match game.position.current_player {
@@ -515,6 +527,10 @@ impl VecEnv {
                         }.expect("legal move must be encodable");
                         mask_slice[idx] = true;
                     }
+                    // Cache legal moves for notation disambiguation
+                    let cache = &mut *legal_cache_ptr.offset(i);
+                    cache.clear();
+                    cache.extend(move_list.iter().copied());
 
                     *current_players_ptr.offset(i) = match game.position.current_player {
                         Color::Black => 0,
@@ -586,6 +602,7 @@ impl VecEnv {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            legal_moves_cache: (0..num_envs).map(|_| Vec::new()).collect(),
             move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
@@ -674,13 +691,11 @@ impl VecEnv {
         }
 
         // Record move notations before apply (single-threaded, before state mutation).
-        // Generate legal moves per-env for disambiguation. The mutable borrow for
-        // generate_legal_moves_into must end before we borrow position immutably.
-        let mut move_list = MoveList::new();
+        // Uses legal_moves_cache populated during the previous step's mask generation,
+        // avoiding a redundant generate_legal_moves_into call per environment.
         for (i, mv) in decoded_moves.iter().enumerate() {
             let action_idx = actions[i] as usize;
-            self.games[i].generate_legal_moves_into(&mut move_list);
-            let notation = move_notation(*mv, &self.games[i].position, move_list.as_slice());
+            let notation = move_notation(*mv, &self.games[i].position, &self.legal_moves_cache[i]);
             self.move_histories[i].push((action_idx, notation));
         }
 
@@ -908,6 +923,7 @@ mod tests {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            legal_moves_cache: (0..num_envs).map(|_| Vec::new()).collect(),
             move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
@@ -951,6 +967,7 @@ mod tests {
             obs_buffer_len: obs_buf_len,
             action_space: act_space,
             num_channels: channels,
+            legal_moves_cache: (0..num_envs).map(|_| Vec::new()).collect(),
             move_histories: (0..num_envs).map(|_| Vec::new()).collect(),
             episodes_completed: AtomicU64::new(0),
             episodes_drawn: AtomicU64::new(0),
