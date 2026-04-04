@@ -17,7 +17,7 @@
 
   afterUpdate(() => {
     if (scrollContainer) {
-      scrollContainer.scrollTop = scrollContainer.scrollHeight
+      scrollContainer.scrollTop = 0
     }
   })
 </script>
@@ -39,7 +39,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each rows as row}
+        {#each [...rows].reverse() as row}
           <tr class:latest={row.isLatest}>
             <td class="num">{row.num}</td>
             <td>{row.black}</td>
