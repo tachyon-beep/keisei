@@ -890,8 +890,8 @@ class TestValueCategoryNoLeague:
         original_add = loop.buffer.add
 
         def spy_add(*args, **kwargs):
-            # value_cats is the 8th positional arg (index 7)
-            captured_value_cats.append(args[7].clone())
+            # value_cats is the 9th positional arg (index 8) — index 7 was before terminated was added
+            captured_value_cats.append(args[8].clone())
             return original_add(*args, **kwargs)
 
         loop.buffer.add = spy_add

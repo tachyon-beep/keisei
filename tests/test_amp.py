@@ -103,7 +103,7 @@ def _fill_buffer(ppo: KataGoPPOAlgorithm, num_envs: int = 2, steps: int = 4) -> 
         legal_masks = torch.ones(num_envs, action_space, dtype=torch.bool)
         value_cats = torch.randint(0, 3, (num_envs,))
         score_targets = torch.randn(num_envs).clamp(-1.5, 1.5)
-        buf.add(obs, actions, log_probs, values, rewards, dones, legal_masks,
+        buf.add(obs, actions, log_probs, values, rewards, dones, dones, legal_masks,
                 value_categories=value_cats, score_targets=score_targets)
 
     return buf

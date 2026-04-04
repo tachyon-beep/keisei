@@ -135,7 +135,8 @@ class TestRLWarmup:
                 actions, log_probs, values = ppo.select_actions(obs, legal_masks)
                 buf.add(
                     obs, actions, log_probs, values,
-                    torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                    torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                    torch.zeros(2, dtype=torch.bool), legal_masks,
                     torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
                 )
 

@@ -840,6 +840,7 @@ class KataGoTrainingLoop:
                             finalized["obs"], finalized["actions"],
                             finalized["log_probs"], finalized["values"],
                             finalized["rewards"], finalized["dones"],
+                            finalized["dones"],  # terminated=dones until R1-D wires real signal
                             finalized["legal_masks"], f_value_cats,
                             finalized["score_targets"],
                             env_ids=finalized["env_ids"],
@@ -879,6 +880,7 @@ class KataGoTrainingLoop:
                                     imm_finalized["obs"], imm_finalized["actions"],
                                     imm_finalized["log_probs"], imm_finalized["values"],
                                     imm_finalized["rewards"], imm_finalized["dones"],
+                                    imm_finalized["dones"],  # terminated=dones until R1-D wires real signal
                                     imm_finalized["legal_masks"], imm_value_cats,
                                     imm_finalized["score_targets"],
                                     env_ids=imm_finalized["env_ids"],
@@ -933,7 +935,7 @@ class KataGoTrainingLoop:
 
                     self.buffer.add(
                         obs, actions, log_probs, values, rewards, dones,
-                        legal_masks, value_cats, score_targets,
+                        terminated, legal_masks, value_cats, score_targets,
                     )
 
                 obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
@@ -958,6 +960,7 @@ class KataGoTrainingLoop:
                         remaining["obs"], remaining["actions"],
                         remaining["log_probs"], remaining["values"],
                         remaining["rewards"], remaining["dones"],
+                        remaining["dones"],  # terminated=dones until R1-D wires real signal
                         remaining["legal_masks"], remaining_value_cats,
                         remaining["score_targets"],
                         env_ids=remaining["env_ids"],

@@ -49,7 +49,7 @@ class TestKataGoRolloutBuffer:
         value_cats = torch.tensor([0, 2])  # W, L
         score_targets = torch.tensor([0.5, -0.3])
 
-        buf.add(obs, actions, log_probs, values, rewards, dones, legal_masks,
+        buf.add(obs, actions, log_probs, values, rewards, dones, dones, legal_masks,
                 value_cats, score_targets)
         assert buf.size == 1
 
@@ -62,6 +62,7 @@ class TestKataGoRolloutBuffer:
                 torch.randn(2),
                 torch.randn(2),
                 torch.randn(2),
+                torch.zeros(2, dtype=torch.bool),
                 torch.zeros(2, dtype=torch.bool),
                 torch.ones(2, 11259, dtype=torch.bool),
                 torch.randint(0, 3, (2,)),
@@ -78,7 +79,8 @@ class TestKataGoRolloutBuffer:
         buf.add(
             torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
             torch.zeros(2), torch.zeros(2), torch.zeros(2),
-            torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
             torch.zeros(2, dtype=torch.long), torch.zeros(2),
         )
         assert buf.size == 1
@@ -92,7 +94,8 @@ class TestKataGoRolloutBuffer:
             buf.add(
                 torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
                 torch.zeros(2), torch.zeros(2), torch.zeros(2),
-                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+                torch.ones(2, 11259, dtype=torch.bool),
                 torch.zeros(2, dtype=torch.long), torch.tensor([10.0, -5.0]),
             )
 
@@ -187,7 +190,8 @@ class TestKataGoPPOUpdate:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
             )
         next_values = torch.zeros(2)
@@ -206,7 +210,8 @@ class TestKataGoPPOUpdate:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.randn(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randn(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
             )
         next_values = torch.zeros(2)
@@ -223,7 +228,8 @@ class TestKataGoPPOUpdate:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.zeros(2, dtype=torch.long), torch.zeros(2),
             )
         ppo.update(buf, torch.zeros(2))
@@ -238,7 +244,8 @@ class TestKataGoPPOUpdate:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
             )
         params_before = {
@@ -260,7 +267,8 @@ class TestKataGoPPOUpdate:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
             )
         losses = ppo.update(buf, torch.zeros(2))
@@ -283,7 +291,8 @@ class TestIgnoreIndex:
             # All value_cats = -1 (non-terminal, should be ignored by cross_entropy)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.full((2,), -1, dtype=torch.long), torch.zeros(2),
             )
         losses = ppo.update(buf, torch.zeros(2))
@@ -348,7 +357,8 @@ class TestBufferEdgeCases:
             buf.add(
                 torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
                 torch.zeros(2), torch.zeros(2), torch.zeros(2),
-                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+                torch.ones(2, 11259, dtype=torch.bool),
                 torch.tensor([5, 3], dtype=torch.long),  # invalid categories
                 torch.zeros(2),
             )
@@ -377,7 +387,8 @@ class TestScoreLossNoNaN:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.zeros(2), torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.zeros(2), torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.tensor([0.5, -0.3]),
             )
         losses = ppo.update(buf, torch.zeros(2))
@@ -391,7 +402,8 @@ class TestScoreLossNoNaN:
             buf.add(
                 torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
                 torch.zeros(2), torch.zeros(2), torch.zeros(2),
-                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+                torch.ones(2, 11259, dtype=torch.bool),
                 torch.zeros(2, dtype=torch.long),
                 torch.tensor([float("nan"), 0.5]),
             )
@@ -403,7 +415,8 @@ class TestScoreLossNoNaN:
             buf.add(
                 torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
                 torch.zeros(2), torch.zeros(2), torch.zeros(2),
-                torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+                torch.ones(2, 11259, dtype=torch.bool),
                 torch.zeros(2, dtype=torch.long),
                 torch.tensor([10.0, -5.0]),
             )
@@ -421,7 +434,8 @@ class TestUpdateWithValueAdapter:
             actions, log_probs, values = ppo.select_actions(obs, legal_masks)
             buf.add(
                 obs, actions, log_probs, values,
-                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool), legal_masks,
+                torch.randn(2) * 0.1, torch.zeros(2, dtype=torch.bool),
+                torch.zeros(2, dtype=torch.bool), legal_masks,
                 torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
             )
         next_values = torch.zeros(2)
@@ -481,7 +495,7 @@ class TestSplitMergeGAEPath:
             dones = torch.zeros(n_learner, dtype=torch.bool)
             value_cats = torch.full((n_learner,), -1, dtype=torch.long)
             score_targets = torch.rand(n_learner) * 2 - 1
-            buf.add(obs, actions, log_probs, values, rewards, dones,
+            buf.add(obs, actions, log_probs, values, rewards, dones, dones,
                     legal_masks, value_cats, score_targets)
 
         # total_samples = 2+3+1+4 = 10, T*N = 4*4 = 16, so flat GAE path triggers
@@ -507,7 +521,7 @@ class TestSplitMergeGAEPath:
             dones = torch.zeros(n_learner, dtype=torch.bool)
             value_cats = torch.randint(0, 3, (n_learner,))
             score_targets = torch.rand(n_learner) * 2 - 1
-            buf.add(obs, actions, log_probs, values, rewards, dones,
+            buf.add(obs, actions, log_probs, values, rewards, dones, dones,
                     legal_masks, value_cats, score_targets)
 
         params_before = {n: p.clone() for n, p in ppo.model.named_parameters()}
@@ -533,6 +547,7 @@ class TestBufferVariableSizeFlatten:
                 torch.randn(n),
                 torch.zeros(n),
                 torch.zeros(n, dtype=torch.bool),
+                torch.zeros(n, dtype=torch.bool),
                 torch.ones(n, 11259, dtype=torch.bool),
                 torch.full((n,), -1, dtype=torch.long),
                 torch.rand(n) * 2 - 1,
@@ -556,6 +571,7 @@ class TestBufferVariableSizeFlatten:
                 torch.randn(1),
                 torch.zeros(1),
                 torch.zeros(1, dtype=torch.bool),
+                torch.zeros(1, dtype=torch.bool),
                 torch.ones(1, 11259, dtype=torch.bool),
                 torch.full((1,), -1, dtype=torch.long),
                 torch.rand(1) * 2 - 1,
@@ -576,6 +592,7 @@ class TestBufferCPUStorage:
             torch.randn(2),
             torch.zeros(2),
             torch.zeros(2, dtype=torch.bool),
+            torch.zeros(2, dtype=torch.bool),
             torch.ones(2, 11259, dtype=torch.bool),
             torch.randint(0, 3, (2,)),
             torch.rand(2) * 2 - 1,
@@ -593,6 +610,7 @@ class TestBufferCPUStorage:
             torch.randn(2),
             torch.randn(2),
             torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool),
             torch.zeros(2, dtype=torch.bool),
             torch.ones(2, 11259, dtype=torch.bool),
             torch.randint(0, 3, (2,)),
@@ -612,7 +630,8 @@ class TestEnvIdsTracking:
         buf.add(
             torch.randn(2, 50, 9, 9), torch.randint(0, 11259, (2,)),
             torch.randn(2), torch.randn(2), torch.zeros(2),
-            torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
             torch.full((2,), -1, dtype=torch.long), torch.rand(2) * 2 - 1,
             env_ids=torch.tensor([0, 2]),
         )
@@ -620,7 +639,8 @@ class TestEnvIdsTracking:
         buf.add(
             torch.randn(3, 50, 9, 9), torch.randint(0, 11259, (3,)),
             torch.randn(3), torch.randn(3), torch.zeros(3),
-            torch.zeros(3, dtype=torch.bool), torch.ones(3, 11259, dtype=torch.bool),
+            torch.zeros(3, dtype=torch.bool), torch.zeros(3, dtype=torch.bool),
+            torch.ones(3, 11259, dtype=torch.bool),
             torch.full((3,), -1, dtype=torch.long), torch.rand(3) * 2 - 1,
             env_ids=torch.tensor([1, 2, 3]),
         )
@@ -633,7 +653,8 @@ class TestEnvIdsTracking:
         buf.add(
             torch.randn(2, 50, 9, 9), torch.randint(0, 11259, (2,)),
             torch.randn(2), torch.randn(2), torch.zeros(2),
-            torch.zeros(2, dtype=torch.bool), torch.ones(2, 11259, dtype=torch.bool),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
             torch.randint(0, 3, (2,)), torch.rand(2) * 2 - 1,
         )
         data = buf.flatten()
@@ -720,6 +741,7 @@ class TestPerEnvGAE:
                 torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
                 torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
                 torch.zeros(n, dtype=torch.bool),
+                torch.zeros(n, dtype=torch.bool),
                 torch.ones(n, 11259, dtype=torch.bool),
                 torch.full((n,), -1, dtype=torch.long),
                 torch.rand(n) * 2 - 1,
@@ -741,6 +763,7 @@ class TestPerEnvGAE:
                 torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
                 torch.randn(n), torch.randn(n) * 0.1,
                 torch.randn(n) * 0.1, torch.zeros(n, dtype=torch.bool),
+                torch.zeros(n, dtype=torch.bool),
                 torch.ones(n, 11259, dtype=torch.bool),
                 torch.randint(0, 3, (n,)),
                 torch.rand(n) * 2 - 1,
@@ -812,6 +835,7 @@ class TestKataGoPPOUpdateWithAdapter:
                 values,
                 torch.zeros(num_envs),
                 torch.zeros(num_envs),
+                torch.zeros(num_envs),
                 legal_masks,
                 torch.randint(0, 3, (num_envs,)),
                 torch.randn(num_envs).clamp(-1.0, 1.0),
@@ -873,3 +897,48 @@ class TestKataGoPPOUpdateWithAdapter:
         for key, val in metrics.items():
             assert not torch.tensor(val).isnan(), f"Adapter path: {key} is NaN"
             assert not torch.tensor(val).isinf(), f"Adapter path: {key} is Inf"
+
+
+class TestBufferTerminatedField:
+    def test_add_stores_terminated(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(4, 9, 9), action_space=100)
+        obs = torch.zeros(2, 4, 9, 9)
+        actions = torch.zeros(2, dtype=torch.long)
+        log_probs = torch.zeros(2)
+        values = torch.zeros(2)
+        rewards = torch.zeros(2)
+        dones = torch.tensor([1.0, 1.0])
+        terminated = torch.tensor([1.0, 0.0])
+        legal_masks = torch.zeros(2, 100, dtype=torch.bool)
+        legal_masks[:, 0] = True
+        value_cats = torch.tensor([-1, -1], dtype=torch.long)
+        score_targets = torch.tensor([0.1, -0.1])
+
+        buf.add(obs, actions, log_probs, values, rewards, dones,
+                terminated, legal_masks, value_cats, score_targets)
+
+        data = buf.flatten()
+        assert "terminated" in data
+        assert data["terminated"][0].item() == 1.0
+        assert data["terminated"][1].item() == 0.0
+        assert "dones" in data
+        assert data["dones"][0].item() == 1.0
+        assert data["dones"][1].item() == 1.0
+
+    def test_terminated_must_be_subset_of_dones(self):
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(4, 9, 9), action_space=100)
+        obs = torch.zeros(2, 4, 9, 9)
+        actions = torch.zeros(2, dtype=torch.long)
+        log_probs = torch.zeros(2)
+        values = torch.zeros(2)
+        rewards = torch.zeros(2)
+        dones = torch.tensor([0.0, 0.0])
+        terminated = torch.tensor([1.0, 0.0])
+        legal_masks = torch.zeros(2, 100, dtype=torch.bool)
+        legal_masks[:, 0] = True
+        value_cats = torch.tensor([-1, -1], dtype=torch.long)
+        score_targets = torch.tensor([0.1, -0.1])
+
+        with pytest.raises(AssertionError, match="terminated must be a subset of dones"):
+            buf.add(obs, actions, log_probs, values, rewards, dones,
+                    terminated, legal_masks, value_cats, score_targets)

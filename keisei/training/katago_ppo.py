@@ -68,6 +68,9 @@ class KataGoPPOParams:
     use_amp: bool = False
     compile_mode: str | None = None    # None, "default", "reduce-overhead", "max-autotune"
     compile_dynamic: bool = True       # dynamic shapes — True for league/split-merge safety
+    entropy_decay_epochs: int = 0    # R5: 0 = instant transition; >0 = linear decay
+    score_blend_alpha: float = 0.0   # R2: 0.0 = pure WDL; >0 blends score_lead into GAE value
+    use_terminated_for_gae: bool = False  # R1: default False until all paths are wired up
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
@@ -93,6 +96,7 @@ class KataGoRolloutBuffer:
         self.values: list[torch.Tensor] = []
         self.rewards: list[torch.Tensor] = []
         self.dones: list[torch.Tensor] = []
+        self.terminated: list[torch.Tensor] = []
         self.legal_masks: list[torch.Tensor] = []
         self.value_categories: list[torch.Tensor] = []
         self.score_targets: list[torch.Tensor] = []
@@ -110,6 +114,7 @@ class KataGoRolloutBuffer:
         values: torch.Tensor,
         rewards: torch.Tensor,
         dones: torch.Tensor,
+        terminated: torch.Tensor,
         legal_masks: torch.Tensor,
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
@@ -132,6 +137,14 @@ class KataGoRolloutBuffer:
         values_cpu = values.detach().cpu()
         rewards_cpu = rewards.detach().cpu()
         dones_cpu = dones.detach().cpu()
+        terminated_cpu = terminated.detach().cpu()
+
+        # Guard: terminated must be a subset of dones (can't be terminated without being done)
+        if not (terminated_cpu <= dones_cpu + 1e-6).all():
+            raise AssertionError(
+                "terminated must be a subset of dones: every terminated position must also be done. "
+                "Got terminated=True where dones=False — likely a call site passing the merged signal."
+            )
         legal_masks_cpu = legal_masks.detach().cpu()
         value_cats_cpu = value_categories.detach().cpu()
         score_cpu = score_targets.detach().cpu()
@@ -173,6 +186,7 @@ class KataGoRolloutBuffer:
         self.values.append(values_cpu)
         self.rewards.append(rewards_cpu)
         self.dones.append(dones_cpu)
+        self.terminated.append(terminated_cpu)
         self.legal_masks.append(legal_masks_cpu)
         self.value_categories.append(value_cats_cpu)
         self.score_targets.append(score_cpu)
@@ -193,6 +207,7 @@ class KataGoRolloutBuffer:
             "values": torch.cat(self.values, dim=0).reshape(-1),
             "rewards": torch.cat(self.rewards, dim=0).reshape(-1),
             "dones": torch.cat(self.dones, dim=0).reshape(-1),
+            "terminated": torch.cat(self.terminated, dim=0).reshape(-1),
             "legal_masks": torch.cat(self.legal_masks, dim=0).reshape(-1, self.action_space),
             "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
             "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
