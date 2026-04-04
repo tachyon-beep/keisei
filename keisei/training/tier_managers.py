@@ -59,8 +59,12 @@ class FrontierManager:
 
         sorted_entries = sorted(entries, key=lambda e: e.elo_rating)
         n = len(sorted_entries)
-        # Evenly spaced indices across [0, n-1]
-        indices = [round(i * (n - 1) / (count - 1)) for i in range(count)]
+        if count == 1:
+            # Single slot: pick the median entry
+            indices = [n // 2]
+        else:
+            # Evenly spaced indices across [0, n-1]
+            indices = [round(i * (n - 1) / (count - 1)) for i in range(count)]
         selected = [sorted_entries[i] for i in indices]
         logger.info(
             "Frontier select_initial: picked %d from %d entries, Elo range %.0f-%.0f",
