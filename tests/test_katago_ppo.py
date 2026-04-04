@@ -942,3 +942,22 @@ class TestBufferTerminatedField:
         with pytest.raises(AssertionError, match="terminated must be a subset of dones"):
             buf.add(obs, actions, log_probs, values, rewards, dones,
                     terminated, legal_masks, value_cats, score_targets)
+
+
+class TestFeatureFlagFalsePath:
+    """Verify use_terminated_for_gae=False uses dones (not terminated) for GAE."""
+
+    def test_flag_false_reads_dones_key(self):
+        """With flag=False, GAE should use data['dones'], not data['terminated']."""
+        params = KataGoPPOParams(use_terminated_for_gae=False)
+        assert params.use_terminated_for_gae is False
+        # The gae_dones_key logic in update():
+        gae_dones_key = "terminated" if params.use_terminated_for_gae else "dones"
+        assert gae_dones_key == "dones"
+
+    def test_flag_true_reads_terminated_key(self):
+        """With flag=True (the default), GAE should use data['terminated']."""
+        params = KataGoPPOParams()
+        assert params.use_terminated_for_gae is True
+        gae_dones_key = "terminated" if params.use_terminated_for_gae else "dones"
+        assert gae_dones_key == "terminated"

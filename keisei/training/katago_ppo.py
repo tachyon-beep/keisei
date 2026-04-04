@@ -70,7 +70,7 @@ class KataGoPPOParams:
     compile_dynamic: bool = True       # dynamic shapes — True for league/split-merge safety
     entropy_decay_epochs: int = 0    # R5: 0 = instant transition; >0 = linear decay
     score_blend_alpha: float = 0.0   # R2: 0.0 = pure WDL; >0 blends score_lead into GAE value
-    use_terminated_for_gae: bool = False  # R1: default False until all paths are wired up
+    use_terminated_for_gae: bool = True   # R1: correctness fix, False only for emergency rollback
 
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):

@@ -63,19 +63,20 @@ class SplitMergeResult:
 
 def _compute_value_cats(
     rewards: torch.Tensor,
-    dones_bool: torch.Tensor,
+    terminal_mask: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
     """Assign value-head categories from terminal rewards.
 
     Returns a tensor of {-1=ignore, 0=win, 1=draw, 2=loss}.
+    Only genuinely terminal positions (not truncated) receive labels.
     Engine produces exact integer-valued rewards (0.0 for draws, ±1.0
     for wins/losses), so float equality with == 0 is safe here.
     """
     cats = torch.full((rewards.numel(),), -1, dtype=torch.long, device=device)
-    cats[dones_bool & (rewards > 0)] = 0
-    cats[dones_bool & (rewards == 0)] = 1
-    cats[dones_bool & (rewards < 0)] = 2
+    cats[terminal_mask & (rewards > 0)] = 0
+    cats[terminal_mask & (rewards == 0)] = 1
+    cats[terminal_mask & (rewards < 0)] = 2
     return cats
 
 

@@ -315,11 +315,18 @@ class TestGAETruncationBootstrap:
         values = torch.tensor([[0.5, 0.3], [0.4, 0.6], [0.7, 0.2]])
         next_value = torch.tensor([0.1, 0.5])
 
+        # Some positions terminated, NO truncation — so terminated == dones
         terminated = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]])
-        adv_a = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
-        dones_same = terminated.clone()
-        adv_b = compute_gae_gpu(rewards, values, dones_same, next_value, gamma=0.99, lam=0.95)
-        assert torch.allclose(adv_a, adv_b)
+        adv_terminated = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+
+        # Simulate merged dones where dones has EXTRA done flags from truncation
+        dones_with_truncation = torch.tensor([[0.0, 0.0], [1.0, 1.0], [0.0, 0.0]])
+        adv_dones = compute_gae_gpu(rewards, values, dones_with_truncation, next_value, gamma=0.99, lam=0.95)
+
+        # When terminated == dones (no truncation), env 0 should match
+        # But env 1 at step 1 has an extra done (truncation) that changes the result
+        assert torch.allclose(adv_terminated[:, 0], adv_dones[:, 0])  # env 0: no truncation
+        assert not torch.allclose(adv_terminated[:, 1], adv_dones[:, 1])  # env 1: truncation matters
 
 
 class TestGAEPaddedTruncation:
