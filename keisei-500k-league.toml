@@ -46,6 +46,7 @@ lambda_score = 0.02
 lambda_entropy = 0.01
 score_normalization = 76.0
 grad_clip = 1.0
+use_terminated_for_gae = true
 
 [display]
 moves_per_minute = 30
