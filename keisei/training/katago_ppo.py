@@ -324,12 +324,20 @@ class KataGoPPOAlgorithm:
     def get_entropy_coeff(self, epoch: int) -> float:
         """Return the entropy coefficient for the current epoch.
 
-        During the first `warmup_epochs` epochs of RL (after SL warmup),
-        uses elevated entropy to soften the overconfident SL policy.
+        During warmup: elevated entropy to soften overconfident SL policy.
+        After warmup: linear decay from warmup_entropy to lambda_entropy
+        over entropy_decay_epochs (0 = instant transition).
         """
         if epoch < self.warmup_epochs:
             return self.warmup_entropy
-        return self.params.lambda_entropy
+        decay_epochs = self.params.entropy_decay_epochs
+        if decay_epochs <= 0:
+            return self.params.lambda_entropy
+        elapsed = epoch - self.warmup_epochs
+        if elapsed >= decay_epochs:
+            return self.params.lambda_entropy
+        t = elapsed / decay_epochs
+        return self.warmup_entropy + t * (self.params.lambda_entropy - self.warmup_entropy)
 
     def flush_timings(self) -> None:
         """Convert accumulated CUDA event pairs to elapsed-time floats.
