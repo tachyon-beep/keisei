@@ -47,7 +47,7 @@
     align-items: center;
     gap: 8px;
     padding: 3px 6px;
-    font-size: 11px;
+    font-size: 12px;
     border-radius: 3px;
   }
 
@@ -58,7 +58,7 @@
   .event-time {
     color: var(--text-muted);
     font-family: monospace;
-    font-size: 10px;
+    font-size: 11px;
     flex-shrink: 0;
     min-width: 60px;
   }

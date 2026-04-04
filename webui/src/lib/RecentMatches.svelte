@@ -139,7 +139,7 @@
   }
 
   .epoch-separator {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -205,7 +205,7 @@
   .match-score.tied { color: var(--accent-gold); background: rgba(200, 150, 46, 0.1); }
 
   .match-detail {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-muted);
     display: flex;
     gap: 4px;
