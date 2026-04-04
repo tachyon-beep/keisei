@@ -144,6 +144,9 @@ class OpponentEntry:
     elo_dynamic: float = 1000.0
     elo_recent: float = 1000.0
     elo_historical: float = 1000.0
+    optimizer_path: str | None = None
+    update_count: int = 0
+    last_train_at: str | None = None
 
     @classmethod
     def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
@@ -170,6 +173,9 @@ class OpponentEntry:
             elo_dynamic=row["elo_dynamic"] if "elo_dynamic" in keys else 1000.0,
             elo_recent=row["elo_recent"] if "elo_recent" in keys else 1000.0,
             elo_historical=row["elo_historical"] if "elo_historical" in keys else 1000.0,
+            optimizer_path=row["optimizer_path"] if "optimizer_path" in keys else None,
+            update_count=row["update_count"] if "update_count" in keys else 0,
+            last_train_at=row["last_train_at"] if "last_train_at" in keys else None,
         )
 
 
@@ -661,6 +667,62 @@ class OpponentStore:
                    ORDER BY h.slot_index"""
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Gauntlet results
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Optimizer persistence (Phase 3)
+    # ------------------------------------------------------------------
+
+    def save_optimizer(self, entry_id: int, optimizer_state_dict: dict[str, Any]) -> None:
+        """Save an optimizer state dict alongside the entry's checkpoint.
+
+        Writes atomically via .tmp + rename. Updates optimizer_path in the DB.
+        """
+        with self._lock:
+            entry = self._get_entry(entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} not found")
+            ckpt = Path(entry.checkpoint_path)
+            opt_path = ckpt.with_name(f"{ckpt.stem}_optimizer{ckpt.suffix}")
+            tmp_path = opt_path.with_suffix(opt_path.suffix + ".tmp")
+            torch.save(optimizer_state_dict, tmp_path)
+            tmp_path.rename(opt_path)
+            self._conn.execute(
+                "UPDATE league_entries SET optimizer_path = ? WHERE id = ?",
+                (str(opt_path), entry_id),
+            )
+            if not self._in_transaction:
+                self._conn.commit()
+            logger.info("Saved optimizer for entry %d -> %s", entry_id, opt_path.name)
+
+    def load_optimizer(self, entry_id: int, device: str = "cpu") -> dict[str, Any] | None:
+        """Load a saved optimizer state dict, or None if unavailable."""
+        with self._lock:
+            entry = self._get_entry(entry_id)
+        if entry is None or entry.optimizer_path is None:
+            return None
+        opt_path = Path(entry.optimizer_path)
+        if not opt_path.exists():
+            logger.warning(
+                "Optimizer file does not exist for entry %d: %s", entry_id, opt_path,
+            )
+            return None
+        return torch.load(opt_path, map_location=device, weights_only=True)
+
+    def increment_update_count(self, entry_id: int) -> None:
+        """Increment the update_count and set last_train_at to now."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE league_entries SET update_count = update_count + 1, "
+                "last_train_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                "WHERE id = ?",
+                (entry_id,),
+            )
+            if not self._in_transaction:
+                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Gauntlet results

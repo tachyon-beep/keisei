@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -99,7 +99,10 @@ def init_db(db_path: str) -> None:
                 elo_frontier    REAL NOT NULL DEFAULT 1000.0,
                 elo_dynamic     REAL NOT NULL DEFAULT 1000.0,
                 elo_recent      REAL NOT NULL DEFAULT 1000.0,
-                elo_historical  REAL NOT NULL DEFAULT 1000.0
+                elo_historical  REAL NOT NULL DEFAULT 1000.0,
+                optimizer_path  TEXT,
+                update_count    INTEGER NOT NULL DEFAULT 0,
+                last_train_at   TEXT
             );
             CREATE TABLE IF NOT EXISTS league_results (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,6 +247,15 @@ def init_db(db_path: str) -> None:
                     );
                     CREATE INDEX IF NOT EXISTS idx_gauntlet_epoch ON gauntlet_results(epoch);
                 """)
+                conn.execute("UPDATE schema_version SET version = 5")
+            if db_version < 6:
+                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
+                if "optimizer_path" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN optimizer_path TEXT")
+                if "update_count" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN update_count INTEGER NOT NULL DEFAULT 0")
+                if "last_train_at" not in cols:
+                    conn.execute("ALTER TABLE league_entries ADD COLUMN last_train_at TEXT")
                 conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         conn.commit()
     finally:
@@ -435,7 +447,8 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "SELECT id, display_name, flavour_facts, model_params, architecture, "
             "elo_rating, games_played, created_epoch, created_at, "
             "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at, "
-            "elo_frontier, elo_dynamic, elo_recent, elo_historical "
+            "elo_frontier, elo_dynamic, elo_recent, elo_historical, "
+            "optimizer_path, update_count, last_train_at "
             "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
