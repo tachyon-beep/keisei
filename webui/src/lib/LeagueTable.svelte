@@ -245,6 +245,7 @@
 
   .name-cell {
     white-space: nowrap;
+    width: 28%;
   }
 
   tr.expanded { background: var(--bg-card); }

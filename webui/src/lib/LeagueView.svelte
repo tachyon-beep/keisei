@@ -154,6 +154,12 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+  }
+
+  .chart-card > :global(.chart-wrapper) {
+    flex: 1;
+    min-height: 0;
   }
 
   .bottom-row {
