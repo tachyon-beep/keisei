@@ -46,6 +46,17 @@ class FrontierStaticConfig:
     review_interval_epochs: int = 250
     min_tenure_epochs: int = 100
     promotion_margin_elo: float = 50.0
+    min_games_for_promotion: int = 100
+    topk: int = 3
+    streak_epochs: int = 50
+    max_lineage_overlap: int = 2
+
+    def __post_init__(self) -> None:
+        if self.min_games_for_promotion < self.min_tenure_epochs:
+            raise ValueError(
+                f"min_games_for_promotion ({self.min_games_for_promotion}) "
+                f"must be >= min_tenure_epochs ({self.min_tenure_epochs})"
+            )
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,29 @@ class DynamicConfig:
     protection_matches: int = 24
     min_games_before_eviction: int = 40
     training_enabled: bool = False
+    update_epochs_per_batch: int = 2
+    lr_scale: float = 0.25
+    grad_clip: float = 1.0
+    update_every_matches: int = 4
+    max_updates_per_minute: int = 20
+    checkpoint_flush_every: int = 8
+    disable_on_error: bool = True
+    max_buffer_depth: int = 8
+    max_consecutive_errors: int = 3
+
+    def __post_init__(self) -> None:
+        if not (0 < self.lr_scale <= 1.0):
+            raise ValueError(
+                f"lr_scale must be in (0, 1.0], got {self.lr_scale}"
+            )
+        if self.update_every_matches < 1:
+            raise ValueError(
+                f"update_every_matches must be >= 1, got {self.update_every_matches}"
+            )
+        if self.max_updates_per_minute < 1:
+            raise ValueError(
+                f"max_updates_per_minute must be >= 1, got {self.max_updates_per_minute}"
+            )
 
 
 @dataclass(frozen=True)
