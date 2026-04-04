@@ -481,4 +481,139 @@ mod tests {
             piece_type: HandPieceType::Rook,
         };
     }
+
+    // ===================================================================
+    // Gap #5: Exhaustive Square boundary tests
+    // ===================================================================
+
+    /// Exhaustive roundtrip: from_row_col → row()/col() for all 81 valid squares.
+    #[test]
+    fn test_square_from_row_col_exhaustive_roundtrip() {
+        for row in 0u8..9 {
+            for col in 0u8..9 {
+                let sq = Square::from_row_col(row, col)
+                    .unwrap_or_else(|_| panic!("from_row_col({},{}) should succeed", row, col));
+                assert_eq!(sq.row(), row, "row mismatch for ({},{})", row, col);
+                assert_eq!(sq.col(), col, "col mismatch for ({},{})", row, col);
+                assert_eq!(sq.index(), (row as usize) * 9 + (col as usize));
+            }
+        }
+    }
+
+    /// All invalid row/col pairs are rejected.
+    #[test]
+    fn test_square_from_row_col_invalid_exhaustive() {
+        // Row 9+ with any col
+        for col in 0u8..20 {
+            assert!(Square::from_row_col(9, col).is_err());
+            assert!(Square::from_row_col(10, col).is_err());
+            assert!(Square::from_row_col(255, col).is_err());
+        }
+        // Valid row, col 9+
+        for row in 0u8..9 {
+            assert!(Square::from_row_col(row, 9).is_err());
+            assert!(Square::from_row_col(row, 10).is_err());
+            assert!(Square::from_row_col(row, 255).is_err());
+        }
+    }
+
+    /// Square::new accepts 0..80 and rejects 81..255.
+    #[test]
+    fn test_square_new_boundary() {
+        // Valid: 0 through 80
+        for i in 0u8..81 {
+            assert!(Square::new(i).is_ok(), "Square::new({}) should be Ok", i);
+        }
+        // Invalid: 81 through 255
+        for i in 81u8..=255 {
+            assert!(Square::new(i).is_err(), "Square::new({}) should be Err", i);
+        }
+    }
+
+    /// Square::new(idx).index() == idx for all valid indices.
+    #[test]
+    fn test_square_index_roundtrip() {
+        for i in 0u8..81 {
+            let sq = Square::new(i).unwrap();
+            assert_eq!(sq.index(), i as usize);
+        }
+    }
+
+    /// Square::offset at the boundaries of the board.
+    #[test]
+    fn test_square_offset_all_corners() {
+        // Top-left corner (0,0)
+        let tl = Square::from_row_col(0, 0).unwrap();
+        assert_eq!(tl.offset(-1), None, "top-left offset -1 should be None");
+        assert_eq!(tl.offset(-9), None, "top-left offset -9 should be None");
+        assert!(tl.offset(1).is_some(), "top-left offset +1 should be Some");
+        assert!(tl.offset(9).is_some(), "top-left offset +9 should be Some");
+
+        // Bottom-right corner (8,8)
+        let br = Square::from_row_col(8, 8).unwrap();
+        assert_eq!(br.offset(1), None, "bottom-right offset +1 should be None");
+        assert_eq!(br.offset(9), None, "bottom-right offset +9 should be None");
+        assert!(br.offset(-1).is_some());
+        assert!(br.offset(-9).is_some());
+
+        // Top-right corner (0,8)
+        let tr = Square::from_row_col(0, 8).unwrap();
+        assert_eq!(tr.offset(-1), Some(Square::from_row_col(0, 7).unwrap()));
+        assert_eq!(tr.offset(1), Some(Square::from_row_col(1, 0).unwrap()));
+
+        // Bottom-left corner (8,0)
+        let bl = Square::from_row_col(8, 0).unwrap();
+        assert_eq!(bl.offset(-1), Some(Square::from_row_col(7, 8).unwrap()));
+        assert_eq!(bl.offset(9), None);
+    }
+
+    /// PieceType::from_u8 covers the full u8 range.
+    #[test]
+    fn test_piece_type_from_u8_full_range() {
+        let mut valid_count = 0;
+        for v in 0u8..=255 {
+            match PieceType::from_u8(v) {
+                Some(_) => valid_count += 1,
+                None => {}
+            }
+        }
+        assert_eq!(valid_count, PieceType::COUNT, "should have exactly 8 valid PieceType values");
+    }
+
+    /// HandPieceType::ALL has exactly COUNT elements, all unique.
+    #[test]
+    fn test_hand_piece_type_all_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for &hpt in &HandPieceType::ALL {
+            assert!(seen.insert(hpt), "duplicate in HandPieceType::ALL: {:?}", hpt);
+        }
+        assert_eq!(seen.len(), HandPieceType::COUNT);
+    }
+
+    /// GameResult variant exhaustiveness: every variant has correct is_terminal/is_truncation.
+    #[test]
+    fn test_game_result_variants_complete() {
+        let variants = [
+            (GameResult::InProgress, false, false),
+            (GameResult::Checkmate { winner: Color::Black }, true, false),
+            (GameResult::Checkmate { winner: Color::White }, true, false),
+            (GameResult::Impasse { winner: None }, true, false),
+            (GameResult::Impasse { winner: Some(Color::Black) }, true, false),
+            (GameResult::Impasse { winner: Some(Color::White) }, true, false),
+            (GameResult::Repetition, true, false),
+            (GameResult::PerpetualCheck { winner: Color::Black }, true, false),
+            (GameResult::PerpetualCheck { winner: Color::White }, true, false),
+            (GameResult::MaxMoves, true, true),
+        ];
+        for (result, expected_terminal, expected_truncation) in variants {
+            assert_eq!(
+                result.is_terminal(), expected_terminal,
+                "{:?}.is_terminal() should be {}", result, expected_terminal
+            );
+            assert_eq!(
+                result.is_truncation(), expected_truncation,
+                "{:?}.is_truncation() should be {}", result, expected_truncation
+            );
+        }
+    }
 }

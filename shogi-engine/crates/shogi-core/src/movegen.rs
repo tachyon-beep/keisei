@@ -1047,4 +1047,199 @@ mod tests {
             total_expected, moves.len()
         );
     }
+
+    // ===================================================================
+    // Gap #3: Promotion-zone boundary tests
+    // ===================================================================
+
+    #[test]
+    fn test_in_promotion_zone_boundaries_black() {
+        // Black promotion zone: rows 0, 1, 2
+        assert!(in_promotion_zone(0, Color::Black));
+        assert!(in_promotion_zone(1, Color::Black));
+        assert!(in_promotion_zone(2, Color::Black));
+        assert!(!in_promotion_zone(3, Color::Black));
+        assert!(!in_promotion_zone(8, Color::Black));
+    }
+
+    #[test]
+    fn test_in_promotion_zone_boundaries_white() {
+        // White promotion zone: rows 6, 7, 8
+        assert!(!in_promotion_zone(5, Color::White));
+        assert!(in_promotion_zone(6, Color::White));
+        assert!(in_promotion_zone(7, Color::White));
+        assert!(in_promotion_zone(8, Color::White));
+    }
+
+    #[test]
+    fn test_must_promote_pawn_lance_boundaries() {
+        // Black pawn/lance must promote on row 0 only
+        assert!(must_promote(PieceType::Pawn, 0, Color::Black));
+        assert!(!must_promote(PieceType::Pawn, 1, Color::Black));
+        assert!(must_promote(PieceType::Lance, 0, Color::Black));
+        assert!(!must_promote(PieceType::Lance, 1, Color::Black));
+
+        // White pawn/lance must promote on row 8 only
+        assert!(must_promote(PieceType::Pawn, 8, Color::White));
+        assert!(!must_promote(PieceType::Pawn, 7, Color::White));
+        assert!(must_promote(PieceType::Lance, 8, Color::White));
+        assert!(!must_promote(PieceType::Lance, 7, Color::White));
+    }
+
+    #[test]
+    fn test_must_promote_knight_boundaries() {
+        // Black knight must promote on rows 0 and 1
+        assert!(must_promote(PieceType::Knight, 0, Color::Black));
+        assert!(must_promote(PieceType::Knight, 1, Color::Black));
+        assert!(!must_promote(PieceType::Knight, 2, Color::Black));
+
+        // White knight must promote on rows 7 and 8
+        assert!(must_promote(PieceType::Knight, 7, Color::White));
+        assert!(must_promote(PieceType::Knight, 8, Color::White));
+        assert!(!must_promote(PieceType::Knight, 6, Color::White));
+    }
+
+    #[test]
+    fn test_must_promote_non_promotable() {
+        // Gold, King, and already-promoted pieces never must promote
+        for row in 0..9u8 {
+            assert!(!must_promote(PieceType::Gold, row, Color::Black));
+            assert!(!must_promote(PieceType::King, row, Color::Black));
+            assert!(!must_promote(PieceType::Gold, row, Color::White));
+            assert!(!must_promote(PieceType::King, row, Color::White));
+        }
+    }
+
+    // ===================================================================
+    // Gap #3b: Dead-drop boundary tests
+    // ===================================================================
+
+    #[test]
+    fn test_is_dead_drop_pawn_lance_boundaries() {
+        // Black pawn/lance: dead on row 0, alive on row 1
+        assert!(is_dead_drop(HandPieceType::Pawn, 0, Color::Black));
+        assert!(!is_dead_drop(HandPieceType::Pawn, 1, Color::Black));
+        assert!(is_dead_drop(HandPieceType::Lance, 0, Color::Black));
+        assert!(!is_dead_drop(HandPieceType::Lance, 1, Color::Black));
+
+        // White pawn/lance: dead on row 8, alive on row 7
+        assert!(is_dead_drop(HandPieceType::Pawn, 8, Color::White));
+        assert!(!is_dead_drop(HandPieceType::Pawn, 7, Color::White));
+        assert!(is_dead_drop(HandPieceType::Lance, 8, Color::White));
+        assert!(!is_dead_drop(HandPieceType::Lance, 7, Color::White));
+    }
+
+    #[test]
+    fn test_is_dead_drop_knight_boundaries() {
+        // Black knight: dead on rows 0-1, alive on row 2
+        assert!(is_dead_drop(HandPieceType::Knight, 0, Color::Black));
+        assert!(is_dead_drop(HandPieceType::Knight, 1, Color::Black));
+        assert!(!is_dead_drop(HandPieceType::Knight, 2, Color::Black));
+
+        // White knight: dead on rows 7-8, alive on row 6
+        assert!(is_dead_drop(HandPieceType::Knight, 8, Color::White));
+        assert!(is_dead_drop(HandPieceType::Knight, 7, Color::White));
+        assert!(!is_dead_drop(HandPieceType::Knight, 6, Color::White));
+    }
+
+    #[test]
+    fn test_is_dead_drop_other_pieces_never_dead() {
+        // Gold, Silver, Bishop, Rook can drop anywhere
+        for row in 0..9u8 {
+            for color in [Color::Black, Color::White] {
+                assert!(!is_dead_drop(HandPieceType::Gold, row, color));
+                assert!(!is_dead_drop(HandPieceType::Silver, row, color));
+                assert!(!is_dead_drop(HandPieceType::Bishop, row, color));
+                assert!(!is_dead_drop(HandPieceType::Rook, row, color));
+            }
+        }
+    }
+
+    // ===================================================================
+    // Gap #3c: Verify pseudo-legal drops exclude dead-drop squares
+    // ===================================================================
+
+    /// White drops on an empty board: pawns can't drop on row 8, knights can't drop on rows 7-8.
+    #[test]
+    fn test_white_drops_exclude_dead_squares() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_hand_count(Color::White, HandPieceType::Pawn, 1);
+        pos.set_hand_count(Color::White, HandPieceType::Knight, 1);
+        pos.set_hand_count(Color::White, HandPieceType::Lance, 1);
+        pos.current_player = Color::White;
+
+        let mut moves = Vec::new();
+        generate_pseudo_legal_drops(&pos, Color::White, &mut moves);
+
+        // No pawn drops on row 8
+        for mv in &moves {
+            if let Move::Drop { to, piece_type: HandPieceType::Pawn } = mv {
+                assert_ne!(
+                    to.row(), 8,
+                    "White pawn drop on row 8 is a dead drop"
+                );
+            }
+        }
+
+        // No lance drops on row 8
+        for mv in &moves {
+            if let Move::Drop { to, piece_type: HandPieceType::Lance } = mv {
+                assert_ne!(
+                    to.row(), 8,
+                    "White lance drop on row 8 is a dead drop"
+                );
+            }
+        }
+
+        // No knight drops on rows 7 or 8
+        for mv in &moves {
+            if let Move::Drop { to, piece_type: HandPieceType::Knight } = mv {
+                assert!(
+                    to.row() < 7,
+                    "White knight drop on row {} is a dead drop",
+                    to.row()
+                );
+            }
+        }
+    }
+
+    /// Board moves from promotion zone must produce promotion variants.
+    #[test]
+    fn test_board_moves_promotion_in_zone() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black silver on row 3 (just outside promotion zone)
+        let silver_sq = Square::from_row_col(3, 0).unwrap();
+        pos.set_piece(silver_sq, Piece::new(PieceType::Silver, Color::Black, false));
+
+        let mut moves = Vec::new();
+        generate_pseudo_legal_board_moves(&pos, Color::Black, &mut moves);
+
+        // Silver moving from row 3 to row 2 (entering promo zone) should have both variants
+        let to_promo_zone: Vec<&Move> = moves
+            .iter()
+            .filter(|mv| matches!(mv, Move::Board { from, to, .. } if *from == silver_sq && to.row() == 2))
+            .collect();
+
+        let has_promote = to_promo_zone.iter().any(|mv| matches!(mv, Move::Board { promote: true, .. }));
+        let has_no_promote = to_promo_zone.iter().any(|mv| matches!(mv, Move::Board { promote: false, .. }));
+
+        assert!(has_promote, "Silver moving into promotion zone should have promote=true variant");
+        assert!(has_no_promote, "Silver moving into promotion zone should have promote=false variant");
+    }
 }

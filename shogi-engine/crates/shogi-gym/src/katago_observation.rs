@@ -563,4 +563,107 @@ mod tests {
             "ch48 should be 1.0 (perspective=Black IS in check)"
         );
     }
+
+    // ===================================================================
+    // Gap #9a: Empty board observation
+    // ===================================================================
+
+    /// An empty board (kings only, no other pieces) should produce mostly-zero observation.
+    #[test]
+    fn test_katago_observation_minimal_board() {
+        use shogi_core::{Piece, PieceType, Position, Square};
+
+        let obs_gen = make_gen();
+
+        // Minimal valid position: just two kings
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let state = GameState::from_position(pos, 500);
+        let mut buf = make_buffer();
+        obs_gen.generate(&state, Color::Black, &mut buf);
+
+        // Most piece planes (channels 0-27 for 14 piece types × 2 colors) should be
+        // almost all zero (only 2 squares occupied by kings)
+        let piece_channels_end = 28 * 81; // approximate: 28 piece planes
+        let nonzero_in_piece_planes = buf[..piece_channels_end]
+            .iter()
+            .filter(|&&v| v != 0.0)
+            .count();
+        // Should have very few non-zero values (just the 2 king positions)
+        assert!(
+            nonzero_in_piece_planes <= 4, // 2 kings, potentially 2 planes each
+            "Minimal board should have very few non-zero piece plane values, got {}",
+            nonzero_in_piece_planes
+        );
+
+        // Hand planes should all be zero (no pieces in hand)
+        let hand_start = 28 * 81;
+        let hand_end = 42 * 81;
+        if hand_end <= buf.len() {
+            let nonzero_hand = buf[hand_start..hand_end]
+                .iter()
+                .filter(|&&v| v != 0.0)
+                .count();
+            assert_eq!(
+                nonzero_hand, 0,
+                "No pieces in hand, so hand planes should be all zero"
+            );
+        }
+
+        // Repetition channels (44-47) should be all zero (first occurrence)
+        let rep_start = 44 * 81;
+        let rep_end = 48 * 81;
+        let nonzero_rep = buf[rep_start..rep_end]
+            .iter()
+            .filter(|&&v| v != 0.0)
+            .count();
+        assert_eq!(
+            nonzero_rep, 0,
+            "First occurrence should have zero repetition channels"
+        );
+
+        // Check channel (48) should be zero (no check)
+        let check_start = 48 * 81;
+        let check_end = 49 * 81;
+        let nonzero_check = buf[check_start..check_end]
+            .iter()
+            .filter(|&&v| v != 0.0)
+            .count();
+        assert_eq!(
+            nonzero_check, 0,
+            "No check on minimal board"
+        );
+
+        // Reserved channel (49) should be all zero
+        let reserved_start = 49 * 81;
+        let reserved_end = 50 * 81;
+        let nonzero_reserved = buf[reserved_start..reserved_end]
+            .iter()
+            .filter(|&&v| v != 0.0)
+            .count();
+        assert_eq!(
+            nonzero_reserved, 0,
+            "Reserved channel should be all zero"
+        );
+    }
+
+    /// Buffer length mismatch should panic.
+    #[test]
+    #[should_panic(expected = "buffer must have length")]
+    fn test_katago_observation_wrong_buffer_length() {
+        let obs_gen = make_gen();
+        let state = GameState::new();
+        let mut buf = vec![0.0f32; 100]; // wrong size
+        obs_gen.generate(&state, Color::Black, &mut buf);
+    }
 }

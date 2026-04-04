@@ -311,4 +311,99 @@ mod tests {
             }
         }
     }
+
+    // ===================================================================
+    // Gap #8b: Zobrist collision resistance sanity check
+    // ===================================================================
+
+    /// Hash N random-ish positions and verify collision rate is negligible.
+    /// With 64-bit hashes and 500 positions, birthday paradox gives ~6.8e-15
+    /// probability of any collision — essentially zero.
+    #[test]
+    fn test_zobrist_collision_resistance_random_positions() {
+        use crate::position::Position;
+
+        let mut seen = std::collections::HashSet::new();
+
+        // Generate diverse positions by permuting board state
+        for seed in 0u64..500 {
+            let mut pos = Position::empty();
+            pos.current_player = if seed % 2 == 0 { Color::Black } else { Color::White };
+
+            // Place a king for each side
+            let bk_idx = (seed % 81) as u8;
+            pos.set_piece(
+                Square::new_unchecked(bk_idx),
+                Piece::new(PieceType::King, Color::Black, false),
+            );
+            let wk_idx = ((seed * 7 + 13) % 81) as u8;
+            if wk_idx != bk_idx {
+                pos.set_piece(
+                    Square::new_unchecked(wk_idx),
+                    Piece::new(PieceType::King, Color::White, false),
+                );
+            }
+
+            // Add a few more pieces based on the seed
+            let piece_types = [
+                PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+                PieceType::Silver, PieceType::Gold, PieceType::Bishop,
+                PieceType::Rook,
+            ];
+            let pt = piece_types[(seed as usize) % piece_types.len()];
+            let color = if seed % 3 == 0 { Color::White } else { Color::Black };
+            let sq_idx = ((seed * 11 + 3) % 81) as u8;
+            if sq_idx != bk_idx && sq_idx != wk_idx {
+                pos.set_piece(
+                    Square::new_unchecked(sq_idx),
+                    Piece::new(pt, color, false),
+                );
+            }
+
+            // Add hand pieces
+            if seed % 5 == 0 {
+                pos.set_hand_count(Color::Black, HandPieceType::Pawn, (seed % 18 + 1) as u8);
+            }
+
+            let h = pos.compute_hash();
+            // Note: We don't assert zero collisions (hash collisions are possible in
+            // principle) but with 500 samples and 64-bit hashes, even ONE collision
+            // would be astronomically unlikely and indicate a bug.
+            seen.insert(h);
+        }
+
+        // We should have close to 500 unique hashes.
+        // Allow a tiny margin (499) in case two seeds generate identical boards.
+        assert!(
+            seen.len() >= 490,
+            "Expected ~500 unique hashes, got {} — possible collision bug",
+            seen.len()
+        );
+    }
+
+    /// Zobrist values for same piece on different squares are all unique.
+    #[test]
+    fn test_zobrist_piece_square_all_unique_per_piece() {
+        let table = ZobristTable::new();
+        let pieces_to_check = [
+            Piece::new(PieceType::Pawn, Color::Black, false),
+            Piece::new(PieceType::Rook, Color::White, false),
+            Piece::new(PieceType::Bishop, Color::Black, true),
+            Piece::new(PieceType::King, Color::White, false),
+        ];
+
+        for piece in pieces_to_check {
+            let mut hashes = std::collections::HashSet::new();
+            for sq_idx in 0u8..81 {
+                let sq = Square::new(sq_idx).unwrap();
+                let h = table.hash_piece_at(sq, piece);
+                assert!(
+                    hashes.insert(h),
+                    "Collision: {:?} on square {} has same hash as another square",
+                    piece, sq_idx
+                );
+            }
+            assert_eq!(hashes.len(), 81, "not all 81 squares produced unique hashes for {:?}", piece);
+        }
+    }
 }

@@ -8,14 +8,41 @@ Repo is in early rebuild after migrating from a pure Python engine to Rust.
 
 ## Commands
 
+### Python (training harness, top-level)
+
 ```bash
 uv pip install -e ".[dev]"
-uv run pytest
+uv run pytest                    # Python training tests
 ```
+
+Always use `uv run` for pytest/python — project deps live in the uv-managed venv, not system Python.
+
+### Rust engine (shogi-engine/)
+
+```bash
+cd shogi-engine
+cargo test -p shogi-core         # Pure Rust tests (no Python dependency)
+```
+
+`cargo test -p shogi-gym` will NOT work — it's a PyO3 cdylib that can't link without Python symbols. Use maturin instead.
+
+### shogi-gym (Rust + Python bindings)
+
+```bash
+cd shogi-engine/crates/shogi-gym
+source .venv/bin/activate        # shogi-gym has its own venv
+maturin develop                  # Build the Rust extension into the venv
+python -m pytest tests/ -v       # Run Python-side tests (exercises Rust code via PyO3)
+```
+
+**Key points:**
+- shogi-gym has its own `.venv` at `shogi-engine/crates/shogi-gym/.venv` — always activate it before running maturin or pytest there
+- `maturin develop` builds in debug mode; use `maturin develop --release` for optimized builds (needed for perft/benchmarks)
+- Rust `#[cfg(test)]` tests inside shogi-gym source files are compiled and exercised through the Python test suite, not via `cargo test`
 
 ## Key Paths
 
-- Rust engine: developed on `feature/shogi-core-rust-engine` branch
+- Rust engine: `shogi-engine/crates/shogi-core/` (pure Rust, zero deps) and `shogi-engine/crates/shogi-gym/` (PyO3 bindings)
 - Python training: TBD
 - WebUI: TBD
 

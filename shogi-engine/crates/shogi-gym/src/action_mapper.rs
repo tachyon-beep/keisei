@@ -479,4 +479,71 @@ mod tests {
 
         assert_eq!(seen.len(), DROP_MOVE_COUNT, "not all drop indices covered (white)");
     }
+
+    // ===================================================================
+    // Gap #6: Boundary and negative tests
+    // ===================================================================
+
+    /// Decode at exact boundary: last valid board index and first drop index.
+    #[test]
+    fn test_decode_board_drop_boundary() {
+        let m = mapper();
+        // Last valid board move index
+        let last_board = BOARD_MOVE_COUNT - 1;
+        let result = trait_decode(&m, last_board, Color::Black);
+        assert!(result.is_ok(), "last board index should decode successfully");
+        if let Ok(Move::Board { .. }) = result {
+            // good
+        } else {
+            panic!("last board index should decode to a Board move, got {:?}", result);
+        }
+
+        // First drop index
+        let first_drop = BOARD_MOVE_COUNT;
+        let result = trait_decode(&m, first_drop, Color::Black);
+        assert!(result.is_ok(), "first drop index should decode successfully");
+        if let Ok(Move::Drop { .. }) = result {
+            // good
+        } else {
+            panic!("first drop index should decode to a Drop move, got {:?}", result);
+        }
+
+        // Last valid drop index
+        let last_drop = ACTION_SPACE_SIZE - 1;
+        let result = trait_decode(&m, last_drop, Color::Black);
+        assert!(result.is_ok(), "last valid index should decode successfully");
+    }
+
+    /// Encode then decode preserves the original move for all piece types at boundary squares.
+    #[test]
+    fn test_encode_decode_boundary_squares() {
+        let m = mapper();
+        let corner_squares = [0u8, 8, 72, 80]; // (0,0), (0,8), (8,0), (8,8)
+
+        for &from_idx in &corner_squares {
+            for &to_idx in &corner_squares {
+                if from_idx == to_idx {
+                    continue;
+                }
+                for promote in [false, true] {
+                    let from = Square::new_unchecked(from_idx);
+                    let to = Square::new_unchecked(to_idx);
+                    let mv = Move::Board { from, to, promote };
+                    let idx = trait_encode(&m, mv, Color::Black);
+                    let decoded = trait_decode(&m, idx, Color::Black).unwrap();
+                    assert_eq!(decoded, mv, "corner roundtrip failed: from={from_idx} to={to_idx} promote={promote}");
+                }
+            }
+        }
+    }
+
+    /// The entire action space [0, ACTION_SPACE_SIZE) decodes without error.
+    #[test]
+    fn test_every_index_decodes_successfully() {
+        let m = mapper();
+        for idx in 0..ACTION_SPACE_SIZE {
+            let result = trait_decode(&m, idx, Color::Black);
+            assert!(result.is_ok(), "index {} should decode successfully, got {:?}", idx, result);
+        }
+    }
 }

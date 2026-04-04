@@ -468,4 +468,126 @@ mod tests {
         assert!(debug_str.contains("Position"), "Debug output should contain 'Position'");
         assert!(debug_str.contains("Black"), "Debug output should mention a color");
     }
+
+    // ===================================================================
+    // Gap #4: Mutation edge case tests
+    // ===================================================================
+
+    /// set_piece on an occupied square overwrites silently.
+    #[test]
+    fn test_set_piece_overwrites_occupied_square() {
+        let mut pos = Position::startpos();
+        let sq = Square::from_row_col(6, 0).unwrap(); // Black pawn
+        let original = pos.piece_at(sq).unwrap();
+        assert_eq!(original.piece_type(), PieceType::Pawn);
+        assert_eq!(original.color(), Color::Black);
+
+        // Overwrite with a White rook
+        let new_piece = Piece::new(PieceType::Rook, Color::White, false);
+        pos.set_piece(sq, new_piece);
+        assert_eq!(pos.piece_at(sq), Some(new_piece));
+    }
+
+    /// clear_square on an already-empty square is a no-op.
+    #[test]
+    fn test_clear_empty_square_is_noop() {
+        let mut pos = Position::startpos();
+        let sq = Square::from_row_col(4, 4).unwrap(); // center, empty at start
+        assert!(pos.piece_at(sq).is_none());
+
+        let board_before = pos.board;
+        pos.clear_square(sq);
+        assert_eq!(pos.board, board_before, "clearing an empty square should not change the board");
+    }
+
+    /// set_piece followed by clear_square restores the square to empty.
+    #[test]
+    fn test_set_then_clear_restores_empty() {
+        let mut pos = Position::empty();
+        let sq = Square::from_row_col(4, 4).unwrap();
+        let piece = Piece::new(PieceType::Bishop, Color::Black, false);
+
+        pos.set_piece(sq, piece);
+        assert_eq!(pos.piece_at(sq), Some(piece));
+
+        pos.clear_square(sq);
+        assert!(pos.piece_at(sq).is_none());
+    }
+
+    /// set_hand_count with max plausible value (18 pawns) works correctly.
+    #[test]
+    fn test_set_hand_count_max_value() {
+        let mut pos = Position::empty();
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 18);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Pawn), 18);
+    }
+
+    /// set_hand_count to 0 and back up.
+    #[test]
+    fn test_set_hand_count_zero_and_back() {
+        let mut pos = Position::empty();
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, 2);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 2);
+
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, 0);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 0);
+
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, 1);
+        assert_eq!(pos.hand_count(Color::Black, HandPieceType::Rook), 1);
+    }
+
+    /// find_king exhaustive: every board square can hold a king.
+    #[test]
+    fn test_find_king_every_square() {
+        for idx in 0u8..81 {
+            let sq = Square::new(idx).unwrap();
+            let mut pos = Position::empty();
+            pos.set_piece(sq, Piece::new(PieceType::King, Color::Black, false));
+            assert_eq!(pos.find_king(Color::Black), Some(sq), "find_king failed for square index {}", idx);
+        }
+    }
+
+    /// piece_at returns correct value for all piece types on all squares.
+    #[test]
+    fn test_piece_at_all_types() {
+        let types = [
+            PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+            PieceType::Silver, PieceType::Gold, PieceType::Bishop,
+            PieceType::Rook, PieceType::King,
+        ];
+        for &pt in &types {
+            for &color in &[Color::Black, Color::White] {
+                for &promoted in &[false, true] {
+                    if promoted && !pt.can_promote() {
+                        continue;
+                    }
+                    let piece = Piece::new(pt, color, promoted);
+                    let mut pos = Position::empty();
+                    let sq = Square::from_row_col(4, 4).unwrap();
+                    pos.set_piece(sq, piece);
+                    let read_back = pos.piece_at(sq).unwrap();
+                    assert_eq!(read_back.piece_type(), pt);
+                    assert_eq!(read_back.color(), color);
+                    assert_eq!(read_back.is_promoted(), promoted);
+                }
+            }
+        }
+    }
+
+    /// compute_hash is different for positions that differ only in hand counts.
+    #[test]
+    fn test_compute_hash_sensitive_to_different_hand_piece_types() {
+        let mut pos1 = Position::empty();
+        pos1.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos1.hash = pos1.compute_hash();
+
+        let mut pos2 = Position::empty();
+        pos2.set_hand_count(Color::Black, HandPieceType::Lance, 1);
+        pos2.hash = pos2.compute_hash();
+
+        assert_ne!(
+            pos1.hash, pos2.hash,
+            "Different hand piece types should produce different hashes"
+        );
+    }
 }

@@ -52,13 +52,13 @@ Expected: FAIL — `LeagueConfig` has no attribute `color_randomization`
 
 - [ ] **Step 3: Add fields to `LeagueConfig`**
 
-In `keisei/config.py`, add two fields to `LeagueConfig` after `elo_floor`:
+In `keisei/config.py`, add two fields to `LeagueConfig` between `elo_floor` (line 50) and the existing `opponent_device` (line 51). **Do NOT re-add `opponent_device` — it already exists.**
 
 ```python
     elo_floor: float = 500.0
     color_randomization: bool = True     # Per-game color randomization (Change 2)
     per_env_opponents: bool = True       # Per-env sticky opponents (Change 3)
-    opponent_device: str | None = None  # e.g. "cuda:1" — defaults to learner device
+    opponent_device: str | None = None  # ALREADY EXISTS — do not add
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -90,7 +90,7 @@ class TestOpponentSamplerSampleFrom:
     """Tests for sample_from() with pre-fetched entries."""
 
     def test_sample_from_matches_sample(self, league_db, league_dir):
-        """sample_from(entries) should produce the same distribution as sample()."""
+        """sample_from(entries) should draw from both historical and current_best."""
         pool = OpponentPool(league_db, str(league_dir), max_pool_size=10)
         model = torch.nn.Linear(10, 10)
         for i in range(5):
@@ -100,10 +100,15 @@ class TestOpponentSamplerSampleFrom:
         entries = pool.list_entries()
         pool_ids = {e.id for e in entries}
 
-        for _ in range(20):
+        # Draw enough samples to confirm diversity (not always current_best)
+        seen_ids: set[int] = set()
+        for _ in range(200):
             entry = sampler.sample_from(entries)
             assert isinstance(entry, OpponentEntry)
             assert entry.id in pool_ids
+            seen_ids.add(entry.id)
+        # With 5 entries and 200 draws at 80/20 split, we should see at least 2 distinct IDs
+        assert len(seen_ids) >= 2, f"Expected diversity, only saw {seen_ids}"
 
     def test_sample_from_single_entry(self, league_db, league_dir):
         """Single-entry list should always return that entry."""
@@ -347,6 +352,41 @@ Add to `tests/test_katago_loop.py` inside `TestRotateSeat`:
         old_entry = loop.pool._get_entry(old_id)
         assert old_entry is not None
         assert old_entry.elo_rating == 1200.0
+
+    def test_rotate_seat_no_elo_history_for_new_entry(self, league_config):
+        """New entry should have no elo_history rows immediately after rotation."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        loop._rotate_seat(epoch=5)
+
+        # Query elo_history directly for the new entry
+        import sqlite3
+        conn = sqlite3.connect(league_config.display.db_path)
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM elo_history WHERE entry_id = ?",
+            (loop._learner_entry_id,),
+        ).fetchone()
+        conn.close()
+        assert rows[0] == 0, "New entry should have no elo_history rows after rotation"
+
+    def test_rotate_seat_evicted_old_entry_still_resets(self, league_config):
+        """If old entry was evicted, new entry should still start at 1000.0."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
+        loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+
+        # Fill pool to max, forcing eviction of the original entry
+        for i in range(league_config.league.max_pool_size + 1):
+            loop.pool.add_snapshot(
+                loop._base_model, "se_resnet",
+                dict(league_config.model.params), epoch=100 + i,
+            )
+
+        # Old learner entry may have been evicted
+        loop._rotate_seat(epoch=200)
+        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        assert new_entry is not None
+        assert new_entry.elo_rating == 1000.0
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -356,7 +396,9 @@ Expected: FAIL — new entry has Elo 1650.0 due to carry-forward
 
 - [ ] **Step 3: Remove carry-forward logic**
 
-In `keisei/training/katago_loop.py`, replace `_rotate_seat` lines 1226-1238 with:
+In `keisei/training/katago_loop.py`, replace **only lines 1226-1241** of `_rotate_seat`. The method continues through line 1269 with optimizer reset, scheduler recreation, and warmup extension — **all of that must be preserved**. Only the carry-forward block (lines 1228-1230 fetching old Elo, lines 1237-1238 writing it to the new entry) is deleted.
+
+Replace lines 1226-1241:
 
 ```python
     def _rotate_seat(self, epoch: int) -> None:
@@ -376,7 +418,26 @@ In `keisei/training/katago_loop.py`, replace `_rotate_seat` lines 1226-1238 with
         self._learner_entry_id = new_entry.id
 ```
 
-Keep everything after the old line 1241 (`self._learner_entry_id = new_entry.id`) unchanged — the optimizer reset, scheduler recreation, warmup extension all remain.
+**IMPORTANT**: Lines 1243-1269 (optimizer reset, LR scheduler recreation, warmup extension, log message) MUST remain unchanged after this replacement. Verify the complete method looks like this after the edit:
+
+```python
+    def _rotate_seat(self, epoch: int) -> None:
+        """Save current learner weights and reset optimizer for the next seat."""
+        # NOTE: chart-continuity carry-forward (lines 1112-1122) is separate...
+        new_entry = self.pool.add_snapshot(...)
+        self._learner_entry_id = new_entry.id
+
+        # Reset optimizer (fresh Adam — old momentum fights new gradient signal)
+        self.ppo.optimizer = torch.optim.Adam(
+            self.ppo.model.parameters(), lr=self.ppo.params.learning_rate,
+        )
+        # B1 fix: recreate LR scheduler pointing at the NEW optimizer
+        if self.lr_scheduler is not None and self.config.league is not None:
+            ...
+        # B2 fix: extend warmup relative to the rotation point.
+        self.ppo.warmup_epochs = epoch + 1 + self._original_warmup_duration
+        logger.info(...)
+```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -572,7 +633,8 @@ After the existing dones processing block (after the `if imm_terminal.any():` bl
 ```python
                     # Re-randomize learner color for completed games (Change 2).
                     # This sets up state for the NEXT game — must happen AFTER
-                    # pending transition finalization and Elo attribution.
+                    # pending transition finalization and Elo attribution
+                    # (see Task 8 for opponent tracking which runs BEFORE this).
                     if use_color_rand and dones.bool().any():
                         done_np = dones.bool().cpu().numpy()
                         new_sides = np.random.randint(
@@ -582,8 +644,11 @@ After the existing dones processing block (after the `if imm_terminal.any():` bl
                         done_indices = torch.from_numpy(
                             np.flatnonzero(done_np).astype(np.int64),
                         ).to(self.device)
+                        # CRITICAL: new_sides must stay uint8 to match learner_side_t dtype.
+                        # The done_indices tensor is int64 (for indexing), but the VALUES
+                        # being scattered must match the destination tensor's dtype (uint8).
                         learner_side_t[done_indices] = torch.from_numpy(
-                            new_sides.astype(np.int64),
+                            new_sides,  # uint8 — matches learner_side_t dtype
                         ).to(self.device)
 ```
 
@@ -613,23 +678,32 @@ Add to `tests/test_split_merge.py`:
 
 ```python
 def _make_deterministic_model(bias: float = 0.0, action_space: int = 11259):
-    """Create a mock model with a known bias to distinguish outputs."""
-    model = MagicMock()
+    """Create a mock model with a known constant bias to distinguish outputs.
+
+    Uses torch.full (no randomness) so the argmax action is deterministic
+    and different models produce reliably different actions.
+    """
+    call_count = [0]  # mutable counter to track calls
 
     def forward(obs):
+        call_count[0] += 1
         batch = obs.shape[0]
         output = MagicMock()
-        # Add bias to logits so different models produce distinguishable actions
-        output.policy_logits = torch.randn(batch, 9, 9, 139) + bias
-        output.value_logits = torch.randn(batch, 3)
-        output.score_lead = torch.randn(batch, 1)
+        # Constant logits + bias — deterministic argmax for action verification
+        output.policy_logits = torch.full((batch, 9, 9, 139), bias)
+        output.value_logits = torch.zeros(batch, 3)
+        output.score_lead = torch.zeros(batch, 1)
         return output
 
+    model = MagicMock()
     model.side_effect = forward
     model.__call__ = forward
     # Give the mock a parameters() method that returns an empty iterator
     # so the cross-device detection doesn't fail
     model.parameters = MagicMock(return_value=iter([]))
+    # Expose call_count so tests can verify whether the model was invoked.
+    # MagicMock.called is unreliable when __call__ is overridden.
+    model._call_count = call_count
     return model
 
 
@@ -683,7 +757,7 @@ class TestSplitMergeMultiOpponent:
         # All opponent envs assigned to model 1, model 2 has no envs
         env_opponent_ids = np.array([1, 1, 1, 1], dtype=np.int64)
 
-        unused_model = _make_mock_model()
+        unused_model = _make_deterministic_model(bias=999.0)
         result = split_merge_step(
             obs=obs, legal_masks=legal_masks,
             current_players=current_players,
@@ -694,8 +768,9 @@ class TestSplitMergeMultiOpponent:
         )
 
         assert result.actions.shape == (num_envs,)
-        # unused_model should not have been called
-        assert not unused_model.called
+        # MagicMock.called is unreliable when __call__ is overridden.
+        # Use the explicit call counter instead.
+        assert unused_model._call_count[0] == 0, "Model 2 should not have been called"
 
     def test_multi_opponent_with_array_learner_side(self):
         """Multi-opponent + per-env learner_side should produce correct masks."""
@@ -873,9 +948,31 @@ git commit -m "feat(loop): multi-opponent split_merge_step with backward-compati
 ### Task 8: Per-Env Opponents in Training Loop (Change 3, Part B)
 
 **Files:**
-- Modify: `keisei/training/katago_loop.py:700-722, 787-794, 1081-1110`
+- Modify: `keisei/training/katago_loop.py:516-520, 700-722, 787-794, 1081-1122`
 
 This is the largest task — it wires the multi-opponent support into the training loop epoch logic. The changes are gated behind `config.league.per_env_opponents`.
+
+- [ ] **Step 0: Initialize new attributes in `__init__`**
+
+In `keisei/training/katago_loop.py`, find the league attribute block (around line 516-520):
+
+```python
+        self.pool: OpponentPool | None = None
+        self.sampler: OpponentSampler | None = None
+        self._current_opponent: torch.nn.Module | None = None
+        self._current_opponent_entry: OpponentEntry | None = None
+```
+
+Add after it:
+
+```python
+        # Per-env opponent state (Change 3) — initialized at epoch start when enabled
+        self._opponent_models: dict[int, torch.nn.Module] | None = None
+        self._env_opponent_ids: np.ndarray | None = None
+        self._cached_entries: list[OpponentEntry] = []
+        self._cached_entries_by_id: dict[int, OpponentEntry] = {}
+        self._opponent_results: dict[int, list[int]] | None = None
+```
 
 - [ ] **Step 1: Add per-env opponent initialization at epoch start**
 
@@ -893,22 +990,27 @@ with:
 ```python
                 opp_device = opp_device_cfg or str(self.device)
 
+                # Cache entries once — reused for sampling AND opponent loading
+                self._cached_entries = self.pool.list_entries()
+                self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
+
                 use_per_env_opps = (
                     self.config.league is not None
                     and self.config.league.per_env_opponents
-                    and len(self.pool.list_entries()) > 0
+                    and len(self._cached_entries) > 0
                 )
 
                 if use_per_env_opps:
-                    # Memory cleanup: release previous epoch's models
-                    if hasattr(self, '_opponent_models') and self._opponent_models:
+                    # Memory cleanup: release previous epoch's models.
+                    # Safe at epoch start: ppo.update() backward pass is a
+                    # CUDA sync point, so all prior kernels have completed.
+                    if self._opponent_models is not None:
                         del self._opponent_models
+                        self._opponent_models = None
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
                     self._opponent_models = self.pool.load_all_opponents(device=opp_device)
-                    self._cached_entries = self.pool.list_entries()
-                    self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
 
                     # Per-env opponent assignment
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
@@ -917,15 +1019,19 @@ with:
                         self._env_opponent_ids[env_i] = entry.id
 
                     # Per-opponent W/L/D tracking for epoch-end Elo update
-                    self._opponent_results: dict[int, list[int]] = {
+                    self._opponent_results = {
                         eid: [0, 0, 0] for eid in self._opponent_models
                     }
 
-                    # Use first opponent as self._current_opponent for backward compat
-                    # (non-league code paths, tournament, etc.)
-                    self._current_opponent = self.pool.load_opponent(
-                        self._current_opponent_entry, device=opp_device,
-                    )
+                    # Reuse an already-loaded model for _current_opponent (used by
+                    # PendingTransitions guard, sign_correct_bootstrap, etc.).
+                    # Do NOT call load_opponent again — saves 14MB VRAM + disk I/O.
+                    opp_entry_id = self._current_opponent_entry.id
+                    if opp_entry_id in self._opponent_models:
+                        self._current_opponent = self._opponent_models[opp_entry_id]
+                    else:
+                        # Entry's checkpoint was corrupt/missing — use any loaded model
+                        self._current_opponent = next(iter(self._opponent_models.values()))
                 else:
                     self._opponent_models = None
                     self._env_opponent_ids = None

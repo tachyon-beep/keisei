@@ -986,4 +986,106 @@ mod tests {
             "Incremental map with multiple sliders through same square must match oracle"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Gap #2: update_rays_through_square no-op when no slider passes through
+    // -----------------------------------------------------------------------
+
+    /// Removing a piece from a square where no slider looks through should be a no-op.
+    #[test]
+    fn test_update_rays_no_slider_through_square() {
+        // Only pieces: two kings and a pawn. No sliders anywhere.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        let pawn_sq = Square::from_row_col(4, 4).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::Black, false);
+        pos.set_piece(pawn_sq, pawn);
+
+        let map_before = compute_attack_map(&pos);
+
+        // Remove pawn and call update_rays_through_square
+        pos.clear_square(pawn_sq);
+        let mut map = map_before;
+        remove_piece_attacks(&mut map, &pos, pawn_sq, pawn);
+        update_rays_through_square(&mut map, &pos, pawn_sq, true);
+
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Removing a piece with no slider behind it should match oracle"
+        );
+    }
+
+    /// Placing a piece on a square where no slider fires through is also a no-op
+    /// for update_rays_through_square.
+    #[test]
+    fn test_update_rays_no_slider_through_square_on_placement() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+
+        let mut map = compute_attack_map(&pos);
+
+        // Place a knight (non-slider) on (4,4) — no slider is affected
+        let knight_sq = Square::from_row_col(4, 4).unwrap();
+        let knight = Piece::new(PieceType::Knight, Color::Black, false);
+        pos.set_piece(knight_sq, knight);
+        add_piece_attacks(&mut map, &pos, knight_sq, knight);
+        update_rays_through_square(&mut map, &pos, knight_sq, false);
+
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Placing a knight with no slider firing through should match oracle"
+        );
+    }
+
+    /// Edge case: update_rays_through_square on a corner square (a1).
+    #[test]
+    fn test_update_rays_corner_square() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Place a rook at (0,0) corner
+        let rook_sq = Square::from_row_col(0, 0).unwrap();
+        let rook = Piece::new(PieceType::Rook, Color::Black, false);
+        pos.set_piece(rook_sq, rook);
+
+        // Place a pawn at (2,0) blocking the rook's downward ray
+        let pawn_sq = Square::from_row_col(2, 0).unwrap();
+        let pawn = Piece::new(PieceType::Pawn, Color::White, false);
+        pos.set_piece(pawn_sq, pawn);
+
+        let mut map = compute_attack_map(&pos);
+
+        // Remove the pawn — should unblock rook ray through (2,0)
+        pos.clear_square(pawn_sq);
+        remove_piece_attacks(&mut map, &pos, pawn_sq, pawn);
+        update_rays_through_square(&mut map, &pos, pawn_sq, true);
+
+        let oracle = compute_attack_map(&pos);
+        assert_eq!(
+            map, oracle,
+            "Unblocking rook ray from corner should match oracle"
+        );
+    }
 }

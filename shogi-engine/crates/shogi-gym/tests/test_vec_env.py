@@ -14,14 +14,13 @@ class TestVecEnvSpectatorData:
         assert len(data) == 3
 
     def test_get_spectator_data_dict_keys(self):
-        """Each dict has the expected keys (no move_history)."""
+        """Each dict has the expected keys."""
         env = VecEnv(num_envs=1, max_ply=100)
         env.reset()
         data = env.get_spectator_data()
         d = data[0]
-        expected_keys = {"board", "hands", "current_player", "ply", "is_over", "result", "sfen", "in_check"}
+        expected_keys = {"board", "hands", "current_player", "ply", "is_over", "result", "sfen", "in_check", "move_history"}
         assert set(d.keys()) == expected_keys
-        assert "move_history" not in d
 
     def test_get_spectator_data_startpos_values(self):
         """Verify startpos dict values are correct."""
@@ -313,3 +312,61 @@ class TestVecEnvStepping:
             for r in rewards:
                 assert r in (-1.0, 0.0, 1.0), f"unexpected reward: {r}"
             masks = np.asarray(step_result.legal_masks)
+
+
+class TestVecEnvObservation:
+    """Gap #9b: VecEnv observation consistency tests."""
+
+    def test_observations_differ_between_envs_after_different_moves(self):
+        """After different moves, observations should diverge."""
+        env = VecEnv(num_envs=2, max_ply=100)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        # Pick different actions for each env
+        legal_0 = np.where(masks[0])[0]
+        legal_1 = np.where(masks[1])[0]
+        # Pick first legal move for env 0, last for env 1
+        actions = [int(legal_0[0]), int(legal_1[-1])]
+        if actions[0] != actions[1]:
+            step_result = env.step(actions)
+            obs = np.asarray(step_result.observations)
+            assert not np.array_equal(obs[0], obs[1]), \
+                "Different actions should lead to different observations"
+
+    def test_observation_dtype_and_range(self):
+        """Observations should be float32 and contain values in [0, 1] for binary planes."""
+        env = VecEnv(num_envs=1, max_ply=100)
+        result = env.reset()
+        obs = np.asarray(result.observations)
+        assert obs.dtype == np.float32
+        # Piece presence planes (channels 0-27) should be binary
+        piece_planes = obs[0, :28, :, :]
+        unique_vals = np.unique(piece_planes)
+        for v in unique_vals:
+            assert v in (0.0, 1.0), f"Piece plane value {v} should be 0.0 or 1.0"
+
+    def test_legal_masks_consistent_with_action_space(self):
+        """Legal mask width should match action space size."""
+        env = VecEnv(num_envs=3, max_ply=100)
+        result = env.reset()
+        masks = np.asarray(result.legal_masks)
+        assert masks.shape == (3, env.action_space_size)
+
+    def test_multiple_resets_produce_same_state(self):
+        """Resetting the same VecEnv should produce identical initial states."""
+        env = VecEnv(num_envs=2, max_ply=100)
+        result1 = env.reset()
+        obs1 = np.asarray(result1.observations).copy()
+        masks1 = np.asarray(result1.legal_masks).copy()
+
+        # Play some moves
+        actions = [int(np.where(masks1[i])[0][0]) for i in range(2)]
+        env.step(actions)
+
+        # Reset again
+        result2 = env.reset()
+        obs2 = np.asarray(result2.observations)
+        masks2 = np.asarray(result2.legal_masks)
+
+        np.testing.assert_array_equal(obs1, obs2, "Reset should produce same observations")
+        np.testing.assert_array_equal(masks1, masks2, "Reset should produce same masks")

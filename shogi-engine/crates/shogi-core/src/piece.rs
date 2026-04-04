@@ -173,4 +173,83 @@ mod tests {
             }
         }
     }
+
+    // ===================================================================
+    // Gap #8a: Piece — additional tests
+    // ===================================================================
+
+    /// All valid piece encodings have unique u8 values (no collisions).
+    #[test]
+    fn test_all_piece_encodings_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for &color in &[Color::Black, Color::White] {
+            for &pt in &[
+                PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+                PieceType::Silver, PieceType::Gold, PieceType::Bishop,
+                PieceType::Rook, PieceType::King,
+            ] {
+                for &promoted in &[false, true] {
+                    if promoted && !pt.can_promote() {
+                        continue;
+                    }
+                    let piece = Piece::new(pt, color, promoted);
+                    let val = piece.to_u8();
+                    assert!(
+                        seen.insert(val),
+                        "duplicate encoding {} for {:?}",
+                        val,
+                        piece
+                    );
+                }
+            }
+        }
+    }
+
+    /// unpromote on an already-unpromoted piece returns itself.
+    #[test]
+    fn test_unpromote_on_unpromoted_is_identity() {
+        for &pt in &[
+            PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+            PieceType::Silver, PieceType::Gold, PieceType::Bishop,
+            PieceType::Rook, PieceType::King,
+        ] {
+            for &color in &[Color::Black, Color::White] {
+                let base = Piece::new(pt, color, false);
+                let unp = base.unpromote();
+                assert_eq!(unp, base, "unpromote on unpromoted {:?} {:?} should be identity", color, pt);
+            }
+        }
+    }
+
+    /// Debug formatting doesn't panic and includes piece info.
+    #[test]
+    fn test_piece_debug_format() {
+        let piece = Piece::new(PieceType::Rook, Color::White, true);
+        let debug = format!("{:?}", piece);
+        assert!(debug.contains("Rook"), "debug should contain piece type: {}", debug);
+        assert!(debug.contains("White"), "debug should contain color: {}", debug);
+        assert!(debug.contains("+"), "debug should contain + for promoted: {}", debug);
+    }
+
+    /// from_u8 → to_u8 roundtrip for all valid pieces.
+    #[test]
+    fn test_from_u8_to_u8_roundtrip_exhaustive() {
+        for &color in &[Color::Black, Color::White] {
+            for &pt in &[
+                PieceType::Pawn, PieceType::Lance, PieceType::Knight,
+                PieceType::Silver, PieceType::Gold, PieceType::Bishop,
+                PieceType::Rook, PieceType::King,
+            ] {
+                for &promoted in &[false, true] {
+                    if promoted && !pt.can_promote() {
+                        continue;
+                    }
+                    let original = Piece::new(pt, color, promoted);
+                    let encoded = original.to_u8();
+                    let decoded = Piece::from_u8(encoded).expect("should decode");
+                    assert_eq!(decoded, original, "roundtrip failed for {:?}", original);
+                }
+            }
+        }
+    }
 }

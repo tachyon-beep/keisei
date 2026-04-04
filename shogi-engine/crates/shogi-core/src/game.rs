@@ -1905,4 +1905,343 @@ mod tests {
             "perft(4) from startpos must be 719,731"
         );
     }
+
+    // ===================================================================
+    // Gap #1: unmake_move isolation tests for drops (including check)
+    // ===================================================================
+
+    /// Drop a piece that delivers check, then unmake: verify all 4 invariants.
+    #[test]
+    fn test_unmake_drop_with_check() {
+        // Black king at (8,4), White king at (0,4).
+        // Give Black a rook in hand. Drop it at (1,4) to check the White king.
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Rook, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos.clone(), 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+        let original_attack_map = gs.attack_map;
+
+        let drop_move = Move::Drop {
+            to: Square::from_row_col(1, 4).unwrap(),
+            piece_type: HandPieceType::Rook,
+        };
+
+        let undo = gs.make_move(drop_move);
+
+        // After move: White should be in check (rook on (1,4) attacks (0,4))
+        assert!(
+            gs.is_in_check(),
+            "White king should be in check from dropped rook"
+        );
+        // Rook should be off hand
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Rook),
+            0
+        );
+
+        gs.unmake_move(drop_move, undo);
+
+        assert_eq!(gs.position.hash, original_hash, "hash not restored after unmake drop-with-check");
+        assert_eq!(gs.position.board, original_board, "board not restored after unmake drop-with-check");
+        assert_eq!(gs.position.hands, original_hands, "hands not restored after unmake drop-with-check");
+        assert_eq!(gs.attack_map, original_attack_map, "attack map not restored after unmake drop-with-check");
+    }
+
+    /// Drop a gold that delivers check, then unmake. Tests a non-sliding drop.
+    #[test]
+    fn test_unmake_gold_drop_with_check() {
+        // White king at (0,4). Black drops gold at (1,4) — gold attacks diagonally
+        // forward and orthogonally, including (0,4).
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Gold, 2);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+        let original_hands = gs.position.hands;
+
+        let drop_move = Move::Drop {
+            to: Square::from_row_col(1, 4).unwrap(),
+            piece_type: HandPieceType::Gold,
+        };
+
+        let undo = gs.make_move(drop_move);
+        assert!(gs.is_in_check(), "White king should be in check from dropped gold");
+
+        gs.unmake_move(drop_move, undo);
+
+        assert_eq!(gs.position.hash, original_hash, "hash not restored");
+        assert_eq!(gs.position.board, original_board, "board not restored");
+        assert_eq!(gs.position.hands, original_hands, "hands not restored");
+        assert_eq!(
+            gs.position.hand_count(Color::Black, HandPieceType::Gold),
+            2,
+            "gold hand count should be restored to 2"
+        );
+    }
+
+    /// Unmake a pawn drop (non-check). Verify pawn_columns are correctly restored.
+    #[test]
+    fn test_unmake_pawn_drop_restores_pawn_columns() {
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(8, 4).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 4).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_hand_count(Color::Black, HandPieceType::Pawn, 1);
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        let original_pawn_cols = gs.pawn_columns;
+
+        // No pawn on column 0 yet
+        assert!(!gs.pawn_columns[Color::Black as usize][0]);
+
+        let drop_move = Move::Drop {
+            to: Square::from_row_col(5, 0).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let undo = gs.make_move(drop_move);
+
+        // After drop, column 0 should have a black pawn
+        // (pawn_columns is updated in make_move)
+
+        gs.unmake_move(drop_move, undo);
+
+        assert_eq!(
+            gs.pawn_columns, original_pawn_cols,
+            "pawn_columns not restored after unmake pawn drop"
+        );
+    }
+
+    // ===================================================================
+    // Gap #1b: Stalemate for White (symmetric with existing Black stalemate test)
+    // ===================================================================
+
+    /// White is stalemated (no legal moves, not in check). White loses.
+    #[test]
+    fn test_stalemate_white_loses() {
+        // Mirror of test_stalemate_is_loss: White king cornered at (8,8).
+        let mut pos = Position::empty();
+        // White king cornered at (8,8)
+        pos.set_piece(
+            Square::from_row_col(8, 8).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        // Black king at (6,7) — defends (7,7) and (7,8), not (8,8)
+        pos.set_piece(
+            Square::from_row_col(6, 7).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        // Black pawns blocking all 3 adjacent squares
+        // White pawns move UP; Black pawns move DOWN. These are Black pawns
+        // so they attack DOWN from their position — they don't attack (8,8).
+        pos.set_piece(
+            Square::from_row_col(8, 7).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(7, 8).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(7, 7).unwrap(),
+            Piece::new(PieceType::Pawn, Color::Black, false),
+        );
+        // Black rook at (8,3) — defends pawn at (8,7) via row slide
+        // (ray blocked by pawn at (8,7), so doesn't reach (8,8))
+        pos.set_piece(
+            Square::from_row_col(8, 3).unwrap(),
+            Piece::new(PieceType::Rook, Color::Black, false),
+        );
+        pos.current_player = Color::White;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+
+        assert!(!gs.is_in_check(), "White king should NOT be in check");
+        let moves = gs.legal_moves();
+        assert!(
+            moves.is_empty(),
+            "White should have no legal moves (stalemate), got {} moves",
+            moves.len()
+        );
+
+        gs.check_termination();
+        assert_eq!(
+            gs.result,
+            GameResult::Checkmate { winner: Color::Black },
+            "Stalemate should result in loss for the player without moves (White loses)"
+        );
+    }
+
+    // ===================================================================
+    // Gap #1c: check_termination idempotency after no-legal-moves
+    // ===================================================================
+
+    /// Calling check_termination multiple times on the same terminal state is safe.
+    #[test]
+    fn test_check_termination_idempotent_stalemate() {
+        // Reuse the stalemate-for-Black setup
+        let mut pos = Position::empty();
+        pos.set_piece(
+            Square::from_row_col(0, 0).unwrap(),
+            Piece::new(PieceType::King, Color::Black, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(2, 1).unwrap(),
+            Piece::new(PieceType::King, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 0).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(1, 1).unwrap(),
+            Piece::new(PieceType::Pawn, Color::White, false),
+        );
+        pos.set_piece(
+            Square::from_row_col(0, 5).unwrap(),
+            Piece::new(PieceType::Rook, Color::White, false),
+        );
+        pos.current_player = Color::Black;
+        pos.hash = pos.compute_hash();
+
+        let mut gs = GameState::from_position(pos, 500);
+        gs.check_termination();
+        let result_first = gs.result;
+
+        gs.check_termination();
+        assert_eq!(gs.result, result_first, "check_termination should be idempotent on stalemate");
+
+        gs.check_termination();
+        assert_eq!(gs.result, result_first, "check_termination should be idempotent on third call");
+    }
+
+    // ===================================================================
+    // Gap #10: Cross-module fuzz-like consistency test
+    // ===================================================================
+
+    /// Play many random games and verify hash + attack map consistency at every ply.
+    /// This catches interaction bugs between game.rs, rules.rs, movegen.rs, and attack.rs.
+    #[test]
+    fn test_fuzz_consistency_100_games() {
+        for seed in 0u64..100 {
+            let mut gs = GameState::with_max_ply(200);
+            let mut rng_state = seed;
+
+            for _ply in 0..200 {
+                gs.check_termination();
+                if gs.result.is_terminal() {
+                    break;
+                }
+
+                let moves = gs.legal_moves();
+                if moves.is_empty() {
+                    break;
+                }
+
+                // Simple xorshift for deterministic "random" move selection
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 7;
+                rng_state ^= rng_state << 17;
+                let mv = moves[rng_state as usize % moves.len()];
+
+                gs.make_move(mv);
+
+                // Verify hash
+                let recomputed_hash = gs.position.compute_hash();
+                assert_eq!(
+                    gs.position.hash, recomputed_hash,
+                    "Hash mismatch in game {} at ply {}",
+                    seed,
+                    gs.ply
+                );
+
+                // Verify attack map
+                let recomputed_map = compute_attack_map(&gs.position);
+                assert_eq!(
+                    gs.attack_map, recomputed_map,
+                    "Attack map mismatch in game {} at ply {}",
+                    seed,
+                    gs.ply
+                );
+
+                // Verify pawn columns
+                let recomputed_pawn_cols = compute_pawn_columns(&gs.position);
+                assert_eq!(
+                    gs.pawn_columns, recomputed_pawn_cols,
+                    "Pawn columns mismatch in game {} at ply {}",
+                    seed,
+                    gs.ply
+                );
+            }
+        }
+    }
+
+    // ===================================================================
+    // Gap #10b: make/unmake roundtrip with captures and drops over many plies
+    // ===================================================================
+
+    /// Play forward, then unmake all moves back to the start, verifying at each step.
+    #[test]
+    fn test_full_game_make_unmake_stack() {
+        let mut gs = GameState::new();
+        let original_hash = gs.position.hash;
+        let original_board = gs.position.board;
+
+        let mut move_stack: Vec<(Move, UndoInfo)> = Vec::new();
+
+        // Play forward 40 ply
+        for _ in 0..40 {
+            let moves = gs.legal_moves();
+            if moves.is_empty() {
+                break;
+            }
+            let mv = moves[0]; // deterministic: always pick first legal move
+            let undo = gs.make_move(mv);
+            move_stack.push((mv, undo));
+        }
+
+        // Now unmake all moves back
+        while let Some((mv, undo)) = move_stack.pop() {
+            gs.unmake_move(mv, undo);
+        }
+
+        assert_eq!(gs.position.hash, original_hash, "hash not restored after full unmake stack");
+        assert_eq!(gs.position.board, original_board, "board not restored after full unmake stack");
+        assert_eq!(gs.ply, 0, "ply should be 0 after full unmake");
+    }
 }
