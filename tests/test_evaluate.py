@@ -247,6 +247,103 @@ class TestPlayEvaluationGames:
         assert result.draws == 0
 
 
+class TestRewardPerspectiveCorrection:
+    """Regression: reward is from last-mover perspective, not Black's.
+
+    When White delivers checkmate, reward=+1.0 means White won.
+    The old code assumed reward=+1.0 always meant Black won, flipping
+    win/loss attribution whenever the terminal move was by the "wrong" side.
+    """
+
+    def _make_env_white_terminal(self, reward: float):
+        """Mock env where White (player 1) makes the terminal move.
+
+        2 steps per game: Black moves (non-terminal), White moves (terminal).
+        Resets call_count on env.reset() so multi-game runs work.
+        """
+        obs = np.zeros((1, 46, 9, 9), dtype=np.float32)
+        mask = np.ones((1, 11259), dtype=bool)
+
+        env = MagicMock()
+        call_count = {"n": 0}
+
+        def _reset():
+            call_count["n"] = 0
+            return _FakeResetResult(observations=obs, legal_masks=mask)
+
+        def _step(actions):
+            call_count["n"] += 1
+            done = call_count["n"] >= 2  # terminates on step 2 (White's move)
+            return _FakeStepResult(
+                observations=obs,
+                legal_masks=mask,
+                rewards=np.array([reward if done else 0.0]),
+                terminated=np.array([done]),
+                truncated=np.array([False]),
+                current_players=np.array([call_count["n"] % 2]),
+            )
+
+        env.reset.side_effect = _reset
+        env.step.side_effect = _step
+        return env
+
+    def _run_with_env(self, mock_env, games: int):
+        import sys
+
+        mock_model_a = _make_mock_model()
+        mock_model_b = _make_mock_model()
+        models = iter([mock_model_a, mock_model_b])
+
+        fake_shogi_gym = MagicMock()
+        fake_shogi_gym.VecEnv.return_value = mock_env
+        had_module = "shogi_gym" in sys.modules
+        old_module = sys.modules.get("shogi_gym")
+        sys.modules["shogi_gym"] = fake_shogi_gym
+
+        try:
+            with (
+                patch(_PATCH_BUILD, side_effect=lambda *a, **kw: next(models)),
+                patch(_PATCH_LOAD, return_value={"model_state_dict": {}}),
+            ):
+                return _play_evaluation_games(
+                    checkpoint_a="/fake/a.pt", arch_a="resnet",
+                    checkpoint_b="/fake/b.pt", arch_b="resnet",
+                    games=games, max_ply=500,
+                    params_a={}, params_b={},
+                    device="cpu",
+                )
+        finally:
+            if had_module:
+                sys.modules["shogi_gym"] = old_module
+            else:
+                sys.modules.pop("shogi_gym", None)
+
+    def test_white_terminal_move_a_is_black_reward_positive(self):
+        """White wins (reward=+1 from White's POV). A is Black -> A loses."""
+        env = self._make_env_white_terminal(reward=1.0)
+        result = self._run_with_env(env, games=1)
+        # A is Black, White won -> A lost
+        assert result.losses == 1, f"Expected A loss, got W={result.wins} L={result.losses} D={result.draws}"
+        assert result.wins == 0
+
+    def test_white_terminal_move_a_is_black_reward_negative(self):
+        """White loses (reward=-1 from White's POV). A is Black -> A wins."""
+        env = self._make_env_white_terminal(reward=-1.0)
+        result = self._run_with_env(env, games=1)
+        # A is Black, White lost -> A won
+        assert result.wins == 1, f"Expected A win, got W={result.wins} L={result.losses} D={result.draws}"
+        assert result.losses == 0
+
+    def test_white_terminal_move_a_is_white_reward_positive(self):
+        """White wins (reward=+1). A is White (game_i=1) -> A wins."""
+        env = self._make_env_white_terminal(reward=1.0)
+        result = self._run_with_env(env, games=2)
+        # game 0: A=Black, White won -> loss
+        # game 1: A=White, White won -> win
+        assert result.wins == 1
+        assert result.losses == 1
+
+
 class TestGetPolicyFlat:
     """Tests for the _get_policy_flat dispatch function."""
 

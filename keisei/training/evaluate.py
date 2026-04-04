@@ -113,7 +113,10 @@ def _play_evaluation_games(
         current_player = 0
         done = False
 
+        a_color = 0 if a_is_black else 1
+
         while not done:
+            mover = current_player
             model = models[current_player]
             with torch.no_grad():
                 output = model(obs)
@@ -128,8 +131,9 @@ def _play_evaluation_games(
             legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
             current_player = int(step_result.current_players[0])
 
+        # Reward is from last-mover perspective. Convert to A's perspective.
         reward = float(step_result.rewards[0])
-        a_reward = reward if a_is_black else -reward
+        a_reward = reward if mover == a_color else -reward
         if a_reward > 0:
             wins += 1
         elif a_reward < 0:
