@@ -684,6 +684,27 @@ class TestDrawTerminal:
         assert result["dones"][0].item() == 1.0
 
 
+class TestComputeValueCatsTerminated:
+    """R1: _compute_value_cats must use terminated, not dones."""
+
+    def test_truncated_gets_draw_under_dones_but_ignore_under_terminated(self):
+        from keisei.training.katago_loop import _compute_value_cats
+        device = torch.device("cpu")
+        rewards = torch.tensor([0.0, 1.0, 0.0])
+
+        # With merged dones: truncated game (reward=0) gets labeled as draw — WRONG
+        dones_merged = torch.tensor([True, True, False])
+        cats_wrong = _compute_value_cats(rewards, dones_merged, device)
+        assert cats_wrong[0].item() == 1  # WRONG: labeled as draw
+
+        # With terminated only: truncated game (not terminated) gets ignored — CORRECT
+        terminated = torch.tensor([False, True, False])
+        cats_correct = _compute_value_cats(rewards, terminated, device)
+        assert cats_correct[0].item() == -1  # CORRECT: ignored
+        assert cats_correct[1].item() == 0   # win
+        assert cats_correct[2].item() == -1  # still playing
+
+
 class TestPendingTransitionsTerminated:
     """R1: finalize() must return terminated separately from dones."""
 

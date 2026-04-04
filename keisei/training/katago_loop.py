@@ -796,7 +796,7 @@ class KataGoTrainingLoop:
                     learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
 
                     # Track wins/losses/draws from learner perspective
-                    terminal_mask = dones.bool()
+                    terminal_mask = terminated.bool()
                     if terminal_mask.any():
                         t_rewards = learner_rewards[terminal_mask]
                         # Engine produces exact integer-valued rewards (±1.0 or 0.0),
@@ -836,7 +836,7 @@ class KataGoTrainingLoop:
 
                     if finalized is not None:
                         f_value_cats = _compute_value_cats(
-                            finalized["rewards"], finalized["dones"].bool(), self.device,
+                            finalized["rewards"], finalized["terminated"].bool(), self.device,
                         )
                         self.buffer.add(
                             finalized["obs"], finalized["actions"],
@@ -875,7 +875,7 @@ class KataGoTrainingLoop:
                             imm_finalized = pending.finalize(imm_terminal, dones, terminated)
                             if imm_finalized is not None:
                                 imm_value_cats = _compute_value_cats(
-                                    imm_finalized["rewards"], imm_finalized["dones"].bool(),
+                                    imm_finalized["rewards"], imm_finalized["terminated"].bool(),
                                     self.device,
                                 )
                                 self.buffer.add(
@@ -902,7 +902,7 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminal_mask = dones.bool()
+                    terminal_mask = terminated.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
                         # Engine produces exact integer-valued rewards (±1.0 or 0.0),
