@@ -40,6 +40,15 @@
       <div class="table-wrapper">
         <LeagueTable {learnerName} />
       </div>
+      <div class="bottom-row">
+        <div class="event-log-wrapper">
+          <LeagueEventLog />
+        </div>
+        <RecentMatches />
+      </div>
+    </div>
+    <div class="right-column">
+      <MatchupMatrix {learnerName} />
       <div class="chart-card">
         <h2 class="section-header">Elo Over Time</h2>
         {#if chartData.xData.length > 0}
@@ -55,11 +64,6 @@
           <p class="empty">No matches yet.</p>
         {/if}
       </div>
-      <LeagueEventLog />
-    </div>
-    <div class="right-column">
-      <MatchupMatrix {learnerName} />
-      <RecentMatches />
     </div>
   </div>
 </main>
@@ -138,7 +142,7 @@
     flex: 0 1 auto;
     min-height: 0;
     overflow: hidden;
-    max-height: 43%;
+    max-height: 65%;
   }
 
   .chart-card {
@@ -148,6 +152,26 @@
     padding: 14px;
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .bottom-row {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .bottom-row > :global(*) {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .event-log-wrapper {
+    overflow: hidden;
     display: flex;
     flex-direction: column;
   }
