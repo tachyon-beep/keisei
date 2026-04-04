@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseMoves, buildMoveRows } from './moveRows.js'
+import { parseMoves, buildMoveRows, toJapanese } from './moveRows.js'
 
 describe('parseMoves', () => {
   it('parses valid JSON string', () => {
@@ -73,5 +73,39 @@ describe('buildMoveRows', () => {
     expect(rows).toEqual([
       { num: 1, black: '', white: 'P-34', isLatest: true },
     ])
+  })
+})
+
+describe('toJapanese', () => {
+  it('converts simple Hodges move', () => {
+    expect(toJapanese('P-7f')).toBe('P-７六')
+  })
+
+  it('converts capture notation', () => {
+    expect(toJapanese('Bx3c')).toBe('Bx３三')
+  })
+
+  it('converts promoted piece move', () => {
+    expect(toJapanese('+R-5a')).toBe('+R-５一')
+  })
+
+  it('converts drop notation', () => {
+    expect(toJapanese('P*5e')).toBe('P*５五')
+  })
+
+  it('converts promotion suffix', () => {
+    expect(toJapanese('Nx7c+')).toBe('Nx７三+')
+  })
+
+  it('converts declined promotion suffix', () => {
+    expect(toJapanese('S-4d=')).toBe('S-４四=')
+  })
+
+  it('converts disambiguated move', () => {
+    expect(toJapanese('G6g-5h')).toBe('G６七-５八')
+  })
+
+  it('returns empty string for empty input', () => {
+    expect(toJapanese('')).toBe('')
   })
 })

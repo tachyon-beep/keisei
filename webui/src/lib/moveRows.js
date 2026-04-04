@@ -41,9 +41,9 @@ const RANK_KANJI = { a: '一', b: '二', c: '三', d: '四', e: '五', f: '六',
 const FILE_FULL = { '1': '１', '2': '２', '3': '３', '4': '４', '5': '５', '6': '６', '7': '７', '8': '８', '9': '９' }
 
 /**
- * Convert coordinate notation "9g→9f" to Japanese "９七→９六"
+ * Convert Hodges notation coordinates to Japanese: "P-7f" → "P-７六"
  */
-function toJapanese(notation) {
+export function toJapanese(notation) {
   if (!notation) return ''
   return notation.replace(/([1-9])([a-i])/g, (_, file, rank) => {
     return (FILE_FULL[file] || file) + (RANK_KANJI[rank] || rank)
