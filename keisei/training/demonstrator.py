@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from keisei.training.league import OpponentEntry, OpponentPool
+from keisei.training.opponent_store import OpponentEntry, OpponentStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +52,14 @@ class DemonstratorRunner(threading.Thread):
 
     def __init__(
         self,
-        pool: OpponentPool,
+        store: OpponentStore,
         db_path: str,
         num_slots: int = 3,
         moves_per_minute: int = 60,
         device: str = "cpu",
     ) -> None:
         super().__init__(daemon=True, name="DemonstratorRunner")
-        self.pool = pool
+        self.store = store
         self.db_path = db_path
         self.num_slots = num_slots
         self.move_delay = 60.0 / max(moves_per_minute, 1)
@@ -97,7 +97,7 @@ class DemonstratorRunner(threading.Thread):
 
     def _select_matchups(self) -> list[DemoMatchup]:
         """Select matchups for active demo slots based on pool state."""
-        entries = self.pool.list_entries()
+        entries = self.store.list_entries()
         if len(entries) < 2:
             return []
 
@@ -133,17 +133,17 @@ class DemonstratorRunner(threading.Thread):
 
     def _play_game(self, matchup: DemoMatchup) -> None:
         """Play a single demonstrator game to completion."""
-        self.pool.pin(matchup.entry_a.id)
-        self.pool.pin(matchup.entry_b.id)
+        self.store.pin(matchup.entry_a.id)
+        self.store.pin(matchup.entry_b.id)
         try:
-            model_a = self.pool.load_opponent(matchup.entry_a, device=self.device)
-            model_b = self.pool.load_opponent(matchup.entry_b, device=self.device)
+            model_a = self.store.load_opponent(matchup.entry_a, device=self.device)
+            model_b = self.store.load_opponent(matchup.entry_b, device=self.device)
         except FileNotFoundError:
             logger.warning("Checkpoint missing for demo slot %d — skipping", matchup.slot)
             return
         finally:
-            self.pool.unpin(matchup.entry_a.id)
-            self.pool.unpin(matchup.entry_b.id)
+            self.store.unpin(matchup.entry_a.id)
+            self.store.unpin(matchup.entry_b.id)
 
         logger.info(
             "Demo slot %d: %s (elo=%.0f) vs %s (elo=%.0f)",

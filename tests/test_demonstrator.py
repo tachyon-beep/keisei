@@ -26,7 +26,7 @@ def _make_mock_model():
 
 
 def _make_mock_pool(num_entries=3):
-    from keisei.training.league import OpponentEntry
+    from keisei.training.opponent_store import OpponentEntry
 
     pool = MagicMock()
     entries = [
@@ -50,7 +50,7 @@ class TestDemonstratorRunner:
     def test_init_creates_runner(self):
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=3, moves_per_minute=600, device="cpu",
         )
         assert runner.num_slots == 3
@@ -59,7 +59,7 @@ class TestDemonstratorRunner:
     def test_start_and_stop(self):
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         runner.start()
@@ -74,7 +74,7 @@ class TestDemonstratorRunner:
         pool = _make_mock_pool(num_entries=3)
         pool.load_opponent.side_effect = RuntimeError("simulated crash")
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         runner.start()
@@ -89,7 +89,7 @@ class TestDemonstratorRunner:
         """With < 2 entries, slots should be inactive."""
         pool = _make_mock_pool(num_entries=1)
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=3, moves_per_minute=6000, device="cpu",
         )
         matchups = runner._select_matchups()
@@ -99,7 +99,7 @@ class TestDemonstratorRunner:
         """With 3 entries and 3 slots, should get 3 matchups."""
         pool = _make_mock_pool(num_entries=3)
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=3, moves_per_minute=6000, device="cpu",
         )
         matchups = runner._select_matchups()
@@ -116,7 +116,7 @@ class TestPlayGamePinUnpin:
 
         pool = _make_mock_pool(num_entries=2)
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         entries = pool.list_entries()
@@ -149,7 +149,7 @@ class TestPlayGamePinUnpin:
         pool = _make_mock_pool(num_entries=2)
         pool.load_opponent.side_effect = FileNotFoundError("missing checkpoint")
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         entries = pool.list_entries()
@@ -172,7 +172,7 @@ class TestPlayGamePinUnpin:
         pool = _make_mock_pool(num_entries=2)
         pool.load_opponent.side_effect = RuntimeError("unexpected failure")
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         entries = pool.list_entries()
@@ -190,7 +190,7 @@ class TestPlayGamePinUnpin:
         pool = _make_mock_pool(num_entries=2)
         pool.load_opponent.side_effect = FileNotFoundError("gone")
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         entries = pool.list_entries()
@@ -213,7 +213,7 @@ class TestPlayGamePinUnpin:
         pool.unpin.side_effect = lambda id_: call_order.append(("unpin", id_))
 
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         entries = pool.list_entries()
@@ -295,7 +295,7 @@ class TestPlayGameWithMockedVecEnv:
         pool.load_opponent.return_value = real_model
 
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=600_000,  # very fast to avoid sleep
             device="cpu",
         )
@@ -333,7 +333,7 @@ class TestPlayGameWithMockedVecEnv:
         pool.load_opponent.return_value = real_model
 
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             num_slots=1, moves_per_minute=600_000,
             device="cpu",
         )
@@ -364,7 +364,7 @@ class TestMoveDelay:
         """move_delay = 60.0 / moves_per_minute for normal values."""
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             moves_per_minute=60, device="cpu",
         )
         assert runner.move_delay == pytest.approx(1.0)
@@ -373,7 +373,7 @@ class TestMoveDelay:
         """Higher moves_per_minute gives shorter delay."""
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             moves_per_minute=6000, device="cpu",
         )
         assert runner.move_delay == pytest.approx(0.01)
@@ -382,7 +382,7 @@ class TestMoveDelay:
         """Zero moves_per_minute is guarded by max(..., 1), giving 60s delay."""
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             moves_per_minute=0, device="cpu",
         )
         # max(0, 1) = 1 => 60.0 / 1 = 60.0
@@ -392,7 +392,7 @@ class TestMoveDelay:
         """Negative moves_per_minute is guarded by max(..., 1)."""
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             moves_per_minute=-10, device="cpu",
         )
         assert runner.move_delay == pytest.approx(60.0)
@@ -401,7 +401,7 @@ class TestMoveDelay:
         """moves_per_minute=1 gives 60s delay."""
         pool = _make_mock_pool()
         runner = DemonstratorRunner(
-            pool=pool, db_path="/tmp/test.db",
+            store=pool, db_path="/tmp/test.db",
             moves_per_minute=1, device="cpu",
         )
         assert runner.move_delay == pytest.approx(60.0)
