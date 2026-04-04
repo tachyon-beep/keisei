@@ -6,9 +6,14 @@
   export let currentPlayer = 'black'
 
   let scrollContainer
+  let notationStyle = 'coord'
+
+  function toggleNotation() {
+    notationStyle = notationStyle === 'coord' ? 'japanese' : 'coord'
+  }
 
   $: moves = parseMoves(moveHistoryJson)
-  $: rows = buildMoveRows(moves)
+  $: rows = buildMoveRows(moves, notationStyle)
 
   afterUpdate(() => {
     if (scrollContainer) {
@@ -18,7 +23,12 @@
 </script>
 
 <div class="move-log">
-  <h2 class="header">Move Log</h2>
+  <div class="header-row">
+    <h2 class="header">Move Log</h2>
+    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style">
+      {notationStyle === 'coord' ? '漢' : 'abc'}
+    </button>
+  </div>
   <div class="table-container" role="log" aria-label="Move history" tabindex="0" bind:this={scrollContainer}>
     <table>
       <thead>
@@ -56,17 +66,44 @@
     min-height: 0;
   }
 
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 0;
+    background: var(--bg-primary);
+  }
+
   h2.header {
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border-subtle);
-    position: sticky;
-    top: 0;
-    background: var(--bg-primary);
+  }
+
+  .notation-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .notation-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+  }
+
+  .notation-toggle:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   .table-container {
