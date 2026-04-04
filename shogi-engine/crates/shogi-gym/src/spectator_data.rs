@@ -2,6 +2,28 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use shogi_core::{Color, GameResult, GameState, HandPieceType, Move, PieceType, Square};
 
+/// Single-letter piece abbreviation for Hodges notation.
+pub fn piece_char(pt: PieceType) -> char {
+    match pt {
+        PieceType::King   => 'K',
+        PieceType::Rook   => 'R',
+        PieceType::Bishop => 'B',
+        PieceType::Gold   => 'G',
+        PieceType::Silver => 'S',
+        PieceType::Knight => 'N',
+        PieceType::Lance  => 'L',
+        PieceType::Pawn   => 'P',
+    }
+}
+
+/// Format a square as Hodges coordinates: file (1-9) + rank (a-i).
+/// Example: row=6, col=4 → file=5, rank='g' → "5g"
+pub fn square_notation(sq: Square) -> String {
+    let file = 9 - sq.col();
+    let rank = (b'a' + sq.row()) as char;
+    format!("{}{}", file, rank)
+}
+
 pub fn piece_type_name(pt: PieceType) -> &'static str {
     match pt {
         PieceType::Pawn   => "pawn",
@@ -35,15 +57,7 @@ pub fn game_result_str(r: &GameResult) -> &'static str {
 
 /// Encode a drop piece char: P, L, N, S, G, B, R
 pub fn hand_piece_char(hpt: HandPieceType) -> char {
-    match hpt {
-        HandPieceType::Pawn   => 'P',
-        HandPieceType::Lance  => 'L',
-        HandPieceType::Knight => 'N',
-        HandPieceType::Silver => 'S',
-        HandPieceType::Gold   => 'G',
-        HandPieceType::Bishop => 'B',
-        HandPieceType::Rook   => 'R',
-    }
+    piece_char(hpt.to_piece_type())
 }
 
 /// Build move notation string from a Move.
@@ -167,5 +181,43 @@ mod tests {
             "impasse"
         );
         assert_eq!(game_result_str(&GameResult::MaxMoves), "max_moves");
+    }
+
+    #[test]
+    fn test_piece_char_all() {
+        assert_eq!(piece_char(PieceType::King), 'K');
+        assert_eq!(piece_char(PieceType::Rook), 'R');
+        assert_eq!(piece_char(PieceType::Bishop), 'B');
+        assert_eq!(piece_char(PieceType::Gold), 'G');
+        assert_eq!(piece_char(PieceType::Silver), 'S');
+        assert_eq!(piece_char(PieceType::Knight), 'N');
+        assert_eq!(piece_char(PieceType::Lance), 'L');
+        assert_eq!(piece_char(PieceType::Pawn), 'P');
+    }
+
+    #[test]
+    fn test_square_notation_corners_and_center() {
+        // Top-right (row=0, col=0): file=9-0=9, rank='a'+0='a' → "9a"
+        assert_eq!(square_notation(Square::from_row_col(0, 0).unwrap()), "9a");
+        // Bottom-left (row=8, col=8): file=9-8=1, rank='a'+8='i' → "1i"
+        assert_eq!(square_notation(Square::from_row_col(8, 8).unwrap()), "1i");
+        // Center (row=4, col=4): file=9-4=5, rank='a'+4='e' → "5e"
+        assert_eq!(square_notation(Square::from_row_col(4, 4).unwrap()), "5e");
+        // Top-left (row=0, col=8): file=9-8=1, rank='a'+0='a' → "1a"
+        assert_eq!(square_notation(Square::from_row_col(0, 8).unwrap()), "1a");
+        // Bottom-right (row=8, col=0): file=9-0=9, rank='a'+8='i' → "9i"
+        assert_eq!(square_notation(Square::from_row_col(8, 0).unwrap()), "9i");
+    }
+
+    #[test]
+    fn test_hand_piece_char_delegates_to_piece_char() {
+        for &hpt in &HandPieceType::ALL {
+            assert_eq!(
+                hand_piece_char(hpt),
+                piece_char(hpt.to_piece_type()),
+                "hand_piece_char and piece_char disagree for {:?}",
+                hpt
+            );
+        }
     }
 }
