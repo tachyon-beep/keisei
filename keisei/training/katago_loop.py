@@ -99,7 +99,7 @@ def _negate_where(
 def to_learner_perspective(
     rewards: torch.Tensor,
     pre_players: np.ndarray,
-    learner_side: int,
+    learner_side: int | np.ndarray,
 ) -> torch.Tensor:
     """Convert rewards from last-mover perspective to learner perspective.
 
@@ -113,7 +113,7 @@ def to_learner_perspective(
 def sign_correct_bootstrap(
     next_values: torch.Tensor,
     current_players: np.ndarray,
-    learner_side: int,
+    learner_side: int | np.ndarray,
 ) -> torch.Tensor:
     """Correct bootstrap values for learner-centric GAE.
 
@@ -244,7 +244,7 @@ def split_merge_step(
     current_players: np.ndarray,
     learner_model: torch.nn.Module,
     opponent_model: torch.nn.Module,
-    learner_side: int = 0,
+    learner_side: int | np.ndarray = 0,
     value_adapter: ValueHeadAdapter | None = None,
 ) -> SplitMergeResult:
     """Execute one step with split learner/opponent forward passes.

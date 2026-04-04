@@ -740,3 +740,58 @@ class TestPendingTransitionsTerminated:
         assert result["dones"][0].item() == 1.0
         assert result["dones"][1].item() == 1.0
         assert result["dones"][2].item() == 0.0
+
+
+class TestToLearnerPerspectiveArray:
+    """Test to_learner_perspective with per-env ndarray learner_side."""
+
+    def test_mixed_learner_sides(self):
+        """Each env uses its own learner_side for perspective correction."""
+        rewards = torch.tensor([1.0, 1.0, -1.0, -1.0])
+        pre_players = np.array([0, 1, 0, 1], dtype=np.uint8)
+        # env0: learner=0, pre=0 → learner moved → unchanged
+        # env1: learner=1, pre=1 → learner moved → unchanged
+        # env2: learner=1, pre=0 → opponent moved → negated
+        # env3: learner=0, pre=1 → opponent moved → negated
+        learner_side = np.array([0, 1, 1, 0], dtype=np.uint8)
+        result = to_learner_perspective(rewards, pre_players, learner_side)
+        expected = torch.tensor([1.0, 1.0, 1.0, 1.0])
+        assert torch.equal(result, expected)
+
+    def test_all_same_side_matches_scalar(self):
+        """Array of identical values should match scalar behavior."""
+        rewards = torch.tensor([1.0, -1.0, 0.5])
+        pre_players = np.array([0, 1, 0], dtype=np.uint8)
+        learner_side_scalar = 0
+        learner_side_array = np.array([0, 0, 0], dtype=np.uint8)
+        result_scalar = to_learner_perspective(rewards, pre_players, learner_side_scalar)
+        result_array = to_learner_perspective(rewards, pre_players, learner_side_array)
+        assert torch.equal(result_scalar, result_array)
+
+
+class TestSignCorrectBootstrapArray:
+    """Test sign_correct_bootstrap with per-env ndarray learner_side."""
+
+    def test_mixed_learner_sides(self):
+        """Each env uses its own learner_side for sign correction."""
+        next_values = torch.tensor([0.5, 0.5, 0.5, 0.5])
+        current_players = np.array([0, 1, 0, 1], dtype=np.uint8)
+        # env0: learner=0, current=0 → learner to move → unchanged
+        # env1: learner=0, current=1 → opponent to move → negated
+        # env2: learner=1, current=0 → opponent to move → negated
+        # env3: learner=1, current=1 → learner to move → unchanged
+        learner_side = np.array([0, 0, 1, 1], dtype=np.uint8)
+        result = sign_correct_bootstrap(next_values, current_players, learner_side)
+        expected = torch.tensor([0.5, -0.5, -0.5, 0.5])
+        assert torch.equal(result, expected)
+
+    def test_all_same_side_matches_scalar(self):
+        """Array of identical values should match scalar behavior."""
+        next_values = torch.tensor([0.5, -0.3, 0.8])
+        current_players = np.array([0, 1, 0], dtype=np.uint8)
+        result_scalar = sign_correct_bootstrap(next_values, current_players, learner_side=0)
+        result_array = sign_correct_bootstrap(
+            next_values, current_players,
+            learner_side=np.array([0, 0, 0], dtype=np.uint8),
+        )
+        assert torch.equal(result_scalar, result_array)
