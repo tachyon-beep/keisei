@@ -126,6 +126,15 @@
 
 <div class="matrix-card">
   <h2 class="section-header">Head-to-Head</h2>
+  <div class="matrix-legend" aria-label="Color legend">
+    <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.35)"></span>
+    <span class="legend-label">0%</span>
+    <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.08)"></span>
+    <span class="legend-swatch" style="background: transparent; border: 1px solid var(--border-subtle)"></span>
+    <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.08)"></span>
+    <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.43)"></span>
+    <span class="legend-label">100%</span>
+  </div>
     <div class="matrix-scroll">
       <table class="matrix" role="grid" aria-label="Head-to-head win rate matrix">
         <thead>
@@ -153,6 +162,8 @@
                     class:hl={focused != null && (row.id === focused || col.id === focused)}
                     style="background: {cellColor(cellData(row.id, col.id).winRate)}"
                     title="{row.label} vs {col.label}: {cellData(row.id, col.id).w}W {cellData(row.id, col.id).l}L {cellData(row.id, col.id).d}D ({cellData(row.id, col.id).total} games)"
+                    tabindex="0"
+                    aria-label="{row.label} vs {col.label}: {formatRate(cellData(row.id, col.id).winRate)} win rate, {cellData(row.id, col.id).w} wins, {cellData(row.id, col.id).l} losses, {cellData(row.id, col.id).d} draws"
                   >
                     {formatRate(cellData(row.id, col.id).winRate)}
                   </td>
@@ -289,5 +300,31 @@
 
   @media (prefers-reduced-motion: reduce) {
     .rate-cell { transition: none; }
+  }
+
+  .matrix-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+  }
+
+  .legend-swatch {
+    width: 16px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  .legend-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: monospace;
+  }
+
+  .rate-cell:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
   }
 </style>
