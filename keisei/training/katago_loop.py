@@ -271,7 +271,9 @@ def split_merge_step(
     num_envs = obs.shape[0]
     device = obs.device
 
-    learner_mask = torch.tensor(current_players == learner_side, device=device)
+    # Use from_numpy to avoid the extra allocation that torch.tensor() incurs.
+    cmp_result = np.ascontiguousarray(current_players == learner_side)
+    learner_mask = torch.from_numpy(cmp_result).to(device=device, dtype=torch.bool)
     opponent_mask = ~learner_mask
     learner_indices = learner_mask.nonzero(as_tuple=True)[0]
 
@@ -776,6 +778,14 @@ class KataGoTrainingLoop:
 
                     self._opponent_models = self.pool.load_all_opponents(device=opp_device)
 
+                    # Filter cached entries to only those whose models loaded.
+                    # Without this, sample_from could assign an entry whose
+                    # checkpoint was corrupt/missing → silent wrong actions.
+                    self._cached_entries = [
+                        e for e in self._cached_entries if e.id in self._opponent_models
+                    ]
+                    self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
+
                     # Per-env opponent assignment
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
                     for env_i in range(self.num_envs):
@@ -862,6 +872,7 @@ class KataGoTrainingLoop:
                     )
             else:
                 learner_side = 0
+                learner_side_t = None  # only used when use_color_rand is True
             pending: PendingTransitions | None = None
             _scratch_log_probs = torch.zeros(self.num_envs, device=self.device)
             _scratch_values = torch.zeros(self.num_envs, device=self.device)
@@ -1023,20 +1034,29 @@ class KataGoTrainingLoop:
                     # Steps 2-3 set up state for the NEXT game. Step 1 consumes
                     # state from the COMPLETED game. Do not reorder.
 
+                    # Compute done mask once for both Changes 2+3 blocks below.
+                    # Avoids redundant dones.bool() / .cpu().numpy() GPU syncs.
+                    done_bool = dones.bool()
+                    any_done = done_bool.any()
+                    done_np: np.ndarray | None = None
+                    done_idx_np: np.ndarray | None = None
+                    if any_done:
+                        done_np = done_bool.cpu().numpy()
+                        done_idx_np = np.flatnonzero(done_np)
+
                     # Per-env opponent: track results and re-sample on done (Change 3).
                     if (self._opponent_results is not None
                             and self._env_opponent_ids is not None
-                            and dones.bool().any()):
-                        done_mask = dones.bool()
-                        done_indices_np = np.flatnonzero(done_mask.cpu().numpy())
+                            and any_done):
+                        assert done_np is not None and done_idx_np is not None
 
                         # Batch-extract rewards to avoid per-env GPU syncs.
                         # One .cpu() call instead of N .item() calls.
-                        done_rewards_np = learner_rewards[done_mask].cpu().numpy()
-                        done_terminal_np = terminated.bool().cpu().numpy()[done_indices_np]
-                        done_opp_ids = self._env_opponent_ids[done_indices_np]
+                        done_rewards_np = learner_rewards[done_bool].cpu().numpy()
+                        done_terminal_np = terminated.bool().cpu().numpy()[done_idx_np]
+                        done_opp_ids = self._env_opponent_ids[done_idx_np]
 
-                        for i, env_i in enumerate(done_indices_np):
+                        for i, env_i in enumerate(done_idx_np):
                             opp_id = int(done_opp_ids[i])
                             if opp_id not in self._opponent_results:
                                 continue
@@ -1056,19 +1076,19 @@ class KataGoTrainingLoop:
                     # Re-randomize learner color for completed games (Change 2).
                     # This sets up state for the NEXT game — must happen AFTER
                     # pending transition finalization and Elo attribution.
-                    if use_color_rand and dones.bool().any():
-                        done_np = dones.bool().cpu().numpy()
+                    if use_color_rand and any_done:
+                        assert done_np is not None and done_idx_np is not None
                         new_sides = np.random.randint(
                             0, 2, size=int(done_np.sum()), dtype=np.uint8,
                         )
                         learner_side[done_np] = new_sides
-                        done_indices = torch.from_numpy(
-                            np.flatnonzero(done_np).astype(np.int64),
+                        done_indices_t = torch.from_numpy(
+                            done_idx_np.astype(np.int64),
                         ).to(self.device)
                         # CRITICAL: new_sides must stay uint8 to match learner_side_t dtype.
-                        # done_indices is int64 (for indexing), but scattered VALUES
+                        # done_indices_t is int64 (for indexing), but scattered VALUES
                         # must match destination tensor dtype (uint8).
-                        learner_side_t[done_indices] = torch.from_numpy(
+                        learner_side_t[done_indices_t] = torch.from_numpy(
                             new_sides,  # uint8 — matches learner_side_t dtype
                         ).to(self.device)
                 else:
@@ -1266,10 +1286,17 @@ class KataGoTrainingLoop:
                     # computed against this SAME base value, then the cumulative
                     # delta is applied once. This prevents path-dependent Elo drift
                     # from dict iteration order.
+                    # K is normalized by active opponent count to prevent cumulative
+                    # amplification (20 opponents × K=32 = 640 pts without normalization).
                     learner_entry = self.pool._get_entry(self._learner_entry_id)
                     if learner_entry is not None:
                         base_learner_elo = learner_entry.elo_rating
                         cumulative_learner_delta = 0.0
+                        n_active = sum(
+                            1 for w, l, d in self._opponent_results.values()
+                            if w + l + d > 0
+                        )
+                        k_per_opp = k / max(1, n_active)
 
                         for opp_id, (w, l, d) in self._opponent_results.items():
                             opp_total = w + l + d
@@ -1283,7 +1310,7 @@ class KataGoTrainingLoop:
                             result_score = (w + 0.5 * d) / opp_total
                             new_learner_elo, new_opp_elo = compute_elo_update(
                                 base_learner_elo, opp_entry.elo_rating,
-                                result=result_score, k=k,
+                                result=result_score, k=k_per_opp,
                             )
                             learner_delta = new_learner_elo - base_learner_elo
                             cumulative_learner_delta += learner_delta

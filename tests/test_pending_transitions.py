@@ -795,3 +795,59 @@ class TestSignCorrectBootstrapArray:
             learner_side=np.array([0, 0, 0], dtype=np.uint8),
         )
         assert torch.equal(result_scalar, result_array)
+
+
+class TestColorReRandomizationInvariant:
+    """Verify re-randomization timing invariant for sign_correct_bootstrap."""
+
+    def test_non_done_envs_unchanged_after_rerandomization(self):
+        """learner_side for non-done envs must not change during re-randomization."""
+        num_envs = 4
+        learner_side = np.array([0, 1, 0, 1], dtype=np.uint8)
+        original = learner_side.copy()
+
+        # Simulate dones: envs 0 and 2 completed, envs 1 and 3 still mid-game
+        done_np = np.array([True, False, True, False])
+
+        # Re-randomize only done envs (same logic as katago_loop.py)
+        new_sides = np.random.randint(0, 2, size=int(done_np.sum()), dtype=np.uint8)
+        learner_side[done_np] = new_sides
+
+        # Non-done envs must be unchanged — their games are still in progress
+        assert learner_side[1] == original[1], "Non-done env 1 should be unchanged"
+        assert learner_side[3] == original[3], "Non-done env 3 should be unchanged"
+
+    def test_sign_correct_bootstrap_uses_current_game_color(self):
+        """At epoch end, sign_correct_bootstrap should use the color of the
+        currently-running (truncated) game, not the completed game's color.
+
+        For done envs that auto-reset, learner_side reflects the NEXT game's
+        color — but their bootstrap values are irrelevant (terminal episodes
+        don't need bootstrap correction in PPO).
+
+        For non-done (truncated) envs, learner_side still reflects the
+        in-progress game's color — which is correct for bootstrap.
+        """
+        # 4 envs: envs 0,2 are mid-game (truncated), envs 1,3 completed (done)
+        next_values = torch.tensor([0.5, 0.5, 0.5, 0.5])
+        # current_players after step: mid-game envs have their game state,
+        # done envs have reset to player 0
+        current_players = np.array([1, 0, 0, 0], dtype=np.uint8)
+
+        # Pre-re-randomization: learner_side reflects current games
+        learner_side_before = np.array([0, 1, 1, 0], dtype=np.uint8)
+
+        # Simulate re-randomization for done envs only
+        done_np = np.array([False, True, False, True])
+        learner_side = learner_side_before.copy()
+        learner_side[done_np] = np.array([1, 1], dtype=np.uint8)  # new random sides
+
+        # sign_correct_bootstrap for truncated envs (0 and 2):
+        # env0: learner=0, current=1 → opponent to move → negate
+        # env2: learner=1, current=0 → opponent to move → negate
+        # These are UNCHANGED by re-randomization — correct for bootstrap.
+        result = sign_correct_bootstrap(next_values, current_players, learner_side)
+
+        # Truncated envs: sign correction uses their original (unchanged) learner_side
+        assert result[0].item() == -0.5  # env0: learner=0, current=1 → negated
+        assert result[2].item() == -0.5  # env2: learner=1, current=0 → negated

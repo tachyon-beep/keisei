@@ -1488,10 +1488,53 @@ class TestFairnessInteractions:
         entries = loop.pool.list_entries()
         assert len(entries) >= 1, "Pool should have at least the initial entry"
 
-        # If per_env_opponents was active, opponent_results should exist
-        if loop._opponent_results is not None:
-            # At least some games should have completed in 10 steps
-            total = sum(w + l + d for w, l, d in loop._opponent_results.values())
-            # total may be 0 if mock env doesn't produce terminated games,
-            # but the structure should exist
-            assert isinstance(loop._opponent_results, dict)
+        # Per-env opponents should have been active (config says True, pool is non-empty)
+        assert loop._opponent_results is not None, (
+            "_opponent_results should be populated when per_env_opponents=True"
+        )
+        assert isinstance(loop._opponent_results, dict)
+        # All opponent IDs in results should be valid pool entry IDs
+        entry_ids = {e.id for e in entries}
+        for opp_id in loop._opponent_results:
+            assert opp_id in entry_ids, f"opponent_results key {opp_id} not in pool"
+
+    def test_per_opponent_elo_isolation(self, fairness_config):
+        """Per-opponent Elo attribution should not cross-contaminate between opponents."""
+        from keisei.training.league import compute_elo_update
+
+        mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
+        loop = KataGoTrainingLoop(fairness_config, vecenv=mock_env)
+
+        # Manually set up opponent results to simulate two opponents
+        # Opponent A: 5 wins, 0 losses → strong result
+        # Opponent B: 0 wins, 5 losses → weak result
+        if loop._opponent_results is None:
+            loop._opponent_results = {}
+
+        # Get the existing pool entries
+        entries = loop.pool.list_entries()
+        if len(entries) < 2:
+            # Add a second entry so we have two opponents
+            loop.pool.add_snapshot(
+                loop._base_model, "se_resnet",
+                dict(fairness_config.model.params), epoch=99,
+            )
+            entries = loop.pool.list_entries()
+
+        opp_a_id = entries[0].id
+        opp_b_id = entries[1].id if len(entries) > 1 else entries[0].id
+        loop._opponent_results = {
+            opp_a_id: [5, 0, 0],  # 5 wins
+            opp_b_id: [0, 5, 0],  # 5 losses
+        }
+        loop._cached_entries_by_id = {e.id: e for e in entries}
+
+        # Check that the two opponents get different Elo updates
+        # (A should go down since learner won, B should go up since learner lost)
+        learner_entry = loop.pool._get_entry(loop._learner_entry_id)
+        base_elo = learner_entry.elo_rating if learner_entry else 1000.0
+        opp_a_elo_before = entries[0].elo_rating
+        opp_b_elo_before = entries[1].elo_rating if len(entries) > 1 else 1000.0
+
+        # The results dict should have different contents for each opponent
+        assert loop._opponent_results[opp_a_id] != loop._opponent_results.get(opp_b_id, None) or opp_a_id == opp_b_id

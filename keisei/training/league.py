@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pickle
 import random
 import sqlite3
 from dataclasses import dataclass
@@ -314,8 +315,6 @@ class OpponentPool:
 
     def load_all_opponents(self, device: str = "cpu") -> dict[int, torch.nn.Module]:
         """Load all pool entries. Skips entries with missing/corrupt checkpoints."""
-        import pickle
-
         models: dict[int, torch.nn.Module] = {}
         for entry in self.list_entries():
             try:

@@ -221,3 +221,38 @@ class TestSplitMergeMultiOpponent:
         assert result.actions.shape == (num_envs,)
         assert result.learner_mask.sum() == 2  # envs 0 and 1
         assert result.opponent_mask.sum() == 2  # envs 2 and 3
+
+    def test_action_source_from_correct_model(self):
+        """Actions for opponent envs must come from the model assigned to that env."""
+        num_envs = 4
+        obs = torch.randn(num_envs, 50, 9, 9)
+        legal_masks = torch.ones(num_envs, 11259, dtype=torch.bool)
+        # env0: player=0, learner=0 → learner (no opponent action)
+        # env1: player=1, learner=0 → opponent, assigned to model_a
+        # env2: player=0, learner=1 → opponent, assigned to model_b  (learner_side=1, player=0 → opponent)
+        # env3: player=1, learner=0 → opponent, assigned to model_a
+        current_players = np.array([0, 1, 0, 1], dtype=np.uint8)
+        learner_side = np.array([0, 0, 1, 0], dtype=np.uint8)
+        env_opponent_ids = np.array([0, 10, 20, 10], dtype=np.int64)
+
+        model_a = _make_deterministic_model(bias=0.0)   # ID=10
+        model_b = _make_deterministic_model(bias=100.0)  # ID=20, very different logits
+
+        result = split_merge_step(
+            obs=obs, legal_masks=legal_masks,
+            current_players=current_players,
+            learner_model=_make_mock_model(),
+            opponent_models={10: model_a, 20: model_b},
+            env_opponent_ids=env_opponent_ids,
+            learner_side=learner_side,
+        )
+
+        # Model A (bias=0) was called for envs 1 and 3
+        assert model_a._call_count[0] == 1, f"Model A called {model_a._call_count[0]} times, expected 1 batch"
+        # Model B (bias=100) was called for env 2
+        assert model_b._call_count[0] == 1, f"Model B called {model_b._call_count[0]} times, expected 1 batch"
+
+        # The actions for opponent envs should be valid (non-negative action indices)
+        assert result.actions[1].item() >= 0
+        assert result.actions[2].item() >= 0
+        assert result.actions[3].item() >= 0
