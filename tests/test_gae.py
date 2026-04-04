@@ -253,3 +253,72 @@ class TestComputeGAEGPU:
         result = compute_gae_gpu(rewards, values, dones, next_value, gamma=0.99, lam=0.95)
         assert result.shape == (T, N)
         assert result.dtype == torch.float32
+
+
+class TestGAETruncationBootstrap:
+    """R1: Verify that truncated episodes bootstrap V(s_next) instead of zeroing."""
+
+    def test_truncated_bootstraps_value(self):
+        """With terminated-only signal, truncated positions should bootstrap."""
+        rewards = torch.tensor([[0.0], [0.0], [1.0]])   # (T=3, N=1)
+        values = torch.tensor([[0.5], [0.6], [0.7]])
+        next_value = torch.tensor([0.8])
+
+        # Old behavior: dones = terminated | truncated. Step 1 truncated -> dones=True
+        old_dones = torch.tensor([[0.0], [1.0], [0.0]])
+        adv_old = compute_gae_gpu(rewards, values, old_dones, next_value, gamma=0.99, lam=0.95)
+
+        # New behavior: only truly terminated. Step 1 NOT terminated.
+        terminated = torch.tensor([[0.0], [0.0], [0.0]])
+        adv_new = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+
+        # Old: adv_old[1,0] = -0.6 (done=True zeroed bootstrap, no gae carry-over from t=2)
+        # New: adv_new[1,0] = delta[1] + gamma*lam*gae[2]
+        #      delta[1] = 0 + 0.99 * 0.7 - 0.6 = 0.093
+        #      gae[2]   = 1.0 + 0.99*0.8 - 0.7 = 1.092
+        #      adv_new[1,0] ~= 0.093 + 0.99*0.95*1.092 ~= 1.120
+        assert abs(adv_old[1, 0].item() - (-0.6)) < 0.15
+        assert abs(adv_new[1, 0].item() - 1.120) < 0.05
+        assert abs(adv_new[1, 0].item() - adv_old[1, 0].item()) > 0.5
+
+    def test_truncation_vs_terminal_differ(self):
+        """Passing dones (merged) vs terminated (split) must give different results."""
+        rewards = torch.tensor([[0.0], [0.0]])
+        values = torch.tensor([[0.5], [0.5]])
+        next_value = torch.tensor([0.8])
+
+        terminated = torch.tensor([[0.0], [0.0]])
+        adv_terminated = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+
+        dones_merged = torch.tensor([[1.0], [0.0]])
+        adv_dones = compute_gae_gpu(rewards, values, dones_merged, next_value, gamma=0.99, lam=0.95)
+
+        assert not torch.allclose(adv_terminated, adv_dones)
+
+    def test_backward_compat_no_truncation(self):
+        """When no truncation occurs, terminated == dones gives identical results."""
+        rewards = torch.tensor([[1.0, 0.0], [0.0, 2.0], [1.0, 0.0]])
+        values = torch.tensor([[0.5, 0.3], [0.4, 0.6], [0.7, 0.2]])
+        next_value = torch.tensor([0.1, 0.5])
+
+        terminated = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]])
+        adv_a = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        dones_same = terminated.clone()
+        adv_b = compute_gae_gpu(rewards, values, dones_same, next_value, gamma=0.99, lam=0.95)
+        assert torch.allclose(adv_a, adv_b)
+
+
+class TestGAEPaddedTruncation:
+    """R1: Truncation bootstrap for the padded GAE path."""
+
+    def test_padded_truncated_bootstraps(self):
+        from keisei.training.gae import compute_gae_padded
+        rewards = torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.0, 0.5]])
+        values = torch.tensor([[0.5, 0.3], [0.4, 0.6], [0.0, 0.2]])
+        terminated_pad = torch.tensor([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+        next_values = torch.tensor([0.3, 0.8])
+        lengths = torch.tensor([2, 3])
+        adv = compute_gae_padded(rewards, values, terminated_pad, next_values, lengths,
+                                 gamma=0.99, lam=0.95)
+        # Env 0, step 1: delta = 0.0 + 0.99 * 0.3 - 0.4 = -0.103
+        assert abs(adv[1, 0].item() - (-0.103)) < 0.05

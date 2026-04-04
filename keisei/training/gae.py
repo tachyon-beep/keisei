@@ -8,7 +8,7 @@ import torch
 def compute_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminated: torch.Tensor,
     next_value: torch.Tensor,
     gamma: float,
     lam: float,
@@ -16,13 +16,14 @@ def compute_gae(
     """Compute GAE advantages for one or many environments.
 
     Supports both 1D (single env) and 2D (batched) inputs:
-      - 1D: rewards (T,), values (T,), dones (T,), next_value scalar
-      - 2D: rewards (T, N), values (T, N), dones (T, N), next_value (N,)
+      - 1D: rewards (T,), values (T,), terminated (T,), next_value scalar
+      - 2D: rewards (T, N), values (T, N), terminated (T, N), next_value (N,)
 
     Args:
         rewards: per-step rewards
         values: value estimates at each step
-        dones: episode termination flags
+        terminated: True only for genuinely terminal episodes (not truncated).
+            Truncated episodes bootstrap from V(s_next) instead of zeroing it.
         next_value: value estimate(s) for the state after the last step
         gamma: discount factor
         lam: GAE lambda (bias-variance tradeoff)
@@ -40,7 +41,7 @@ def compute_gae(
         else:
             next_val = values[t + 1]
 
-        not_done = 1.0 - dones[t].float()
+        not_done = 1.0 - terminated[t].float()
         delta = rewards[t] + gamma * next_val * not_done - values[t]
         last_gae = delta + gamma * lam * not_done * last_gae
         advantages[t] = last_gae
@@ -51,7 +52,7 @@ def compute_gae(
 def compute_gae_padded(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminated: torch.Tensor,
     next_values: torch.Tensor,
     lengths: torch.Tensor,
     gamma: float,
@@ -60,12 +61,14 @@ def compute_gae_padded(
     """Compute GAE for multiple envs with variable-length episodes via padding.
 
     All inputs are padded to (T_max, N). Positions beyond each env's length
-    must have dones=1 so that GAE propagation is zeroed out for padding.
+    must have terminated=1 so that GAE propagation is zeroed out for padding.
 
     Args:
         rewards: (T_max, N) padded rewards
         values: (T_max, N) padded value estimates
-        dones: (T_max, N) termination flags — padding positions MUST be 1.0
+        terminated: (T_max, N) termination flags — padding positions MUST be 1.0.
+            True only for genuinely terminal episodes (not truncated).
+            Truncated episodes bootstrap from V(s_next) instead of zeroing it.
         next_values: (N,) bootstrap values per env
         lengths: (N,) actual sequence length per env
         gamma: discount factor
@@ -81,7 +84,7 @@ def compute_gae_padded(
     # Build a (T_max, N) tensor of the correct next_val for each (t, env):
     # - at the env's actual last valid step (t == lengths[i]-1), use next_values[i]
     # - elsewhere within valid range, use values[t+1]
-    # - padding positions have dones=1 so not_done=0 and the value doesn't matter
+    # - padding positions have terminated=1 so not_done=0 and the value doesn't matter
     next_vals = torch.zeros_like(rewards)
     next_vals[:-1] = values[1:]          # default: shift values by 1
     next_vals[-1] = next_values          # last row bootstrap (for T_max-length envs)
@@ -94,7 +97,7 @@ def compute_gae_padded(
         next_vals[t_last, i] = next_values[i]
 
     for t in reversed(range(T_max)):
-        not_done = 1.0 - dones[t].float()
+        not_done = 1.0 - terminated[t].float()
         delta = rewards[t] + gamma * next_vals[t] * not_done - values[t]
         last_gae = delta + gamma * lam * not_done * last_gae
         advantages[t] = last_gae
@@ -105,7 +108,7 @@ def compute_gae_padded(
 def compute_gae_gpu(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminated: torch.Tensor,
     next_value: torch.Tensor,
     gamma: float,
     lam: float,
@@ -123,7 +126,9 @@ def compute_gae_gpu(
     Args:
         rewards: (T, N) per-step rewards
         values: (T, N) value estimates at each step
-        dones: (T, N) episode termination flags (1.0 = done)
+        terminated: (T, N) episode termination flags (1.0 = terminated). True only
+            for genuinely terminal episodes (not truncated). Truncated episodes
+            bootstrap from V(s_next) instead of zeroing it.
         next_value: (N,) bootstrap value for the state after the last step
         gamma: discount factor
         lam: GAE lambda (bias-variance tradeoff)
@@ -141,7 +146,7 @@ def compute_gae_gpu(
     # Step 1: vectorized delta and decay (no Python loop)
     # next_values[t] = values[t+1] for t < T-1, next_value for t == T-1
     next_values = torch.cat([values[1:], next_value.unsqueeze(0)], dim=0)
-    not_done = 1.0 - dones.float()
+    not_done = 1.0 - terminated.float()
     delta = rewards + gamma * next_values * not_done - values
     decay = gamma * lam * not_done
 
