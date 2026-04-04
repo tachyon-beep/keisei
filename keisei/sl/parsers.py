@@ -71,6 +71,7 @@ class SFENParser(GameParser):
 
     def parse(self, path: Path) -> Iterator[GameRecord]:
         text = path.read_text()
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         blocks = text.strip().split("\n\n")
 
         for block in blocks:
@@ -225,6 +226,8 @@ class CSAParser(GameParser):
             except ImportError:
                 text = path.read_text(encoding="shift_jis", errors="replace")
                 logger.warning("Non-UTF-8 file %s decoded as Shift-JIS (chardet not available)", path.name)
+
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         # Split on '/' separator lines for multi-game archives
         blocks = text.split("\n/\n")

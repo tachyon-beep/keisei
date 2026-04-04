@@ -202,6 +202,74 @@ class TestCSAParserHardening:
         assert len(games) == 2
 
 
+class TestCRLFLineEndings:
+    """Regression: CRLF line endings must not break game splitting.
+
+    Python's read_text() normalizes \\r\\n via universal newlines, so the
+    UTF-8 path is inherently safe. The vulnerable path is the chardet
+    fallback in CSAParser, which uses raw.decode() — that preserves
+    \\r\\n, causing the '\\n/\\n' archive separator to miss '\\r\\n/\\r\\n'.
+
+    The fix adds explicit normalization after all decode paths.
+    """
+
+    def test_csa_chardet_crlf_multi_game(self, tmp_path, monkeypatch):
+        """CSA chardet fallback with CRLF must split on '/' separator.
+
+        Simulates the chardet path by making read_text(encoding='utf-8')
+        fail, then having chardet detect Shift-JIS. Without the CRLF
+        normalization fix, this produces 1 merged game instead of 2.
+        """
+        import keisei.sl.parsers as parsers_mod
+
+        csa_content = (
+            "V2.2\r\nN+A\r\nN-B\r\n+\r\n"
+            "+7776FU\r\n-3334FU\r\n%TORYO\r\n"
+            "/\r\n"
+            "V2.2\r\nN+C\r\nN-D\r\n+\r\n"
+            "+2726FU\r\n-8384FU\r\n%TORYO\r\n"
+        )
+        # Write raw CRLF bytes (non-UTF-8 to trigger fallback)
+        raw_bytes = b"\x83" + csa_content.encode("ascii")
+        csa_file = tmp_path / "crlf.csa"
+        csa_file.write_bytes(raw_bytes)
+
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2, f"Expected 2 games, got {len(games)}"
+        assert games[0].metadata.get("player_black") == "A"
+        assert games[1].metadata.get("player_black") == "C"
+
+    def test_sfen_crlf_defense_in_depth(self, tmp_path, monkeypatch):
+        """SFEN normalization works even if read_text() didn't normalize."""
+        from keisei.sl.parsers import SFENParser
+
+        # Monkeypatch read_text to return raw CRLF (bypassing universal newlines)
+        from pathlib import Path
+        original_read = Path.read_text
+        crlf_text = (
+            "result:win_black\r\nstartpos\r\n7g7f\r\n3c3d\r\n"
+            "\r\n"
+            "result:win_white\r\nstartpos\r\n2g2f\r\n8c8d\r\n"
+        )
+
+        def fake_read_text(self, *args, **kwargs):
+            if self.suffix == ".sfen":
+                return crlf_text
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        sfen_file = tmp_path / "crlf.sfen"
+        sfen_file.write_text("placeholder")
+
+        parser = SFENParser()
+        games = list(parser.parse(sfen_file))
+        assert len(games) == 2, f"Expected 2 games, got {len(games)}"
+        assert games[0].outcome == GameOutcome.WIN_BLACK
+        assert games[1].outcome == GameOutcome.WIN_WHITE
+
+
 class TestSLDataset:
     def test_write_and_read_shard(self, tmp_path):
         """Write a shard with 10 positions and read them back."""
