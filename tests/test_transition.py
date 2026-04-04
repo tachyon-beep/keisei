@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 import torch
 
+from keisei.db import init_db, read_training_state
+
 
 class TestSLToRL:
     """Verify sl_to_rl() orchestrates the SL→RL handoff correctly."""
@@ -116,3 +118,85 @@ class TestSLToRL:
         assert len(loop.ppo.optimizer.state) == 0, (
             "RL optimizer has state — SL momentum was not skipped"
         )
+
+    def test_sl_to_rl_writes_resume_state_to_rl_config_db_path(
+        self, tmp_path: Path, sl_data_dir: Path
+    ) -> None:
+        """When rl_config_path is provided, transition state must be written to
+        rl_config.display.db_path (the DB KataGoTrainingLoop reads)."""
+        from keisei.training.transition import sl_to_rl
+
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+
+        db_arg = tmp_path / "arg.db"
+        db_cfg = tmp_path / "cfg.db"
+        rl_config_path = tmp_path / "rl.toml"
+        rl_config_path.write_text(
+            f"""\
+[training]
+algorithm = "katago_ppo"
+num_games = 1
+max_ply = 20
+checkpoint_interval = 10
+checkpoint_dir = "{checkpoint_dir}"
+
+[training.algorithm_params]
+learning_rate = 0.0002
+gamma = 0.99
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 0
+db_path = "{db_cfg}"
+
+[model]
+display_name = "TestBot"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 2
+channels = 32
+se_reduction = 8
+global_pool_channels = 16
+policy_channels = 8
+value_fc_size = 32
+score_fc_size = 16
+obs_channels = 50
+"""
+        )
+
+        mock_vecenv = MagicMock()
+        mock_vecenv.observation_channels = 50
+        mock_vecenv.action_space_size = 11259
+
+        sl_to_rl(
+            sl_data_dir=sl_data_dir,
+            sl_epochs=0,
+            sl_batch_size=8,
+            checkpoint_dir=checkpoint_dir,
+            rl_config_path=rl_config_path,
+            architecture="se_resnet",
+            model_params={
+                "num_blocks": 2, "channels": 32, "se_reduction": 8,
+                "global_pool_channels": 16, "policy_channels": 8,
+                "value_fc_size": 32, "score_fc_size": 16, "obs_channels": 50,
+            },
+            vecenv=mock_vecenv,
+            db_path=str(db_arg),
+        )
+
+        cfg_state = read_training_state(str(db_cfg))
+        assert cfg_state is not None
+        assert cfg_state.get("checkpoint_path")
+
+        # db_path argument should not receive transition state when rl_config_path is used.
+        # If the file exists for any external reason, it still must have no training_state row.
+        if db_arg.exists():
+            init_db(str(db_arg))
+            assert read_training_state(str(db_arg)) is None

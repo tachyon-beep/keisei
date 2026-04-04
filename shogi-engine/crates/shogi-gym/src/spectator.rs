@@ -88,6 +88,13 @@ impl SpectatorEnv {
         let perspective = self.game.position.current_player;
         let mv = <DefaultActionMapper as ActionMapper>::decode(&self.mapper, action, perspective)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let legal_moves = self.game.legal_moves();
+        if !legal_moves.contains(&mv) {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "action index {} is not legal for current position",
+                action
+            )));
+        }
 
         let notation = move_notation(mv);
         self.move_history.push((action, notation));
@@ -194,6 +201,7 @@ impl SpectatorEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3::Python;
     use shogi_core::{GameState, Color, HandPieceType, Move, Square};
     use crate::action_mapper::ActionMapper;
     use crate::spectator_data::{hand_piece_char, move_notation};
@@ -306,6 +314,29 @@ mod tests {
 
         assert_eq!(game.ply, 1);
         assert_eq!(game.position.current_player, Color::White);
+    }
+
+    #[test]
+    fn test_spectator_step_rejects_illegal_drop() {
+        let mut env = SpectatorEnv::new(500);
+        let mapper = DefaultActionMapper;
+        let illegal_drop = Move::Drop {
+            to: Square::from_row_col(4, 4).unwrap(),
+            piece_type: HandPieceType::Pawn,
+        };
+        let action = mapper
+            .encode(illegal_drop, Color::Black)
+            .expect("drop should be encodable");
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let err = env.step(py, action).expect_err("illegal drop must error");
+            assert!(
+                err.to_string().contains("not legal"),
+                "unexpected error: {}",
+                err
+            );
+        });
     }
 
     /// Test that legal_actions at startpos returns 30 entries.

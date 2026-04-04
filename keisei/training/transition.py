@@ -93,23 +93,7 @@ def sl_to_rl(
     # 2x peak GPU memory (SL model + RL model simultaneously).
     del trainer, model
 
-    # --- Phase 3: Write DB state for _check_resume() ---
-    init_db(db_path)
-    write_training_state(
-        db_path,
-        {
-            "config_json": "{}",
-            "display_name": "SL→RL",
-            "model_arch": architecture,
-            "algorithm_name": "katago_ppo",
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "current_epoch": sl_epochs,
-            "current_step": 0,
-            "checkpoint_path": str(ckpt_path),
-        },
-    )
-
-    # --- Phase 4: Build RL Training Loop ---
+    # --- Phase 3: Build RL config first (defines effective DB path) ---
     if rl_config_path is not None:
         rl_config = load_config(rl_config_path)
     else:
@@ -140,6 +124,31 @@ def sl_to_rl(
             ),
         )
 
+    # --- Phase 4: Write DB state for _check_resume() ---
+    effective_db_path = rl_config.display.db_path
+    if rl_config_path is not None and str(db_path) != str(effective_db_path):
+        logger.warning(
+            "sl_to_rl: db_path=%s differs from rl_config.display.db_path=%s; "
+            "writing transition state to effective RL DB path",
+            db_path,
+            effective_db_path,
+        )
+    init_db(effective_db_path)
+    write_training_state(
+        effective_db_path,
+        {
+            "config_json": "{}",
+            "display_name": "SL→RL",
+            "model_arch": architecture,
+            "algorithm_name": "katago_ppo",
+            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "current_epoch": sl_epochs,
+            "current_step": 0,
+            "checkpoint_path": str(ckpt_path),
+        },
+    )
+
+    # --- Phase 5: Build RL Training Loop ---
     loop = KataGoTrainingLoop(rl_config, vecenv=vecenv, resume_mode="sl")
     logger.info("RL training loop ready (resume_mode=sl)")
     return loop

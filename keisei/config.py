@@ -58,6 +58,14 @@ class LeagueConfig:
     tournament_pause_seconds: float = 5.0
 
     def __post_init__(self) -> None:
+        if self.epochs_per_seat < 1:
+            raise ValueError(
+                f"league.epochs_per_seat must be >= 1, got {self.epochs_per_seat}"
+            )
+        if self.snapshot_interval < 1:
+            raise ValueError(
+                f"league.snapshot_interval must be >= 1, got {self.snapshot_interval}"
+            )
         ratio_sum = self.historical_ratio + self.current_best_ratio
         if abs(ratio_sum - 1.0) > 1e-6:
             raise ValueError(
@@ -130,7 +138,12 @@ def load_config(path: Path) -> AppConfig:
         (config_dir / t.get("checkpoint_dir", "checkpoints/")).resolve()
     )
     algorithm_params = t.get("algorithm_params", {})
-    use_amp = bool(t.get("use_amp", False))
+    use_amp_raw = t.get("use_amp", False)
+    if not isinstance(use_amp_raw, bool):
+        raise ValueError(
+            f"training.use_amp must be a boolean, got {type(use_amp_raw).__name__}"
+        )
+    use_amp = use_amp_raw
 
     training = TrainingConfig(
         num_games=num_games,
@@ -179,6 +192,12 @@ def load_config(path: Path) -> AppConfig:
             f"Unknown [distributed] config keys: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_dist_fields)}"
         )
+    for key in sorted(valid_dist_fields):
+        if key in dist_raw and not isinstance(dist_raw[key], bool):
+            raise ValueError(
+                f"distributed.{key} must be a boolean, got "
+                f"{type(dist_raw[key]).__name__}"
+            )
     dist_config = DistributedConfig(**dist_raw)
 
     return AppConfig(

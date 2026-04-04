@@ -250,3 +250,42 @@ class TestLeagueConfigRatioTolerance:
         from keisei.config import LeagueConfig
         with pytest.raises(ValueError, match="ratio sum must be 1.0"):
             LeagueConfig(historical_ratio=0.6, current_best_ratio=0.6)
+
+
+def test_training_use_amp_must_be_bool(tmp_path: Path) -> None:
+    config_file = tmp_path / "bad.toml"
+    config_text = _VALID_BASE.format(
+        max_ply=500, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+    ).replace("[training.algorithm_params]", 'use_amp = "false"\n[training.algorithm_params]')
+    config_file.write_text(config_text)
+    with pytest.raises(ValueError, match="training.use_amp must be a boolean"):
+        load_config(config_file)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sync_batchnorm", '"false"'),
+        ("find_unused_parameters", '"false"'),
+        ("gradient_as_bucket_view", '"false"'),
+    ],
+)
+def test_distributed_flags_must_be_bool(tmp_path: Path, field: str, value: str) -> None:
+    config_file = tmp_path / "bad.toml"
+    config_file.write_text(_VALID_BASE.format(
+        max_ply=500, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+    ) + f"\n[distributed]\n{field} = {value}\n")
+    with pytest.raises(ValueError, match=f"distributed\\.{field} must be a boolean"):
+        load_config(config_file)
+
+
+def test_league_epochs_per_seat_zero_rejected() -> None:
+    from keisei.config import LeagueConfig
+    with pytest.raises(ValueError, match="league.epochs_per_seat must be >= 1"):
+        LeagueConfig(epochs_per_seat=0)
+
+
+def test_league_snapshot_interval_zero_rejected() -> None:
+    from keisei.config import LeagueConfig
+    with pytest.raises(ValueError, match="league.snapshot_interval must be >= 1"):
+        LeagueConfig(snapshot_interval=0)
