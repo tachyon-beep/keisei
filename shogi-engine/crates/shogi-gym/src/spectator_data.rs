@@ -80,20 +80,10 @@ pub fn hand_piece_char(hpt: HandPieceType) -> char {
 
 /// Check if promotion is forced for this piece reaching the destination.
 /// Pawn/Lance on last rank, Knight on last two ranks.
+/// Check if promotion is forced for this piece reaching the destination.
+/// Delegates to `movegen::must_promote` — single source of truth for promotion rules.
 fn is_forced_promotion(pt: PieceType, to: Square, color: Color) -> bool {
-    let dest_row = to.row();
-    match color {
-        Color::Black => match pt {
-            PieceType::Pawn | PieceType::Lance => dest_row == 0,
-            PieceType::Knight => dest_row <= 1,
-            _ => false,
-        },
-        Color::White => match pt {
-            PieceType::Pawn | PieceType::Lance => dest_row == 8,
-            PieceType::Knight => dest_row >= 7,
-            _ => false,
-        },
-    }
+    shogi_core::movegen::must_promote(pt, to.row(), color)
 }
 
 /// Build Hodges notation string from a Move, a Position, and the legal moves list.
@@ -103,8 +93,10 @@ fn is_forced_promotion(pt: PieceType, to: Square, color: Color) -> bool {
 pub fn move_notation(mv: Move, position: &Position, legal_moves: &[Move]) -> String {
     match mv {
         Move::Board { from, to, promote } => {
-            let piece = position.piece_at(from)
-                .expect("move_notation: no piece at source square");
+            let piece = match position.piece_at(from) {
+                Some(p) => p,
+                None => return format!("?{}-{}", square_notation(from), square_notation(to)),
+            };
             let pt = piece.piece_type();
             let color = piece.color();
             let promoted = piece.is_promoted();
@@ -545,6 +537,16 @@ mod tests {
         let pos = position_with_pieces(&[(from, knight)]);
         let mv = Move::Board { from, to, promote: false };
         assert_eq!(move_notation(mv, &pos, &[mv]), "N-2i+");
+    }
+
+    #[test]
+    fn test_notation_missing_piece_fallback() {
+        // Empty board — no piece at source. Should produce fallback, not panic.
+        let from = Square::from_row_col(4, 4).unwrap();
+        let to = Square::from_row_col(3, 4).unwrap();
+        let pos = Position::empty();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_notation(mv, &pos, &[mv]), "?5e-5d");
     }
 
     #[test]
