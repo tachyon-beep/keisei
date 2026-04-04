@@ -332,7 +332,7 @@ def _with_league(config, tmp_path, snapshot_interval=10, color_randomization=Fal
     color randomization should pass color_randomization=True explicitly.
     """
     league = LeagueConfig(
-        max_pool_size=10,
+
         snapshot_interval=snapshot_interval,
         epochs_per_seat=50,
         elo_floor=500,
@@ -347,8 +347,8 @@ class TestLeagueIntegration:
         mock_env = _make_mock_katago_vecenv(num_envs=2)
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=10)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
-        assert loop.pool is not None
-        assert len(loop.pool.list_entries()) == 1
+        assert loop.store is not None
+        assert len(loop.store.list_entries()) == 1
 
     def test_periodic_snapshot(self, katago_config, tmp_path):
         """Pool should gain a snapshot every snapshot_interval epochs."""
@@ -356,8 +356,8 @@ class TestLeagueIntegration:
         katago_config = _with_league(katago_config, tmp_path, snapshot_interval=2)
         loop = KataGoTrainingLoop(katago_config, vecenv=mock_env)
         loop.run(num_epochs=4, steps_per_epoch=2)
-        assert loop.pool is not None
-        entries = loop.pool.list_entries()
+        assert loop.store is not None
+        entries = loop.store.list_entries()
         assert len(entries) >= 3  # bootstrap + 2 periodic
 
     def test_opponent_loaded_each_epoch(self, katago_config, tmp_path):
@@ -440,7 +440,7 @@ class TestSplitMergeIntegration:
 def _make_league_config(epochs_per_seat=1, snapshot_interval=1):
     """Create a LeagueConfig with given params (no tmp_path needed)."""
     return LeagueConfig(
-        max_pool_size=5,
+
         snapshot_interval=snapshot_interval,
         epochs_per_seat=epochs_per_seat,
     )
@@ -1058,7 +1058,7 @@ class TestRotateSeat:
                 },
             ),
             league=LeagueConfig(
-                max_pool_size=5,
+        
                 snapshot_interval=10,
                 epochs_per_seat=5,
             ),
@@ -1119,15 +1119,15 @@ class TestRotateSeat:
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
 
         # Artificially inflate the current learner's Elo
-        if loop.pool and loop._learner_entry_id:
-            loop.pool.update_elo(loop._learner_entry_id, 1650.0, epoch=0)
+        if loop.store and loop._learner_entry_id:
+            loop.store.update_elo(loop._learner_entry_id, 1650.0, epoch=0)
 
         loop._rotate_seat(epoch=5)
 
         # The NEW entry should start at the default 1000.0, not 1650.0
-        assert loop.pool is not None
+        assert loop.store is not None
         assert loop._learner_entry_id is not None
-        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        new_entry = loop.store._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
 
@@ -1137,14 +1137,14 @@ class TestRotateSeat:
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
 
         old_id = loop._learner_entry_id
-        if loop.pool and old_id:
-            loop.pool.update_elo(old_id, 1200.0, epoch=0)
+        if loop.store and old_id:
+            loop.store.update_elo(old_id, 1200.0, epoch=0)
 
         loop._rotate_seat(epoch=5)
 
-        assert loop.pool is not None
+        assert loop.store is not None
         assert old_id is not None
-        old_entry = loop.pool._get_entry(old_id)
+        old_entry = loop.store._get_entry(old_id)
         assert old_entry is not None
         assert old_entry.elo_rating == 1200.0
 
@@ -1170,10 +1170,12 @@ class TestRotateSeat:
         mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
 
-        # Fill pool to max, forcing eviction of the original entry
-        assert loop.pool is not None
-        for i in range(league_config.league.max_pool_size + 1):
-            loop.pool.add_snapshot(
+        # Fill pool beyond recent tier capacity, forcing overflow/eviction
+        assert loop.store is not None
+        total_slots = (league_config.league.recent.slots
+                       + league_config.league.recent.soft_overflow + 2)
+        for i in range(total_slots):
+            loop.tiered_pool.snapshot_learner(
                 loop._base_model, "se_resnet",
                 dict(league_config.model.params), epoch=100 + i,
             )
@@ -1181,7 +1183,7 @@ class TestRotateSeat:
         # Old learner entry may have been evicted
         loop._rotate_seat(epoch=200)
         assert loop._learner_entry_id is not None
-        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        new_entry = loop.store._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
 
@@ -1417,7 +1419,7 @@ class TestDDPLeagueGuard:
         config = dataclasses.replace(config, league=LeagueConfig())
         mock_env = _make_mock_katago_vecenv(num_envs=2)
         loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
-        assert loop.pool is not None
+        assert loop.store is not None
 
 
 class TestFairnessInteractions:
@@ -1463,7 +1465,7 @@ class TestFairnessInteractions:
                 },
             ),
             league=LeagueConfig(
-                max_pool_size=5,
+        
                 snapshot_interval=10,
                 epochs_per_seat=5,
                 color_randomization=True,
@@ -1476,13 +1478,13 @@ class TestFairnessInteractions:
         mock_env = _make_mock_katago_vecenv(num_envs=4, alternate_players=True)
         loop = KataGoTrainingLoop(fairness_config, vecenv=mock_env)
 
-        if loop.pool and loop._learner_entry_id:
-            loop.pool.update_elo(loop._learner_entry_id, 1500.0, epoch=0)
+        if loop.store and loop._learner_entry_id:
+            loop.store.update_elo(loop._learner_entry_id, 1500.0, epoch=0)
 
         loop._rotate_seat(epoch=5)
-        assert loop.pool is not None
+        assert loop.store is not None
         assert loop._learner_entry_id is not None
-        new_entry = loop.pool._get_entry(loop._learner_entry_id)
+        new_entry = loop.store._get_entry(loop._learner_entry_id)
         assert new_entry is not None
         assert new_entry.elo_rating == 1000.0
 
@@ -1493,8 +1495,8 @@ class TestFairnessInteractions:
         loop.run(num_epochs=1, steps_per_epoch=10)
 
         # Behavioral assertions — not just "didn't crash"
-        assert loop.pool is not None
-        entries = loop.pool.list_entries()
+        assert loop.store is not None
+        entries = loop.store.list_entries()
         assert len(entries) >= 1, "Pool should have at least the initial entry"
 
         # Per-env opponents should have been active (config says True, pool is non-empty)
@@ -1520,15 +1522,15 @@ class TestFairnessInteractions:
             loop._opponent_results = {}
 
         # Get the existing pool entries
-        assert loop.pool is not None
-        entries = loop.pool.list_entries()
+        assert loop.store is not None
+        entries = loop.store.list_entries()
         if len(entries) < 2:
             # Add a second entry so we have two opponents
-            loop.pool.add_snapshot(
+            loop.tiered_pool.snapshot_learner(
                 loop._base_model, "se_resnet",
                 dict(fairness_config.model.params), epoch=99,
             )
-            entries = loop.pool.list_entries()
+            entries = loop.store.list_entries()
 
         opp_a_id = entries[0].id
         opp_b_id = entries[1].id if len(entries) > 1 else entries[0].id
