@@ -744,6 +744,8 @@ class KataGoTrainingLoop:
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
+            terminated_count = 0
+            truncated_count = 0
             # Per-color win counters (black=0, white=1)
             black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
             white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
@@ -791,6 +793,9 @@ class KataGoTrainingLoop:
                     terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
+
+                    terminated_count += terminated.bool().sum().item()
+                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
 
                     # Convert rewards to learner perspective
                     learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
@@ -902,6 +907,9 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
+                    terminated_count += terminated.bool().sum().item()
+                    truncated_count += (truncated.bool() & ~terminated.bool()).sum().item()
+
                     terminal_mask = terminated.bool()
                     if terminal_mask.any():
                         t_rewards = rewards[terminal_mask]
@@ -988,8 +996,14 @@ class KataGoTrainingLoop:
                     next_values, current_players, learner_side,
                 )
 
+            logger.info(
+                "Epoch %d: %d terminated, %d truncated (bootstrapped)",
+                epoch_i, terminated_count, truncated_count,
+            )
+
             # Set epoch-dependent entropy coefficient
             self.ppo.current_entropy_coeff = self.ppo.get_entropy_coeff(epoch_i)
+            logger.info("Epoch %d: entropy_coeff=%.4f", epoch_i, self.ppo.current_entropy_coeff)
             if epoch_i == 0 or epoch_i == self.ppo.warmup_epochs:
                 logger.info(
                     "Entropy coefficient: %.4f (warmup=%d, epoch=%d)",
