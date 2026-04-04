@@ -76,6 +76,43 @@ describe('buildMoveRows', () => {
   })
 })
 
+describe('buildMoveRows — usi style', () => {
+  it('uses .usi field when style is usi', () => {
+    const moves = [
+      { notation: 'P-7f', usi: '7g7f' },
+      { notation: 'P-3d', usi: '3c3d' },
+    ]
+    const rows = buildMoveRows(moves, 'usi')
+    expect(rows).toEqual([
+      { num: 1, black: '7g7f', white: '3c3d', isLatest: true },
+    ])
+  })
+
+  it('falls back to .notation when .usi is missing', () => {
+    const moves = [
+      { notation: 'P-7f' },  // no usi field (older server)
+      { notation: 'P-3d', usi: '3c3d' },
+    ]
+    const rows = buildMoveRows(moves, 'usi')
+    expect(rows[0].black).toBe('P-7f')  // graceful fallback
+    expect(rows[0].white).toBe('3c3d')
+  })
+
+  it('returns empty string for missing move in usi style', () => {
+    const moves = [{ notation: 'P-7f', usi: '7g7f' }]
+    const rows = buildMoveRows(moves, 'usi')
+    expect(rows[0].white).toBe('')
+  })
+
+  it('western style ignores .usi field', () => {
+    const moves = [
+      { notation: 'P-7f', usi: '7g7f' },
+    ]
+    const rows = buildMoveRows(moves, 'western')
+    expect(rows[0].black).toBe('P-7f')
+  })
+})
+
 describe('toJapanese', () => {
   it('converts simple Hodges move', () => {
     expect(toJapanese('P-7f')).toBe('P-７六')

@@ -16,7 +16,7 @@ use crate::observation::{
     DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS,
 };
 use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
-use crate::spectator_data::{build_spectator_dict, move_notation};
+use crate::spectator_data::{build_spectator_dict, move_notation, move_usi};
 use crate::step_result::{ResetResult, StepMetadata, StepResult, TerminationReason};
 
 use numpy::{PyArrayMethods, ToPyArray};
@@ -257,7 +257,7 @@ pub struct VecEnv {
     legal_moves_cache: Vec<Vec<Move>>,
 
     // Per-env move history for spectator display (cleared on auto-reset)
-    move_histories: Vec<Vec<(usize, String)>>,
+    move_histories: Vec<Vec<(usize, String, String)>>,
 
     // Episode tracking counters (atomic for rayon safety)
     episodes_completed: AtomicU64,
@@ -696,7 +696,8 @@ impl VecEnv {
         for (i, mv) in decoded_moves.iter().enumerate() {
             let action_idx = actions[i] as usize;
             let notation = move_notation(*mv, &self.games[i].position, &self.legal_moves_cache[i]);
-            self.move_histories[i].push((action_idx, notation));
+            let usi = move_usi(*mv);
+            self.move_histories[i].push((action_idx, notation, usi));
         }
 
         // --- Phase 2: Apply (GIL released, with per-env panic isolation) ---
@@ -866,10 +867,11 @@ impl VecEnv {
 
             // Append move_history
             let history_list = PyList::empty(py);
-            for (action_idx, notation) in &self.move_histories[i] {
+            for (action_idx, notation, usi) in &self.move_histories[i] {
                 let hd = PyDict::new(py);
                 hd.set_item("action", *action_idx as i64)?;
                 hd.set_item("notation", notation.as_str())?;
+                hd.set_item("usi", usi.as_str())?;
                 history_list.append(hd)?;
             }
             d.set_item("move_history", history_list)?;

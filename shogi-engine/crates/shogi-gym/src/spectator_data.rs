@@ -86,6 +86,22 @@ fn is_forced_promotion(pt: PieceType, to: Square, color: Color) -> bool {
     shogi_core::movegen::must_promote(pt, to.row(), color)
 }
 
+/// Convert a Move to USI protocol format.
+///
+/// Board moves: `"7g7f"`, `"8h2b+"` (from + to + optional promotion)
+/// Drops: `"P*5e"` (piece + asterisk + destination)
+pub fn move_usi(mv: Move) -> String {
+    match mv {
+        Move::Board { from, to, promote } => {
+            let suffix = if promote { "+" } else { "" };
+            format!("{}{}{}", square_notation(from), square_notation(to), suffix)
+        }
+        Move::Drop { to, piece_type } => {
+            format!("{}*{}", hand_piece_char(piece_type), square_notation(to))
+        }
+    }
+}
+
 /// Build Hodges notation string from a Move, a Position, and the legal moves list.
 ///
 /// Board: `"P-7f"`, `"Bx3c"`, `"Nx7c+"`, `"S-4d="`, `"+R-5a"`, `"G6g-5h"`
@@ -631,5 +647,83 @@ mod tests {
         let pos = Position::empty();
         let mv = Move::Drop { to: drop_sq, piece_type: HandPieceType::Pawn };
         assert_eq!(move_notation(mv, &pos, &[mv]), "P*1a");
+    }
+
+    // -----------------------------------------------------------------------
+    // move_usi tests — USI protocol format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_usi_simple_board_move() {
+        // Pawn from 7g (row=6, col=2) to 7f (row=5, col=2)
+        let from = Square::from_row_col(6, 2).unwrap();
+        let to = Square::from_row_col(5, 2).unwrap();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_usi(mv), "7g7f");
+    }
+
+    #[test]
+    fn test_usi_promotion() {
+        // Bishop from 8h (row=7, col=1) to 2b (row=1, col=7) with promotion
+        let from = Square::from_row_col(7, 1).unwrap();
+        let to = Square::from_row_col(1, 7).unwrap();
+        let mv = Move::Board { from, to, promote: true };
+        assert_eq!(move_usi(mv), "8h2b+");
+    }
+
+    #[test]
+    fn test_usi_no_promotion() {
+        let from = Square::from_row_col(7, 1).unwrap();
+        let to = Square::from_row_col(1, 7).unwrap();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_usi(mv), "8h2b");
+    }
+
+    #[test]
+    fn test_usi_drop() {
+        // Pawn drop at 5e (row=4, col=4)
+        let to = Square::from_row_col(4, 4).unwrap();
+        let mv = Move::Drop { to, piece_type: HandPieceType::Pawn };
+        assert_eq!(move_usi(mv), "P*5e");
+    }
+
+    #[test]
+    fn test_usi_drop_all_piece_types() {
+        let to = Square::from_row_col(4, 4).unwrap();
+        let expected = [
+            (HandPieceType::Pawn,   "P*5e"),
+            (HandPieceType::Lance,  "L*5e"),
+            (HandPieceType::Knight, "N*5e"),
+            (HandPieceType::Silver, "S*5e"),
+            (HandPieceType::Gold,   "G*5e"),
+            (HandPieceType::Bishop, "B*5e"),
+            (HandPieceType::Rook,   "R*5e"),
+        ];
+        for (hpt, exp) in &expected {
+            let mv = Move::Drop { to, piece_type: *hpt };
+            assert_eq!(move_usi(mv), *exp, "USI drop for {:?}", hpt);
+        }
+    }
+
+    #[test]
+    fn test_usi_boundary_corners() {
+        // Top-right to one below: 9a → 9b
+        let from = Square::from_row_col(0, 0).unwrap();
+        let to = Square::from_row_col(1, 0).unwrap();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_usi(mv), "9a9b");
+
+        // Bottom-left to one above: 1i → 1h
+        let from = Square::from_row_col(8, 8).unwrap();
+        let to = Square::from_row_col(7, 8).unwrap();
+        let mv = Move::Board { from, to, promote: false };
+        assert_eq!(move_usi(mv), "1i1h");
+    }
+
+    #[test]
+    fn test_usi_drop_corner() {
+        let to = Square::from_row_col(0, 8).unwrap();
+        let mv = Move::Drop { to, piece_type: HandPieceType::Pawn };
+        assert_eq!(move_usi(mv), "P*1a");
     }
 }

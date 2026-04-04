@@ -19,18 +19,22 @@ export function parseMoves(moveHistoryJson) {
  * Build paired rows for display: each row has a move number,
  * black's move, white's move, and whether it's the latest row.
  *
- * @param {Array} moves - Array of move objects with .notation
- * @param {'western'|'japanese'} style - Notation style
+ * @param {Array} moves - Array of move objects with .notation and .usi
+ * @param {'western'|'japanese'|'usi'} style - Notation style
  * @returns {Array<{ num: number, black: string, white: string, isLatest: boolean }>}
  */
 export function buildMoveRows(moves, style = 'western') {
-  const fmt = style === 'japanese' ? toJapanese : (s) => s
+  const getText = style === 'usi'
+    ? (m) => m?.usi || m?.notation || ''
+    : style === 'japanese'
+      ? (m) => toJapanese(m?.notation || '')
+      : (m) => m?.notation || ''
   const result = []
   for (let i = 0; i < moves.length; i += 2) {
     result.push({
       num: Math.floor(i / 2) + 1,
-      black: fmt(moves[i]?.notation || ''),
-      white: fmt(moves[i + 1]?.notation || ''),
+      black: getText(moves[i]),
+      white: getText(moves[i + 1]),
       isLatest: i >= moves.length - 2,
     })
   }

@@ -26,6 +26,9 @@
 
   $: startedAt = parseUTC($trainingState?.started_at)
   $: heartbeatAt = parseUTC($trainingState?.heartbeat_at)
+  let wallTime = ''
+  let trainTime = ''
+  let wallTimer = null
 
   function tick() {
     if (startedAt) {

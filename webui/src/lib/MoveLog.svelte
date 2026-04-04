@@ -7,9 +7,12 @@
 
   let scrollContainer
   let notationStyle = 'western'
+  const STYLES = ['western', 'japanese', 'usi']
+  const STYLE_LABELS = { western: 'W', japanese: '漢', usi: 'USI' }
 
   function toggleNotation() {
-    notationStyle = notationStyle === 'western' ? 'japanese' : 'western'
+    const idx = STYLES.indexOf(notationStyle)
+    notationStyle = STYLES[(idx + 1) % STYLES.length]
   }
 
   $: moves = parseMoves(moveHistoryJson)
@@ -25,8 +28,8 @@
 <div class="move-log">
   <div class="header-row">
     <h2 class="header">Move Log</h2>
-    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style">
-      {notationStyle === 'western' ? '漢' : 'W'}
+    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style ({notationStyle})">
+      {STYLE_LABELS[notationStyle]}
     </button>
   </div>
   <div class="table-container" role="log" aria-label="Move history" tabindex="0" bind:this={scrollContainer}>
