@@ -27,8 +27,7 @@ cd "$(dirname "$0")"
 
 CONFIG="${CONFIG:-keisei-500k-league.toml}"
 EPOCHS=500000
-WEB_HOST="0.0.0.0"
-WEB_PORT="${WEB_PORT:-8741}"
+WEB_SOCKET="/run/keisei/uvicorn.sock"
 LOG_DIR="logs"
 DB_DIR="data"
 DB_PATH="$DB_DIR/keisei-500k-league.db"
@@ -52,7 +51,7 @@ if [[ "$GPU_COUNT" -lt 2 ]]; then
     echo "  Opponent will share GPU with learner (slower but functional)."
 fi
 
-mkdir -p "$LOG_DIR" "$CKPT_DIR" "$DB_DIR"
+mkdir -p "$LOG_DIR" "$CKPT_DIR" "$DB_DIR" "$(dirname "$WEB_SOCKET")"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 TRAIN_LOG="$LOG_DIR/league500k_train_${TIMESTAMP}.log"
@@ -108,10 +107,10 @@ echo " ready"
 
 # ---- Start web dashboard ----
 
-echo "Starting dashboard on $WEB_HOST:$WEB_PORT"
+echo "Starting dashboard on unix:$WEB_SOCKET"
 echo "  Log:    $SERVER_LOG"
 
-uv run keisei-serve --config "$CONFIG" --host "$WEB_HOST" --port "$WEB_PORT" \
+uv run keisei-serve --config "$CONFIG" --socket "$WEB_SOCKET" \
     > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "  PID:    $SERVER_PID"
@@ -120,7 +119,7 @@ echo ""
 echo "=========================================="
 echo "  Kenshi — 500K League Training"
 echo "=========================================="
-echo "  Dashboard:  https://keisei.foundryside.dev (port $WEB_PORT)"
+echo "  Dashboard:  https://keisei.foundryside.dev (unix:$WEB_SOCKET)"
 echo "  Trainer:    PID $TRAIN_PID"
 echo "  Server:     PID $SERVER_PID"
 echo "  Train log:  $TRAIN_LOG"
@@ -149,7 +148,7 @@ while true; do
 
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
         echo "Server died, restarting..."
-        uv run keisei-serve --config "$CONFIG" --host "$WEB_HOST" --port "$WEB_PORT" \
+        uv run keisei-serve --config "$CONFIG" --socket "$WEB_SOCKET" \
             >> "$SERVER_LOG" 2>&1 &
         SERVER_PID=$!
         echo "  Server restarted (PID $SERVER_PID)"

@@ -316,13 +316,17 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Keisei spectator dashboard")
     parser.add_argument("--config", type=Path, required=True, help="Path to TOML config")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host")
-    parser.add_argument("--port", type=int, default=8741, help="Bind port")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (ignored if --socket)")
+    parser.add_argument("--port", type=int, default=8741, help="Bind port (ignored if --socket)")
+    parser.add_argument("--socket", default=None, help="Unix domain socket path (overrides --host/--port)")
     args = parser.parse_args()
 
     config = load_config(args.config)
     app = create_app(config.display.db_path)
-    uvicorn.run(app, host=args.host, port=args.port)
+    if args.socket:
+        uvicorn.run(app, uds=args.socket)
+    else:
+        uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
