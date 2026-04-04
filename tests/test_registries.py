@@ -77,8 +77,12 @@ class TestModelContractTypes:
 
 
 class TestAlgorithmRegistry:
-    def test_ppo_in_registry(self) -> None:
-        assert "ppo" in VALID_ALGORITHMS
+    def test_katago_ppo_in_registry(self) -> None:
+        assert "katago_ppo" in VALID_ALGORITHMS
+
+    def test_legacy_ppo_not_in_registry(self) -> None:
+        """Legacy 'ppo' was removed — it passed validation but crashed at loop init."""
+        assert "ppo" not in VALID_ALGORITHMS
 
     def test_unknown_algorithm_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown algorithm"):

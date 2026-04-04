@@ -20,7 +20,6 @@ class PPOParams:
 
 
 _PARAM_SCHEMAS: dict[str, type] = {
-    "ppo": PPOParams,
     "katago_ppo": KataGoPPOParams,
 }
 

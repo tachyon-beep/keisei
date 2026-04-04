@@ -12,7 +12,7 @@ def sample_toml(tmp_path: Path) -> Path:
 [training]
 num_games = 4
 max_ply = 300
-algorithm = "ppo"
+algorithm = "katago_ppo"
 checkpoint_interval = 10
 checkpoint_dir = "ckpt/"
 
@@ -43,7 +43,7 @@ def test_load_config_basic(sample_toml: Path) -> None:
     assert isinstance(config, AppConfig)
     assert config.training.num_games == 4
     assert config.training.max_ply == 300
-    assert config.training.algorithm == "ppo"
+    assert config.training.algorithm == "katago_ppo"
     assert config.display.moves_per_minute == 60
     assert config.model.display_name == "TestBot"
     assert config.model.architecture == "resnet"
@@ -65,7 +65,7 @@ def test_num_games_out_of_range(tmp_path: Path) -> None:
 [training]
 num_games = 0
 max_ply = 500
-algorithm = "ppo"
+algorithm = "katago_ppo"
 checkpoint_interval = 50
 checkpoint_dir = "ckpt/"
 [training.algorithm_params]
@@ -89,7 +89,7 @@ def test_num_games_too_high(tmp_path: Path) -> None:
 [training]
 num_games = 513
 max_ply = 500
-algorithm = "ppo"
+algorithm = "katago_ppo"
 checkpoint_interval = 50
 checkpoint_dir = "ckpt/"
 [training.algorithm_params]
@@ -113,7 +113,7 @@ def test_unknown_architecture(tmp_path: Path) -> None:
 [training]
 num_games = 4
 max_ply = 500
-algorithm = "ppo"
+algorithm = "katago_ppo"
 checkpoint_interval = 50
 checkpoint_dir = "ckpt/"
 [training.algorithm_params]
@@ -158,7 +158,7 @@ num_layers = 4
 def test_max_ply_zero_rejected(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=0, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+        max_ply=0, algorithm="katago_ppo", checkpoint_interval=10, moves_per_minute=30,
     ))
     with pytest.raises(ValueError, match="max_ply"):
         load_config(config_file)
@@ -167,7 +167,7 @@ def test_max_ply_zero_rejected(tmp_path: Path) -> None:
 def test_max_ply_negative_rejected(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=-5, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+        max_ply=-5, algorithm="katago_ppo", checkpoint_interval=10, moves_per_minute=30,
     ))
     with pytest.raises(ValueError, match="max_ply"):
         load_config(config_file)
@@ -176,7 +176,7 @@ def test_max_ply_negative_rejected(tmp_path: Path) -> None:
 def test_checkpoint_interval_zero_rejected(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=500, algorithm="ppo", checkpoint_interval=0, moves_per_minute=30,
+        max_ply=500, algorithm="katago_ppo", checkpoint_interval=0, moves_per_minute=30,
     ))
     with pytest.raises(ValueError, match="checkpoint_interval"):
         load_config(config_file)
@@ -185,7 +185,7 @@ def test_checkpoint_interval_zero_rejected(tmp_path: Path) -> None:
 def test_checkpoint_interval_negative_rejected(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=500, algorithm="ppo", checkpoint_interval=-1, moves_per_minute=30,
+        max_ply=500, algorithm="katago_ppo", checkpoint_interval=-1, moves_per_minute=30,
     ))
     with pytest.raises(ValueError, match="checkpoint_interval"):
         load_config(config_file)
@@ -194,7 +194,7 @@ def test_checkpoint_interval_negative_rejected(tmp_path: Path) -> None:
 def test_moves_per_minute_negative_rejected(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=500, algorithm="ppo", checkpoint_interval=10, moves_per_minute=-1,
+        max_ply=500, algorithm="katago_ppo", checkpoint_interval=10, moves_per_minute=-1,
     ))
     with pytest.raises(ValueError, match="moves_per_minute"):
         load_config(config_file)
@@ -255,7 +255,7 @@ class TestLeagueConfigRatioTolerance:
 def test_training_use_amp_must_be_bool(tmp_path: Path) -> None:
     config_file = tmp_path / "bad.toml"
     config_text = _VALID_BASE.format(
-        max_ply=500, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+        max_ply=500, algorithm="katago_ppo", checkpoint_interval=10, moves_per_minute=30,
     ).replace("[training.algorithm_params]", 'use_amp = "false"\n[training.algorithm_params]')
     config_file.write_text(config_text)
     with pytest.raises(ValueError, match="training.use_amp must be a boolean"):
@@ -273,7 +273,7 @@ def test_training_use_amp_must_be_bool(tmp_path: Path) -> None:
 def test_distributed_flags_must_be_bool(tmp_path: Path, field: str, value: str) -> None:
     config_file = tmp_path / "bad.toml"
     config_file.write_text(_VALID_BASE.format(
-        max_ply=500, algorithm="ppo", checkpoint_interval=10, moves_per_minute=30,
+        max_ply=500, algorithm="katago_ppo", checkpoint_interval=10, moves_per_minute=30,
     ) + f"\n[distributed]\n{field} = {value}\n")
     with pytest.raises(ValueError, match=f"distributed\\.{field} must be a boolean"):
         load_config(config_file)
