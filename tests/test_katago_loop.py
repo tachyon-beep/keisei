@@ -323,13 +323,20 @@ class TestKataGoTrainingLoopRun:
         assert len(metrics) == 2  # one row per epoch
 
 
-def _with_league(config, tmp_path, snapshot_interval=10):
-    """Helper to add league config to an existing AppConfig."""
+def _with_league(config, tmp_path, snapshot_interval=10, color_randomization=False):
+    """Helper to add league config to an existing AppConfig.
+
+    color_randomization defaults to False so that tests using non-alternating
+    mock envs (all players == Black) don't starve the buffer when learner_side
+    is randomly assigned White for some envs.  Tests that specifically exercise
+    color randomization should pass color_randomization=True explicitly.
+    """
     league = LeagueConfig(
         max_pool_size=10,
         snapshot_interval=snapshot_interval,
         epochs_per_seat=50,
         elo_floor=500,
+        color_randomization=color_randomization,
     )
     return dataclasses.replace(config, league=league)
 

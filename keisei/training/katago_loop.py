@@ -760,7 +760,25 @@ class KataGoTrainingLoop:
             black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
             white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
 
-            learner_side = 0  # Epoch-scoped: used by bootstrap sign correction after the loop
+            # Per-env color randomization (config-gated).
+            # Invariant: learner_side[env] always reflects the color for
+            # the game CURRENTLY RUNNING in that env. Re-randomization
+            # happens exclusively on dones, never mid-game.
+            use_color_rand = (
+                self.config.league is not None
+                and self.config.league.color_randomization
+                and self._current_opponent is not None
+            )
+            if use_color_rand:
+                learner_side = np.random.randint(0, 2, size=self.num_envs, dtype=np.uint8)
+                learner_side_t = torch.from_numpy(learner_side.copy()).to(self.device)
+                if epoch_i == start_epoch and self.dist_ctx.is_main:
+                    logger.info(
+                        "Color randomization enabled: win_rate now reflects "
+                        "both colors (was black-only previously)"
+                    )
+            else:
+                learner_side = 0
             pending: PendingTransitions | None = None
             _scratch_log_probs = torch.zeros(self.num_envs, device=self.device)
             _scratch_values = torch.zeros(self.num_envs, device=self.device)
@@ -781,7 +799,7 @@ class KataGoTrainingLoop:
                     pre_players = current_players.copy()
                     # GPU copy of pre_players avoids .cpu().numpy() sync for indexing
                     pre_players_t = torch.from_numpy(pre_players).to(self.device)
-                    learner_moved = pre_players_t == learner_side
+                    learner_moved = pre_players_t == (learner_side_t if use_color_rand else learner_side)
 
                     # Split-merge: learner vs opponent
                     sm_result = split_merge_step(
@@ -798,7 +816,7 @@ class KataGoTrainingLoop:
 
                     current_players = np.asarray(step_result.current_players)
                     current_players_t = torch.from_numpy(current_players).to(self.device)
-                    learner_next = current_players_t == learner_side
+                    learner_next = current_players_t == (learner_side_t if use_color_rand else learner_side)
 
                     rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(self.device)
                     terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(self.device)
@@ -903,6 +921,26 @@ class KataGoTrainingLoop:
                                     imm_finalized["score_targets"],
                                     env_ids=imm_finalized["env_ids"],
                                 )
+
+                    # Re-randomize learner color for completed games (Change 2).
+                    # This sets up state for the NEXT game — must happen AFTER
+                    # pending transition finalization and Elo attribution
+                    # (see Task 8 for opponent tracking which runs BEFORE this).
+                    if use_color_rand and dones.bool().any():
+                        done_np = dones.bool().cpu().numpy()
+                        new_sides = np.random.randint(
+                            0, 2, size=int(done_np.sum()), dtype=np.uint8,
+                        )
+                        learner_side[done_np] = new_sides
+                        done_indices = torch.from_numpy(
+                            np.flatnonzero(done_np).astype(np.int64),
+                        ).to(self.device)
+                        # CRITICAL: new_sides must stay uint8 to match learner_side_t dtype.
+                        # done_indices is int64 (for indexing), but scattered VALUES
+                        # must match destination tensor dtype (uint8).
+                        learner_side_t[done_indices] = torch.from_numpy(
+                            new_sides,  # uint8 — matches learner_side_t dtype
+                        ).to(self.device)
                 else:
                     # No opponent: all envs are learner (original behavior)
                     actions, log_probs, values = self.ppo.select_actions(
