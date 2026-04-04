@@ -28,7 +28,7 @@ def test_model_weights_preserved(tmp_path: Path, model: ResNetModel) -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     path = tmp_path / "checkpoint.pt"
 
-    obs = torch.randn(1, 46, 9, 9)
+    obs = torch.randn(1, 50, 9, 9)
     with torch.no_grad():
         original_policy, original_value = model(obs)
 
@@ -201,7 +201,7 @@ def test_skip_optimizer_leaves_optimizer_fresh(tmp_path: Path, model: ResNetMode
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     # Run a training step to populate optimizer momentum buffers
-    obs = torch.randn(1, 46, 9, 9)
+    obs = torch.randn(1, 50, 9, 9)
     policy, value = model(obs)
     loss = policy.sum() + value.sum()
     loss.backward()
@@ -232,7 +232,7 @@ def test_skip_optimizer_still_loads_model_weights(tmp_path: Path, model: ResNetM
     """skip_optimizer=True should still restore model weights correctly."""
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    obs = torch.randn(1, 46, 9, 9)
+    obs = torch.randn(1, 50, 9, 9)
     with torch.no_grad():
         original_policy, original_value = model(obs)
 

@@ -124,7 +124,7 @@ def load_config(path: Path) -> AppConfig:
     if max_ply <= 0:
         raise ValueError(f"max_ply must be positive, got {max_ply}")
 
-    algorithm = t.get("algorithm", "ppo")
+    algorithm = t.get("algorithm", "katago_ppo")
     if algorithm not in VALID_ALGORITHMS:
         raise ValueError(
             f"Unknown algorithm '{algorithm}'. Valid: {sorted(VALID_ALGORITHMS)}"

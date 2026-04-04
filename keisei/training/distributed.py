@@ -94,7 +94,7 @@ def get_distributed_context() -> DistributedContext:
     )
 
 
-def setup_distributed(ctx: DistributedContext, backend: str = "nccl") -> None:
+def setup_distributed(ctx: DistributedContext, backend: str | None = None) -> None:
     """Initialize the process group for DDP.
 
     Must be called before any CUDA operations or DDP wrapping.
@@ -102,14 +102,24 @@ def setup_distributed(ctx: DistributedContext, backend: str = "nccl") -> None:
 
     Args:
         ctx: The distributed context from get_distributed_context().
-        backend: Communication backend. "nccl" for GPU training,
-                 "gloo" for CPU-only (tests). Default: "nccl".
+        backend: Communication backend. ``None`` (default) auto-selects
+                 ``"nccl"`` when CUDA is available, ``"gloo"`` otherwise.
+                 Pass an explicit string to override.
     """
     if not ctx.is_distributed:
         return
 
+    if backend is None:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+    elif backend == "nccl" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "backend='nccl' requires CUDA but torch.cuda.is_available() is False. "
+            "Use backend='gloo' for CPU-only distributed training, or set "
+            "backend=None to auto-select."
+        )
+
     try:
-        if backend == "nccl" and torch.cuda.is_available():
+        if backend == "nccl":
             torch.cuda.set_device(ctx.local_rank)
         dist.init_process_group(backend=backend)
         logger.info(

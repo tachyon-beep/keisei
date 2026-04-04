@@ -141,8 +141,22 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
             "training_alive": alive,
         })
 
+    def _check_ws_host(websocket: WebSocket) -> bool:
+        """Check websocket Host header against the allowlist.
+
+        BaseHTTPMiddleware only filters HTTP scopes, not WebSocket scopes,
+        so we enforce the same host allowlist here.
+        """
+        host = websocket.headers.get("host", "")
+        hostname = host.split(":")[0]
+        return hostname in hosts
+
     @app.websocket("/ws")
     async def ws_endpoint(websocket: WebSocket) -> None:
+        if not _check_ws_host(websocket):
+            logger.warning("Rejected WebSocket with Host: %s", websocket.headers.get("host", ""))
+            await websocket.close(code=1008, reason="Forbidden")
+            return
         await websocket.accept()
         try:
             async with asyncio.TaskGroup() as tg:

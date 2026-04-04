@@ -72,6 +72,22 @@ class KataGoPPOParams:
     score_blend_alpha: float = 0.0   # R2: 0.0 = pure WDL; >0 blends score_lead into GAE value
     use_terminated_for_gae: bool = True   # R1: correctness fix, False only for emergency rollback
 
+    def __post_init__(self) -> None:
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+        if self.epochs_per_batch <= 0:
+            raise ValueError(f"epochs_per_batch must be > 0, got {self.epochs_per_batch}")
+        if not 0.0 <= self.gamma <= 1.0:
+            raise ValueError(f"gamma must be in [0, 1], got {self.gamma}")
+        if not 0.0 <= self.gae_lambda <= 1.0:
+            raise ValueError(f"gae_lambda must be in [0, 1], got {self.gae_lambda}")
+        if self.clip_epsilon < 0.0:
+            raise ValueError(f"clip_epsilon must be >= 0, got {self.clip_epsilon}")
+        if self.learning_rate <= 0.0:
+            raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
+        if self.grad_clip <= 0.0:
+            raise ValueError(f"grad_clip must be > 0, got {self.grad_clip}")
+
 
 # NOTE: Buffer memory at scale (128 steps x 512 envs):
 # - legal_masks: 128 x 512 x 11259 x 1 byte = ~740 MB
@@ -385,7 +401,10 @@ class KataGoPPOAlgorithm:
 
         if self.compiled_eval is not None:
             model = self.compiled_eval
-            # Do NOT toggle forward_model.eval() — see BN invariant in spec H1
+            # Force eval mode so torch.compile traces (or re-uses) eval-mode BN
+            # behavior. compile() captures training flag at first forward call,
+            # NOT at torch.compile() time.
+            self.forward_model.eval()
         else:
             model = self.forward_model
             model.eval()
@@ -432,8 +451,7 @@ class KataGoPPOAlgorithm:
 
             return actions, log_probs, scalar_values
         finally:
-            if self.compiled_eval is None:
-                self.forward_model.train()
+            self.forward_model.train()
 
     def update(
         self,

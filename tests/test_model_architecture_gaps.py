@@ -99,7 +99,7 @@ class TestSEResNetParamVariants:
         model = SEResNetModel(default_params)
         model.eval()
         wrong_obs = torch.randn(2, 46, 9, 9)  # 46 != 50
-        with pytest.raises(ValueError, match="Expected 50 input channels"):
+        with pytest.raises(ValueError, match="Expected obs shape"):
             model(wrong_obs)
 
     def test_batch_size_one(self, default_params):

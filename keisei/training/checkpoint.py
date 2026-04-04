@@ -139,8 +139,13 @@ def load_checkpoint(
 
     # Restore RNG states for reproducible resume (backward-compatible:
     # old checkpoints without rng_states are silently skipped).
+    # In distributed training, the checkpoint contains only rank-0's RNG state.
+    # Restoring it to all ranks would collapse per-rank stochasticity (each rank
+    # should have a different RNG stream seeded with base_seed + rank).  Skip
+    # RNG restoration when world_size > 1 so ranks keep their independently
+    # seeded streams from setup_distributed / seed_all_ranks.
     rng = checkpoint.get("rng_states")
-    if rng is not None:
+    if rng is not None and current_world_size <= 1:
         if "python" in rng:
             random.setstate(rng["python"])
         if "numpy" in rng:
@@ -158,5 +163,11 @@ def load_checkpoint(
                     torch.cuda.set_rng_state(cuda_state[0])
             else:
                 torch.cuda.set_rng_state(cuda_state)
+    elif rng is not None:
+        logger.info(
+            "Skipping RNG state restoration: world_size=%d > 1 — "
+            "per-rank RNG streams from seed_all_ranks will be used instead",
+            current_world_size,
+        )
 
     return {"epoch": checkpoint["epoch"], "step": checkpoint["step"]}

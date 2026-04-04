@@ -567,7 +567,7 @@ class TestTransformerKataGoIncompatibility:
         from keisei.training.models.katago_base import KataGoOutput
 
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
-        obs = torch.randn(2, 46, 9, 9)
+        obs = torch.randn(2, 50, 9, 9)
         result = model(obs)
 
         assert isinstance(result, tuple), "TransformerModel should return tuple"
@@ -589,8 +589,8 @@ class TestTransformerKataGoIncompatibility:
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
         ppo = KataGoPPOAlgorithm(KataGoPPOParams(), model)
 
-        obs = torch.randn(2, 46, 9, 9)
-        legal_masks = torch.ones(2, 13527, dtype=torch.bool)
+        obs = torch.randn(2, 50, 9, 9)
+        legal_masks = torch.ones(2, 11259, dtype=torch.bool)
 
         with pytest.raises(AttributeError):
             ppo.select_actions(obs, legal_masks)

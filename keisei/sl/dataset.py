@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+import re
 from collections import OrderedDict
 from pathlib import Path
 
@@ -101,10 +102,21 @@ class SLDataset(Dataset):
         self.shards: list[tuple[Path, int]] = []
         self._cumulative: list[int] = []
 
-        shard_files = sorted(data_dir.glob("shard_*.bin"))
+        def _shard_sort_key(p: Path) -> int:
+            m = re.search(r"shard_(\d+)\.bin$", p.name)
+            return int(m.group(1)) if m else -1
+
+        shard_files = sorted(data_dir.glob("shard_*.bin"), key=_shard_sort_key)
         total = 0
         for shard_path in shard_files:
             file_size = shard_path.stat().st_size
+            remainder = file_size % RECORD_SIZE
+            if remainder != 0:
+                logger.warning(
+                    "Shard %s has %d trailing bytes (file_size=%d, record_size=%d) "
+                    "— possible corruption or interrupted write",
+                    shard_path.name, remainder, file_size, RECORD_SIZE,
+                )
             n_positions = file_size // RECORD_SIZE
             if n_positions > 0:
                 self.shards.append((shard_path, n_positions))

@@ -52,14 +52,23 @@ class TransformerModel(BaseModel):
         self.register_buffer("_col_idx", torch.arange(self.BOARD_SIZE))
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if obs.ndim != 4 or obs.shape[1] != self.OBS_CHANNELS or obs.shape[2] != self.BOARD_SIZE or obs.shape[3] != self.BOARD_SIZE:
+            hint = ""
+            if obs.ndim == 4 and obs.shape[-1] == self.OBS_CHANNELS:
+                hint = " (input appears to be NHWC — expected NCHW)"
+            raise ValueError(
+                f"Expected obs shape (batch, {self.OBS_CHANNELS}, {self.BOARD_SIZE}, {self.BOARD_SIZE}), "
+                f"got {tuple(obs.shape)}{hint}"
+            )
         batch = obs.shape[0]
+        num_squares = self.BOARD_SIZE * self.BOARD_SIZE
 
-        x = obs.permute(0, 2, 3, 1).reshape(batch, 81, self.OBS_CHANNELS)
+        x = obs.permute(0, 2, 3, 1).reshape(batch, num_squares, self.OBS_CHANNELS)
         x = self.input_proj(x)
 
         row_emb = self.row_embed(self._row_idx)
         col_emb = self.col_embed(self._col_idx)
-        pos = (row_emb.unsqueeze(1) + col_emb.unsqueeze(0)).reshape(81, -1)
+        pos = (row_emb.unsqueeze(1) + col_emb.unsqueeze(0)).reshape(num_squares, -1)
         x = x + pos.unsqueeze(0)
 
         x = self.encoder(x)

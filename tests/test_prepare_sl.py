@@ -224,7 +224,7 @@ class TestShardSizeBoundary:
         assert len(dataset) == 4
 
     def test_single_game_exceeding_shard_size(self, tmp_path):
-        """A single game with 4 moves and shard_size=2 produces 1 shard (flush at game boundary)."""
+        """A single game with 4 moves and shard_size=2 produces 2 shards (flush per position)."""
         games_dir = tmp_path / "games"
         games_dir.mkdir()
         sfen_content = "result:win_black\nstartpos\n7g7f\n3c3d\n2g2f\n8c8d\n"
@@ -237,11 +237,10 @@ class TestShardSizeBoundary:
             min_ply=1,
             shard_size=2,
         )
-        # All 4 positions from one game are accumulated, then flushed once
-        # (the check fires after the game, sees 4 >= 2, flushes all 4)
+        # Flush fires inside the per-move loop, so shard_size is a true cap.
+        # 4 positions with shard_size=2 → 2 shards of 2 positions each.
         shard_files = sorted(output_dir.glob("shard_*.bin"))
-        # Could be 1 shard (all 4 flushed together) — the current implementation
-        # flushes when buffer >= shard_size, putting all accumulated positions in one shard
+        assert len(shard_files) == 2
         dataset = SLDataset(output_dir, allow_placeholder=True)
         assert len(dataset) == 4
 

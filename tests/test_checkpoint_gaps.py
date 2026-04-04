@@ -24,7 +24,7 @@ class TestOptimizerStateRestoration:
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Run a training step to populate Adam's momentum buffers
-        obs = torch.randn(2, 46, 9, 9)
+        obs = torch.randn(2, 50, 9, 9)
         policy, value = model(obs)
         loss = policy.sum() + value.sum()
         loss.backward()
@@ -69,7 +69,7 @@ class TestOptimizerStateRestoration:
 
         # Generate momentum
         for _ in range(3):
-            obs = torch.randn(2, 46, 9, 9)
+            obs = torch.randn(2, 50, 9, 9)
             policy, value = model(obs)
             loss = policy.sum() + value.sum()
             loss.backward()

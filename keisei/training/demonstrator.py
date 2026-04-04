@@ -171,6 +171,15 @@ class DemonstratorRunner(threading.Thread):
             ctx = torch.cuda.stream(self._stream) if self._stream else nullcontext()
             with ctx:
                 with torch.no_grad():
+                    # Guard: zero legal actions → all-inf softmax → NaN crash
+                    legal_counts = legal_masks.sum(dim=-1)
+                    if (legal_counts == 0).any():
+                        logger.warning(
+                            "Demo slot %d: zero legal actions detected — ending game",
+                            matchup.slot,
+                        )
+                        break
+
                     output = model(obs)
                     flat = _get_policy_flat(output, obs.shape[0])
                     masked = flat.masked_fill(~legal_masks, float("-inf"))

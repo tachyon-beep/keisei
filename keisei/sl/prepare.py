@@ -32,6 +32,23 @@ def _build_parser_registry() -> dict[str, GameParser]:
     return registry
 
 
+def _iter_records_safe(parser: GameParser, game_file: Path):
+    """Yield records from parser, logging per-record errors without discarding prior results."""
+    try:
+        it = parser.parse(game_file)
+        while True:
+            try:
+                yield next(it)
+            except StopIteration:
+                return
+            except Exception:
+                logger.exception("Failed to parse a record in %s — skipping record", game_file)
+                yield None
+    except Exception:
+        logger.exception("Failed to open/parse %s — skipping file", game_file)
+        yield None
+
+
 def prepare_sl_data(
     game_sources: list[str],
     output_dir: str,
@@ -90,14 +107,10 @@ def prepare_sl_data(
             logger.warning("No parser for extension '%s', skipping %s", ext, game_file)
             continue
 
-        try:
-            file_records = list(parser.parse(game_file))
-        except Exception:
-            logger.exception("Failed to parse %s — skipping", game_file)
-            parse_errors += 1
-            continue
-
-        for record in file_records:
+        for record in _iter_records_safe(parser, game_file):
+            if record is None:
+                parse_errors += 1
+                continue
             if not game_filter.accepts(record):
                 games_skipped += 1
                 continue
@@ -143,21 +156,22 @@ def prepare_sl_data(
                 # (valid shard format) but semantically wrong for score head training.
                 score_targets.append(raw_score / SCORE_NORMALIZATION)
 
-            # Flush shard if buffer is full
-            if len(observations) >= shard_size:
-                _flush_shard(
-                    output_path,
-                    shard_idx,
-                    observations,
-                    policy_targets,
-                    value_targets,
-                    score_targets,
-                )
-                shard_idx += 1
-                observations.clear()
-                policy_targets.clear()
-                value_targets.clear()
-                score_targets.clear()
+                # Flush inside the per-move loop so shard_size is a true cap,
+                # not a post-game threshold.
+                if len(observations) >= shard_size:
+                    _flush_shard(
+                        output_path,
+                        shard_idx,
+                        observations,
+                        policy_targets,
+                        value_targets,
+                        score_targets,
+                    )
+                    shard_idx += 1
+                    observations.clear()
+                    policy_targets.clear()
+                    value_targets.clear()
+                    score_targets.clear()
 
     # Flush remaining
     if observations:

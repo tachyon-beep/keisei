@@ -103,7 +103,7 @@ class TestSEResNetModel:
 
     def test_wrong_input_channels_raises(self, model):
         obs = torch.randn(4, 46, 9, 9)  # wrong: 46 instead of 50
-        with pytest.raises(ValueError, match="Expected 50 input channels"):
+        with pytest.raises(ValueError, match="Expected obs shape"):
             model(obs)
 
     def test_batch_size_1(self, model):

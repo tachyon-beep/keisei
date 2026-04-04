@@ -19,14 +19,14 @@ class TestResNetZeroLayers:
 
     def test_forward_shapes(self) -> None:
         model = ResNetModel(ResNetParams(hidden_size=16, num_layers=0))
-        obs = torch.randn(2, 46, 9, 9)
+        obs = torch.randn(2, 50, 9, 9)
         policy, value = model(obs)
-        assert policy.shape == (2, 13527)
+        assert policy.shape == (2, 11259)
         assert value.shape == (2, 1)
 
     def test_value_bounded(self) -> None:
         model = ResNetModel(ResNetParams(hidden_size=16, num_layers=0))
-        obs = torch.randn(8, 46, 9, 9)
+        obs = torch.randn(8, 50, 9, 9)
         _, value = model(obs)
         assert value.min() >= -1.0
         assert value.max() <= 1.0
@@ -34,7 +34,7 @@ class TestResNetZeroLayers:
     def test_gradient_flow(self) -> None:
         model = ResNetModel(ResNetParams(hidden_size=16, num_layers=0))
         model.train()
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         policy, value = model(obs)
         loss = policy.sum() + value.sum()
         loss.backward()
@@ -54,14 +54,14 @@ class TestMLPEmptyHidden:
 
     def test_forward_shapes(self) -> None:
         model = MLPModel(MLPParams(hidden_sizes=[]))
-        obs = torch.randn(2, 46, 9, 9)
+        obs = torch.randn(2, 50, 9, 9)
         policy, value = model(obs)
-        assert policy.shape == (2, 13527)
+        assert policy.shape == (2, 11259)
         assert value.shape == (2, 1)
 
     def test_value_bounded(self) -> None:
         model = MLPModel(MLPParams(hidden_sizes=[]))
-        obs = torch.randn(8, 46, 9, 9)
+        obs = torch.randn(8, 50, 9, 9)
         _, value = model(obs)
         assert value.min() >= -1.0
         assert value.max() <= 1.0
@@ -77,7 +77,7 @@ class TestMLPEmptyHidden:
     def test_gradient_flow(self) -> None:
         model = MLPModel(MLPParams(hidden_sizes=[]))
         model.train()
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         policy, value = model(obs)
         loss = policy.sum() + value.sum()
         loss.backward()

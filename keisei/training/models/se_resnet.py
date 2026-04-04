@@ -23,6 +23,19 @@ class SEResNetParams:
     score_fc_size: int = 128
     obs_channels: int = 50
 
+    def __post_init__(self) -> None:
+        for field_name in (
+            "num_blocks", "channels", "se_reduction", "global_pool_channels",
+            "policy_channels", "value_fc_size", "score_fc_size", "obs_channels",
+        ):
+            if getattr(self, field_name) < 1:
+                raise ValueError(f"{field_name} must be >= 1, got {getattr(self, field_name)}")
+        if self.channels // self.se_reduction < 1:
+            raise ValueError(
+                f"channels ({self.channels}) // se_reduction ({self.se_reduction}) "
+                f"must be >= 1"
+            )
+
 
 class GlobalPoolBiasBlock(nn.Module):
     """SE-ResBlock with global pooling bias (KataGo-style).
@@ -117,10 +130,10 @@ class SEResNetModel(KataGoBaseModel):
         self.score_fc2 = nn.Linear(params.score_fc_size, 1)
 
     def _forward_impl(self, obs: torch.Tensor) -> KataGoOutput:
-        if obs.shape[1] != self.params.obs_channels:
+        if obs.ndim != 4 or obs.shape[1] != self.params.obs_channels or obs.shape[2] != 9 or obs.shape[3] != 9:
             raise ValueError(
-                f"Expected {self.params.obs_channels} input channels, "
-                f"got {obs.shape[1]}"
+                f"Expected obs shape (batch, {self.params.obs_channels}, 9, 9), "
+                f"got {tuple(obs.shape)}"
             )
 
         # Trunk

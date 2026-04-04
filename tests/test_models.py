@@ -10,7 +10,7 @@ from keisei.training.models.transformer import TransformerModel, TransformerPara
 def _check_gradient_flow(model: BaseModel) -> None:
     """Verify all parameters receive finite gradients via both heads."""
     model.train()
-    obs = torch.randn(4, 46, 9, 9)
+    obs = torch.randn(4, 50, 9, 9)
     policy, value = model(obs)
     # Loss that depends on both heads
     loss = policy.sum() + value.sum()
@@ -29,15 +29,15 @@ class TestResNet:
     def test_forward_shapes(self) -> None:
         params = ResNetParams(hidden_size=32, num_layers=2)
         model = ResNetModel(params)
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         policy_logits, value = model(obs)
-        assert policy_logits.shape == (4, 13527)
+        assert policy_logits.shape == (4, 11259)
         assert value.shape == (4, 1)
 
     def test_value_bounded(self) -> None:
         params = ResNetParams(hidden_size=32, num_layers=2)
         model = ResNetModel(params)
-        obs = torch.randn(8, 46, 9, 9)
+        obs = torch.randn(8, 50, 9, 9)
         _, value = model(obs)
         assert value.min() >= -1.0
         assert value.max() <= 1.0
@@ -45,9 +45,9 @@ class TestResNet:
     def test_single_sample(self) -> None:
         params = ResNetParams(hidden_size=32, num_layers=2)
         model = ResNetModel(params)
-        obs = torch.randn(1, 46, 9, 9)
+        obs = torch.randn(1, 50, 9, 9)
         policy_logits, value = model(obs)
-        assert policy_logits.shape == (1, 13527)
+        assert policy_logits.shape == (1, 11259)
         assert value.shape == (1, 1)
 
     def test_has_batchnorm(self) -> None:
@@ -65,10 +65,10 @@ class TestResNet:
         model = ResNetModel(ResNetParams(hidden_size=32, num_layers=2))
         # First run a training forward pass to populate running stats
         model.train()
-        model(torch.randn(4, 46, 9, 9))
+        model(torch.randn(4, 50, 9, 9))
         # Now eval mode should be deterministic
         model.eval()
-        obs = torch.randn(1, 46, 9, 9)
+        obs = torch.randn(1, 50, 9, 9)
         with torch.no_grad():
             p1, v1 = model(obs)
             p2, v2 = model(obs)
@@ -79,10 +79,10 @@ class TestResNet:
         """ResNet with BatchNorm must not crash on batch_size=1."""
         model = ResNetModel(ResNetParams(hidden_size=32, num_layers=2))
         model.train()
-        obs = torch.randn(1, 46, 9, 9)
+        obs = torch.randn(1, 50, 9, 9)
         # BatchNorm with batch_size=1 can be problematic in some configs
         policy, value = model(obs)
-        assert policy.shape == (1, 13527)
+        assert policy.shape == (1, 11259)
         assert value.shape == (1, 1)
 
 
@@ -90,15 +90,15 @@ class TestMLP:
     def test_forward_shapes(self) -> None:
         params = MLPParams(hidden_sizes=[128, 64])
         model = MLPModel(params)
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         policy_logits, value = model(obs)
-        assert policy_logits.shape == (4, 13527)
+        assert policy_logits.shape == (4, 11259)
         assert value.shape == (4, 1)
 
     def test_value_bounded(self) -> None:
         params = MLPParams(hidden_sizes=[128, 64])
         model = MLPModel(params)
-        obs = torch.randn(8, 46, 9, 9)
+        obs = torch.randn(8, 50, 9, 9)
         _, value = model(obs)
         assert value.min() >= -1.0
         assert value.max() <= 1.0
@@ -118,15 +118,15 @@ class TestTransformer:
     def test_forward_shapes(self) -> None:
         params = TransformerParams(d_model=32, nhead=4, num_layers=2)
         model = TransformerModel(params)
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         policy_logits, value = model(obs)
-        assert policy_logits.shape == (4, 13527)
+        assert policy_logits.shape == (4, 11259)
         assert value.shape == (4, 1)
 
     def test_value_bounded(self) -> None:
         params = TransformerParams(d_model=32, nhead=4, num_layers=2)
         model = TransformerModel(params)
-        obs = torch.randn(8, 46, 9, 9)
+        obs = torch.randn(8, 50, 9, 9)
         _, value = model(obs)
         assert value.min() >= -1.0
         assert value.max() <= 1.0
@@ -151,7 +151,7 @@ class TestTransformer:
         """Two forward passes in eval mode should produce identical output."""
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
         model.eval()
-        obs = torch.randn(4, 46, 9, 9)
+        obs = torch.randn(4, 50, 9, 9)
         p1, v1 = model(obs)
         p2, v2 = model(obs)
         torch.testing.assert_close(p1, p2)
@@ -160,17 +160,17 @@ class TestTransformer:
     def test_single_sample(self) -> None:
         """Batch size 1 should work."""
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
-        obs = torch.randn(1, 46, 9, 9)
+        obs = torch.randn(1, 50, 9, 9)
         policy, value = model(obs)
-        assert policy.shape == (1, 13527)
+        assert policy.shape == (1, 11259)
         assert value.shape == (1, 1)
 
     def test_spatial_sensitivity(self) -> None:
         """Different spatial inputs should produce different outputs."""
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=2))
         model.eval()
-        obs1 = torch.zeros(1, 46, 9, 9)
-        obs2 = torch.zeros(1, 46, 9, 9)
+        obs1 = torch.zeros(1, 50, 9, 9)
+        obs2 = torch.zeros(1, 50, 9, 9)
         obs2[0, 0, 0, 0] = 10.0
         p1, _ = model(obs1)
         p2, _ = model(obs2)
@@ -181,10 +181,10 @@ class TestTransformer:
         model = TransformerModel(TransformerParams(d_model=32, nhead=4, num_layers=1))
         model.eval()
         # obs1: all weight on square (0,0)
-        obs1 = torch.zeros(1, 46, 9, 9)
+        obs1 = torch.zeros(1, 50, 9, 9)
         obs1[0, 0, 0, 0] = 1.0
         # obs2: all weight on square (8,8)
-        obs2 = torch.zeros(1, 46, 9, 9)
+        obs2 = torch.zeros(1, 50, 9, 9)
         obs2[0, 0, 8, 8] = 1.0
         with torch.no_grad():
             p1, _ = model(obs1)
@@ -209,7 +209,7 @@ class TestModelRegistry:
 
     def test_get_obs_channels_resnet(self):
         from keisei.training.model_registry import get_obs_channels
-        assert get_obs_channels("resnet") == 46
+        assert get_obs_channels("resnet") == 50
 
     def test_unknown_architecture_raises(self):
         from keisei.training.model_registry import get_model_contract
