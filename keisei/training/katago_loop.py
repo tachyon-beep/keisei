@@ -51,7 +51,9 @@ from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tiered_pool import TieredPool
+from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.priority_scorer import PriorityScorer
 from keisei.training.model_registry import build_model
 from keisei.training.tournament import LeagueTournament
 
@@ -574,7 +576,8 @@ class KataGoTrainingLoop:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
             self.store = OpponentStore(self.db_path, league_dir)
             self.tiered_pool = TieredPool(self.store, config.league, learner_lr=self.ppo.params.learning_rate)
-            self.scheduler = MatchScheduler(config.league.scheduler)
+            priority_scorer = PriorityScorer(config.league.priority)
+            self.scheduler = MatchScheduler(config.league.scheduler, priority_scorer=priority_scorer)
             # Bootstrap snapshot so pool is never empty
             bootstrap_entry = self.tiered_pool.snapshot_learner(
                 self._base_model, config.model.architecture,
@@ -608,6 +611,8 @@ class KataGoTrainingLoop:
                         max_ply=config.training.max_ply,
                     )
 
+                concurrent_pool = ConcurrentMatchPool(config.league.concurrency)
+
                 self._tournament = LeagueTournament(
                     store=self.store,
                     scheduler=self.scheduler,
@@ -620,6 +625,7 @@ class KataGoTrainingLoop:
                     learner_entry_id=self._learner_entry_id,
                     historical_library=self.tiered_pool.historical_library,
                     gauntlet=gauntlet,
+                    concurrent_pool=concurrent_pool,
                 )
 
         self._check_resume()

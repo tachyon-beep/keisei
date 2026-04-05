@@ -190,7 +190,14 @@ class LeagueTournament:
                                 entry_a.display_name, entry_b.display_name,
                             )
                             continue
+                        if self.scheduler._priority_scorer is not None:
+                            self.scheduler._priority_scorer.record_round_result(
+                                entry_a.id, entry_b.id,
+                            )
                         self._stop_event.wait(self.pause_seconds)
+
+                    if self.scheduler._priority_scorer is not None:
+                        self.scheduler._priority_scorer.advance_round()
 
                 logger.info("Tournament round E%d complete", epoch)
 
@@ -301,6 +308,19 @@ class LeagueTournament:
                             self.dynamic_trainer.update(
                                 entry, device=str(self.device),
                             )
+
+        # Update priority scorer state after concurrent round
+        if self.scheduler._priority_scorer is not None:
+            for result in results:
+                total = result.a_wins + result.b_wins + result.draws
+                for _ in range(total):
+                    self.scheduler._priority_scorer.record_result(
+                        result.entry_a.id, result.entry_b.id,
+                    )
+                self.scheduler._priority_scorer.record_round_result(
+                    result.entry_a.id, result.entry_b.id,
+                )
+            self.scheduler._priority_scorer.advance_round()
 
     # ── Per-match logic ─────────────────────────────────────
 
