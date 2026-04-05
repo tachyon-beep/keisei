@@ -14,9 +14,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from keisei.config import MatchSchedulerConfig
+from keisei.config import ConcurrencyConfig, MatchSchedulerConfig
 from keisei.db import init_db
 from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.tournament import LeagueTournament
 
@@ -417,3 +418,35 @@ class TestConstructor:
         assert t.num_envs == 8
         assert t.games_per_match == 16
         assert t.k_factor == 32.0
+
+
+# ===========================================================================
+# Concurrent pool integration
+# ===========================================================================
+
+
+class TestConcurrentTournament:
+    """Test ConcurrentMatchPool integration with LeagueTournament."""
+
+    def test_tournament_accepts_concurrent_pool(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        scheduler = _make_scheduler()
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4,
+        )
+        pool = ConcurrentMatchPool(config)
+        t = _make_tournament(store, scheduler, concurrent_pool=pool)
+        assert t.concurrent_pool is pool
+
+    def test_tournament_without_pool_still_works(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        t = _make_tournament(store)
+        assert t.concurrent_pool is None

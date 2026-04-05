@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.dynamic_trainer import DynamicTrainer
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ class LeagueTournament:
         historical_library: HistoricalLibrary | None = None,
         gauntlet: HistoricalGauntlet | None = None,
         dynamic_trainer: DynamicTrainer | None = None,
+        concurrent_pool: ConcurrentMatchPool | None = None,
     ) -> None:
         """
         Args:
@@ -84,6 +86,7 @@ class LeagueTournament:
         self.historical_library = historical_library
         self.gauntlet = gauntlet
         self.dynamic_trainer = dynamic_trainer
+        self.concurrent_pool = concurrent_pool
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -139,8 +142,13 @@ class LeagueTournament:
         # Lazy-import VecEnv so the module can be imported without shogi_gym
         from shogi_gym import VecEnv
 
+        num_envs = (
+            self.concurrent_pool.config.total_envs
+            if self.concurrent_pool is not None
+            else self.num_envs
+        )
         vecenv = VecEnv(
-            num_envs=self.num_envs,
+            num_envs=num_envs,
             max_ply=self.max_ply,
             observation_mode="katago",  # type: ignore[call-arg]
             action_mode="spatial",
@@ -168,19 +176,21 @@ class LeagueTournament:
 
                 logger.info("Tournament round E%d: %d pairings", epoch, len(pairings))
 
-                for entry_a, entry_b in pairings:
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        self._run_one_match(vecenv, entry_a, entry_b, epoch=epoch)
-                    except Exception:
-                        logger.exception(
-                            "Match failed: %s vs %s",
-                            entry_a.display_name, entry_b.display_name,
-                        )
-                        continue
-
-                    self._stop_event.wait(self.pause_seconds)
+                if self.concurrent_pool is not None:
+                    self._run_concurrent_round(vecenv, pairings, epoch)
+                else:
+                    for entry_a, entry_b in pairings:
+                        if self._stop_event.is_set():
+                            break
+                        try:
+                            self._run_one_match(vecenv, entry_a, entry_b, epoch=epoch)
+                        except Exception:
+                            logger.exception(
+                                "Match failed: %s vs %s",
+                                entry_a.display_name, entry_b.display_name,
+                            )
+                            continue
+                        self._stop_event.wait(self.pause_seconds)
 
                 logger.info("Tournament round E%d complete", epoch)
 
@@ -219,6 +229,78 @@ class LeagueTournament:
             and entry_b.role in trainable_roles
             and (entry_a.role == Role.DYNAMIC or entry_b.role == Role.DYNAMIC)
         )
+
+    # ── Concurrent round ───────────────────────────────────
+
+    def _run_concurrent_round(
+        self,
+        vecenv: object,
+        pairings: list[tuple[OpponentEntry, OpponentEntry]],
+        epoch: int,
+    ) -> None:
+        """Run a round using the ConcurrentMatchPool."""
+        assert self.concurrent_pool is not None
+
+        def _load_fn(entry: OpponentEntry) -> object:
+            return self.store.load_opponent(entry, device=str(self.device))
+
+        def _release_fn(model_a: object, model_b: object) -> None:
+            release_models(model_a, model_b, device_type=self.device.type)
+
+        results = self.concurrent_pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=_load_fn,
+            release_fn=_release_fn,
+            device=self.device,
+            games_per_match=self.games_per_match,
+            max_ply=self.max_ply,
+            stop_event=self._stop_event,
+            trainable_fn=self._is_trainable_match if self.dynamic_trainer else None,
+        )
+        for result in results:
+            total = result.a_wins + result.b_wins + result.draws
+            if total == 0:
+                continue
+            current_a = self.store.get_entry(result.entry_a.id)
+            current_b = self.store.get_entry(result.entry_b.id)
+            if current_a is None or current_b is None:
+                continue
+            result_score = (result.a_wins + 0.5 * result.draws) / total
+            new_a_elo, new_b_elo = compute_elo_update(
+                current_a.elo_rating, current_b.elo_rating,
+                result=result_score, k=self.k_factor,
+            )
+            self.store.record_result(
+                epoch=epoch,
+                learner_id=result.entry_a.id,
+                opponent_id=result.entry_b.id,
+                wins=result.a_wins,
+                losses=result.b_wins,
+                draws=result.draws,
+                elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
+                elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
+            )
+            self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
+            self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
+            logger.info(
+                "  %s vs %s — %dW %dL %dD",
+                result.entry_a.display_name, result.entry_b.display_name,
+                result.a_wins, result.b_wins, result.draws,
+            )
+            if self.dynamic_trainer and result.rollout is not None:
+                for i, entry in enumerate([result.entry_a, result.entry_b]):
+                    if entry.role == Role.DYNAMIC:
+                        self.dynamic_trainer.record_match(
+                            entry.id, result.rollout, side=i,
+                        )
+                        if (
+                            self.dynamic_trainer.should_update(entry.id)
+                            and not self.dynamic_trainer.is_rate_limited()
+                        ):
+                            self.dynamic_trainer.update(
+                                entry, device=str(self.device),
+                            )
 
     # ── Per-match logic ─────────────────────────────────────
 
