@@ -443,15 +443,18 @@ class KataGoPPOAlgorithm:
         try:
             # Record CUDA events around forward pass only (not the legal mask guard,
             # which includes a CPU-syncing .nonzero() call — see spec hazard H8).
+            # Pin both events to the same stream explicitly so DDP/NCCL stream
+            # switches between start and end don't silently mis-pair them.
             if device.type == "cuda":
+                _sa_stream = torch.cuda.current_stream(device)
                 _sa_start = torch.cuda.Event(enable_timing=True)
                 _sa_end = torch.cuda.Event(enable_timing=True)
-                _sa_start.record()
+                _sa_start.record(_sa_stream)
 
             output = model(obs)
 
             if device.type == "cuda":
-                _sa_end.record()
+                _sa_end.record(_sa_stream)
                 # Do NOT synchronize here — events are read lazily in flush_timings()
                 self._timing_events["select_actions_forward_ms"].append((_sa_start, _sa_end))
 
@@ -527,9 +530,10 @@ class KataGoPPOAlgorithm:
             terminated_2d = data[gae_dones_key].reshape(T, N)
 
             if device.type == "cuda":
+                _gae_stream = torch.cuda.current_stream(device)
                 _gae_start = torch.cuda.Event(enable_timing=True)
                 _gae_end = torch.cuda.Event(enable_timing=True)
-                _gae_start.record()
+                _gae_start.record(_gae_stream)
 
             if device.type == "cuda":
                 # GPU path: move buffer tensors to GPU, compute GAE there, return to CPU.
@@ -548,7 +552,7 @@ class KataGoPPOAlgorithm:
                 ).reshape(-1)
 
             if device.type == "cuda":
-                _gae_end.record()
+                _gae_end.record(_gae_stream)
                 self._timing_events["gae_ms"].append((_gae_start, _gae_end))
         elif "env_ids" in data:
             # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
@@ -663,9 +667,10 @@ class KataGoPPOAlgorithm:
                 batch_score_targets = gpu_score_targets[idx]
 
                 if device.type == "cuda":
+                    _fb_stream = torch.cuda.current_stream(device)
                     _fb_start = torch.cuda.Event(enable_timing=True)
                     _fb_end = torch.cuda.Event(enable_timing=True)
-                    _fb_start.record()
+                    _fb_start.record(_fb_stream)
 
                 with autocast(device_type=autocast_device, dtype=amp_dtype, enabled=self.params.use_amp):
                     # Use compiled_train if available; fall back to eager forward_model.
@@ -754,8 +759,12 @@ class KataGoPPOAlgorithm:
                 self.scaler.update()
 
                 if device.type == "cuda":
-                    _fb_end.record()
-                    # Do NOT synchronize — events read lazily in flush_timings()
+                    # Note: under DDP, NCCL allreduce runs on a separate stream
+                    # overlapped with compute. This timer captures compute-stream
+                    # time only, not communication. To include NCCL time, a
+                    # torch.cuda.synchronize() would be needed here, but that
+                    # would defeat the zero-sync timing design.
+                    _fb_end.record(_fb_stream)
                     self._timing_events["update_forward_backward_ms"].append((_fb_start, _fb_end))
 
                 # Accumulate on GPU — no .item() sync per mini-batch
