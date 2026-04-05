@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+if TYPE_CHECKING:
+    from keisei.training.dynamic_trainer import MatchRollout
 
-def _combine_rollouts(rollouts: list[Any]) -> Any:
+
+def _combine_rollouts(rollouts: list[MatchRollout]) -> MatchRollout:
     """Concatenate multiple batch rollouts along step dimension."""
     from keisei.training.dynamic_trainer import MatchRollout
 

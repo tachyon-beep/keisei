@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 import torch
 
 from keisei.training.dynamic_trainer import DynamicTrainer
+
+if TYPE_CHECKING:
+    from keisei.training.dynamic_trainer import MatchRollout
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler
@@ -290,7 +294,7 @@ class LeagueTournament:
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
         collect_rollout: bool = False,
-    ) -> tuple[int, int, int] | tuple[int, int, int, object]:
+    ) -> tuple[int, int, int] | tuple[int, int, int, MatchRollout]:
         """Play a set of games between two frozen models.
 
         Returns (a_wins, b_wins, draws), or (a_wins, b_wins, draws, MatchRollout)

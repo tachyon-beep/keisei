@@ -103,6 +103,8 @@ class FrontierManager:
             return
 
         with self._store.transaction():
+            # Re-fetch inside transaction for accurate slot count
+            frontier_entries = self._store.list_by_role(Role.FRONTIER_STATIC)
             new_entry = self._store.clone_entry(
                 candidate.id,
                 Role.FRONTIER_STATIC,
@@ -199,16 +201,7 @@ class RecentFixedManager:
 
     def get_unique_opponent_count(self, entry_id: int) -> int:
         """Count distinct opponents this entry has faced (in either seat)."""
-        with self._store._lock:
-            row = self._store._conn.execute(
-                """SELECT COUNT(DISTINCT other_id) AS cnt FROM (
-                       SELECT opponent_id AS other_id FROM league_results WHERE learner_id = ?
-                       UNION ALL
-                       SELECT learner_id AS other_id FROM league_results WHERE opponent_id = ?
-                   )""",
-                (entry_id, entry_id),
-            ).fetchone()
-            return row["cnt"] if row else 0
+        return self._store.count_unique_opponents(entry_id)
 
     def review_oldest(self) -> tuple[ReviewOutcome, OpponentEntry]:
         """Review the oldest active Recent Fixed entry for promotion/retirement.
@@ -316,10 +309,7 @@ class DynamicManager:
                 source_entry.id, Role.DYNAMIC, "promoted from recent_fixed"
             )
             # Set protection
-            self._store._conn.execute(
-                "UPDATE league_entries SET protection_remaining = ? WHERE id = ?",
-                (self._config.protection_matches, entry.id),
-            )
+            self._store.set_protection(entry.id, self._config.protection_matches)
             logger.info(
                 "Dynamic admit: id=%d (from id=%d), protection=%d",
                 entry.id,
@@ -327,21 +317,26 @@ class DynamicManager:
                 self._config.protection_matches,
             )
             # Re-fetch to get updated protection_remaining
-            refreshed = self._store._get_entry(entry.id)
+            refreshed = self._store.get_entry(entry.id)
             assert refreshed is not None
             return refreshed
 
-    def evict_weakest(self) -> OpponentEntry | None:
+    def evict_weakest(self, disabled_entry_ids: set[int] | None = None) -> OpponentEntry | None:
         """Evict the lowest-Elo eligible entry (not protected, enough games).
+
+        Disabled entries (passed via *disabled_entry_ids*) are always eligible
+        for eviction regardless of protection or games played.
 
         Returns the evicted entry, or None if all entries are protected.
         """
         entries = self._store.list_by_role(Role.DYNAMIC)
+        disabled = disabled_entry_ids or set()
         eligible = [
             e
             for e in entries
-            if e.protection_remaining == 0
-            and e.games_played >= self._config.min_games_before_eviction
+            if (e.protection_remaining == 0
+                and e.games_played >= self._config.min_games_before_eviction)
+            or e.id in disabled
         ]
         if not eligible:
             logger.info("Dynamic evict_weakest: no eligible entries")

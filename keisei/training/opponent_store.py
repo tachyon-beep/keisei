@@ -216,7 +216,7 @@ class OpponentStore:
         # limitation; persisting to DB is tracked as keisei-76cc7fdc85.
         self._pinned: set[int] = set()
         self._lock = threading.RLock()
-        self._in_transaction = False
+        self._transaction_depth: int = 0
         self._conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
@@ -244,17 +244,23 @@ class OpponentStore:
 
     @contextmanager
     def transaction(self) -> Generator[None, None, None]:
-        """Atomic multi-operation context. Holds lock, defers commit."""
+        """Atomic multi-operation context. Holds lock, defers commit.
+
+        Supports nesting: only the outermost transaction commits/rollbacks.
+        """
         with self._lock:
-            self._in_transaction = True
+            self._transaction_depth += 1
+            is_outermost = self._transaction_depth == 1
             try:
                 yield
-                self._conn.commit()
+                if is_outermost:
+                    self._conn.commit()
             except Exception:
-                self._conn.rollback()
+                if is_outermost:
+                    self._conn.rollback()
                 raise
             finally:
-                self._in_transaction = False
+                self._transaction_depth -= 1
 
     # ------------------------------------------------------------------
     # Entry CRUD
@@ -299,7 +305,7 @@ class OpponentStore:
 
             self.log_transition(entry_id, None, role, None, EntryStatus.ACTIVE, "added")
 
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
             logger.info(
@@ -341,7 +347,7 @@ class OpponentStore:
                 (str(dst_path), entry_id),
             )
             self.log_transition(entry_id, None, new_role, None, EntryStatus.ACTIVE, reason)
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
             entry = self._get_entry(entry_id)
             assert entry is not None
@@ -362,7 +368,7 @@ class OpponentStore:
                 entry_id, old_role, old_role,
                 EntryStatus.ACTIVE, EntryStatus.RETIRED, reason,
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     def update_role(self, entry_id: int, new_role: Role, reason: str) -> None:
@@ -380,7 +386,7 @@ class OpponentStore:
                 entry_id, old_role, new_role,
                 entry.status, entry.status, reason,
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -468,7 +474,30 @@ class OpponentStore:
                  str(to_status) if to_status else None,
                  reason),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
+                self._conn.commit()
+
+    def count_unique_opponents(self, entry_id: int) -> int:
+        """Count distinct opponents this entry has faced (in either seat)."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT COUNT(DISTINCT other_id) AS cnt FROM (
+                       SELECT opponent_id AS other_id FROM league_results WHERE learner_id = ?
+                       UNION ALL
+                       SELECT learner_id AS other_id FROM league_results WHERE opponent_id = ?
+                   )""",
+                (entry_id, entry_id),
+            ).fetchone()
+            return row["cnt"] if row else 0
+
+    def set_protection(self, entry_id: int, count: int) -> None:
+        """Set the protection_remaining value for an entry."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE league_entries SET protection_remaining = ? WHERE id = ?",
+                (count, entry_id),
+            )
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     def decrement_protection(self, entry_id: int) -> None:
@@ -480,7 +509,7 @@ class OpponentStore:
                    WHERE id = ?""",
                 (entry_id,),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -515,7 +544,7 @@ class OpponentStore:
             self._conn.execute(
                 "UPDATE league_meta SET bootstrapped = 1 WHERE id = 1"
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -564,7 +593,7 @@ class OpponentStore:
                 "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
                 (entry_id, epoch, new_elo),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     def record_result(
@@ -602,7 +631,7 @@ class OpponentStore:
             self.decrement_protection(learner_id)
             if opponent_id != learner_id:
                 self.decrement_protection(opponent_id)
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -623,7 +652,7 @@ class OpponentStore:
             raise ValueError(f"Invalid Elo column: {column!r}")
         with self._lock:
             self._conn.execute(sql, (new_elo, entry_id))
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -652,7 +681,7 @@ class OpponentStore:
                      selection_mode = excluded.selection_mode""",
                 (slot_index, target_epoch, entry_id, actual_epoch, selection_mode),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     def get_historical_slots(self) -> list[dict[str, Any]]:
@@ -694,7 +723,7 @@ class OpponentStore:
                 "UPDATE league_entries SET optimizer_path = ? WHERE id = ?",
                 (str(opt_path), entry_id),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
             logger.info("Saved optimizer for entry %d -> %s", entry_id, opt_path.name)
 
@@ -710,7 +739,10 @@ class OpponentStore:
                 "Optimizer file does not exist for entry %d: %s", entry_id, opt_path,
             )
             return None
-        return torch.load(opt_path, map_location=device, weights_only=True)
+        # Optimizer state is self-generated, not from untrusted sources.
+        # weights_only=False is needed because Adam state contains Python
+        # ints and dicts alongside tensors.
+        return torch.load(opt_path, map_location=device, weights_only=False)
 
     def increment_update_count(self, entry_id: int) -> None:
         """Increment the update_count and set last_train_at to now."""
@@ -721,7 +753,7 @@ class OpponentStore:
                 "WHERE id = ?",
                 (entry_id,),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -750,5 +782,5 @@ class OpponentStore:
                 (epoch, entry_id, historical_slot, historical_entry_id,
                  wins, losses, draws, elo_before, elo_after),
             )
-            if not self._in_transaction:
+            if self._transaction_depth == 0:
                 self._conn.commit()
