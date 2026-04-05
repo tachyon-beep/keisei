@@ -424,7 +424,7 @@ class TestFrontierReview:
 
     def test_frontier_review_promotes_candidate(self, store):
         """Dynamic entry meeting criteria is promoted; weakest Frontier retired."""
-        config = _make_frontier_config(slots=5, min_tenure_epochs=0)
+        config = _make_frontier_config(slots=5, min_tenure_epochs=0, span_selection=False)
         promoter = FrontierPromoter(config)
 
         # Seed 5 Frontier entries with varying Elo
@@ -499,7 +499,7 @@ class TestFrontierReview:
 
     def test_frontier_review_retires_weakest_or_stalest(self, store):
         """Weakest Frontier entry past min_tenure is retired on promotion."""
-        config = _make_frontier_config(slots=3, min_tenure_epochs=50)
+        config = _make_frontier_config(slots=3, min_tenure_epochs=50, span_selection=False)
         promoter = FrontierPromoter(config)
 
         # 3 Frontier entries: one weak and old, one strong and old, one mid and new
@@ -523,6 +523,35 @@ class TestFrontierReview:
         retired = store.get_entry(weak_old.id)
         assert retired is not None
         assert retired.status == EntryStatus.RETIRED
+
+    def test_frontier_review_span_selection_retires_closest_elo(self, store):
+        """With span_selection=True, retire entry closest to candidate Elo, not weakest."""
+        config = _make_frontier_config(
+            slots=3, min_tenure_epochs=0, span_selection=True,
+        )
+        promoter = FrontierPromoter(config)
+
+        # 3 Frontier entries: 800, 1000, 1200
+        f800 = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=800)
+        f1000 = _add_entry(store, epoch=1, role=Role.FRONTIER_STATIC, elo=1000)
+        f1200 = _add_entry(store, epoch=2, role=Role.FRONTIER_STATIC, elo=1200)
+
+        # Candidate at Elo 1050 — closest to f1000 (distance=50) vs f800 (250) and f1200 (150)
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1050)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+
+        # f1000 should be retired (closest to candidate at 1050), not f800 (weakest)
+        assert store.get_entry(f1000.id).status == EntryStatus.RETIRED
+        assert store.get_entry(f800.id).status == EntryStatus.ACTIVE
+        assert store.get_entry(f1200.id).status == EntryStatus.ACTIVE
 
     def test_frontier_review_blocks_promotion_when_all_under_tenure(self, store):
         """When all Frontier entries are under min_tenure, no retirement or promotion occurs."""

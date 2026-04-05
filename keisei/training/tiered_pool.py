@@ -7,7 +7,9 @@ import logging
 from keisei.config import LeagueConfig
 from keisei.training.dynamic_trainer import DynamicTrainer
 from keisei.training.frontier_promoter import FrontierPromoter
+from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary, HistoricalSlot
+from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tier_managers import (
@@ -40,6 +42,14 @@ class TieredPool:
         self.historical_library = HistoricalLibrary(store, config.history)
         self.historical_library.refresh(0)
         self.role_elo_tracker = RoleEloTracker(store, config.elo)
+        self.scheduler = MatchScheduler(config.scheduler)
+        self.gauntlet: HistoricalGauntlet | None = None
+        if config.gauntlet.enabled:
+            self.gauntlet = HistoricalGauntlet(
+                store=store,
+                role_elo_tracker=self.role_elo_tracker,
+                config=config.gauntlet,
+            )
 
         if config.dynamic.training_enabled:
             self.dynamic_trainer: DynamicTrainer | None = DynamicTrainer(
@@ -149,6 +159,14 @@ class TieredPool:
         """Return all active entries across all tiers."""
         return self.store.list_entries()
 
+    def sample_opponent_for_learner(self) -> OpponentEntry:
+        """Sample an opponent for the learner using §11 tier ratios.
+
+        Uses the MatchScheduler's configured learner_dynamic/frontier/recent
+        ratios (default 50/30/20) to pick from the appropriate tier.
+        """
+        return self.scheduler.sample_for_learner(self.entries_by_role())
+
     # ------------------------------------------------------------------
     # Epoch hooks
     # ------------------------------------------------------------------
@@ -159,6 +177,12 @@ class TieredPool:
             self.frontier_manager.review(epoch)
         if self.historical_library.is_due_for_refresh(epoch):
             self.historical_library.refresh(epoch)
+
+    def is_gauntlet_due(self, epoch: int) -> bool:
+        """Check whether a historical gauntlet should run at this epoch."""
+        if self.gauntlet is None:
+            return False
+        return self.gauntlet.is_due(epoch)
 
     def get_historical_slots(self) -> list[HistoricalSlot]:
         """Delegate to the historical library."""

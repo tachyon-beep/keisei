@@ -121,7 +121,8 @@ class FrontierManager:
             retired_id = None
             if len(frontier_entries) >= self._config.slots:
                 retired_id = self._retire_weakest_or_stalest(
-                    frontier_entries, epoch
+                    frontier_entries, epoch,
+                    candidate_elo=candidate.elo_frontier,
                 )
                 if retired_id is None:
                     # All entries under tenure — skip promotion to respect cooldown.
@@ -149,9 +150,15 @@ class FrontierManager:
         )
 
     def _retire_weakest_or_stalest(
-        self, frontier_entries: list[OpponentEntry], epoch: int
+        self, frontier_entries: list[OpponentEntry], epoch: int,
+        candidate_elo: float | None = None,
     ) -> int | None:
-        """Retire the weakest or stalest Frontier entry. Returns retired entry ID."""
+        """Retire the weakest or stalest Frontier entry. Returns retired entry ID.
+
+        When span_selection is enabled and candidate_elo is provided, retires
+        the entry closest in Elo to the candidate (preserving spread) instead
+        of the weakest (§6.1).
+        """
         if not frontier_entries:
             return None
 
@@ -175,6 +182,11 @@ class FrontierManager:
                 epoch,
             )
             return None
+        elif self._config.span_selection and candidate_elo is not None:
+            # §6.1 span_selection: retire the entry closest in Elo to the
+            # incoming candidate, preserving difficulty spread.  This prevents
+            # Frontier from clustering at the high end over time.
+            target = min(eligible, key=lambda e: (abs(e.elo_frontier - candidate_elo), e.created_epoch))
         else:
             # Retire lowest elo_frontier; tie-break by oldest created_epoch.
             # Must match the metric used by FrontierPromoter (elo_frontier)

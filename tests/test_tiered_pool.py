@@ -14,6 +14,8 @@ from keisei.config import (
     RecentFixedConfig,
 )
 from keisei.db import init_db
+from keisei.training.historical_gauntlet import HistoricalGauntlet
+from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.opponent_store import EloColumn, OpponentStore, Role, EntryStatus
 from keisei.training.tiered_pool import TieredPool
 
@@ -237,6 +239,31 @@ class TestListAllActive:
         assert len(pool.list_all_active()) == 0
 
 
+class TestSampleOpponentForLearner:
+    def test_returns_entry_from_populated_tier(self, pool_setup):
+        """sample_opponent_for_learner returns an entry from one of the tiers."""
+        pool, store, _ = pool_setup
+        model = torch.nn.Linear(10, 10)
+        store.add_entry(model, "resnet", {}, epoch=1, role=Role.FRONTIER_STATIC)
+        store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
+        store.add_entry(model, "resnet", {}, epoch=3, role=Role.RECENT_FIXED)
+
+        result = pool.sample_opponent_for_learner()
+        assert result.role in (Role.FRONTIER_STATIC, Role.DYNAMIC, Role.RECENT_FIXED)
+
+    def test_raises_when_no_entries(self, pool_setup):
+        """sample_opponent_for_learner raises when pool is empty."""
+        pool, store, _ = pool_setup
+        with pytest.raises(ValueError, match="No entries available"):
+            pool.sample_opponent_for_learner()
+
+    def test_scheduler_attribute_exists(self, pool_setup):
+        """TieredPool exposes a scheduler attribute."""
+        pool, store, _ = pool_setup
+        assert hasattr(pool, 'scheduler')
+        assert isinstance(pool.scheduler, MatchScheduler)
+
+
 class TestOnEpochEndHistoricalRefresh:
     """Regression: on_epoch_end must respect min_epoch_for_selection."""
 
@@ -275,6 +302,34 @@ class TestOnEpochEndHistoricalRefresh:
         with patch.object(pool.historical_library, "refresh") as mock_refresh:
             pool.on_epoch_end(100)
             mock_refresh.assert_called_once_with(100)
+
+
+class TestGauntletIntegration:
+    """TieredPool creates and exposes gauntlet when enabled."""
+
+    def test_gauntlet_created_when_enabled(self, pool_setup):
+        pool, store, _ = pool_setup
+        assert pool.gauntlet is not None
+        assert isinstance(pool.gauntlet, HistoricalGauntlet)
+
+    def test_gauntlet_not_created_when_disabled(self, tmp_path):
+        from keisei.config import GauntletConfig
+        db_path = str(tmp_path / "pool.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        config = LeagueConfig(gauntlet=GauntletConfig(enabled=False))
+        pool = TieredPool(store, config)
+        assert pool.gauntlet is None
+        assert pool.is_gauntlet_due(100) is False
+        store.close()
+
+    def test_is_gauntlet_due_delegates(self, pool_setup):
+        pool, store, _ = pool_setup
+        # Default gauntlet interval is 100
+        assert pool.is_gauntlet_due(100) is True
+        assert pool.is_gauntlet_due(50) is False
 
 
 # ===========================================================================

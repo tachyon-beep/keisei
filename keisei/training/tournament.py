@@ -29,7 +29,7 @@ from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler, is_training_match
 from keisei.training.match_utils import play_match, release_models
-from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
+from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
 
 logger = logging.getLogger(__name__)
@@ -310,6 +310,13 @@ class LeagueTournament:
                 current_b = self.store.get_entry(result.entry_b.id)
                 if current_a is None or current_b is None:
                     continue
+                # Skip results for entries retired mid-round (race with tier manager)
+                if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
+                    logger.info(
+                        "  Skipping result %s vs %s — entry retired mid-round",
+                        result.entry_a.display_name, result.entry_b.display_name,
+                    )
+                    continue
                 result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
                 context = RoleEloTracker.determine_match_context(
                     current_a, current_b,
@@ -324,6 +331,22 @@ class LeagueTournament:
                     result=result_score, k=k,
                 )
                 is_train = is_training_match(current_a, current_b)
+                # §9.1/13.3: store role-specific Elo (not composite) in match
+                # records so analytics see the context-appropriate view.
+                if self.role_elo_tracker:
+                    col_a, col_b = self.role_elo_tracker.columns_for_context(
+                        current_a, current_b, context,
+                    )
+                    elo_before_a = getattr(current_a, col_a.value)
+                    elo_before_b = getattr(current_b, (col_b or col_a).value)
+                    role_new_a, role_new_b = compute_elo_update(
+                        elo_before_a, elo_before_b, result=result_score, k=k,
+                    )
+                else:
+                    elo_before_a = current_a.elo_rating
+                    elo_before_b = current_b.elo_rating
+                    role_new_a = new_a_elo
+                    role_new_b = new_b_elo
                 self.store.record_result(
                     epoch=epoch,
                     entry_a_id=result.entry_a.id,
@@ -334,10 +357,10 @@ class LeagueTournament:
                     match_type="train" if is_train else "calibration",
                     role_a=current_a.role,
                     role_b=current_b.role,
-                    elo_before_a=current_a.elo_rating,
-                    elo_after_a=new_a_elo,
-                    elo_before_b=current_b.elo_rating,
-                    elo_after_b=new_b_elo,
+                    elo_before_a=elo_before_a,
+                    elo_after_a=role_new_a,
+                    elo_before_b=elo_before_b,
+                    elo_after_b=role_new_b,
                     training_updates_a=current_a.update_count,
                     training_updates_b=current_b.update_count,
                 )
@@ -429,6 +452,12 @@ class LeagueTournament:
             current_b = self.store.get_entry(entry_b.id)
             if current_a is None or current_b is None:
                 return total  # entry retired mid-round
+            if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
+                logger.info(
+                    "  Skipping %s vs %s — entry retired mid-round",
+                    entry_a.display_name, entry_b.display_name,
+                )
+                return total
             result_score = majority_wins_result(wins_a, wins_b, draws)
             context = RoleEloTracker.determine_match_context(
                 current_a, current_b,
@@ -442,16 +471,31 @@ class LeagueTournament:
                 current_a.elo_rating, current_b.elo_rating,
                 result=result_score, k=k,
             )
+            # §9.1/13.3: store role-specific Elo in match records
+            if self.role_elo_tracker:
+                col_a, col_b = self.role_elo_tracker.columns_for_context(
+                    current_a, current_b, context,
+                )
+                elo_before_a = getattr(current_a, col_a.value)
+                elo_before_b = getattr(current_b, (col_b or col_a).value)
+                role_new_a, role_new_b = compute_elo_update(
+                    elo_before_a, elo_before_b, result=result_score, k=k,
+                )
+            else:
+                elo_before_a = current_a.elo_rating
+                elo_before_b = current_b.elo_rating
+                role_new_a = new_a_elo
+                role_new_b = new_b_elo
             self.store.record_result(
                 epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,
                 wins_a=wins_a, wins_b=wins_b, draws=draws,
                 match_type="train" if is_trainable else "calibration",
                 role_a=current_a.role,
                 role_b=current_b.role,
-                elo_before_a=current_a.elo_rating,
-                elo_after_a=new_a_elo,
-                elo_before_b=current_b.elo_rating,
-                elo_after_b=new_b_elo,
+                elo_before_a=elo_before_a,
+                elo_after_a=role_new_a,
+                elo_before_b=elo_before_b,
+                elo_after_b=role_new_b,
                 training_updates_a=current_a.update_count,
                 training_updates_b=current_b.update_count,
             )

@@ -64,6 +64,20 @@ class RoleEloTracker:
             if column_b is not None:
                 self.store.update_role_elo(entry_b.id, column_b, new_b)
 
+    def columns_for_context(
+        self,
+        entry_a: OpponentEntry,
+        entry_b: OpponentEntry,
+        match_context: str,
+    ) -> tuple[EloColumn, EloColumn | None]:
+        """Return the Elo columns for each entry in a given match context.
+
+        Returns (column_a, column_b) where column_b is None for historical
+        matches (anchor's Elo is frozen).
+        """
+        col_a, col_b, _ = self._resolve_context(entry_a, entry_b, match_context)
+        return col_a, col_b
+
     def k_for_context(self, match_context: str) -> float:
         """Return the K-factor for a given match context.
 
