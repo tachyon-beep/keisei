@@ -90,13 +90,19 @@ def test_frontier_config_promotion_defaults():
 
 
 def test_frontier_config_promotion_validation():
-    """min_games_for_promotion < min_tenure_epochs should raise."""
-    with pytest.raises(ValueError, match="min_games_for_promotion"):
-        FrontierStaticConfig(min_games_for_promotion=50, min_tenure_epochs=100)
+    """Individual field bounds are validated independently."""
+    with pytest.raises(ValueError, match="min_games_for_promotion must be >= 0"):
+        FrontierStaticConfig(min_games_for_promotion=-1)
 
-    # Equal should be OK
-    fc = FrontierStaticConfig(min_games_for_promotion=100, min_tenure_epochs=100)
-    assert fc.min_games_for_promotion == 100
+    with pytest.raises(ValueError, match="min_tenure_epochs must be >= 0"):
+        FrontierStaticConfig(min_tenure_epochs=-1)
+
+    with pytest.raises(ValueError, match="slots must be >= 1"):
+        FrontierStaticConfig(slots=0)
+
+    # Different units — games < epochs is valid
+    fc = FrontierStaticConfig(min_games_for_promotion=64, min_tenure_epochs=100)
+    assert fc.min_games_for_promotion == 64
 
 
 # --- TOML loading tests ---

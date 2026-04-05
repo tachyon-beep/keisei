@@ -30,6 +30,7 @@ from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.match_utils import play_match, release_models
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
+from keisei.training.role_elo import RoleEloTracker
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class LeagueTournament:
         gauntlet: HistoricalGauntlet | None = None,
         dynamic_trainer: DynamicTrainer | None = None,
         concurrent_pool: ConcurrentMatchPool | None = None,
+        role_elo_tracker: RoleEloTracker | None = None,
     ) -> None:
         """
         Args:
@@ -71,6 +73,7 @@ class LeagueTournament:
             historical_library: The milestone library instance (Phase 2).
             gauntlet: The gauntlet runner instance (Phase 2).
             dynamic_trainer: DynamicTrainer for updating Dynamic entries (Phase 3).
+            role_elo_tracker: RoleEloTracker for per-context Elo updates (Phase 4).
         """
         self.store = store
         self.scheduler = scheduler
@@ -87,6 +90,7 @@ class LeagueTournament:
         self.gauntlet = gauntlet
         self.dynamic_trainer = dynamic_trainer
         self.concurrent_pool = concurrent_pool
+        self.role_elo_tracker = role_elo_tracker
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -295,6 +299,13 @@ class LeagueTournament:
             )
             self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
+            if self.role_elo_tracker:
+                context = RoleEloTracker.determine_match_context(
+                    current_a, current_b,
+                )
+                self.role_elo_tracker.update_from_result(
+                    current_a, current_b, result_score, context,
+                )
             logger.info(
                 "  %s vs %s — %dW %dL %dD",
                 result.entry_a.display_name, result.entry_b.display_name,
@@ -370,6 +381,13 @@ class LeagueTournament:
             )
             self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
+            if self.role_elo_tracker:
+                context = RoleEloTracker.determine_match_context(
+                    current_a, current_b,
+                )
+                self.role_elo_tracker.update_from_result(
+                    current_a, current_b, result_score, context,
+                )
             logger.info(
                 "  %s vs %s — %dW %dL %dD",
                 entry_a.display_name, entry_b.display_name,

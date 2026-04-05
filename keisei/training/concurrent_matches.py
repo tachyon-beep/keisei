@@ -208,7 +208,8 @@ class ConcurrentMatchPool:
         ).to(device)
         current_players = np.zeros(self.config.total_envs, dtype=np.uint8)
 
-        # Assign initial pairings
+        # Assign initial pairings and track slot→pairing mapping
+        slot_pairing_map: dict[int, int] = {}
         for slot in slots:
             if next_pairing_idx >= total_pairings:
                 break
@@ -217,15 +218,9 @@ class ConcurrentMatchPool:
                 slot, pairing_idx, pairings[pairing_idx],
                 load_fn, games_per_match, trainable_fn,
             )
-            next_pairing_idx += 1
-
-        # Track which pairing index each slot is currently running
-        slot_pairing_map: dict[int, int] = {}
-        _next = 0
-        for slot in slots:
             if slot.active:
-                slot_pairing_map[slot.index] = _next
-                _next += 1
+                slot_pairing_map[slot.index] = pairing_idx
+            next_pairing_idx += 1
 
         # Game loop
         ply_count = 0

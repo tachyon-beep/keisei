@@ -626,6 +626,8 @@ class KataGoTrainingLoop:
                     historical_library=self.tiered_pool.historical_library,
                     gauntlet=gauntlet,
                     concurrent_pool=concurrent_pool,
+                    role_elo_tracker=self.tiered_pool.role_elo_tracker,
+                    dynamic_trainer=self.tiered_pool.dynamic_trainer,
                 )
 
         self._check_resume()

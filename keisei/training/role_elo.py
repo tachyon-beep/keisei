@@ -43,19 +43,26 @@ class RoleEloTracker:
             result_score: 1.0 = A wins, 0.5 = draw, 0.0 = A loses.
             match_context: One of 'frontier', 'dynamic', 'recent',
                 'historical', or 'cross_dynamic_recent'.
+
+        For the 'historical' context, only entry_a (the learner) is updated.
+        Entry_b (the historical anchor) keeps its frozen Elo.
         """
         column_a, column_b, k = self._resolve_context(
             entry_a, entry_b, match_context
         )
 
         elo_a = self._get_entry_role_elo(entry_a, column_a)
-        elo_b = self._get_entry_role_elo(entry_b, column_b)
+        # When column_b is None (historical anchor), read its elo_historical
+        # for accurate Elo math but don't persist the update.
+        read_column_b = column_b if column_b is not None else EloColumn.HISTORICAL
+        elo_b = self._get_entry_role_elo(entry_b, read_column_b)
 
         new_a, new_b = compute_elo_update(elo_a, elo_b, result_score, k=k)
 
         with self.store.transaction():
             self.store.update_role_elo(entry_a.id, column_a, new_a)
-            self.store.update_role_elo(entry_b.id, column_b, new_b)
+            if column_b is not None:
+                self.store.update_role_elo(entry_b.id, column_b, new_b)
 
     def get_role_elos(self, entry_id: int) -> dict[str, float]:
         """Returns dict of {role: elo_value} for an entry."""
@@ -78,10 +85,16 @@ class RoleEloTracker:
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
         match_context: str,
-    ) -> tuple[EloColumn, EloColumn, float]:
-        """Determine which Elo columns to update and the K-factor."""
+    ) -> tuple[EloColumn, EloColumn | None, float]:
+        """Determine which Elo columns to update and the K-factor.
+
+        Returns None for column_b when the second participant is a frozen
+        anchor (historical benchmarks) whose Elo should not drift.
+        """
         if match_context == "historical":
-            return EloColumn.HISTORICAL, EloColumn.HISTORICAL, self.config.historical_k
+            # entry_b is a frozen anchor — read its elo_historical for the
+            # computation, but column_b=None signals "don't write back".
+            return EloColumn.HISTORICAL, None, self.config.historical_k
 
         if match_context == "frontier":
             return EloColumn.FRONTIER, EloColumn.FRONTIER, self.config.frontier_k

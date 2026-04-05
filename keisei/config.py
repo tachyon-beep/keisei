@@ -53,10 +53,15 @@ class FrontierStaticConfig:
     max_lineage_overlap: int = 2
 
     def __post_init__(self) -> None:
-        if self.min_games_for_promotion < self.min_tenure_epochs:
+        if self.slots < 1:
+            raise ValueError(f"slots must be >= 1, got {self.slots}")
+        if self.min_games_for_promotion < 0:
             raise ValueError(
-                f"min_games_for_promotion ({self.min_games_for_promotion}) "
-                f"must be >= min_tenure_epochs ({self.min_tenure_epochs})"
+                f"min_games_for_promotion must be >= 0, got {self.min_games_for_promotion}"
+            )
+        if self.min_tenure_epochs < 0:
+            raise ValueError(
+                f"min_tenure_epochs must be >= 0, got {self.min_tenure_epochs}"
             )
 
 

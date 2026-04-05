@@ -105,6 +105,8 @@ class TieredPool:
         """Run end-of-epoch maintenance (frontier review, historical refresh, etc.)."""
         if self.frontier_manager.is_due_for_review(epoch):
             self.frontier_manager.review(epoch)
+        if epoch > 0 and epoch % self.config.history.refresh_interval_epochs == 0:
+            self.historical_library.refresh(epoch)
 
     def get_historical_slots(self) -> list[HistoricalSlot]:
         """Delegate to the historical library."""

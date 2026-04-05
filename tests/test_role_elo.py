@@ -60,7 +60,8 @@ class TestUpdateFromResult:
         a_after = store._get_entry(a.id)
         assert a_after.elo_recent > 1000.0
 
-    def test_historical_match_updates_elo_historical(self, elo_setup):
+    def test_historical_match_updates_learner_only(self, elo_setup):
+        """Historical context: learner (a) gets updated, anchor (b) stays frozen."""
         tracker, store, model = elo_setup
         a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
         b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
@@ -70,7 +71,7 @@ class TestUpdateFromResult:
         a_after = store._get_entry(a.id)
         b_after = store._get_entry(b.id)
         assert a_after.elo_historical > 1000.0
-        assert b_after.elo_historical < 1000.0
+        assert b_after.elo_historical == 1000.0  # anchor stays frozen
 
     def test_cross_dynamic_recent(self, elo_setup):
         tracker, store, model = elo_setup
