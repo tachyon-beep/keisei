@@ -243,7 +243,7 @@ class TestTierConfigs:
         assert cfg.slots == 10
         assert cfg.protection_matches == 24
         assert cfg.min_games_before_eviction == 40
-        assert cfg.training_enabled is False
+        assert cfg.training_enabled is True
 
     def test_match_scheduler_defaults(self):
         cfg = MatchSchedulerConfig()
