@@ -105,6 +105,7 @@ class TestScore:
             uncertainty_weight=0.0,
             recent_fixed_bonus=0.0,
             diversity_weight=0.0,
+            match_class_weight=0.0,
             repeat_penalty=0.0,
             lineage_penalty=0.0,
         )

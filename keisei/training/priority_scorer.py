@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, deque
 
 from keisei.config import PriorityScorerConfig
+from keisei.training.match_scheduler import MATCH_CLASS_WEIGHTS, classify_match
 from keisei.training.opponent_store import OpponentEntry, Role
 
 
@@ -79,6 +80,10 @@ class PriorityScorer:
             return 0.5
         return 0.0
 
+    def _match_class_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        """§8.3 match-class weight: D-vs-D highest, FS-vs-FS lowest."""
+        return MATCH_CLASS_WEIGHTS.get(classify_match(a, b), 0.0)
+
     def score(self, a: OpponentEntry, b: OpponentEntry) -> float:
         """Compute priority score for a pairing. Higher = more informative.
 
@@ -92,6 +97,7 @@ class PriorityScorer:
             + c.uncertainty_weight * self._uncertainty_bonus(a, b)
             + c.recent_fixed_bonus * self._has_recent_fixed(a, b)
             + c.diversity_weight * self._lineage_diversity(a, b)
+            + c.match_class_weight * self._match_class_bonus(a, b)
             + c.repeat_penalty * self._repeat_count(a.id, b.id)
             + c.lineage_penalty * self._lineage_closeness(a, b)
         )

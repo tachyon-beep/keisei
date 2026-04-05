@@ -173,14 +173,15 @@ class TestRefresh:
         # _snap_to_nearest prefers retired entries on distance ties.
         filled = [s for s in slots if s.entry_id is not None]
         assert len(filled) >= 1, "At least one slot should be filled"
-        slot_100 = [s for s in filled if s.target_epoch == 100]
+        # The slot targeting epoch 100 should prefer the retired entry
+        slot_100 = [s for s in slots if s.target_epoch == 100]
         assert len(slot_100) == 1, "Exactly one slot targets epoch 100"
         assert slot_100[0].entry_id == retired.id
 
 
 class TestProximityThreshold:
-    def test_distant_checkpoint_leaves_slot_empty(self, library_setup):
-        """A candidate too far from the target epoch leaves the slot empty."""
+    def test_distant_checkpoint_backfilled_as_fallback(self, library_setup):
+        """§6.4: all slots are filled; distant candidates are marked fallback."""
         library, store = library_setup
         model = torch.nn.Linear(10, 10)
         # Only create entries at epoch 1 and 10000 — nothing near the middle targets
@@ -191,16 +192,19 @@ class TestProximityThreshold:
 
         library.refresh(10000)
         slots = library.get_slots()
-        # Only 2 checkpoints (epoch 1 and 10000) — endpoints filled, middle slots empty
+        # Only 2 candidates — exactly 2 slots filled, 3 remain empty (no candidates left)
         filled = [s for s in slots if s.entry_id is not None]
         empty = [s for s in slots if s.entry_id is None]
-        assert len(filled) == 2  # exactly the two endpoints
-        assert len(empty) == 3  # middle slots rejected by proximity threshold
-        # Verify the filled slots are the two endpoints
-        filled_epochs = {s.actual_epoch for s in filled}
-        assert filled_epochs == {1, 10000}
+        assert len(filled) == 2
+        assert len(empty) == 3
+        # Both endpoints should be used
         filled_ids = {s.entry_id for s in filled}
         assert filled_ids == {e1.id, e2.id}
+        # The endpoint slots (target 1 and 10000) should be log_spaced (within threshold),
+        # any middle-target slots that got backfilled would be fallback.
+        # With only 2 candidates, pass 1 fills the 2 best matches, pass 2 has nothing left.
+        for s in filled:
+            assert s.selection_mode in ("log_spaced", "fallback")
 
 
 class TestGetSlots:

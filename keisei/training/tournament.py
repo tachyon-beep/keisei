@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
-from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.match_scheduler import MatchScheduler, is_training_match
 from keisei.training.match_utils import play_match, release_models
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
@@ -268,13 +268,8 @@ class LeagueTournament:
     def _is_trainable_match(
         self, entry_a: OpponentEntry, entry_b: OpponentEntry,
     ) -> bool:
-        """D-vs-D or D-vs-RF produces training data. D-vs-FS and Historical do not."""
-        trainable_roles = {Role.DYNAMIC, Role.RECENT_FIXED}
-        return (
-            entry_a.role in trainable_roles
-            and entry_b.role in trainable_roles
-            and (entry_a.role == Role.DYNAMIC or entry_b.role == Role.DYNAMIC)
-        )
+        """D-vs-D or D-vs-RF produces training data (§8.2 / §10.1)."""
+        return is_training_match(entry_a, entry_b)
 
     # ── Concurrent round ───────────────────────────────────
 

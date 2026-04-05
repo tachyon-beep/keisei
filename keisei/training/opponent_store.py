@@ -286,6 +286,18 @@ class OpponentStore:
     # Entry CRUD
     # ------------------------------------------------------------------
 
+    def _entry_dir(self, entry_id: int) -> Path:
+        """Per-entry directory: league/entries/{id:06d}/."""
+        return self.league_dir / "entries" / f"{entry_id:06d}"
+
+    @staticmethod
+    def _write_metadata(entry_dir: Path, metadata: dict[str, Any]) -> None:
+        """Write metadata.json sidecar so checkpoints are self-describing."""
+        meta_path = entry_dir / "metadata.json"
+        tmp = Path(str(meta_path) + ".tmp")
+        tmp.write_text(json.dumps(metadata, indent=2))
+        tmp.rename(meta_path)
+
     def add_entry(
         self,
         model: torch.nn.Module,
@@ -314,7 +326,9 @@ class OpponentStore:
             entry_id = cursor.lastrowid
             assert entry_id is not None
 
-            ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}_id{entry_id}.pt"
+            entry_dir = self._entry_dir(entry_id)
+            entry_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = entry_dir / "weights.pt"
             tmp_path = Path(str(ckpt_path) + ".tmp")
             torch.save(raw_model.state_dict(), tmp_path)
             tmp_path.rename(ckpt_path)
@@ -330,9 +344,18 @@ class OpponentStore:
                 ckpt_path.unlink(missing_ok=True)
                 raise
 
+            self._write_metadata(entry_dir, {
+                "entry_id": entry_id,
+                "display_name": display_name,
+                "architecture": architecture,
+                "model_params": model_params,
+                "created_epoch": epoch,
+                "role": str(role),
+            })
+
             logger.info(
-                "Store entry: %s (%s) epoch %d -> %s (id=%d)",
-                display_name, architecture, epoch, ckpt_path.name, entry_id,
+                "Store entry: %s (%s) epoch %d -> entries/%06d/ (id=%d)",
+                display_name, architecture, epoch, entry_id, entry_id,
             )
 
             entry = self._get_entry(entry_id)
@@ -340,7 +363,7 @@ class OpponentStore:
             return entry
 
     def clone_entry(self, source_entry_id: int, new_role: Role, reason: str) -> OpponentEntry:
-        """Clone an entry: copy checkpoint file, create new DB row with lineage."""
+        """Clone an entry: copy checkpoint into new per-entry dir, create DB row with lineage."""
         with self.transaction():
             source = self._get_entry(source_entry_id)
             if source is None:
@@ -363,7 +386,9 @@ class OpponentStore:
             )
             entry_id = cursor.lastrowid
             assert entry_id is not None
-            dst_path = self.league_dir / f"{source.architecture}_ep{source.created_epoch:05d}_id{entry_id}.pt"
+            entry_dir = self._entry_dir(entry_id)
+            entry_dir.mkdir(parents=True, exist_ok=True)
+            dst_path = entry_dir / "weights.pt"
             shutil.copy2(str(src_path), str(dst_path))
             try:
                 self._conn.execute(
@@ -374,6 +399,18 @@ class OpponentStore:
             except Exception:
                 dst_path.unlink(missing_ok=True)
                 raise
+
+            self._write_metadata(entry_dir, {
+                "entry_id": entry_id,
+                "display_name": display_name,
+                "architecture": source.architecture,
+                "model_params": source.model_params,
+                "created_epoch": source.created_epoch,
+                "role": str(new_role),
+                "parent_entry_id": source_entry_id,
+                "lineage_group": source.lineage_group or f"lineage-{source_entry_id}",
+            })
+
             entry = self._get_entry(entry_id)
             assert entry is not None
             return entry
@@ -765,16 +802,18 @@ class OpponentStore:
     # ------------------------------------------------------------------
 
     def save_optimizer(self, entry_id: int, optimizer_state_dict: dict[str, Any]) -> None:
-        """Save an optimizer state dict alongside the entry's checkpoint.
+        """Save an optimizer state dict as optimizer.pt in the entry directory.
 
+        Per §14: Dynamic entries get weights.pt + optimizer.pt + metadata.json.
         Writes atomically via .tmp + rename. Updates optimizer_path in the DB.
         """
         with self.transaction():
             entry = self._get_entry(entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} not found")
-            ckpt = Path(entry.checkpoint_path)
-            opt_path = ckpt.with_name(f"{ckpt.stem}_optimizer{ckpt.suffix}")
+            entry_dir = self._entry_dir(entry_id)
+            entry_dir.mkdir(parents=True, exist_ok=True)
+            opt_path = entry_dir / "optimizer.pt"
             tmp_path = Path(str(opt_path) + ".tmp")
             torch.save(optimizer_state_dict, tmp_path)
             tmp_path.rename(opt_path)
@@ -782,7 +821,7 @@ class OpponentStore:
                 "UPDATE league_entries SET optimizer_path = ? WHERE id = ?",
                 (str(opt_path), entry_id),
             )
-            logger.info("Saved optimizer for entry %d -> %s", entry_id, opt_path.name)
+            logger.info("Saved optimizer for entry %d -> entries/%06d/optimizer.pt", entry_id, entry_id)
 
     def load_optimizer(self, entry_id: int, device: str = "cpu") -> dict[str, Any] | None:
         """Load a saved optimizer state dict, or None if unavailable.

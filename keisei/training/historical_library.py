@@ -61,13 +61,44 @@ class HistoricalLibrary:
             )
             return
 
-        # Compute neighbor distances for the 50% proximity threshold
+        # Two-pass assignment (§6.4):
+        # Pass 1: fill slots where a candidate is within the 50% proximity
+        #         threshold — these are good log-spaced matches.
+        # Pass 2: backfill any empty slots with the closest remaining
+        #         candidate, so all slots are always populated.
         neighbor_dists = self._neighbor_distances(targets)
         used_ids: set[int] = set()
+        enough_candidates = len(candidates) >= self.config.slots
+        # slot_assignments[i] = (entry, mode) or None
+        slot_assignments: list[tuple[object, str] | None] = [None] * len(targets)
 
+        # Pass 1: assign within-threshold candidates
         for i, target in enumerate(targets):
             best = self._snap_to_nearest(target, candidates, used_ids)
             if best is None:
+                continue
+            distance = abs(best.created_epoch - target)
+            threshold = neighbor_dists[i] * 0.5
+            if threshold > 0 and distance > threshold:
+                continue  # beyond threshold — leave for pass 2
+            used_ids.add(best.id)
+            mode = "log_spaced" if enough_candidates else "fallback"
+            slot_assignments[i] = (best, mode)
+
+        # Pass 2: backfill empty slots with closest unused candidate
+        for i, target in enumerate(targets):
+            if slot_assignments[i] is not None:
+                continue
+            best = self._snap_to_nearest(target, candidates, used_ids)
+            if best is None:
+                continue
+            used_ids.add(best.id)
+            slot_assignments[i] = (best, "fallback")
+
+        # Write all slots to DB
+        for i, target in enumerate(targets):
+            assignment = slot_assignments[i]
+            if assignment is None:
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
@@ -75,37 +106,17 @@ class HistoricalLibrary:
                     actual_epoch=None,
                     selection_mode="fallback",
                 )
-                continue
-
-            distance = abs(best.created_epoch - target)
-            threshold = neighbor_dists[i] * 0.5
-            if threshold > 0 and distance > threshold:
-                # Too far from target — leave slot empty.  "threshold_rejected"
-                # distinguishes this from "fallback" (no candidates at all).
-                self.store.upsert_historical_slot(
-                    slot_index=i,
-                    target_epoch=target,
-                    entry_id=None,
-                    actual_epoch=None,
-                    selection_mode="threshold_rejected",
-                )
             else:
-                used_ids.add(best.id)
-                # selection_mode reflects the OVERALL selection strategy, not per-slot
-                # optimality: "log_spaced" when we had enough candidates to fill all
-                # slots (even if some were threshold-rejected), "fallback" when fewer
-                # candidates than slots forced best-effort placement.
+                entry, mode = assignment
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
-                    entry_id=best.id,
-                    actual_epoch=best.created_epoch,
-                    selection_mode="log_spaced" if len(candidates) >= self.config.slots else "fallback",
+                    entry_id=entry.id,
+                    actual_epoch=entry.created_epoch,
+                    selection_mode=mode,
                 )
 
-        filled = sum(
-            1 for s in self.get_slots() if s.entry_id is not None
-        )
+        filled = sum(1 for a in slot_assignments if a is not None)
         logger.info(
             "Historical library refresh: epoch=%d, filled=%d/%d",
             current_epoch, filled, self.config.slots,

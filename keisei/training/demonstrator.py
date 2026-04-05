@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from keisei.training.opponent_store import OpponentEntry, OpponentStore
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
 
 logger = logging.getLogger(__name__)
 
@@ -96,38 +96,63 @@ class DemonstratorRunner(threading.Thread):
                     logger.exception("Demo slot %d game failed — skipping", matchup.slot)
 
     def _select_matchups(self) -> list[DemoMatchup]:
-        """Select matchups for active demo slots based on pool state."""
+        """Select role-aware matchups for active demo slots (§11, §12.6).
+
+        Slot 1: Cross-tier championship — top Dynamic vs top Frontier Static.
+        Slot 2: Intra-tier — two Dynamic entries (or two from the largest tier).
+        Slot 3: Random cross-tier pairing.
+
+        Falls back gracefully when tiers are empty or too small.
+        """
         entries = self.store.list_entries()
         if len(entries) < 2:
             return []
 
-        matchups = []
-        sorted_by_elo = sorted(entries, key=lambda e: e.elo_rating, reverse=True)
+        by_role: dict[Role, list[OpponentEntry]] = {}
+        for e in entries:
+            by_role.setdefault(e.role, []).append(e)
 
-        # Slot 1: #1 Elo vs #2 Elo (championship match)
-        if len(sorted_by_elo) >= 2 and self.num_slots >= 1:
-            matchups.append(DemoMatchup(
-                slot=1, entry_a=sorted_by_elo[0], entry_b=sorted_by_elo[1],
-            ))
+        # Sort each tier by Elo descending
+        for role in by_role:
+            by_role[role].sort(key=lambda e: e.elo_rating, reverse=True)
 
-        # Slot 2: cross-architecture if available, else random
-        if self.num_slots >= 2 and len(entries) >= 2:
-            archs: dict[str, list[OpponentEntry]] = {}
-            for e in entries:
-                archs.setdefault(e.architecture, []).append(e)
-            if len(archs) >= 2:
-                arch_names = list(archs.keys())
-                a = random.choice(archs[arch_names[0]])
-                b = random.choice(archs[arch_names[1]])
-                matchups.append(DemoMatchup(slot=2, entry_a=a, entry_b=b))
-            else:
+        dynamic = by_role.get(Role.DYNAMIC, [])
+        frontier = by_role.get(Role.FRONTIER_STATIC, [])
+        recent = by_role.get(Role.RECENT_FIXED, [])
+        matchups: list[DemoMatchup] = []
+
+        # Slot 1: cross-tier championship (Dynamic #1 vs Frontier #1)
+        if self.num_slots >= 1:
+            if dynamic and frontier:
+                matchups.append(DemoMatchup(slot=1, entry_a=dynamic[0], entry_b=frontier[0]))
+            elif len(entries) >= 2:
+                # Fallback: top-2 by Elo regardless of tier
+                top = sorted(entries, key=lambda e: e.elo_rating, reverse=True)
+                matchups.append(DemoMatchup(slot=1, entry_a=top[0], entry_b=top[1]))
+
+        # Slot 2: intra-tier (prefer Dynamic vs Dynamic)
+        if self.num_slots >= 2:
+            if len(dynamic) >= 2:
+                pair = random.sample(dynamic, 2)
+                matchups.append(DemoMatchup(slot=2, entry_a=pair[0], entry_b=pair[1]))
+            elif len(recent) >= 2:
+                pair = random.sample(recent, 2)
+                matchups.append(DemoMatchup(slot=2, entry_a=pair[0], entry_b=pair[1]))
+            elif len(entries) >= 2:
                 pair = random.sample(entries, 2)
                 matchups.append(DemoMatchup(slot=2, entry_a=pair[0], entry_b=pair[1]))
 
-        # Slot 3: random pairing
+        # Slot 3: random cross-tier pairing
         if self.num_slots >= 3 and len(entries) >= 2:
-            pair = random.sample(entries, 2)
-            matchups.append(DemoMatchup(slot=3, entry_a=pair[0], entry_b=pair[1]))
+            populated_roles = [r for r in by_role if len(by_role[r]) > 0]
+            if len(populated_roles) >= 2:
+                r1, r2 = random.sample(populated_roles, 2)
+                a = random.choice(by_role[r1])
+                b = random.choice(by_role[r2])
+                matchups.append(DemoMatchup(slot=3, entry_a=a, entry_b=b))
+            else:
+                pair = random.sample(entries, 2)
+                matchups.append(DemoMatchup(slot=3, entry_a=pair[0], entry_b=pair[1]))
 
         return matchups
 

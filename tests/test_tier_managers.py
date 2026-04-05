@@ -321,12 +321,12 @@ class TestDynamicManager:
         _add_entry(store, 2, role=Role.DYNAMIC)
         assert mgr.is_full()
 
-    def test_weakest_elo_returns_none_when_all_protected(self, store):
+    def test_weakest_dynamic_elo_returns_none_when_all_protected(self, store):
         mgr = DynamicManager(store, DynamicConfig(
             slots=2, protection_matches=24, min_games_before_eviction=40,
         ))
         _add_entry(store, 1, role=Role.DYNAMIC, elo=800)
-        assert mgr.weakest_elo() is None
+        assert mgr.weakest_dynamic_elo() is None
 
     def test_admit_returns_none_when_full_and_all_protected(self, store):
         mgr = DynamicManager(store, DynamicConfig(

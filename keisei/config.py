@@ -134,6 +134,8 @@ class MatchSchedulerConfig:
     learner_frontier_ratio: float = 0.30
     learner_recent_ratio: float = 0.20
     tournament_games_per_pair: int = 3  # best-of-3 round-robin
+    tournament_mode: str = "full"  # "full", "weighted", or "random"
+    weighted_round_size: int = 0  # 0 = auto (N entries → N pairings per round)
 
     def __post_init__(self) -> None:
         learner_sum = (
@@ -148,6 +150,15 @@ class MatchSchedulerConfig:
         if self.tournament_games_per_pair < 1:
             raise ValueError(
                 f"tournament_games_per_pair must be >= 1, got {self.tournament_games_per_pair}"
+            )
+        valid_modes = ("full", "weighted", "random")
+        if self.tournament_mode not in valid_modes:
+            raise ValueError(
+                f"tournament_mode must be one of {valid_modes}, got {self.tournament_mode!r}"
+            )
+        if self.weighted_round_size < 0:
+            raise ValueError(
+                f"weighted_round_size must be >= 0, got {self.weighted_round_size}"
             )
 
 
@@ -203,6 +214,7 @@ class PriorityScorerConfig:
     uncertainty_weight: float = 0.5
     recent_fixed_bonus: float = 0.3
     diversity_weight: float = 0.3
+    match_class_weight: float = 1.0
     repeat_penalty: float = -0.5
     lineage_penalty: float = -0.3
     repeat_window_rounds: int = 5
@@ -213,6 +225,7 @@ class PriorityScorerConfig:
             "uncertainty_weight",
             "recent_fixed_bonus",
             "diversity_weight",
+            "match_class_weight",
             "repeat_penalty",
             "lineage_penalty",
         ):

@@ -163,8 +163,10 @@ class FrontierManager:
             eligible = sorted(frontier_entries, key=lambda e: e.created_epoch)
             target = eligible[0]
         else:
-            # Retire lowest Elo; tie-break by oldest created_epoch
-            target = min(eligible, key=lambda e: (e.elo_rating, e.created_epoch))
+            # Retire lowest elo_frontier; tie-break by oldest created_epoch.
+            # Must match the metric used by FrontierPromoter (elo_frontier)
+            # so that the weakest entry by promotion criteria is the one retired.
+            target = min(eligible, key=lambda e: (e.elo_frontier, e.created_epoch))
 
         self._store.retire_entry(
             target.id, reason=f"replaced by promotion at epoch {epoch}"
