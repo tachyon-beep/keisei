@@ -188,10 +188,17 @@ class FrontierManager:
             # Frontier from clustering at the high end over time.
             target = min(eligible, key=lambda e: (abs(e.elo_frontier - candidate_elo), e.created_epoch))
         else:
-            # Retire lowest elo_frontier; tie-break by oldest created_epoch.
-            # Must match the metric used by FrontierPromoter (elo_frontier)
-            # so that the weakest entry by promotion criteria is the one retired.
-            target = min(eligible, key=lambda e: (e.elo_frontier, e.created_epoch))
+            # §6.1 "weakest OR stalest": composite score that considers both
+            # low Elo and excessive age.  An entry that has held a seat for
+            # much longer than min_tenure gets an Elo penalty proportional to
+            # extra tenure, making ancient middling-Elo entries evictable.
+            tenure = self._config.min_tenure_epochs or 1
+            def _retirement_score(e: OpponentEntry) -> float:
+                age = epoch - e.created_epoch
+                extra_tenure = max(0, age - tenure) / tenure
+                # Penalty: each extra tenure period subtracts 25 Elo from the score
+                return e.elo_frontier - extra_tenure * 25.0
+            target = min(eligible, key=lambda e: (_retirement_score(e), e.created_epoch))
 
         self._store.retire_entry(
             target.id, reason=f"replaced by promotion at epoch {epoch}"

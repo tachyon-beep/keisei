@@ -430,7 +430,14 @@ class OpponentStore:
             return entry
 
     def clone_entry(self, source_entry_id: int, new_role: Role, reason: str) -> OpponentEntry:
-        """Clone an entry: copy checkpoint into new per-entry dir, create DB row with lineage."""
+        """Clone an entry: copy checkpoint into new per-entry dir, create DB row with lineage.
+
+        Lifecycle invariants (§5.2, §7.1) are the CALLER's responsibility:
+        - Dynamic clones: DynamicManager.admit() sets protection_remaining.
+        - Optimizer state: clone copies only weights, not optimizer — fresh
+          optimizer is created on first DynamicTrainer.update().
+        - Frontier clones: FrontierManager.review() handles retirement.
+        """
         with self.transaction():
             source = self._get_entry(source_entry_id)
             if source is None:

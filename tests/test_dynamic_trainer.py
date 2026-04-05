@@ -653,3 +653,74 @@ class TestPostCheckpointFailureStillReturnsTrue:
         assert entry.id not in trainer._disabled_entries
         # Error count should be reset (successful training)
         assert trainer._error_counts.get(entry.id, 0) == 0
+
+
+class TestGlobalDisableFallback:
+    """Tests for §10.4 global inference-only fallback (_globally_disabled)."""
+
+    def test_global_disable_triggers_on_threshold(self, store_and_entry) -> None:
+        """When global error count reaches threshold, training is globally disabled."""
+        store, entry = store_and_entry
+        config = DynamicConfig(
+            update_every_matches=1,
+            disable_on_error=True,
+            max_consecutive_errors=100,  # high so per-entry disable doesn't trigger first
+            global_error_threshold=3,
+            global_error_window_seconds=300.0,
+        )
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
+
+        assert not trainer.is_globally_disabled
+
+        # Simulate 3 global errors by directly adding timestamps
+        now = time.monotonic()
+        trainer._global_error_timestamps = [now - 10, now - 5, now]
+        trainer._check_global_disable()
+
+        assert trainer.is_globally_disabled
+        assert trainer.should_update(entry.id) is False
+
+    def test_global_disable_respects_window(self, store_and_entry) -> None:
+        """Errors outside the window don't count toward the threshold."""
+        store, entry = store_and_entry
+        config = DynamicConfig(
+            update_every_matches=1,
+            disable_on_error=True,
+            max_consecutive_errors=100,
+            global_error_threshold=3,
+            global_error_window_seconds=60.0,
+        )
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
+
+        # 2 recent errors + 1 expired error = only 2 in window
+        now = time.monotonic()
+        trainer._global_error_timestamps = [now - 120, now - 5, now]
+        trainer._check_global_disable()
+
+        assert not trainer.is_globally_disabled
+
+    def test_global_disable_via_update_errors(self, store_and_entry) -> None:
+        """Repeated update() failures trigger global disable through the real code path."""
+        store, entry = store_and_entry
+        config = DynamicConfig(
+            update_every_matches=1,
+            disable_on_error=True,
+            max_consecutive_errors=100,  # won't hit per-entry disable
+            global_error_threshold=2,
+            global_error_window_seconds=300.0,
+        )
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
+
+        # Force update to fail by patching load_opponent to raise
+        with patch(
+            "keisei.training.opponent_store.build_model",
+            side_effect=RuntimeError("model load failed"),
+        ):
+            trainer.record_match(entry.id, _make_rollout(side=0), 0)
+            trainer.update(entry, "cpu")  # error 1
+
+            trainer._match_counts[entry.id] = config.update_every_matches
+            trainer.update(entry, "cpu")  # error 2
+
+        assert trainer.is_globally_disabled
+        assert trainer.should_update(entry.id) is False

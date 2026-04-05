@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from keisei.training.match_utils import release_models
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,8 @@ class DemonstratorRunner(threading.Thread):
         # delete the checkpoint while the model is still in use.
         self.store.pin(matchup.entry_a.id)
         self.store.pin(matchup.entry_b.id)
+        model_a = None
+        model_b = None
         try:
             try:
                 model_a = self.store.load_opponent(matchup.entry_a, device=self.device)
@@ -228,5 +231,10 @@ class DemonstratorRunner(threading.Thread):
 
             logger.info("Demo slot %d game completed", matchup.slot)
         finally:
+            # Release GPU memory for loaded models to prevent OOM in daemon loop
+            if model_a is not None or model_b is not None:
+                models_to_release = [m for m in (model_a, model_b) if m is not None]
+                release_models(*models_to_release, device_type=self.device.split(":")[0])
+                del model_a, model_b
             self.store.unpin(matchup.entry_a.id)
             self.store.unpin(matchup.entry_b.id)

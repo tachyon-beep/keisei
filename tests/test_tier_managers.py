@@ -524,6 +524,36 @@ class TestFrontierReview:
         assert retired is not None
         assert retired.status == EntryStatus.RETIRED
 
+    def test_frontier_review_retires_stale_over_weak(self, store):
+        """Ancient middling-Elo entry is evicted over a slightly weaker but newer entry."""
+        config = _make_frontier_config(
+            slots=3, min_tenure_epochs=50, span_selection=False,
+        )
+        promoter = FrontierPromoter(config)
+
+        # Entry at Elo=850 created at epoch 0 (very old — 600 epochs of tenure)
+        ancient = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=850)
+        # Entry at Elo=800 created at epoch=500 (newer, slightly weaker)
+        newer_weak = _add_entry(store, epoch=500, role=Role.FRONTIER_STATIC, elo=800)
+        _add_entry(store, epoch=550, role=Role.FRONTIER_STATIC, elo=1200)
+
+        # Candidate
+        candidate = _add_entry(store, epoch=590, role=Role.DYNAMIC, elo=1300)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=600)
+
+        # Ancient entry (Elo=850, age=600) should be retired over newer_weak (Elo=800, age=100)
+        # because staleness penalty makes ancient's score lower than newer_weak's
+        assert store.get_entry(ancient.id).status == EntryStatus.RETIRED
+        assert store.get_entry(newer_weak.id).status == EntryStatus.ACTIVE
+
     def test_frontier_review_span_selection_retires_closest_elo(self, store):
         """With span_selection=True, retire entry closest to candidate Elo, not weakest."""
         config = _make_frontier_config(
