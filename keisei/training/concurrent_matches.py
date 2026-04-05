@@ -326,12 +326,14 @@ class ConcurrentMatchPool:
                 env_s, env_e = self.partition_range(slot_idx)
                 if (env_s, env_e) not in active_ranges:
                     inactive_ranges.append((env_s, env_e))
-            for start, end in inactive_ranges:
-                for idx in range(start, end):
-                    legal = legal_masks[idx].nonzero(as_tuple=True)[0]
-                    # Fallback 0 for no-legal-moves: shouldn't occur in shogi
-                    # (auto-reset ensures fresh game state for inactive envs).
-                    actions[idx] = legal[0] if legal.numel() > 0 else 0
+            if inactive_ranges:
+                # Batched: argmax over legal_masks gives first legal action per
+                # env in one GPU kernel — no per-env GPU-CPU sync.
+                # If no legal actions (shouldn't occur), argmax returns 0.
+                inactive_idx = torch.cat([
+                    torch.arange(s, e, device=device) for s, e in inactive_ranges
+                ])
+                actions[inactive_idx] = legal_masks[inactive_idx].to(torch.long).argmax(dim=-1)
 
             # Step ALL environments at once
             step_result = vecenv.step(actions.cpu().numpy())
