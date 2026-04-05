@@ -242,8 +242,13 @@ class LeagueTournament:
         vecenv: object,
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
-    ) -> tuple[int, int, int]:
-        """Play a set of games between two frozen models. Returns (a_wins, b_wins, draws)."""
+        collect_rollout: bool = False,
+    ) -> tuple[int, int, int] | tuple[int, int, int, object]:
+        """Play a set of games between two frozen models.
+
+        Returns (a_wins, b_wins, draws), or (a_wins, b_wins, draws, MatchRollout)
+        when collect_rollout=True.
+        """
         model_a = self.store.load_opponent(entry_a, device=str(self.device))
         model_b = self.store.load_opponent(entry_b, device=str(self.device))
 
@@ -253,6 +258,7 @@ class LeagueTournament:
                 device=self.device, num_envs=self.num_envs,
                 max_ply=self.max_ply, games_target=self.games_per_match,
                 stop_event=self._stop_event,
+                collect_rollout=collect_rollout,
             )
         finally:
             release_models(model_a, model_b, device_type=self.device.type)
