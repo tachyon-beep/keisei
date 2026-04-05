@@ -295,10 +295,10 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
             """INSERT OR REPLACE INTO training_state
                (id, config_json, display_name, model_arch, algorithm_name,
                 started_at, current_epoch, current_step, checkpoint_path,
-                total_epochs, status)
+                total_epochs, status, phase)
                VALUES (1, :config_json, :display_name, :model_arch, :algorithm_name,
                 :started_at, :current_epoch, :current_step, :checkpoint_path,
-                :total_epochs, :status)""",
+                :total_epochs, :status, :phase)""",
             {
                 "config_json": state["config_json"], "display_name": state["display_name"],
                 "model_arch": state["model_arch"], "algorithm_name": state["algorithm_name"],
@@ -308,6 +308,7 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
                 "checkpoint_path": state.get("checkpoint_path"),
                 "total_epochs": state.get("total_epochs"),
                 "status": state.get("status", "running"),
+                "phase": state.get("phase", "init"),
             },
         )
         conn.commit()

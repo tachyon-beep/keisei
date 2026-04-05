@@ -208,10 +208,13 @@ class LeagueTournament:
                             self.scheduler.priority_scorer.record_round_result(
                                 entry_a.id, entry_b.id,
                             )
-                            for _ in range(games_played):
-                                self.scheduler.priority_scorer.record_result(
-                                    entry_a.id, entry_b.id,
-                                )
+                            # Record once per match, not per game: _under_sample_bonus
+                            # uses 1/(count+1), so per-game inflates count by
+                            # games_per_match (e.g. 32x), collapsing the bonus to
+                            # near-zero after a single match.
+                            self.scheduler.priority_scorer.record_result(
+                                entry_a.id, entry_b.id,
+                            )
                         self._stop_event.wait(self.pause_seconds)
 
                     # Advance round even if stop_event fired mid-round: a partial

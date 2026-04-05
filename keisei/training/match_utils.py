@@ -115,6 +115,13 @@ def play_batch(
 
     When collect_rollout=True, returns (a_wins, b_wins, draws, MatchRollout).
     """
+    # Defensive: ensure both models are in eval mode so BatchNorm running
+    # statistics are not corrupted during inference.  ConcurrentMatchPool
+    # already does this (concurrent_matches.py _assign_pairing), but
+    # play_batch is a public API and callers may pass training-mode models.
+    model_a.eval()
+    model_b.eval()
+
     reset_result = vecenv.reset()
     obs = torch.from_numpy(np.asarray(reset_result.observations)).to(device)
     legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(device)
@@ -229,14 +236,11 @@ def play_batch(
 
 
 def release_models(*models: torch.nn.Module, device_type: str = "cpu") -> None:
-    """Hint GC and clear CUDA cache if on GPU.
+    """Reclaim cached CUDA allocator blocks if on GPU.
 
-    Note: `del m` only removes the function-local binding — the caller's
-    reference keeps the model alive until it goes out of scope or is
-    reassigned.  The primary value is `empty_cache()` which reclaims
-    cached CUDA allocator blocks (useful even with live tensors).
+    Note: callers still hold references to the model objects — this function
+    cannot free them.  The value is ``empty_cache()``, which returns unused
+    cached blocks to the CUDA allocator (useful even with live tensors).
     """
-    for m in models:
-        del m
     if device_type == "cuda":
         torch.cuda.empty_cache()

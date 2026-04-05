@@ -614,7 +614,11 @@ class OpponentStore:
             )
         model = build_model(entry.architecture, entry.model_params)
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
-        model.load_state_dict(state_dict)
+        # strict=True: entry.architecture + model_params must exactly match the
+        # checkpoint's layer structure.  If architecture evolves, entries need
+        # migration (re-save with new structure) — silent partial loads via
+        # strict=False would produce corrupt inference.
+        model.load_state_dict(state_dict, strict=True)
         model = model.to(device)
         model.eval()
         return model

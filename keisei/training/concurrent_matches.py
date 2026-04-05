@@ -473,10 +473,14 @@ class ConcurrentMatchPool:
             try:
                 model_b = load_fn(entry_b)
             except Exception:
-                # model_a loaded successfully but model_b failed — release model_a
-                # to avoid a resource leak (model stays on GPU indefinitely).
+                # model_a loaded successfully but model_b failed — move model_a
+                # off GPU and reclaim CUDA cache to avoid a memory leak.
+                # del only drops the local binding; .cpu() actually frees VRAM.
                 try:
+                    model_a.cpu()
                     del model_a
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 except Exception:
                     pass
                 raise

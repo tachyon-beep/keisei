@@ -327,10 +327,11 @@ class DynamicTrainer:
             self._total_matches.get(entry.id, 0) + match_count
         )
 
-        # Checkpoint optimizer periodically
+        # Checkpoint optimizer periodically.  Keep surplus so matches aren't
+        # lost (e.g. total=15, flush_every=10 → save and keep surplus 5).
         if self._total_matches[entry.id] >= self.config.checkpoint_flush_every:
             self.store.save_optimizer(entry.id, optimizer.state_dict())
-            self._total_matches[entry.id] = 0
+            self._total_matches[entry.id] %= self.config.checkpoint_flush_every
 
         self.store.increment_update_count(entry.id)
         self._match_counts[entry.id] = 0

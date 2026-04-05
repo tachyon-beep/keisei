@@ -60,7 +60,7 @@ class DemonstratorRunner(threading.Thread):
     ) -> None:
         super().__init__(daemon=True, name="DemonstratorRunner")
         self.store = store
-        self.db_path = db_path
+        self.db_path = db_path  # reserved for future game-state persistence (not yet wired)
         self.num_slots = num_slots
         self.move_delay = 60.0 / max(moves_per_minute, 1)
         self.device = device

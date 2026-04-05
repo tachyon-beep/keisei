@@ -50,6 +50,9 @@ def wdl_cross_entropy_loss(
     """WDL (Win/Draw/Loss) categorical cross-entropy with ignore_index=-1."""
     has_valid = (value_cats >= 0).any()
     if not has_valid:
+        # Return a differentiable zero connected to value_logits so autograd
+        # produces zero gradients (not None) for the value head parameters.
+        # A plain torch.tensor(0.0) would have no graph connection.
         return value_logits.sum() * 0.0
     return F.cross_entropy(value_logits, value_cats, ignore_index=-1)
 

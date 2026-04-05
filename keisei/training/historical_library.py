@@ -140,9 +140,11 @@ class HistoricalLibrary:
         between them.  This is intentional: the library wants coverage from the
         very beginning of training to now.
         """
-        e = max(current_epoch, 2)
         if num_slots == 1:
-            return [e]
+            # Single slot: just return the current epoch (clamped to 1 so we
+            # always target an actual training checkpoint, not epoch 0).
+            return [max(current_epoch, 1)]
+        e = max(current_epoch, 2)
         return [
             round(math.exp(math.log(e) * i / (num_slots - 1)))
             for i in range(num_slots)
