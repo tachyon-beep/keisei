@@ -1,5 +1,5 @@
 <script>
-  import { eloHistory, leagueEntries, leagueStats, tournamentStats } from '../stores/league.js'
+  import { eloHistory, leagueEntries, leagueStats, learnerEntry } from '../stores/league.js'
   import { trainingState } from '../stores/training.js'
   import { buildEloChartData } from './eloChartData.js'
   import LeagueTable from './LeagueTable.svelte'
@@ -10,35 +10,33 @@
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
   $: stats = $leagueStats
-  $: tStats = $tournamentStats
-  $: learnerName = $trainingState?.display_name || null
+  $: learner = $learnerEntry
+  $: learnerName = learner?.display_name || null
 </script>
 
 <main class="league-view" aria-label="League standings">
   {#if stats}
-    <div class="stats-banner" role="region" aria-label="League summary">
-      <div class="stat-card">
-        <span class="stat-value">{stats.poolSize}</span>
-        <span class="stat-label">Pool Size</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-value">{stats.totalMatches}</span>
-        <span class="stat-label">Matches</span>
-      </div>
+    <div class="stats-banner" role="region" aria-label="League metrics">
       <div class="stat-card highlight">
-        <span class="stat-value">{stats.topEntry?.display_name || stats.topEntry?.architecture || '—'}</span>
-        <span class="stat-label">Top Rated · {Math.round(stats.topEntry?.elo_rating || 0)}</span>
+        <span class="stat-value">{learner ? Math.round(learner.elo_frontier) : '—'}</span>
+        <span class="stat-label">Frontier Elo</span>
       </div>
       <div class="stat-card">
-        <span class="stat-value">{stats.eloMin} – {stats.eloMax}</span>
-        <span class="stat-label">Elo Range · {stats.eloSpread} spread</span>
+        <span class="stat-value">{learner ? Math.round(learner.elo_dynamic) : '—'}</span>
+        <span class="stat-label">League Elo</span>
       </div>
-      {#if tStats}
-        <div class="stat-card">
-          <span class="stat-value">{Math.round(tStats.games_per_min)}</span>
-          <span class="stat-label">Games/min · {tStats.active_slots} slots</span>
-        </div>
-      {/if}
+      <div class="stat-card">
+        <span class="stat-value">{learner ? Math.round(learner.elo_recent) : '—'}</span>
+        <span class="stat-label">Challenge</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">{learner ? Math.round(learner.elo_historical) : '—'}</span>
+        <span class="stat-label">Gauntlet</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">{stats.poolSize} / 20</span>
+        <span class="stat-label">Pool</span>
+      </div>
     </div>
   {/if}
 
