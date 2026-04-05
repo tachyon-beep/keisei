@@ -1,0 +1,138 @@
+"""Tests for PriorityScorer -- matchup informativeness ranking."""
+
+from __future__ import annotations
+
+import pytest
+
+from keisei.config import PriorityScorerConfig
+from keisei.training.opponent_store import EntryStatus, OpponentEntry, Role
+from keisei.training.priority_scorer import PriorityScorer
+
+
+def _make_entry(
+    id: int,
+    role: Role = Role.DYNAMIC,
+    elo: float = 1000.0,
+    lineage: str | None = None,
+    parent_id: int | None = None,
+) -> OpponentEntry:
+    return OpponentEntry(
+        id=id,
+        display_name=f"e{id}",
+        architecture="resnet",
+        model_params={},
+        checkpoint_path=f"/tmp/{id}.pt",
+        elo_rating=elo,
+        created_epoch=0,
+        games_played=10,
+        created_at="2026-01-01",
+        flavour_facts=[],
+        role=role,
+        status=EntryStatus.ACTIVE,
+        lineage_group=lineage,
+        parent_entry_id=parent_id,
+    )
+
+
+class TestScore:
+    def test_under_sampled_pair_scores_higher(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a, b, c = _make_entry(1), _make_entry(2), _make_entry(3)
+        scorer.record_result(a.id, b.id)
+        scorer.record_result(a.id, b.id)
+        scorer.record_result(a.id, b.id)
+        score_ab = scorer.score(a, b)
+        score_ac = scorer.score(a, c)
+        assert score_ac > score_ab
+
+    def test_uncertainty_bonus_for_close_elo(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, elo=1000.0)
+        b_close = _make_entry(2, elo=1050.0)
+        b_far = _make_entry(3, elo=1200.0)
+        score_close = scorer.score(a, b_close)
+        score_far = scorer.score(a, b_far)
+        assert score_close > score_far
+
+    def test_recent_fixed_bonus(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, role=Role.DYNAMIC)
+        b_rf = _make_entry(2, role=Role.RECENT_FIXED)
+        b_dyn = _make_entry(3, role=Role.DYNAMIC)
+        score_rf = scorer.score(a, b_rf)
+        score_dyn = scorer.score(a, b_dyn)
+        assert score_rf > score_dyn
+
+    def test_repeat_penalty(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a, b = _make_entry(1), _make_entry(2)
+        score_before = scorer.score(a, b)
+        scorer.record_round_result(a.id, b.id)
+        scorer.advance_round()
+        score_after = scorer.score(a, b)
+        assert score_after < score_before
+
+    def test_lineage_penalty_parent_child(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        parent = _make_entry(1, lineage="lin-1")
+        child = _make_entry(2, lineage="lin-1", parent_id=1)
+        unrelated = _make_entry(3, lineage="lin-2")
+        score_related = scorer.score(parent, child)
+        score_unrelated = scorer.score(parent, unrelated)
+        assert score_unrelated > score_related
+
+    def test_lineage_penalty_same_group(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, lineage="lin-1")
+        sibling = _make_entry(2, lineage="lin-1")
+        unrelated = _make_entry(3, lineage="lin-2")
+        score_sibling = scorer.score(a, sibling)
+        score_unrelated = scorer.score(a, unrelated)
+        assert score_unrelated > score_sibling
+
+    def test_diversity_bonus_cross_lineage(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, lineage="lin-1")
+        same = _make_entry(2, lineage="lin-1")
+        diff = _make_entry(3, lineage="lin-2")
+        score_same = scorer.score(a, same)
+        score_diff = scorer.score(a, diff)
+        assert score_diff > score_same
+
+    def test_all_weights_zero_produces_zero(self):
+        cfg = PriorityScorerConfig(
+            under_sample_weight=0.0,
+            uncertainty_weight=0.0,
+            recent_fixed_bonus=0.0,
+            diversity_weight=0.0,
+            repeat_penalty=0.0,
+            lineage_penalty=0.0,
+        )
+        scorer = PriorityScorer(cfg)
+        a, b = _make_entry(1), _make_entry(2)
+        assert scorer.score(a, b) == 0.0
+
+    def test_repeat_window_slides(self):
+        cfg = PriorityScorerConfig(repeat_window_rounds=2)
+        scorer = PriorityScorer(cfg)
+        a, b = _make_entry(1), _make_entry(2)
+        scorer.record_round_result(a.id, b.id)
+        scorer.advance_round()
+        scorer.record_round_result(a.id, b.id)
+        scorer.advance_round()
+        scorer.advance_round()
+        one_repeat_score = scorer.score(a, b)
+        fresh_score = PriorityScorer(cfg).score(a, b)
+        assert fresh_score > one_repeat_score
+
+
+class TestScoreRound:
+    def test_returns_sorted_by_priority_descending(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, elo=1000.0)
+        b = _make_entry(2, elo=1050.0)
+        c = _make_entry(3, elo=1500.0)
+        pairings = [(a, b), (a, c), (b, c)]
+        sorted_pairings = scorer.score_round(pairings)
+        scores = [scorer.score(p[0], p[1]) for p in sorted_pairings]
+        assert scores == sorted(scores, reverse=True)
