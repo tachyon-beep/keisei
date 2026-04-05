@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from keisei.config import DynamicConfig, FrontierStaticConfig, RecentFixedConfig
 from keisei.training.opponent_store import (
+    EntryStatus,
     OpponentEntry,
     OpponentStore,
     Role,
@@ -132,6 +133,18 @@ class FrontierManager:
                         epoch,
                     )
                     return
+            # Re-validate candidate inside transaction (TOCTOU guard):
+            # the tournament thread may have retired this entry since we
+            # fetched it outside the lock.  clone_entry() checks status,
+            # but catching here avoids rolling back the retirement above.
+            fresh = self._store._get_entry(candidate.id)
+            if fresh is None or fresh.status != EntryStatus.ACTIVE:
+                logger.warning(
+                    "Frontier review: candidate %d retired by concurrent "
+                    "thread before promotion — skipping at epoch %d",
+                    candidate.id, epoch,
+                )
+                return
             new_entry = self._store.clone_entry(
                 candidate.id,
                 Role.FRONTIER_STATIC,

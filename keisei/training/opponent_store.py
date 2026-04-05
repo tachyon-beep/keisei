@@ -301,7 +301,10 @@ class OpponentStore:
                     self._finalize_fs_ops()
             except Exception:
                 if is_outermost:
-                    self._conn.rollback()
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        logger.error("DB rollback failed", exc_info=True)
                     self._rollback_fs_ops()
                 raise
             finally:
@@ -444,6 +447,11 @@ class OpponentStore:
             source = self._get_entry(source_entry_id)
             if source is None:
                 raise ValueError(f"Source entry {source_entry_id} not found")
+            if source.status != EntryStatus.ACTIVE:
+                raise ValueError(
+                    f"Source entry {source_entry_id} is not active "
+                    f"(status={source.status})"
+                )
             src_path = Path(source.checkpoint_path)
             existing_names = self._all_display_names_unlocked()
             entry_count = self._entry_count_unlocked()

@@ -242,6 +242,40 @@ class TestOpponentStoreTransaction:
         assert len(weight_files) == 1, f"Expected 1 weights.pt, got {weight_files}"
         store.close()
 
+    def test_rollback_failure_still_cleans_up_files(self, store_db, league_dir):
+        """If _conn.rollback() throws, filesystem cleanup must still run."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        source = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        # Wrap _conn in a proxy that injects a failure after rollback
+        real_conn = store._conn
+        wrapper = type("FailingConn", (), {})()
+        for attr in dir(real_conn):
+            if not attr.startswith("_"):
+                try:
+                    setattr(wrapper, attr, getattr(real_conn, attr))
+                except (AttributeError, TypeError):
+                    pass
+
+        def failing_rollback():
+            real_conn.rollback()
+            raise OSError("simulated rollback I/O failure")
+
+        wrapper.rollback = failing_rollback
+        store._conn = wrapper
+
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                store.clone_entry(source.id, Role.FRONTIER_STATIC, "test")
+                raise RuntimeError("abort")
+
+        # Files must be cleaned up despite rollback() raising
+        weight_files = list(Path(league_dir).rglob("weights.pt"))
+        assert len(weight_files) == 1, f"Expected 1 weights.pt (source only), got {weight_files}"
+        store._conn = real_conn
+        store.close()
+
     def test_rollback_preserves_prior_optimizer(self, store_db, league_dir):
         """save_optimizer rollback must restore the prior optimizer.pt, not delete it."""
         store = OpponentStore(store_db, str(league_dir))
@@ -378,6 +412,37 @@ class TestDynamicToFrontierStaticClone:
         assert clone.optimizer_path is None
         # Weights file should exist at the clone's path
         assert Path(clone.checkpoint_path).exists()
+        store.close()
+
+
+class TestCloneEntryStatusGuard:
+    """P29: clone_entry must reject non-ACTIVE source entries."""
+
+    def test_clone_retired_entry_raises(self, store_db, league_dir):
+        """Cloning a retired entry must raise ValueError, not silently succeed."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        source = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        store.retire_entry(source.id, reason="evicted")
+
+        with pytest.raises(ValueError, match="not active"):
+            store.clone_entry(source.id, Role.FRONTIER_STATIC, "promotion")
+        store.close()
+
+    def test_clone_archived_entry_raises(self, store_db, league_dir):
+        """Cloning an archived entry must raise ValueError."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        source = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        store.retire_entry(source.id, reason="evicted")
+        # Archive the entry
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET status = ? WHERE id = ?",
+                (EntryStatus.ARCHIVED, source.id),
+            )
+        with pytest.raises(ValueError, match="not active"):
+            store.clone_entry(source.id, Role.FRONTIER_STATIC, "promotion")
         store.close()
 
 
