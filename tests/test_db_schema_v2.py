@@ -48,10 +48,10 @@ class TestSchemaV2:
         assert "game_type" in cols
         assert "demo_slot" in cols
 
-    def test_schema_version_is_5(self, tmp_path):
+    def test_schema_version_is_current(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
         init_db(db_path)
-        assert _get_schema_version(db_path) == 5
+        assert _get_schema_version(db_path) == 6
 
     def test_league_entries_columns(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
@@ -239,7 +239,7 @@ class TestSchemaV5:
         init_db(db_path)
 
         # Verify
-        assert _get_schema_version(db_path) == 5
+        assert _get_schema_version(db_path) == 6
         cols = _get_table_columns(db_path, "league_entries")
         assert "elo_frontier" in cols
         assert "elo_dynamic" in cols
@@ -255,8 +255,8 @@ class TestSchemaV5:
         assert row == (1000.0, 1000.0, 1000.0, 1000.0)
 
     def test_idempotent_migration(self, tmp_path):
-        """Running init_db twice on a v5 DB should be a no-op."""
+        """Running init_db twice on a v6 DB should be a no-op."""
         db_path = str(tmp_path / "idempotent.db")
         init_db(db_path)
         init_db(db_path)  # Should not raise
-        assert _get_schema_version(db_path) == 5
+        assert _get_schema_version(db_path) == 6

@@ -30,6 +30,30 @@ def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dt
     return dtype, device_type
 
 
+def ppo_clip_loss(
+    new_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    clip_epsilon: float,
+) -> torch.Tensor:
+    """PPO clipped surrogate policy loss."""
+    ratio = (new_log_probs - old_log_probs).exp()
+    surr1 = ratio * advantages
+    surr2 = ratio.clamp(1 - clip_epsilon, 1 + clip_epsilon) * advantages
+    return -torch.min(surr1, surr2).mean()
+
+
+def wdl_cross_entropy_loss(
+    value_logits: torch.Tensor,
+    value_cats: torch.Tensor,
+) -> torch.Tensor:
+    """WDL (Win/Draw/Loss) categorical cross-entropy with ignore_index=-1."""
+    has_valid = (value_cats >= 0).any()
+    if not has_valid:
+        return value_logits.sum() * 0.0
+    return F.cross_entropy(value_logits, value_cats, ignore_index=-1)
+
+
 def compute_value_metrics(
     value_logits: torch.Tensor, value_targets: torch.Tensor,
 ) -> dict[str, float]:
@@ -665,11 +689,10 @@ class KataGoPPOAlgorithm:
                         1, batch_actions.unsqueeze(1)
                     ).squeeze(1)
 
-                    ratio = (new_log_probs - batch_old_log_probs).exp()
-                    clip = self.params.clip_epsilon
-                    surr1 = ratio * batch_advantages
-                    surr2 = ratio.clamp(1 - clip, 1 + clip) * batch_advantages
-                    policy_loss = -torch.min(surr1, surr2).mean()
+                    policy_loss = ppo_clip_loss(
+                        new_log_probs, batch_old_log_probs,
+                        batch_advantages, self.params.clip_epsilon,
+                    )
 
                     # Entropy over legal actions only.
                     # Reuse log_softmax result instead of computing softmax again.
@@ -691,13 +714,9 @@ class KataGoPPOAlgorithm:
                         score_loss = _zero
                     else:
                         # Default: inline KataGo multi-head (backward compatible)
-                        has_valid_value_targets = (batch_value_cats >= 0).any()
-                        if has_valid_value_targets:
-                            value_loss = F.cross_entropy(
-                                output.value_logits, batch_value_cats, ignore_index=-1
-                            )
-                        else:
-                            value_loss = output.value_logits.sum() * 0.0
+                        value_loss = wdl_cross_entropy_loss(
+                            output.value_logits, batch_value_cats,
+                        )
 
                         # Score loss (MSE on normalized material balance).
                         # Every position has a real target — no NaN masking needed.

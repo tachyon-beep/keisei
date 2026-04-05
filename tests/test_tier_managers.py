@@ -2,12 +2,14 @@
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 from keisei.config import FrontierStaticConfig, RecentFixedConfig, DynamicConfig
 from keisei.db import init_db
+from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, EntryStatus
 from keisei.training.tier_managers import (
     FrontierManager,
@@ -60,9 +62,9 @@ class TestFrontierManager:
         selected = mgr.select_initial(entries, count=5)
         assert len(selected) == 3
 
-    def test_review_is_noop_phase1(self, store):
+    def test_review_is_noop_without_promoter(self, store):
         mgr = FrontierManager(store, FrontierStaticConfig())
-        mgr.review(epoch=500)  # should not raise
+        mgr.review(epoch=500)  # should not raise, no-op without promoter
 
     def test_is_due_for_review(self, store):
         mgr = FrontierManager(store, FrontierStaticConfig(review_interval_epochs=250))
@@ -220,6 +222,212 @@ class TestDynamicManager:
         result = mgr.admit(source)
         assert result is None
 
-    def test_training_enabled_raises(self, store):
-        with pytest.raises((AssertionError, NotImplementedError)):
-            DynamicManager(store, DynamicConfig(training_enabled=True))
+    def test_training_enabled_accepted(self, store):
+        """DynamicManager now accepts training_enabled=True (Phase 3)."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
+        assert mgr._config.training_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# FrontierManager.review() with promoter — Phase 3 tests
+# ---------------------------------------------------------------------------
+
+
+def _make_frontier_config(**overrides: object) -> FrontierStaticConfig:
+    """Helper to build a FrontierStaticConfig with test-friendly defaults."""
+    defaults = dict(
+        slots=5,
+        review_interval_epochs=250,
+        min_tenure_epochs=50,
+        promotion_margin_elo=10.0,
+        min_games_for_promotion=50,
+        topk=3,
+        streak_epochs=0,  # disable streak requirement for tests
+        max_lineage_overlap=10,
+    )
+    defaults.update(overrides)
+    return FrontierStaticConfig(**defaults)
+
+
+class TestFrontierReview:
+    """Tests for FrontierManager.review() with FrontierPromoter."""
+
+    def test_frontier_review_promotes_candidate(self, store):
+        """Dynamic entry meeting criteria is promoted; weakest Frontier retired."""
+        config = _make_frontier_config(slots=5, min_tenure_epochs=0)
+        promoter = FrontierPromoter(config)
+
+        # Seed 5 Frontier entries with varying Elo
+        frontier_ids = []
+        for i, elo in enumerate([900, 950, 1000, 1050, 1100]):
+            e = _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=elo)
+            frontier_ids.append(e.id)
+
+        # Add Dynamic entries — one with high Elo
+        for i in range(9):
+            _add_entry(store, epoch=100 + i, role=Role.DYNAMIC, elo=1000 + i * 10)
+        # The top candidate — high Elo, enough games
+        candidate = _add_entry(store, epoch=110, role=Role.DYNAMIC, elo=1200)
+        # Give the candidate enough games_played
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        # Prime the promoter streak tracking so the candidate is seen at the epoch
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr.review(epoch=300)
+
+        # New Frontier entry should exist (cloned from candidate)
+        frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
+        frontier_after_ids = {e.id for e in frontier_after}
+
+        # Original candidate still exists as Dynamic
+        dyn_after = store.list_by_role(Role.DYNAMIC)
+        assert any(e.id == candidate.id for e in dyn_after)
+
+        # The weakest Frontier entry (Elo=900) should be retired
+        retired_entry = store.get_entry(frontier_ids[0])
+        assert retired_entry is not None
+        assert retired_entry.status == EntryStatus.RETIRED
+
+        # A new Frontier entry was created (6 total original minus 1 retired + 1 new = 5 active)
+        assert len(frontier_after) == 5
+
+    def test_frontier_review_no_promotion_when_no_candidate(self, store):
+        """No Dynamic entries meet criteria -> no changes."""
+        config = _make_frontier_config(
+            slots=5, min_games_for_promotion=1000
+        )  # very high bar
+        promoter = FrontierPromoter(config)
+
+        for i in range(5):
+            _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=1000)
+        for i in range(10):
+            _add_entry(store, epoch=100 + i, role=Role.DYNAMIC, elo=900)
+
+        frontier_before = store.list_by_role(Role.FRONTIER_STATIC)
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+        frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
+
+        assert len(frontier_before) == len(frontier_after)
+        assert {e.id for e in frontier_before} == {e.id for e in frontier_after}
+
+    def test_frontier_review_retires_weakest_or_stalest(self, store):
+        """Weakest Frontier entry past min_tenure is retired on promotion."""
+        config = _make_frontier_config(slots=3, min_tenure_epochs=50)
+        promoter = FrontierPromoter(config)
+
+        # 3 Frontier entries: one weak and old, one strong and old, one mid and new
+        weak_old = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=800)
+        _add_entry(store, epoch=10, role=Role.FRONTIER_STATIC, elo=1200)
+        _add_entry(store, epoch=200, role=Role.FRONTIER_STATIC, elo=1000)
+
+        # One high-Elo Dynamic candidate
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1300)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+
+        # weak_old (Elo=800, epoch=0) should be retired — past tenure and lowest Elo
+        retired = store.get_entry(weak_old.id)
+        assert retired is not None
+        assert retired.status == EntryStatus.RETIRED
+
+    def test_frontier_review_never_replaces_more_than_one(self, store):
+        """Even if multiple Dynamic entries qualify, only 1 is promoted per review."""
+        config = _make_frontier_config(slots=3, min_tenure_epochs=0)
+        promoter = FrontierPromoter(config)
+
+        for i in range(3):
+            _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=800 + i * 50)
+
+        # Two qualifying Dynamic entries
+        c1 = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1200)
+        c2 = _add_entry(store, epoch=101, role=Role.DYNAMIC, elo=1300)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id IN (?, ?)",
+                (c1.id, c2.id),
+            )
+        promoter._topk_streaks[c1.id] = 0
+        promoter._topk_streaks[c2.id] = 0
+
+        frontier_before = store.list_by_role(Role.FRONTIER_STATIC)
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+        frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
+
+        # Still 3 active Frontier entries (1 retired + 1 promoted = net 0)
+        assert len(frontier_after) == 3
+
+        # Only 1 retirement occurred
+        retired_count = sum(
+            1
+            for e_before in frontier_before
+            if store.get_entry(e_before.id).status == EntryStatus.RETIRED
+        )
+        assert retired_count == 1
+
+    def test_frontier_review_skips_retirement_when_frontier_not_full(self, store):
+        """Frontier has 3 entries but slots=5; promote without retiring."""
+        config = _make_frontier_config(slots=5, min_tenure_epochs=0)
+        promoter = FrontierPromoter(config)
+
+        frontier_entries = []
+        for i in range(3):
+            frontier_entries.append(
+                _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=900 + i * 100)
+            )
+
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1300)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+
+        # All original Frontier entries should still be active
+        for fe in frontier_entries:
+            entry = store.get_entry(fe.id)
+            assert entry.status == EntryStatus.ACTIVE
+
+        # Now 4 Frontier entries (3 original + 1 promoted)
+        frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
+        assert len(frontier_after) == 4
+
+    def test_frontier_review_promotion_is_atomic(self, store):
+        """Verify clone + retire happens within a transaction context."""
+        config = _make_frontier_config(slots=3, min_tenure_epochs=0)
+        promoter = FrontierPromoter(config)
+
+        for i in range(3):
+            _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=900)
+
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1200)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+
+        with patch.object(store, "transaction", wraps=store.transaction) as mock_txn:
+            mgr.review(epoch=300)
+            mock_txn.assert_called_once()

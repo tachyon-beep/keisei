@@ -16,14 +16,19 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 import torch
 
+from keisei.training.dynamic_trainer import DynamicTrainer
+
+if TYPE_CHECKING:
+    from keisei.training.dynamic_trainer import MatchRollout
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.match_utils import play_match, release_models
-from keisei.training.opponent_store import OpponentEntry, OpponentStore, compute_elo_update
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,7 @@ class LeagueTournament:
         learner_entry_id: int | None = None,
         historical_library: HistoricalLibrary | None = None,
         gauntlet: HistoricalGauntlet | None = None,
+        dynamic_trainer: DynamicTrainer | None = None,
     ) -> None:
         """
         Args:
@@ -62,6 +68,7 @@ class LeagueTournament:
             learner_entry_id: Entry ID of the learner (needed for gauntlet).
             historical_library: The milestone library instance (Phase 2).
             gauntlet: The gauntlet runner instance (Phase 2).
+            dynamic_trainer: DynamicTrainer for updating Dynamic entries (Phase 3).
         """
         self.store = store
         self.scheduler = scheduler
@@ -76,6 +83,7 @@ class LeagueTournament:
         self._learner_lock = threading.Lock()
         self.historical_library = historical_library
         self.gauntlet = gauntlet
+        self.dynamic_trainer = dynamic_trainer
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -164,43 +172,13 @@ class LeagueTournament:
                     if self._stop_event.is_set():
                         break
                     try:
-                        wins_a, wins_b, draws = self._play_match(
-                            vecenv, entry_a, entry_b,
-                        )
+                        self._run_one_match(vecenv, entry_a, entry_b, epoch=epoch)
                     except Exception:
                         logger.exception(
                             "Match failed: %s vs %s",
                             entry_a.display_name, entry_b.display_name,
                         )
                         continue
-
-                    total = wins_a + wins_b + draws
-                    if total > 0:
-                        # Re-read current Elo from DB — entries in the pairing
-                        # list are stale if this entry already played earlier
-                        # in the same round-robin round.
-                        current_a = self.store.get_entry(entry_a.id)
-                        current_b = self.store.get_entry(entry_b.id)
-                        if current_a is None or current_b is None:
-                            continue  # entry retired mid-round
-                        result_score = (wins_a + 0.5 * draws) / total
-                        new_a_elo, new_b_elo = compute_elo_update(
-                            current_a.elo_rating, current_b.elo_rating,
-                            result=result_score, k=self.k_factor,
-                        )
-                        self.store.record_result(
-                            epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
-                            wins=wins_a, losses=wins_b, draws=draws,
-                            elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
-                            elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
-                        )
-                        self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
-                        self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
-                        logger.info(
-                            "  %s vs %s — %dW %dL %dD",
-                            entry_a.display_name, entry_b.display_name,
-                            wins_a, wins_b, draws,
-                        )
 
                     self._stop_event.wait(self.pause_seconds)
 
@@ -229,6 +207,79 @@ class LeagueTournament:
         finally:
             logger.info("Tournament thread stopped")
 
+    # ── Trainability ──────────────────────────────────────────
+
+    def _is_trainable_match(
+        self, entry_a: OpponentEntry, entry_b: OpponentEntry,
+    ) -> bool:
+        """D-vs-D or D-vs-RF produces training data. D-vs-FS and Historical do not."""
+        trainable_roles = {Role.DYNAMIC, Role.RECENT_FIXED}
+        return (
+            entry_a.role in trainable_roles
+            and entry_b.role in trainable_roles
+            and (entry_a.role == Role.DYNAMIC or entry_b.role == Role.DYNAMIC)
+        )
+
+    # ── Per-match logic ─────────────────────────────────────
+
+    def _run_one_match(
+        self,
+        vecenv: object,
+        entry_a: OpponentEntry,
+        entry_b: OpponentEntry,
+        epoch: int,
+    ) -> None:
+        """Play a single match, update Elo, and trigger training if applicable."""
+        is_trainable = (
+            self.dynamic_trainer is not None
+            and self._is_trainable_match(entry_a, entry_b)
+        )
+
+        if is_trainable:
+            result = self._play_match(
+                vecenv, entry_a, entry_b, collect_rollout=True,
+            )
+            wins_a, wins_b, draws, rollout = result
+        else:
+            wins_a, wins_b, draws = self._play_match(vecenv, entry_a, entry_b)
+            rollout = None
+
+        total = wins_a + wins_b + draws
+        if total > 0:
+            current_a = self.store.get_entry(entry_a.id)
+            current_b = self.store.get_entry(entry_b.id)
+            if current_a is None or current_b is None:
+                return  # entry retired mid-round
+            result_score = (wins_a + 0.5 * draws) / total
+            new_a_elo, new_b_elo = compute_elo_update(
+                current_a.elo_rating, current_b.elo_rating,
+                result=result_score, k=self.k_factor,
+            )
+            self.store.record_result(
+                epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
+                wins=wins_a, losses=wins_b, draws=draws,
+                elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
+                elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
+            )
+            self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
+            self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
+            logger.info(
+                "  %s vs %s — %dW %dL %dD",
+                entry_a.display_name, entry_b.display_name,
+                wins_a, wins_b, draws,
+            )
+
+        # Training trigger (after Elo update)
+        if is_trainable and rollout is not None:
+            for i, entry in enumerate([entry_a, entry_b]):
+                if entry.role == Role.DYNAMIC:
+                    self.dynamic_trainer.record_match(entry.id, rollout, side=i)
+                    if (
+                        self.dynamic_trainer.should_update(entry.id)
+                        and not self.dynamic_trainer.is_rate_limited()
+                    ):
+                        self.dynamic_trainer.update(entry, device=str(self.device))
+
     # ── Helpers ──────────────────────────────────────────────
 
     def _current_epoch(self) -> int:
@@ -242,8 +293,13 @@ class LeagueTournament:
         vecenv: object,
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
-    ) -> tuple[int, int, int]:
-        """Play a set of games between two frozen models. Returns (a_wins, b_wins, draws)."""
+        collect_rollout: bool = False,
+    ) -> tuple[int, int, int] | tuple[int, int, int, MatchRollout]:
+        """Play a set of games between two frozen models.
+
+        Returns (a_wins, b_wins, draws), or (a_wins, b_wins, draws, MatchRollout)
+        when collect_rollout=True.
+        """
         model_a = self.store.load_opponent(entry_a, device=str(self.device))
         model_b = self.store.load_opponent(entry_b, device=str(self.device))
 
@@ -253,6 +309,7 @@ class LeagueTournament:
                 device=self.device, num_envs=self.num_envs,
                 max_ply=self.max_ply, games_target=self.games_per_match,
                 stop_event=self._stop_event,
+                collect_rollout=collect_rollout,
             )
         finally:
             release_models(model_a, model_b, device_type=self.device.type)
