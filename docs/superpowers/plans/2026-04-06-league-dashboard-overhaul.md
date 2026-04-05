@@ -8,6 +8,8 @@
 
 **Tech Stack:** Svelte 4, Vitest, Python/SQLite (backend), WebSocket
 
+**Note:** `.sr-only` CSS class is globally defined in `webui/src/app.css:147`. No need to redefine it in component styles.
+
 **Spec:** `docs/superpowers/specs/2026-04-06-league-dashboard-overhaul-design.md`
 
 ---
@@ -903,6 +905,19 @@ Replace the `<tbody>` contents. For flat mode, keep the existing row rendering. 
                     <td class="num">{entry.created_epoch}</td>
                   </tr>
                 {/each}
+                {#each Array(Math.max(0, (ROLE_CAPACITY[role] || 0) - ($leagueByRole.get(role)?.length || 0))) as _, i}
+                  <tr class="placeholder-row" aria-hidden="true">
+                    <td class="num rank placeholder-text">{($leagueByRole.get(role)?.length || 0) + i + 1}</td>
+                    <td class="placeholder-text">—</td>
+                    <td class="num placeholder-text">—</td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                  </tr>
+                {/each}
               {/if}
             {/each}
           {:else}
@@ -1358,6 +1373,36 @@ Replace the `<script>` block:
   import { getRoleIcon } from './roleIcons.js'
 
   $: counts = $transitionCounts
+
+  /**
+   * Batch-collapse: group consecutive events of the same type and time into
+   * a single collapsed line. e.g., 3 arrivals at the same timestamp become
+   * "→ 3 arrivals" instead of 3 separate lines.
+   */
+  $: collapsedEvents = (() => {
+    const out = []
+    for (const event of $leagueEvents) {
+      const prev = out[out.length - 1]
+      if (prev && !prev.collapsed && prev.type === event.type && prev.time === event.time) {
+        // Convert previous single event to collapsed group
+        out[out.length - 1] = {
+          collapsed: true,
+          type: event.type,
+          icon: event.icon,
+          time: event.time,
+          count: 2,
+          names: [prev.name, event.name],
+        }
+      } else if (prev?.collapsed && prev.type === event.type && prev.time === event.time) {
+        // Extend existing collapsed group
+        prev.count++
+        prev.names.push(event.name)
+      } else {
+        out.push(event)
+      }
+    }
+    return out
+  })()
 </script>
 ```
 
@@ -1375,7 +1420,34 @@ Insert after `<h2 class="section-header">Event Log</h2>`:
   {/if}
 ```
 
-- [ ] **Step 3: Add CSS for the summary line**
+- [ ] **Step 3: Update the event feed to use `collapsedEvents`**
+
+Replace the existing `{#each $leagueEvents as event}` loop with:
+
+```svelte
+      {#each collapsedEvents as event}
+        {#if event.collapsed}
+          <div class="event {event.type}">
+            <span class="event-time">{event.time}</span>
+            <span class="event-icon" aria-hidden="true">{event.icon}</span>
+            <span class="sr-only">{event.type}</span>
+            <span class="event-name">{event.count} {event.type === 'arrival' ? 'arrivals' : event.type === 'departure' ? 'departures' : event.type === 'promotion' ? 'promotions' : 'demotions'}</span>
+            <span class="event-detail" title={event.names.join(', ')}>{event.names.slice(0, 3).join(', ')}{event.names.length > 3 ? ` +${event.names.length - 3}` : ''}</span>
+          </div>
+        {:else}
+          <div class="event" class:arrival={event.type === 'arrival'} class:departure={event.type === 'departure'} class:promotion={event.type === 'promotion'} class:demotion={event.type === 'demotion'}>
+            <span class="event-time">{event.time}</span>
+            <span class="event-icon" aria-hidden="true">{event.icon}</span>
+            <span class="sr-only">{event.type}</span>
+            {#if event.role}<span class="role-icon" aria-hidden="true">{getRoleIcon(event.role)}</span>{/if}
+            <span class="event-name">{event.name}</span>
+            <span class="event-detail">{event.detail}</span>
+          </div>
+        {/if}
+      {/each}
+```
+
+- [ ] **Step 4: Add CSS for the summary line**
 
 ```css
   .transition-summary {
@@ -1392,17 +1464,97 @@ Insert after `<h2 class="section-header">Event Log</h2>`:
   .summary-item.admission { color: var(--accent-teal); }
 ```
 
-- [ ] **Step 4: Build to verify**
+- [ ] **Step 5: Write batch-collapse unit test**
+
+Create `webui/src/lib/collapseEvents.test.js`:
+
+```js
+// @vitest-environment jsdom
+import { describe, it, expect } from 'vitest'
+
+// Extract the collapse logic for testing. In the component it's inline,
+// but we test the algorithm here with the same logic.
+function collapseEvents(events) {
+  const out = []
+  for (const event of events) {
+    const prev = out[out.length - 1]
+    if (prev && !prev.collapsed && prev.type === event.type && prev.time === event.time) {
+      out[out.length - 1] = {
+        collapsed: true, type: event.type, icon: event.icon,
+        time: event.time, count: 2, names: [prev.name, event.name],
+      }
+    } else if (prev?.collapsed && prev.type === event.type && prev.time === event.time) {
+      prev.count++
+      prev.names.push(event.name)
+    } else {
+      out.push(event)
+    }
+  }
+  return out
+}
+
+describe('collapseEvents', () => {
+  it('returns empty array for empty input', () => {
+    expect(collapseEvents([])).toEqual([])
+  })
+
+  it('passes through a single event unchanged', () => {
+    const events = [{ type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-A', detail: 'joined' }]
+    const result = collapseEvents(events)
+    expect(result).toHaveLength(1)
+    expect(result[0].collapsed).toBeUndefined()
+    expect(result[0].name).toBe('Bot-A')
+  })
+
+  it('collapses consecutive same-type same-time events', () => {
+    const events = [
+      { type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-A', detail: 'joined' },
+      { type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-B', detail: 'joined' },
+      { type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-C', detail: 'joined' },
+    ]
+    const result = collapseEvents(events)
+    expect(result).toHaveLength(1)
+    expect(result[0].collapsed).toBe(true)
+    expect(result[0].count).toBe(3)
+    expect(result[0].names).toEqual(['Bot-A', 'Bot-B', 'Bot-C'])
+  })
+
+  it('does not collapse events of different types', () => {
+    const events = [
+      { type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-A' },
+      { type: 'departure', time: '12:00:00', icon: '←', name: 'Bot-B' },
+    ]
+    const result = collapseEvents(events)
+    expect(result).toHaveLength(2)
+  })
+
+  it('does not collapse events at different times', () => {
+    const events = [
+      { type: 'arrival', time: '12:00:00', icon: '→', name: 'Bot-A' },
+      { type: 'arrival', time: '12:00:05', icon: '→', name: 'Bot-B' },
+    ]
+    const result = collapseEvents(events)
+    expect(result).toHaveLength(2)
+  })
+})
+```
+
+- [ ] **Step 6: Run the batch-collapse test**
+
+Run: `cd webui && npx vitest run src/lib/collapseEvents.test.js`
+Expected: All PASS
+
+- [ ] **Step 7: Build to verify**
 
 Run: `cd webui && npm run build`
 Expected: Build succeeds
 
-- [ ] **Step 5: Run all frontend tests**
+- [ ] **Step 8: Run all frontend tests**
 
 Run: `cd webui && npx vitest run`
 Expected: All tests PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add webui/src/lib/LeagueEventLog.svelte
