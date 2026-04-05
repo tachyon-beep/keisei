@@ -64,6 +64,21 @@ class RoleEloTracker:
             if column_b is not None:
                 self.store.update_role_elo(entry_b.id, column_b, new_b)
 
+    def k_for_context(self, match_context: str) -> float:
+        """Return the K-factor for a given match context.
+
+        Used by the tournament to apply context-appropriate K-factors to the
+        composite elo_rating, not just the role-specific columns.
+        """
+        context_k = {
+            "frontier": self.config.frontier_k,
+            "dynamic": self.config.dynamic_k,
+            "recent": self.config.recent_k,
+            "historical": self.config.historical_k,
+            "cross_dynamic_recent": self.config.dynamic_k,
+        }
+        return context_k.get(match_context, self.config.frontier_k)
+
     def get_role_elos(self, entry_id: int) -> dict[EloColumn, float]:
         """Returns dict of {EloColumn: elo_value} for an entry."""
         entry = self.store.get_entry(entry_id)

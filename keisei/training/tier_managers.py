@@ -123,6 +123,14 @@ class FrontierManager:
                 retired_id = self._retire_weakest_or_stalest(
                     frontier_entries, epoch
                 )
+                if retired_id is None:
+                    # All entries under tenure — skip promotion to respect cooldown.
+                    logger.info(
+                        "Frontier review: skipping promotion at epoch %d — "
+                        "no Frontier entry eligible for retirement (tenure)",
+                        epoch,
+                    )
+                    return
             new_entry = self._store.clone_entry(
                 candidate.id,
                 Role.FRONTIER_STATIC,
@@ -156,21 +164,17 @@ class FrontierManager:
         ]
 
         if not eligible:
-            # Fallback: if no entries are past tenure, retire the oldest anyway.
-            # This guarantees a retirement always occurs when called at capacity,
-            # so the caller (review()) can safely clone before checking capacity
-            # without risk of exceeding the slot limit.
-            eligible = sorted(frontier_entries, key=lambda e: e.created_epoch)
-            target = eligible[0]
-            logger.warning(
+            # No entries past tenure — refuse to retire.  The caller (review())
+            # must check for None and skip promotion to avoid exceeding capacity.
+            # Per design spec §6.1: "only after a minimum tenure/cooldown".
+            logger.info(
                 "Frontier retirement: all %d entries under min_tenure_epochs=%d "
-                "at epoch %d — falling back to oldest (id=%d, epoch=%d)",
+                "at epoch %d — skipping retirement (tenure protection)",
                 len(frontier_entries),
                 self._config.min_tenure_epochs,
                 epoch,
-                target.id,
-                target.created_epoch,
             )
+            return None
         else:
             # Retire lowest elo_frontier; tie-break by oldest created_epoch.
             # Must match the metric used by FrontierPromoter (elo_frontier)

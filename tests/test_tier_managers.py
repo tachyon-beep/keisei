@@ -524,6 +524,45 @@ class TestFrontierReview:
         assert retired is not None
         assert retired.status == EntryStatus.RETIRED
 
+    def test_frontier_review_blocks_promotion_when_all_under_tenure(self, store):
+        """When all Frontier entries are under min_tenure, no retirement or promotion occurs."""
+        config = _make_frontier_config(slots=3, min_tenure_epochs=100)
+        promoter = FrontierPromoter(config)
+
+        # 3 Frontier entries all created recently (epoch 50-52), tenure needs 100
+        frontier_entries = []
+        for i in range(3):
+            frontier_entries.append(
+                _add_entry(store, epoch=50 + i, role=Role.FRONTIER_STATIC, elo=900 + i * 100)
+            )
+
+        # A qualifying Dynamic candidate
+        candidate = _add_entry(store, epoch=60, role=Role.DYNAMIC, elo=1300)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        # Review at epoch 80 — all frontier entries have tenure < 100
+        mgr.review(epoch=80)
+
+        # All original Frontier entries should still be active (none retired)
+        for fe in frontier_entries:
+            entry = store.get_entry(fe.id)
+            assert entry.status == EntryStatus.ACTIVE, (
+                f"Frontier entry {fe.id} (epoch={fe.created_epoch}) was retired "
+                f"despite being under min_tenure_epochs={config.min_tenure_epochs}"
+            )
+
+        # Still exactly 3 Frontier entries (no promotion occurred)
+        frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
+        assert len(frontier_after) == 3, (
+            f"Expected 3 Frontier entries (no promotion), got {len(frontier_after)}"
+        )
+
     def test_frontier_review_never_replaces_more_than_one(self, store):
         """Even if multiple Dynamic entries qualify, only 1 is promoted per review."""
         config = _make_frontier_config(slots=3, min_tenure_epochs=0)

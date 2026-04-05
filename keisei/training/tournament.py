@@ -311,12 +311,17 @@ class LeagueTournament:
                 if current_a is None or current_b is None:
                     continue
                 result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
-                new_a_elo, new_b_elo = compute_elo_update(
-                    current_a.elo_rating, current_b.elo_rating,
-                    result=result_score, k=self.k_factor,
-                )
                 context = RoleEloTracker.determine_match_context(
                     current_a, current_b,
+                )
+                k = (
+                    self.role_elo_tracker.k_for_context(context)
+                    if self.role_elo_tracker
+                    else self.k_factor
+                )
+                new_a_elo, new_b_elo = compute_elo_update(
+                    current_a.elo_rating, current_b.elo_rating,
+                    result=result_score, k=k,
                 )
                 is_train = is_training_match(current_a, current_b)
                 self.store.record_result(
@@ -425,12 +430,17 @@ class LeagueTournament:
             if current_a is None or current_b is None:
                 return total  # entry retired mid-round
             result_score = majority_wins_result(wins_a, wins_b, draws)
-            new_a_elo, new_b_elo = compute_elo_update(
-                current_a.elo_rating, current_b.elo_rating,
-                result=result_score, k=self.k_factor,
-            )
             context = RoleEloTracker.determine_match_context(
                 current_a, current_b,
+            )
+            k = (
+                self.role_elo_tracker.k_for_context(context)
+                if self.role_elo_tracker
+                else self.k_factor
+            )
+            new_a_elo, new_b_elo = compute_elo_update(
+                current_a.elo_rating, current_b.elo_rating,
+                result=result_score, k=k,
             )
             self.store.record_result(
                 epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,

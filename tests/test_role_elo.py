@@ -358,3 +358,19 @@ class TestDetermineContextCrossCombinations:
 
         assert result == "dynamic"
         assert any("Unrecognised role combination" in msg for msg in caplog.messages)
+
+
+class TestKForContext:
+    """Tests for k_for_context — public K-factor lookup by match context."""
+
+    def test_returns_correct_k_per_context(self, elo_setup):
+        tracker, store, model = elo_setup
+        assert tracker.k_for_context("frontier") == 16.0
+        assert tracker.k_for_context("dynamic") == 24.0
+        assert tracker.k_for_context("recent") == 32.0
+        assert tracker.k_for_context("historical") == 12.0
+        assert tracker.k_for_context("cross_dynamic_recent") == 24.0
+
+    def test_unknown_context_falls_back_to_frontier_k(self, elo_setup):
+        tracker, store, model = elo_setup
+        assert tracker.k_for_context("unknown_context") == 16.0
