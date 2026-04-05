@@ -279,21 +279,12 @@ class TestRunRound:
             release_fn=lambda ma, mb: None,
             device="cpu",
             games_per_match=4,
-            trainable_fn=lambda entry: True,
+            trainable_fn=lambda ea, eb: True,
         )
         assert len(results) == 1
         assert results[0].rollout is not None
-        # observations shape: (steps, num_envs, channels, 9, 9) -> ndim==5
-        # But task says ndim==4... the per-slot obs is (num_envs, channels, 9, 9)
-        # stacked over steps -> (steps, num_envs, channels, 9, 9) = ndim 5
-        # Actually task says observations.ndim==4 — let's check what it means
-        # The rollout observations are stacked step tensors, each (num_envs, 50, 9, 9)
-        # So stacked = (steps, num_envs, 50, 9, 9) = ndim 5
-        # But the task spec says ndim==4. This might mean (steps*num_envs, 50, 9, 9)?
-        # Looking at make_rollout, it creates (steps, num_envs, 50, 9, 9) = ndim 5.
-        # The task spec just says "observations.ndim==4" which seems wrong for the
-        # existing MatchRollout format. Let's assert >=4 and that it's a valid tensor.
-        assert results[0].rollout.observations.ndim >= 4
+        # MatchRollout.observations shape: (steps, num_envs, channels, 9, 9) = ndim 5
+        assert results[0].rollout.observations.ndim == 5
 
     def test_no_rollout_when_trainable_fn_false(self) -> None:
         """trainable_fn=False -> rollout is None."""
@@ -309,7 +300,7 @@ class TestRunRound:
             release_fn=lambda ma, mb: None,
             device="cpu",
             games_per_match=4,
-            trainable_fn=lambda entry: False,
+            trainable_fn=lambda ea, eb: False,
         )
         assert len(results) == 1
         assert results[0].rollout is None

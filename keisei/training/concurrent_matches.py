@@ -163,7 +163,7 @@ class ConcurrentMatchPool:
         games_per_match: int = 64,
         max_ply: int = 512,
         stop_event: threading.Event | None = None,
-        trainable_fn: Callable[[OpponentEntry], bool] | None = None,
+        trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
     ) -> list[MatchResult]:
         """Execute pairings with true concurrent partitioned inference.
 
@@ -400,7 +400,7 @@ class ConcurrentMatchPool:
         pairing: tuple[OpponentEntry, OpponentEntry],
         load_fn: Callable[[OpponentEntry], Any],
         games_target: int,
-        trainable_fn: Callable[[OpponentEntry], bool] | None = None,
+        trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
     ) -> None:
         """Load models and assign a pairing to a slot."""
         entry_a, entry_b = pairing
@@ -420,7 +420,7 @@ class ConcurrentMatchPool:
 
         collect_rollout = False
         if trainable_fn is not None:
-            collect_rollout = trainable_fn(entry_a) or trainable_fn(entry_b)
+            collect_rollout = trainable_fn(entry_a, entry_b)
 
         model_a.eval()
         model_b.eval()

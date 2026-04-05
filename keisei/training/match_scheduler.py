@@ -21,6 +21,11 @@ class MatchScheduler:
         self.config = config
         self._priority_scorer = priority_scorer
 
+    @property
+    def priority_scorer(self) -> PriorityScorer | None:
+        """The PriorityScorer instance, or None if not configured."""
+        return self._priority_scorer
+
     def sample_for_learner(
         self, entries_by_role: dict[Role, list[OpponentEntry]],
     ) -> OpponentEntry:
