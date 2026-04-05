@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,56 @@ class RoleEloConfig:
 
 
 @dataclass(frozen=True)
+class PriorityScorerConfig:
+    under_sample_weight: float = 1.0
+    uncertainty_weight: float = 0.5
+    recent_fixed_bonus: float = 0.3
+    diversity_weight: float = 0.3
+    repeat_penalty: float = -0.5
+    lineage_penalty: float = -0.3
+    repeat_window_rounds: int = 5
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "under_sample_weight",
+            "uncertainty_weight",
+            "recent_fixed_bonus",
+            "diversity_weight",
+            "repeat_penalty",
+            "lineage_penalty",
+        ):
+            val = getattr(self, field_name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{field_name} must be finite, got {val}")
+        if self.repeat_window_rounds < 1:
+            raise ValueError(
+                f"repeat_window_rounds must be >= 1, got {self.repeat_window_rounds}"
+            )
+
+
+@dataclass(frozen=True)
+class ConcurrencyConfig:
+    parallel_matches: int = 4
+    envs_per_match: int = 8
+    total_envs: int = 32
+    max_resident_models: int = 10
+
+    def __post_init__(self) -> None:
+        needed_envs = self.parallel_matches * self.envs_per_match
+        if needed_envs > self.total_envs:
+            raise ValueError(
+                f"parallel_matches * envs_per_match ({needed_envs}) "
+                f"exceeds total_envs ({self.total_envs})"
+            )
+        min_models = self.parallel_matches * 2
+        if self.max_resident_models < min_models:
+            raise ValueError(
+                f"max_resident_models ({self.max_resident_models}) must be >= "
+                f"parallel_matches * 2 ({min_models})"
+            )
+
+
+@dataclass(frozen=True)
 class LeagueConfig:
     snapshot_interval: int = 10
     epochs_per_seat: int = 50
@@ -152,6 +203,8 @@ class LeagueConfig:
     history: HistoricalLibraryConfig = HistoricalLibraryConfig()
     gauntlet: GauntletConfig = GauntletConfig()
     role_elo: RoleEloConfig = RoleEloConfig()
+    priority: PriorityScorerConfig = PriorityScorerConfig()
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
 
     def __post_init__(self) -> None:
         if self.epochs_per_seat < 1:
@@ -286,6 +339,8 @@ def load_config(path: Path) -> AppConfig:
         history_raw = lg.pop("history", {})
         gauntlet_raw = lg.pop("gauntlet", {})
         role_elo_raw = lg.pop("role_elo", {})
+        priority_raw = lg.pop("priority", {})
+        concurrency_raw = lg.pop("concurrency", {})
         # Strip legacy keys removed during tiered-pool migration
         _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
         for key in _legacy_league_keys:
@@ -299,6 +354,8 @@ def load_config(path: Path) -> AppConfig:
             history=HistoricalLibraryConfig(**history_raw),
             gauntlet=GauntletConfig(**gauntlet_raw),
             role_elo=RoleEloConfig(**role_elo_raw),
+            priority=PriorityScorerConfig(**priority_raw),
+            concurrency=ConcurrencyConfig(**concurrency_raw),
         )
 
     demo_config = None

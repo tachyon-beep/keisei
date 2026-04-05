@@ -101,6 +101,43 @@ def test_load_config_without_league_section(tmp_path):
     assert config.demonstrator is None
 
 
+def test_priority_scorer_config_defaults():
+    from keisei.config import PriorityScorerConfig
+
+    c = PriorityScorerConfig()
+    assert c.under_sample_weight == 1.0
+    assert c.uncertainty_weight == 0.5
+    assert c.recent_fixed_bonus == 0.3
+    assert c.diversity_weight == 0.3
+    assert c.repeat_penalty == -0.5
+    assert c.lineage_penalty == -0.3
+    assert c.repeat_window_rounds == 5
+
+
+def test_concurrency_config_defaults():
+    from keisei.config import ConcurrencyConfig
+
+    c = ConcurrencyConfig()
+    assert c.parallel_matches == 4
+    assert c.envs_per_match == 8
+    assert c.total_envs == 32
+    assert c.max_resident_models == 10
+
+
+def test_concurrency_config_validation_env_budget():
+    from keisei.config import ConcurrencyConfig
+
+    with pytest.raises(ValueError, match="total_envs"):
+        ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=16)
+
+
+def test_concurrency_config_validation_model_budget():
+    from keisei.config import ConcurrencyConfig
+
+    with pytest.raises(ValueError, match="max_resident_models"):
+        ConcurrencyConfig(parallel_matches=4, max_resident_models=4)
+
+
 def test_league_scheduler_ratio_validation(tmp_path):
     """learner mix ratios must sum to 1.0."""
     bad_toml = LEAGUE_TOML + "\n[league.scheduler]\nlearner_dynamic_ratio = 0.9\n"
