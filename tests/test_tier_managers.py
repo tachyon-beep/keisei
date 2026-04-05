@@ -2,12 +2,14 @@
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 
 from keisei.config import FrontierStaticConfig, RecentFixedConfig, DynamicConfig
 from keisei.db import init_db
+from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, EntryStatus
 from keisei.training.tier_managers import (
     FrontierManager,
@@ -220,6 +222,7 @@ class TestDynamicManager:
         result = mgr.admit(source)
         assert result is None
 
-    def test_training_enabled_raises(self, store):
-        with pytest.raises((AssertionError, NotImplementedError)):
-            DynamicManager(store, DynamicConfig(training_enabled=True))
+    def test_training_enabled_accepted(self, store):
+        """DynamicManager now accepts training_enabled=True (Phase 3)."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
+        assert mgr._config.training_enabled is True

@@ -73,7 +73,7 @@ class DynamicConfig:
     slots: int = 10
     protection_matches: int = 24
     min_games_before_eviction: int = 40
-    training_enabled: bool = False
+    training_enabled: bool = True
     update_epochs_per_batch: int = 2
     lr_scale: float = 0.25
     grad_clip: float = 1.0

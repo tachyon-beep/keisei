@@ -42,7 +42,7 @@ db_path = "test.db"
 def test_dynamic_config_training_defaults():
     """Construct with no args, assert all new fields have expected defaults."""
     dc = DynamicConfig()
-    assert dc.training_enabled is False
+    assert dc.training_enabled is True
     assert dc.update_epochs_per_batch == 2
     assert dc.lr_scale == 0.25
     assert dc.grad_clip == 1.0
@@ -132,7 +132,7 @@ def test_load_config_without_phase3_fields(tmp_path):
     config = load_config(toml_file)
 
     assert config.league is not None
-    assert config.league.dynamic.training_enabled is False
+    assert config.league.dynamic.training_enabled is True
     assert config.league.dynamic.lr_scale == 0.25
     assert config.league.dynamic.update_every_matches == 4
     # Frontier defaults too
