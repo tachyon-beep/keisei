@@ -1381,6 +1381,315 @@ class TestDDPDBInit:
             mock_init.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# PendingTransitions unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestPendingTransitionsCreate:
+    """Test PendingTransitions.create() — zero prior tests for PPO rollout accumulation."""
+
+    def test_pending_transitions_create_shapes(self):
+        """Construct with known num_envs and obs shapes; verify field dimensions."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        num_envs = 4
+        obs_shape = (50, 9, 9)
+        action_space = 11259
+        device = torch.device("cpu")
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        assert pt.obs.shape == (num_envs, *obs_shape)
+        assert pt.actions.shape == (num_envs,)
+        assert pt.log_probs.shape == (num_envs,)
+        assert pt.values.shape == (num_envs,)
+        assert pt.legal_masks.shape == (num_envs, action_space)
+        assert pt.rewards.shape == (num_envs,)
+        assert pt.score_targets.shape == (num_envs,)
+        assert pt.valid.shape == (num_envs,)
+        assert not pt.valid.any(), "No envs should be valid initially"
+
+    def test_create_sets_valid_and_stores_data(self):
+        """After create(), masked envs should have valid=True and correct data."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        num_envs = 4
+        obs_shape = (2, 3, 3)
+        action_space = 10
+        device = torch.device("cpu")
+
+        pt = PendingTransitions(num_envs, obs_shape, action_space, device)
+
+        # Create transitions for envs 0 and 2
+        env_mask = torch.tensor([True, False, True, False])
+        obs = torch.randn(num_envs, *obs_shape)
+        actions = torch.arange(num_envs, dtype=torch.long)
+        log_probs = torch.randn(num_envs)
+        values = torch.randn(num_envs)
+        legal_masks = torch.ones(num_envs, action_space, dtype=torch.bool)
+        rewards = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        score_targets = torch.tensor([0.1, 0.2, 0.3, 0.4])
+
+        pt.create(env_mask, obs, actions, log_probs, values, legal_masks, rewards, score_targets)
+
+        assert pt.valid[0] and pt.valid[2]
+        assert not pt.valid[1] and not pt.valid[3]
+        assert torch.allclose(pt.obs[0], obs[0])
+        assert torch.allclose(pt.obs[2], obs[2])
+        assert pt.actions[0] == actions[0]
+        assert pt.actions[2] == actions[2]
+
+    def test_create_double_open_raises(self):
+        """Calling create() on an already-valid env should raise RuntimeError."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        num_envs = 2
+        pt = PendingTransitions(num_envs, (2,), 5, torch.device("cpu"))
+
+        env_mask = torch.tensor([True, False])
+        obs = torch.randn(num_envs, 2)
+        actions = torch.zeros(num_envs, dtype=torch.long)
+        log_probs = torch.zeros(num_envs)
+        values = torch.zeros(num_envs)
+        legal_masks = torch.ones(num_envs, 5, dtype=torch.bool)
+        rewards = torch.zeros(num_envs)
+        score_targets = torch.zeros(num_envs)
+
+        pt.create(env_mask, obs, actions, log_probs, values, legal_masks, rewards, score_targets)
+
+        with pytest.raises(RuntimeError, match="already-valid"):
+            pt.create(env_mask, obs, actions, log_probs, values, legal_masks, rewards, score_targets)
+
+
+class TestPendingTransitionsAccumulateReward:
+    """Test PendingTransitions.accumulate_reward()."""
+
+    def test_accumulate_reward_adds_correctly(self):
+        """Call accumulate_reward multiple times; verify rewards sum per env."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        num_envs = 3
+        pt = PendingTransitions(num_envs, (2,), 5, torch.device("cpu"))
+
+        # Open transitions for envs 0 and 1
+        env_mask = torch.tensor([True, True, False])
+        obs = torch.randn(num_envs, 2)
+        actions = torch.zeros(num_envs, dtype=torch.long)
+        log_probs = torch.zeros(num_envs)
+        values = torch.zeros(num_envs)
+        legal_masks = torch.ones(num_envs, 5, dtype=torch.bool)
+        rewards = torch.tensor([1.0, 2.0, 0.0])  # initial rewards
+        score_targets = torch.zeros(num_envs)
+
+        pt.create(env_mask, obs, actions, log_probs, values, legal_masks, rewards, score_targets)
+
+        # Accumulate additional rewards
+        pt.accumulate_reward(torch.tensor([0.5, 0.3, 99.0]))  # env 2 ignored (not valid)
+        pt.accumulate_reward(torch.tensor([0.1, 0.2, 88.0]))
+
+        assert torch.isclose(pt.rewards[0], torch.tensor(1.6))  # 1.0 + 0.5 + 0.1
+        assert torch.isclose(pt.rewards[1], torch.tensor(2.5))  # 2.0 + 0.3 + 0.2
+        assert pt.rewards[2] == 0.0  # env 2 was never valid, reward stays at 0
+
+
+class TestPendingTransitionsFinalize:
+    """Test PendingTransitions.finalize()."""
+
+    def test_finalize_output_shapes(self):
+        """Create, accumulate, finalize -> verify output tensor shapes."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        num_envs = 4
+        obs_shape = (2, 3)
+        action_space = 7
+        pt = PendingTransitions(num_envs, obs_shape, action_space, torch.device("cpu"))
+
+        # Open transitions for envs 0, 1, 3
+        env_mask = torch.tensor([True, True, False, True])
+        obs = torch.randn(num_envs, *obs_shape)
+        actions = torch.zeros(num_envs, dtype=torch.long)
+        log_probs = torch.randn(num_envs)
+        values = torch.randn(num_envs)
+        legal_masks = torch.ones(num_envs, action_space, dtype=torch.bool)
+        rewards = torch.zeros(num_envs)
+        score_targets = torch.zeros(num_envs)
+
+        pt.create(env_mask, obs, actions, log_probs, values, legal_masks, rewards, score_targets)
+        pt.accumulate_reward(torch.tensor([0.5, -0.5, 0.0, 1.0]))
+
+        # Finalize envs 0 and 1 (env 3 stays open)
+        finalize_mask = torch.tensor([True, True, False, False])
+        dones = torch.tensor([1.0, 0.0, 0.0, 0.0])
+        terminated = torch.tensor([1.0, 0.0, 0.0, 0.0])
+
+        result = pt.finalize(finalize_mask, dones, terminated)
+        assert result is not None
+
+        # Should finalize 2 envs (0 and 1)
+        assert result["obs"].shape == (2, *obs_shape)
+        assert result["actions"].shape == (2,)
+        assert result["log_probs"].shape == (2,)
+        assert result["values"].shape == (2,)
+        assert result["rewards"].shape == (2,)
+        assert result["dones"].shape == (2,)
+        assert result["terminated"].shape == (2,)
+        assert result["legal_masks"].shape == (2, action_space)
+        assert result["score_targets"].shape == (2,)
+        assert result["env_ids"].shape == (2,)
+
+        # Finalized envs should be cleared
+        assert not pt.valid[0]
+        assert not pt.valid[1]
+        # Env 3 should still be valid
+        assert pt.valid[3]
+
+    def test_finalize_returns_none_when_nothing_to_finalize(self):
+        """Finalize with no valid envs returns None."""
+        from keisei.training.katago_loop import PendingTransitions
+
+        pt = PendingTransitions(2, (2,), 5, torch.device("cpu"))
+
+        finalize_mask = torch.tensor([True, True])
+        dones = torch.zeros(2)
+        terminated = torch.zeros(2)
+
+        result = pt.finalize(finalize_mask, dones, terminated)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Pure function tests from katago_loop.py
+# ---------------------------------------------------------------------------
+
+
+class TestComputeValueCats:
+    """Test _compute_value_cats — value-head category assignment."""
+
+    def test_non_terminal_all_ignore(self):
+        """All-False terminal_mask -> all cats == -1 (ignore label)."""
+        from keisei.training.katago_loop import _compute_value_cats
+
+        rewards = torch.tensor([1.0, 0.0, -1.0, 0.5])
+        terminal_mask = torch.zeros(4, dtype=torch.bool)
+        device = torch.device("cpu")
+
+        cats = _compute_value_cats(rewards, terminal_mask, device)
+        assert (cats == -1).all(), f"Expected all -1 for non-terminal, got {cats}"
+
+    def test_terminal_win_draw_loss(self):
+        """Terminal positions: positive=0(win), zero=1(draw), negative=2(loss)."""
+        from keisei.training.katago_loop import _compute_value_cats
+
+        rewards = torch.tensor([1.0, 0.0, -1.0])
+        terminal_mask = torch.ones(3, dtype=torch.bool)
+        device = torch.device("cpu")
+
+        cats = _compute_value_cats(rewards, terminal_mask, device)
+        assert cats[0].item() == 0, "Win (reward > 0) should be category 0"
+        assert cats[1].item() == 1, "Draw (reward == 0) should be category 1"
+        assert cats[2].item() == 2, "Loss (reward < 0) should be category 2"
+
+    def test_mixed_terminal_and_non_terminal(self):
+        """Mix of terminal and non-terminal positions."""
+        from keisei.training.katago_loop import _compute_value_cats
+
+        rewards = torch.tensor([1.0, 0.0, -1.0, 0.5])
+        terminal_mask = torch.tensor([True, False, True, False])
+        device = torch.device("cpu")
+
+        cats = _compute_value_cats(rewards, terminal_mask, device)
+        assert cats[0].item() == 0   # terminal win
+        assert cats[1].item() == -1  # non-terminal (ignore)
+        assert cats[2].item() == 2   # terminal loss
+        assert cats[3].item() == -1  # non-terminal (ignore)
+
+
+class TestToLearnerPerspective:
+    """Test to_learner_perspective — reward sign correction."""
+
+    def test_learner_moved_no_flip(self):
+        """When learner moved (pre_players == learner_side), reward unchanged."""
+        from keisei.training.katago_loop import to_learner_perspective
+
+        rewards = torch.tensor([1.0, -0.5])
+        pre_players = np.array([0, 0], dtype=np.uint8)
+        learner_side = 0
+
+        result = to_learner_perspective(rewards, pre_players, learner_side)
+        assert torch.allclose(result, rewards)
+
+    def test_opponent_moved_flip(self):
+        """When opponent moved (pre_players != learner_side), reward is negated."""
+        from keisei.training.katago_loop import to_learner_perspective
+
+        rewards = torch.tensor([1.0, -0.5])
+        pre_players = np.array([1, 1], dtype=np.uint8)
+        learner_side = 0
+
+        result = to_learner_perspective(rewards, pre_players, learner_side)
+        expected = torch.tensor([-1.0, 0.5])
+        assert torch.allclose(result, expected)
+
+    def test_mixed_perspective(self):
+        """Mixed: learner on side 1, some envs learner-moved, some opponent-moved."""
+        from keisei.training.katago_loop import to_learner_perspective
+
+        rewards = torch.tensor([1.0, -1.0, 0.5])
+        pre_players = np.array([1, 0, 1], dtype=np.uint8)
+        learner_side = 1
+
+        result = to_learner_perspective(rewards, pre_players, learner_side)
+        # env 0: pre_player=1 == learner_side=1 -> no flip -> 1.0
+        # env 1: pre_player=0 != learner_side=1 -> flip -> 1.0
+        # env 2: pre_player=1 == learner_side=1 -> no flip -> 0.5
+        expected = torch.tensor([1.0, 1.0, 0.5])
+        assert torch.allclose(result, expected)
+
+
+class TestSignCorrectBootstrap:
+    """Test sign_correct_bootstrap — value sign correction for GAE."""
+
+    def test_learner_to_move_no_flip(self):
+        """When learner is to-move, bootstrap value is already correct."""
+        from keisei.training.katago_loop import sign_correct_bootstrap
+
+        next_values = torch.tensor([0.8, -0.3])
+        current_players = np.array([0, 0], dtype=np.uint8)
+        learner_side = 0
+
+        result = sign_correct_bootstrap(next_values, current_players, learner_side)
+        assert torch.allclose(result, next_values)
+
+    def test_opponent_to_move_negated(self):
+        """When opponent is to-move, bootstrap value must be negated."""
+        from keisei.training.katago_loop import sign_correct_bootstrap
+
+        next_values = torch.tensor([0.8, -0.3])
+        current_players = np.array([1, 1], dtype=np.uint8)
+        learner_side = 0
+
+        result = sign_correct_bootstrap(next_values, current_players, learner_side)
+        expected = torch.tensor([-0.8, 0.3])
+        assert torch.allclose(result, expected)
+
+    def test_mixed_learner_and_opponent(self):
+        """Known learner_mask and opponent_mask, verify negation pattern."""
+        from keisei.training.katago_loop import sign_correct_bootstrap
+
+        next_values = torch.tensor([1.0, 2.0, -3.0, 4.0])
+        current_players = np.array([0, 1, 0, 1], dtype=np.uint8)
+        learner_side = 0
+
+        result = sign_correct_bootstrap(next_values, current_players, learner_side)
+        # env 0: current=0 == learner -> no flip -> 1.0
+        # env 1: current=1 != learner -> flip -> -2.0
+        # env 2: current=0 == learner -> no flip -> -3.0
+        # env 3: current=1 != learner -> flip -> -4.0
+        expected = torch.tensor([1.0, -2.0, -3.0, -4.0])
+        assert torch.allclose(result, expected)
+
+
 class TestMainEntryPoint:
     def test_main_calls_setup_and_cleanup(self):
         """main() should call setup_distributed and cleanup_distributed."""

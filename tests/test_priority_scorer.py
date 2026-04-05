@@ -140,6 +140,41 @@ class TestScore:
         assert fresh_score > one_repeat_score
 
 
+    def test_uncertainty_bonus_at_100_boundary(self):
+        """Two entries exactly 100 Elo apart -> bonus is 0.0 (threshold is < 100, not <= 100)."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, elo=1000.0)
+        b_at_100 = _make_entry(2, elo=1100.0)  # exactly 100 apart
+        b_at_99 = _make_entry(3, elo=1099.0)  # 99 apart
+
+        # Exactly 100 apart: abs(1000-1100) = 100, 100 < 100 is False -> bonus 0.0
+        assert scorer._uncertainty_bonus(a, b_at_100) == 0.0
+        # 99 apart: abs(1000-1099) = 99, 99 < 100 is True -> bonus 1.0
+        assert scorer._uncertainty_bonus(a, b_at_99) == 1.0
+
+    def test_lineage_diversity_none_lineage(self):
+        """Entry with lineage_group=None paired with any -> returns 1.0 (optimistic default)."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        none_lin = _make_entry(1, lineage=None)
+        with_lin = _make_entry(2, lineage="lin-1")
+        both_none = _make_entry(3, lineage=None)
+
+        assert scorer._lineage_diversity(none_lin, with_lin) == 1.0
+        assert scorer._lineage_diversity(with_lin, none_lin) == 1.0
+        assert scorer._lineage_diversity(none_lin, both_none) == 1.0
+
+    def test_lineage_closeness_b_is_parent(self):
+        """b.parent_entry_id == a.id returns same as a.parent_entry_id == b.id (1.0)."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        parent = _make_entry(1, lineage="lin-1")
+        child = _make_entry(2, lineage="lin-1", parent_id=1)
+
+        # a is parent, b is child (b.parent_entry_id == a.id)
+        assert scorer._lineage_closeness(parent, child) == 1.0
+        # a is child, b is parent (a.parent_entry_id == b.id)
+        assert scorer._lineage_closeness(child, parent) == 1.0
+
+
 class TestScoreRound:
     def test_returns_sorted_by_priority_descending(self):
         scorer = PriorityScorer(PriorityScorerConfig())
@@ -150,3 +185,25 @@ class TestScoreRound:
         sorted_pairings = scorer.sort_by_priority(pairings)
         scores = [scorer.score(p[0], p[1]) for p in sorted_pairings]
         assert scores == sorted(scores, reverse=True)
+
+    def test_sort_by_priority_stable(self):
+        """Two pairings with identical scores -> order is deterministic."""
+        # Use all-zero weights so every pairing scores 0.0
+        cfg = PriorityScorerConfig(
+            under_sample_weight=0.0,
+            uncertainty_weight=0.0,
+            recent_fixed_bonus=0.0,
+            diversity_weight=0.0,
+            repeat_penalty=0.0,
+            lineage_penalty=0.0,
+        )
+        scorer = PriorityScorer(cfg)
+        a = _make_entry(1)
+        b = _make_entry(2)
+        c = _make_entry(3)
+        pairings = [(a, b), (a, c), (b, c)]
+
+        result1 = scorer.sort_by_priority(pairings)
+        result2 = scorer.sort_by_priority(pairings)
+        # Same input, same scorer state -> identical output order
+        assert [(x.id, y.id) for x, y in result1] == [(x.id, y.id) for x, y in result2]

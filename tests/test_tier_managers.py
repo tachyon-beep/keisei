@@ -563,3 +563,130 @@ class TestFrontierReview:
             assert "retire" in ops_inside_txn
             # The outer transaction wrapping both calls
             assert mock_txn.call_count >= 1
+
+
+# ===========================================================================
+# DynamicManager.get_trainable
+# ===========================================================================
+
+
+class TestDynamicGetTrainable:
+    """Tests for DynamicManager.get_trainable — controls PPO update eligibility."""
+
+    def test_get_trainable_returns_dynamic_entries(self, store):
+        """training_enabled=True, Dynamic entries present -> returns them."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
+        e1 = _add_entry(store, 1, role=Role.DYNAMIC, elo=1000)
+        e2 = _add_entry(store, 2, role=Role.DYNAMIC, elo=1100)
+        result = mgr.get_trainable()
+        ids = {e.id for e in result}
+        assert e1.id in ids
+        assert e2.id in ids
+
+    def test_get_trainable_excludes_disabled(self, store):
+        """Entry in disabled set is excluded from trainable list."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
+        e1 = _add_entry(store, 1, role=Role.DYNAMIC, elo=1000)
+        e2 = _add_entry(store, 2, role=Role.DYNAMIC, elo=1100)
+        result = mgr.get_trainable(disabled_entries={e1.id})
+        ids = {e.id for e in result}
+        assert e1.id not in ids
+        assert e2.id in ids
+
+    def test_get_trainable_disabled_training_returns_empty(self, store):
+        """training_enabled=False -> returns empty list regardless of entries."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=False))
+        _add_entry(store, 1, role=Role.DYNAMIC, elo=1000)
+        _add_entry(store, 2, role=Role.DYNAMIC, elo=1100)
+        result = mgr.get_trainable()
+        assert result == []
+
+    def test_get_trainable_empty_tier(self, store):
+        """No Dynamic entries -> returns empty list."""
+        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
+        result = mgr.get_trainable()
+        assert result == []
+
+
+# ===========================================================================
+# DynamicManager.evict_weakest with disabled_entry_ids
+# ===========================================================================
+
+
+class TestDynamicEvictDisabled:
+    """Tests for disabled_entry_ids overriding protection in evict_weakest."""
+
+    def test_evict_weakest_disabled_overrides_protection(self, store):
+        """Protected entry with id in disabled_entry_ids is still evictable."""
+        mgr = DynamicManager(store, DynamicConfig(
+            slots=3, protection_matches=0, min_games_before_eviction=100,
+        ))
+        # All entries have 0 games_played (< 100), so normally ALL protected
+        e1 = _add_entry(store, 1, role=Role.DYNAMIC, elo=800)
+        e2 = _add_entry(store, 2, role=Role.DYNAMIC, elo=1200)
+
+        # Without disabled set: no eligible entries
+        assert mgr.evict_weakest() is None
+
+        # With disabled set: e1 becomes eligible despite insufficient games
+        evicted = mgr.evict_weakest(disabled_entry_ids={e1.id})
+        assert evicted is not None
+        assert evicted.id == e1.id
+
+
+# ===========================================================================
+# RecentFixedManager.review_oldest Elo rejection path
+# ===========================================================================
+
+
+class TestRecentFixedEloRejection:
+    """Tests for review_oldest Elo floor logic."""
+
+    def test_review_oldest_rejects_below_elo_floor(self, store):
+        """Entry below floor-margin should NOT promote even if games/opponents ok."""
+        mgr = RecentFixedManager(store, RecentFixedConfig(
+            slots=2, soft_overflow=0,
+            min_games_for_review=0, min_unique_opponents=0,
+            promotion_margin_elo=25.0,
+        ))
+        # Set weakest_elo_fn returning 1200.0 -> floor = 1200 - 25 = 1175
+        mgr.set_weakest_elo_fn(lambda: 1200.0)
+
+        model = torch.nn.Linear(10, 10)
+        mgr.admit(model, "resnet", {}, epoch=1)
+        # Set oldest entry elo to 900 (well below 1175)
+        oldest = store.list_by_role(Role.RECENT_FIXED)[0]
+        store.update_elo(oldest.id, 900.0)
+
+        mgr.admit(model, "resnet", {}, epoch=2)
+        mgr.admit(model, "resnet", {}, epoch=3)
+        # count=3, slots=2, overflow_used=1, soft_overflow=0 -> can't delay -> RETIRE
+        outcome, entry = mgr.review_oldest()
+        assert outcome is ReviewOutcome.RETIRE
+        assert entry.id == oldest.id
+
+
+# ===========================================================================
+# FrontierManager.select_initial edge cases
+# ===========================================================================
+
+
+class TestFrontierSelectInitialEdgeCases:
+    """Edge cases for FrontierManager.select_initial."""
+
+    def test_select_initial_count_zero(self, store):
+        """select_initial with count=0 returns empty list."""
+        entries = [_add_entry(store, i, elo=1000 + i * 100) for i in range(5)]
+        mgr = FrontierManager(store, FrontierStaticConfig())
+        result = mgr.select_initial(entries, count=0)
+        assert result == []
+
+    def test_select_initial_count_one(self, store):
+        """Single slot selection picks the median-elo entry."""
+        entries = [_add_entry(store, i, elo=800 + i * 100) for i in range(5)]
+        # Elos: 800, 900, 1000, 1100, 1200 sorted
+        # Median index: 5 // 2 = 2 -> elo 1000
+        mgr = FrontierManager(store, FrontierStaticConfig())
+        result = mgr.select_initial(entries, count=1)
+        assert len(result) == 1
+        assert result[0].elo_rating == pytest.approx(1000.0)

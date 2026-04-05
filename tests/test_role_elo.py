@@ -1,11 +1,13 @@
 """Tests for RoleEloTracker -- per-context Elo updates."""
 
+import logging
+
 import pytest
 import torch
 
 from keisei.config import RoleEloConfig
 from keisei.db import init_db
-from keisei.training.opponent_store import EloColumn, OpponentStore, Role
+from keisei.training.opponent_store import EloColumn, OpponentEntry, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 
 
@@ -288,3 +290,69 @@ class TestGetRoleElos:
     def test_nonexistent_entry_returns_empty(self, elo_setup):
         tracker, _, _ = elo_setup
         assert tracker.get_role_elos(9999) == {}
+
+
+class TestUpdateFromResultDraw:
+    def test_update_from_result_draw(self, elo_setup):
+        """result_score=0.5 -> both entries move less than with a win."""
+        tracker, store, model = elo_setup
+        # Draw match
+        a_draw = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        b_draw = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
+        tracker.update_from_result(a_draw, b_draw, result_score=0.5, match_context="dynamic")
+        a_draw_after = store._get_entry(a_draw.id)
+        b_draw_after = store._get_entry(b_draw.id)
+
+        # Win match (for comparison)
+        a_win = store.add_entry(model, "resnet", {}, epoch=3, role=Role.DYNAMIC)
+        b_win = store.add_entry(model, "resnet", {}, epoch=4, role=Role.DYNAMIC)
+        tracker.update_from_result(a_win, b_win, result_score=1.0, match_context="dynamic")
+        a_win_after = store._get_entry(a_win.id)
+
+        # Draw delta should be smaller than win delta
+        draw_delta = abs(a_draw_after.elo_dynamic - 1000.0)
+        win_delta = abs(a_win_after.elo_dynamic - 1000.0)
+        assert draw_delta < win_delta, (
+            f"Draw delta {draw_delta} should be less than win delta {win_delta}"
+        )
+        # Draw with equal Elo: expected score = 0.5, actual = 0.5, delta = 0
+        assert a_draw_after.elo_dynamic == pytest.approx(1000.0, abs=0.01)
+        assert b_draw_after.elo_dynamic == pytest.approx(1000.0, abs=0.01)
+
+
+class TestDetermineContextCrossCombinations:
+    def test_determine_context_frontier_vs_recent_fixed(self):
+        """RECENT_FIXED vs FRONTIER_STATIC -> 'frontier' context (frontier takes priority)."""
+        a = OpponentEntry(
+            id=1, display_name="A", architecture="resnet", model_params={},
+            checkpoint_path="", elo_rating=1000, created_epoch=1,
+            games_played=0, created_at="", flavour_facts=[],
+            role=Role.RECENT_FIXED,
+        )
+        b = OpponentEntry(
+            id=2, display_name="B", architecture="resnet", model_params={},
+            checkpoint_path="", elo_rating=1000, created_epoch=2,
+            games_played=0, created_at="", flavour_facts=[],
+            role=Role.FRONTIER_STATIC,
+        )
+        assert RoleEloTracker.determine_match_context(a, b) == "frontier"
+
+    def test_determine_context_unknown_roles_warning(self, caplog):
+        """UNASSIGNED vs UNASSIGNED -> logger.warning is emitted."""
+        a = OpponentEntry(
+            id=1, display_name="A", architecture="resnet", model_params={},
+            checkpoint_path="", elo_rating=1000, created_epoch=1,
+            games_played=0, created_at="", flavour_facts=[],
+            role=Role.UNASSIGNED,
+        )
+        b = OpponentEntry(
+            id=2, display_name="B", architecture="resnet", model_params={},
+            checkpoint_path="", elo_rating=1000, created_epoch=2,
+            games_played=0, created_at="", flavour_facts=[],
+            role=Role.UNASSIGNED,
+        )
+        with caplog.at_level(logging.WARNING, logger="keisei.training.role_elo"):
+            result = RoleEloTracker.determine_match_context(a, b)
+
+        assert result == "dynamic"
+        assert any("Unrecognised role combination" in msg for msg in caplog.messages)

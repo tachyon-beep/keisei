@@ -558,3 +558,65 @@ class TestErrorFallbackDisabledSetting:
         with patch.object(store, "load_opponent", side_effect=bad_load):
             with pytest.raises(RuntimeError, match="simulated failure"):
                 trainer.update(entry, "cpu")
+
+
+# ---------------------------------------------------------------------------
+# Disabled-entry path tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecordMatchDisabledEntryIgnored:
+    """record_match on a disabled entry does nothing."""
+
+    def test_record_match_disabled_entry_ignored(self, store_and_entry, default_config) -> None:
+        store, entry = store_and_entry
+        trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
+
+        # Disable the entry
+        trainer._disabled_entries.add(entry.id)
+
+        # Record a match — should be silently ignored
+        trainer.record_match(entry.id, _make_rollout(side=0), 0)
+
+        # Buffer should not be populated
+        assert entry.id not in trainer._rollout_buffers
+        # Match count should not be incremented
+        assert trainer._match_counts.get(entry.id, 0) == 0
+
+
+class TestShouldUpdateDisabledEntryFalse:
+    """should_update returns False for disabled entries even with enough matches."""
+
+    def test_should_update_disabled_entry_false(self, store_and_entry, default_config) -> None:
+        store, entry = store_and_entry
+        trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
+
+        # Record enough matches BEFORE disabling
+        for _ in range(default_config.update_every_matches):
+            trainer.record_match(entry.id, _make_rollout(side=0), 0)
+
+        # Verify it would normally trigger an update
+        assert trainer.should_update(entry.id) is True
+
+        # Now disable the entry
+        trainer._disabled_entries.add(entry.id)
+
+        # should_update must return False
+        assert trainer.should_update(entry.id) is False
+
+
+class TestUpdateEmptyBatchReturnsFalse:
+    """Trainer with no recorded matches calls update -> returns False."""
+
+    def test_update_empty_batch_returns_false(self, store_and_entry, default_config) -> None:
+        store, entry = store_and_entry
+        trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
+
+        # No matches recorded at all — _prepare_batch returns empty tensors
+        with patch(
+            "keisei.training.opponent_store.build_model",
+            return_value=TinyModel(),
+        ):
+            result = trainer.update(entry, "cpu")
+
+        assert result is False

@@ -63,9 +63,9 @@ class TestComputeTargets:
         assert targets == [500]
 
     def test_targets_with_single_slot_epoch_1(self):
-        """num_slots=1 at epoch 1 (clamped to 2)."""
+        """num_slots=1 at epoch 1 returns [1] (the current epoch)."""
         targets = HistoricalLibrary._compute_targets(1, num_slots=1)
-        assert targets == [2]
+        assert targets == [1]
 
 
 class TestIsDueForRefresh:

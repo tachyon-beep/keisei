@@ -353,3 +353,156 @@ class TestMaxResidentModels:
         assert peak_loaded <= 4, (
             f"Peak loaded models {peak_loaded} exceeded max_resident_models 4"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestRunRoundStopEventMidGame
+# ---------------------------------------------------------------------------
+
+
+class TestRunRoundStopEventMidGame:
+    def test_run_round_stop_event_mid_game(self) -> None:
+        """Set stop_event after N step calls; verify partial results and models released."""
+        pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
+        stop_event = threading.Event()
+        step_count = 0
+
+        class StoppingVecEnv(MockVecEnv):
+            """MockVecEnv that sets stop_event after a few steps."""
+
+            def step(self, actions: np.ndarray) -> SimpleNamespace:
+                nonlocal step_count
+                step_count += 1
+                if step_count >= 2:
+                    stop_event.set()
+                return super().step(actions)
+
+        vecenv = StoppingVecEnv(num_envs=2, terminate_after=100)  # never terminates naturally
+        entries = [_make_entry(i) for i in range(2)]
+        pairings = [(entries[0], entries[1])]
+
+        released_models: list[object] = []
+
+        def track_release(ma: object, mb: object) -> None:
+            released_models.append(ma)
+            released_models.append(mb)
+
+        results = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=track_release,
+            device="cpu",
+            games_per_match=1000,  # won't complete
+            stop_event=stop_event,
+        )
+        # Partial results — game didn't finish, so no completed results
+        assert len(results) == 0
+        # Models should still be released (cleanup for active slots on stop_event)
+        assert len(released_models) == 2, (
+            f"Expected 2 released models (model_a + model_b), got {len(released_models)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRunRoundModelBLoadFailure
+# ---------------------------------------------------------------------------
+
+
+class TestRunRoundModelBLoadFailure:
+    def test_run_round_model_b_load_failure(self) -> None:
+        """model_a loads, model_b raises -> model_a must not be leaked, pool continues."""
+        # Use 2 parallel slots so both pairings get assigned during initial assignment.
+        # Pairing 0 -> slot 0 (will fail), pairing 1 -> slot 1 (should succeed).
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4)
+        vecenv = MockVecEnv(num_envs=4, terminate_after=2)
+        entries = [_make_entry(i) for i in range(4)]
+        pairings = [
+            (entries[0], entries[1]),  # will fail on model_b
+            (entries[2], entries[3]),  # should succeed
+        ]
+
+        load_call_count = 0
+
+        def failing_load(entry: OpponentEntry) -> TinyModel:
+            nonlocal load_call_count
+            load_call_count += 1
+            # First call: model_a for pairing 0 -> OK
+            # Second call: model_b for pairing 0 -> FAIL
+            # Third+ calls: pairing 1 -> OK
+            if load_call_count == 2:
+                raise RuntimeError("Simulated model_b load failure")
+            return TinyModel()
+
+        results = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=failing_load,
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=4,
+        )
+
+        # First pairing skipped due to load failure, second should complete
+        assert len(results) == 1
+        assert results[0].entry_a.id == 2
+        assert results[0].entry_b.id == 3
+
+
+# ---------------------------------------------------------------------------
+# TestRunRoundPlyCeiling
+# ---------------------------------------------------------------------------
+
+
+class TestRunRoundPlyCeiling:
+    def test_run_round_ply_ceiling_warning(self) -> None:
+        """Very low max_ply should trigger ply ceiling and yield partial results."""
+        pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
+        # terminate_after=100 ensures games don't finish naturally
+        vecenv = MockVecEnv(num_envs=2, terminate_after=100)
+        entries = [_make_entry(i) for i in range(2)]
+        pairings = [(entries[0], entries[1])]
+
+        results = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=1000,  # unreachable
+            max_ply=1,  # very low ceiling
+        )
+        # Should get a result (partial) due to ply ceiling
+        assert len(results) == 1
+        r = results[0]
+        total = r.a_wins + r.b_wins + r.draws
+        assert total < 1000, "Should not have completed all games"
+
+
+# ---------------------------------------------------------------------------
+# TestPartitionRange
+# ---------------------------------------------------------------------------
+
+
+class TestPartitionRange:
+    def test_partition_range_valid(self) -> None:
+        """Index 0 returns (0, envs_per_match); last index returns correct end."""
+        pool = _make_pool(parallel_matches=4, envs_per_match=3, total_envs=12)
+        assert pool.partition_range(0) == (0, 3)
+        assert pool.partition_range(1) == (3, 6)
+        assert pool.partition_range(2) == (6, 9)
+        assert pool.partition_range(3) == (9, 12)
+
+    def test_partition_range_negative_raises(self) -> None:
+        """index=-1 should raise ValueError."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4)
+        with pytest.raises(ValueError, match="out of range"):
+            pool.partition_range(-1)
+
+    def test_partition_range_too_large_raises(self) -> None:
+        """index >= parallel_matches should raise ValueError."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4)
+        with pytest.raises(ValueError, match="out of range"):
+            pool.partition_range(2)
+        with pytest.raises(ValueError, match="out of range"):
+            pool.partition_range(10)

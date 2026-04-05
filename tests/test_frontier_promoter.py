@@ -329,3 +329,73 @@ class TestEloFrontierPromotion:
         promoter._topk_streaks[candidate.id] = 0
         result = promoter.should_promote(candidate, frontier, epoch=100)
         assert result is False  # 900 < 1000 + 10
+
+
+class TestEvaluateEdgeCases:
+    """Edge cases for evaluate()."""
+
+    def test_evaluate_empty_dynamics(self, config: FrontierStaticConfig) -> None:
+        """evaluate([], frontier_entries, epoch) returns None."""
+        promoter = FrontierPromoter(config)
+        frontier = [_make_entry(10, elo=1100, role=Role.FRONTIER_STATIC)]
+        result = promoter.evaluate([], frontier, epoch=50)
+        assert result is None
+
+    def test_evaluate_topk_exceeds_dynamics(self) -> None:
+        """config.topk=5 but only 2 dynamic entries -> no crash, both tracked."""
+        config = _make_frontier_config(
+            topk=5,
+            streak_epochs=0,
+            min_games_for_promotion=0,
+            promotion_margin_elo=0.0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        dynamics = [
+            _make_entry(1, elo=1200, games=200, lineage="a"),
+            _make_entry(2, elo=1100, games=200, lineage="b"),
+        ]
+        frontier = [_make_entry(10, elo=1000, role=Role.FRONTIER_STATIC)]
+
+        result = promoter.evaluate(dynamics, frontier, epoch=0)
+        # Both entries are in top-K tracking
+        assert 1 in promoter._topk_streaks
+        assert 2 in promoter._topk_streaks
+        # Best candidate should be promoted (streak_epochs=0 means immediate)
+        assert result is not None
+        assert result.id == 1
+
+
+class TestStreakBoundary:
+    """Off-by-one tests for streak_epochs criterion (uses <, not <=)."""
+
+    def test_should_promote_streak_exact_boundary(self) -> None:
+        """first_seen=0, epoch=streak_epochs -> passes (epoch - first_seen == streak_epochs >= streak_epochs uses <)."""
+        config = _make_frontier_config(
+            streak_epochs=50,
+            min_games_for_promotion=0,
+            promotion_margin_elo=0.0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        candidate = _make_entry(1, elo=1200, games=200, lineage="a")
+        frontier = [_make_entry(10, elo=1000, role=Role.FRONTIER_STATIC)]
+        # Simulate: entered top-K at epoch 0
+        promoter._topk_streaks[candidate.id] = 0
+        # At epoch=50: epoch - first_seen = 50, criterion is < 50, so 50 < 50 is False -> passes
+        assert promoter.should_promote(candidate, frontier, epoch=50) is True
+
+    def test_should_promote_streak_one_short(self) -> None:
+        """first_seen=0, epoch=streak_epochs-1 -> fails the streak criterion."""
+        config = _make_frontier_config(
+            streak_epochs=50,
+            min_games_for_promotion=0,
+            promotion_margin_elo=0.0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        candidate = _make_entry(1, elo=1200, games=200, lineage="a")
+        frontier = [_make_entry(10, elo=1000, role=Role.FRONTIER_STATIC)]
+        promoter._topk_streaks[candidate.id] = 0
+        # At epoch=49: epoch - first_seen = 49, criterion is < 50, so 49 < 50 is True -> fails
+        assert promoter.should_promote(candidate, frontier, epoch=49) is False

@@ -481,3 +481,104 @@ class TestConcurrentTournament:
         t = _make_tournament(store)
         assert t.concurrent_pool is None
         store.close()
+
+
+# ===========================================================================
+# _is_trainable_match — pure predicate tests
+# ===========================================================================
+
+
+def _make_entry_with_role(
+    id: int, role: Role, elo: float = 1000.0,
+) -> OpponentEntry:
+    """Create an OpponentEntry with a specific role."""
+    return OpponentEntry(
+        id=id,
+        display_name=f"Bot-{id}",
+        architecture="resnet",
+        model_params={"hidden_size": 16},
+        checkpoint_path="/fake/ckpt.pt",
+        elo_rating=elo,
+        created_epoch=id,
+        games_played=0,
+        created_at="2026-04-01T00:00:00Z",
+        flavour_facts=[],
+        role=role,
+    )
+
+
+class TestIsTrainableMatch:
+    """Test _is_trainable_match: D-vs-D or D-vs-RF produces training data."""
+
+    def _make_tournament(self, store):
+        return _make_tournament(store)
+
+    def test_is_trainable_dynamic_vs_dynamic(self, store):
+        """D x D -> True: both Dynamic entries produce trainable rollouts."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.DYNAMIC)
+        b = _make_entry_with_role(2, Role.DYNAMIC)
+        assert t._is_trainable_match(a, b) is True
+
+    def test_is_trainable_dynamic_vs_recent_fixed(self, store):
+        """D x RF -> True: Dynamic vs RecentFixed produces trainable rollouts."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.DYNAMIC)
+        b = _make_entry_with_role(2, Role.RECENT_FIXED)
+        assert t._is_trainable_match(a, b) is True
+
+    def test_is_trainable_recent_fixed_vs_dynamic(self, store):
+        """RF x D -> True: order should not matter (symmetric)."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.RECENT_FIXED)
+        b = _make_entry_with_role(2, Role.DYNAMIC)
+        assert t._is_trainable_match(a, b) is True
+
+    def test_is_trainable_dynamic_vs_frontier_static(self, store):
+        """D x FS -> False: Frontier Static is NOT in trainable_roles."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.DYNAMIC)
+        b = _make_entry_with_role(2, Role.FRONTIER_STATIC)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_frontier_static_vs_dynamic(self, store):
+        """FS x D -> False: symmetric check."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.FRONTIER_STATIC)
+        b = _make_entry_with_role(2, Role.DYNAMIC)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_frontier_vs_recent_fixed(self, store):
+        """FS x RF -> False: neither is in the pair with Dynamic."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.FRONTIER_STATIC)
+        b = _make_entry_with_role(2, Role.RECENT_FIXED)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_frontier_vs_frontier(self, store):
+        """FS x FS -> False: Frontier Static entries are never trainable."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.FRONTIER_STATIC)
+        b = _make_entry_with_role(2, Role.FRONTIER_STATIC)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_recent_fixed_vs_recent_fixed(self, store):
+        """RF x RF -> False: need at least one Dynamic entry."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.RECENT_FIXED)
+        b = _make_entry_with_role(2, Role.RECENT_FIXED)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_unassigned_vs_dynamic(self, store):
+        """UNASSIGNED x D -> False: UNASSIGNED is not in trainable_roles."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.UNASSIGNED)
+        b = _make_entry_with_role(2, Role.DYNAMIC)
+        assert t._is_trainable_match(a, b) is False
+
+    def test_is_trainable_recent_fixed_vs_frontier_static(self, store):
+        """RF x FS -> False: no Dynamic entry present."""
+        t = self._make_tournament(store)
+        a = _make_entry_with_role(1, Role.RECENT_FIXED)
+        b = _make_entry_with_role(2, Role.FRONTIER_STATIC)
+        assert t._is_trainable_match(a, b) is False

@@ -225,3 +225,132 @@ class TestStaleEloAccumulation:
             f"Stale learner bug: slot1 started at {slot1_before} instead of {slot0_after}"
         )
         assert slot1_after > slot1_before
+
+
+class TestRunGauntletFailurePaths:
+    """Tests for various failure/edge-case paths in run_gauntlet."""
+
+    def test_run_gauntlet_learner_load_failure(self, gauntlet_setup, caplog):
+        """If loading the learner model fails, gauntlet aborts gracefully."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist.id, actual_epoch=50, selection_mode="log_spaced"),
+        ]
+
+        dummy_vecenv = object()
+
+        with (
+            patch.object(store, "load_opponent", side_effect=RuntimeError("corrupt checkpoint")),
+            patch("keisei.training.historical_gauntlet.release_models") as mock_release,
+            caplog.at_level(logging.ERROR, logger="keisei.training.historical_gauntlet"),
+        ):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
+
+        # No gauntlet results recorded
+        with store._lock:
+            rows = store._conn.execute("SELECT COUNT(*) FROM gauntlet_results").fetchone()
+            assert rows[0] == 0
+
+        # release_models should NOT have been called (learner never loaded)
+        mock_release.assert_not_called()
+
+    def test_run_gauntlet_hist_model_load_failure(self, gauntlet_setup):
+        """If one historical model fails to load, remaining slots still proceed."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist_a = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+        hist_b = store.add_entry(model, "resnet", {}, epoch=100, role=Role.RECENT_FIXED)
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist_a.id, actual_epoch=50, selection_mode="log_spaced"),
+            HistoricalSlot(1, target_epoch=100, entry_id=hist_b.id, actual_epoch=100, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+        call_count = 0
+
+        def selective_load(entry, device="cpu"):
+            nonlocal call_count
+            call_count += 1
+            # First call is learner (succeeds), second is hist_a (fails), third is hist_b (succeeds)
+            if call_count == 1:
+                return dummy_model  # learner
+            elif call_count == 2:
+                raise RuntimeError("corrupt slot 0 model")  # hist_a
+            else:
+                return dummy_model  # hist_b
+
+        with (
+            patch.object(store, "load_opponent", side_effect=selective_load),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=(8, 4, 4)),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
+
+        # Only slot 1 should have a result (slot 0 failed to load)
+        with store._lock:
+            rows = store._conn.execute("SELECT * FROM gauntlet_results").fetchall()
+            assert len(rows) == 1
+            assert dict(rows[0])["historical_slot"] == 1
+
+    def test_run_gauntlet_zero_games_skip(self, gauntlet_setup):
+        """If play_match returns (0,0,0), no gauntlet result is recorded for that slot."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist.id, actual_epoch=50, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+
+        with (
+            patch.object(store, "load_opponent", return_value=dummy_model),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=(0, 0, 0)),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
+
+        # Zero games → no result recorded
+        with store._lock:
+            rows = store._conn.execute("SELECT COUNT(*) FROM gauntlet_results").fetchone()
+            assert rows[0] == 0
+
+    def test_run_gauntlet_hist_entry_not_found(self, gauntlet_setup):
+        """If store.get_entry returns None for a slot's entry_id, that slot is skipped."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist_real = store.add_entry(model, "resnet", {}, epoch=100, role=Role.RECENT_FIXED)
+
+        # Slot 0 refers to a non-existent entry_id (9999)
+        # Slot 1 refers to a real entry
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=9999, actual_epoch=50, selection_mode="log_spaced"),
+            HistoricalSlot(1, target_epoch=100, entry_id=hist_real.id, actual_epoch=100, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+
+        with (
+            patch.object(store, "load_opponent", return_value=dummy_model),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=(10, 2, 4)),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
+
+        # Only slot 1 should have a result (slot 0's entry_id doesn't exist)
+        with store._lock:
+            rows = store._conn.execute("SELECT * FROM gauntlet_results").fetchall()
+            assert len(rows) == 1
+            assert dict(rows[0])["historical_slot"] == 1

@@ -191,3 +191,102 @@ class TestOnEpochEndHistoricalRefresh:
         with patch.object(pool.historical_library, "refresh") as mock_refresh:
             pool.on_epoch_end(100)
             mock_refresh.assert_called_once_with(100)
+
+
+# ===========================================================================
+# DELAY outcome in snapshot_learner
+# ===========================================================================
+
+
+class TestSnapshotLearnerDelay:
+    """Test DELAY path: entry stays in overflow when under-calibrated."""
+
+    def test_snapshot_learner_delay_undercalibrated(self, tmp_path):
+        """Entry stays in overflow when under min_opponents threshold (DELAY)."""
+        db_path = str(tmp_path / "delay.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        # soft_overflow=2 gives room for delay; min_games_for_review=32 means
+        # entries with 0 games are under-calibrated
+        config = LeagueConfig(recent=RecentFixedConfig(
+            slots=2, soft_overflow=2, min_games_for_review=32,
+        ))
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        # Fill to capacity
+        pool.snapshot_learner(model, "resnet", {}, epoch=1)
+        pool.snapshot_learner(model, "resnet", {}, epoch=2)
+        assert len(store.list_by_role(Role.RECENT_FIXED)) == 2
+
+        # Overflow: triggers review_oldest, but oldest has 0 games -> DELAY
+        pool.snapshot_learner(model, "resnet", {}, epoch=3)
+        # All 3 entries should remain (oldest was delayed, not retired/promoted)
+        rf = store.list_by_role(Role.RECENT_FIXED)
+        assert len(rf) == 3
+        # The oldest entry (epoch=1) should still be present
+        assert any(e.created_epoch == 1 for e in rf)
+
+        store.close()
+
+
+# ===========================================================================
+# bootstrap_from_flat_pool edge cases
+# ===========================================================================
+
+
+class TestBootstrapEdgeCases:
+    """Edge cases for bootstrap_from_flat_pool with very small pools."""
+
+    def test_bootstrap_single_entry(self, pool_setup):
+        """1 entry -> assigned to some tier without crash."""
+        pool, store, _ = pool_setup
+        model = torch.nn.Linear(10, 10)
+        store.add_entry(model, "resnet", {}, epoch=1, role=Role.UNASSIGNED)
+        pool.bootstrap_from_flat_pool()
+
+        # Entry should no longer be UNASSIGNED
+        all_entries = store.list_entries()
+        assert len(all_entries) == 1
+        assert all_entries[0].role is not Role.UNASSIGNED
+
+    def test_bootstrap_two_entries(self, pool_setup):
+        """2 entries -> each gets a role (no crash, no UNASSIGNED remaining)."""
+        pool, store, _ = pool_setup
+        model = torch.nn.Linear(10, 10)
+        store.add_entry(model, "resnet", {}, epoch=1, role=Role.UNASSIGNED)
+        store.add_entry(model, "resnet", {}, epoch=2, role=Role.UNASSIGNED)
+        pool.bootstrap_from_flat_pool()
+
+        all_entries = store.list_entries()
+        assert len(all_entries) == 2
+        for e in all_entries:
+            assert e.role is not Role.UNASSIGNED
+        # Both entries should have some role assigned
+        roles = {e.role for e in all_entries}
+        assert len(roles) >= 1  # at least one role type used
+
+
+# ===========================================================================
+# training_enabled=False path
+# ===========================================================================
+
+
+class TestTrainingDisabled:
+    """Test that training_enabled=False produces no DynamicTrainer."""
+
+    def test_init_training_disabled(self, tmp_path):
+        """DynamicConfig(training_enabled=False) -> pool.dynamic_trainer is None."""
+        from keisei.config import DynamicConfig as DC
+
+        db_path = str(tmp_path / "disabled.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        config = LeagueConfig(dynamic=DC(training_enabled=False))
+        pool = TieredPool(store, config)
+        assert pool.dynamic_trainer is None
+        store.close()

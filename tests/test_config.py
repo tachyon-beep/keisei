@@ -505,3 +505,60 @@ def test_priority_scorer_non_numeric_rejected() -> None:
     from keisei.config import PriorityScorerConfig
     with pytest.raises(TypeError):
         PriorityScorerConfig(under_sample_weight="not_a_number")
+
+
+# ---------------------------------------------------------------------------
+# DynamicConfig lr_scale bounds
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicConfigLrScale:
+    def test_dynamic_config_lr_scale_zero_raises(self):
+        with pytest.raises(ValueError, match="lr_scale"):
+            DynamicConfig(lr_scale=0.0)
+
+    def test_dynamic_config_lr_scale_above_one_raises(self):
+        with pytest.raises(ValueError, match="lr_scale"):
+            DynamicConfig(lr_scale=1.5)
+
+    def test_dynamic_config_lr_scale_negative_raises(self):
+        with pytest.raises(ValueError, match="lr_scale"):
+            DynamicConfig(lr_scale=-0.1)
+
+    def test_dynamic_config_max_updates_per_minute_zero_raises(self):
+        with pytest.raises(ValueError, match="max_updates_per_minute"):
+            DynamicConfig(max_updates_per_minute=0)
+
+
+# ---------------------------------------------------------------------------
+# PriorityScorerConfig positive penalty guard
+# ---------------------------------------------------------------------------
+
+
+class TestPriorityScorerConfigValidation:
+    def test_priority_scorer_config_positive_penalty_raises(self):
+        from keisei.config import PriorityScorerConfig
+
+        with pytest.raises(ValueError, match="repeat_penalty.*<= 0"):
+            PriorityScorerConfig(repeat_penalty=0.1)
+
+    def test_priority_scorer_config_inf_weight_raises(self):
+        from keisei.config import PriorityScorerConfig
+
+        with pytest.raises(ValueError, match="under_sample_weight.*finite"):
+            PriorityScorerConfig(under_sample_weight=float("inf"))
+
+
+# ---------------------------------------------------------------------------
+# LeagueConfig k-factor bounds
+# ---------------------------------------------------------------------------
+
+
+class TestLeagueConfigKFactors:
+    def test_league_config_elo_k_zero_raises(self):
+        with pytest.raises(ValueError, match="elo_k_factor must be > 0"):
+            LeagueConfig(elo_k_factor=0)
+
+    def test_league_config_tournament_k_negative_raises(self):
+        with pytest.raises(ValueError, match="tournament_k_factor must be > 0"):
+            LeagueConfig(tournament_k_factor=-1.0)

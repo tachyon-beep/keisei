@@ -305,3 +305,185 @@ class TestReadLeagueDataPhase3:
         assert entry["optimizer_path"] == "/opt.pt"
         assert entry["update_count"] == 3
         assert entry["last_train_at"] == "2026-04-01T00:00:00Z"
+
+
+# ---------- record_result self-play ----------
+
+
+class TestRecordResultSelfPlay:
+    def test_record_result_self_play(self, store, league_dir):
+        """When learner_id == opponent_id, protection_remaining decrements only once."""
+        entry = _add_test_entry(store, league_dir)
+        store.set_protection(entry.id, 5)
+
+        # Verify starting protection
+        before = store.get_entry(entry.id)
+        assert before is not None
+        assert before.protection_remaining == 5
+
+        store.record_result(
+            epoch=1, learner_id=entry.id, opponent_id=entry.id,
+            wins=1, losses=0, draws=0,
+        )
+
+        after = store.get_entry(entry.id)
+        assert after is not None
+        # Should be 4 (decremented once), NOT 3 (double-decremented)
+        assert after.protection_remaining == 4
+
+
+# ---------- Pin / Unpin ----------
+
+
+class TestPinUnpin:
+    def test_pin_adds_to_pinned_set(self, store, league_dir):
+        """Pin an entry and verify it's in the internal pinned set."""
+        entry = _add_test_entry(store, league_dir)
+        store.pin(entry.id)
+        assert entry.id in store._pinned
+
+    def test_unpin_removes_from_pinned_set(self, store, league_dir):
+        """Pin then unpin an entry, verify it's no longer pinned."""
+        entry = _add_test_entry(store, league_dir)
+        store.pin(entry.id)
+        assert entry.id in store._pinned
+        store.unpin(entry.id)
+        assert entry.id not in store._pinned
+
+    def test_pin_idempotent(self, store, league_dir):
+        """Pinning the same entry twice should not raise an error."""
+        entry = _add_test_entry(store, league_dir)
+        store.pin(entry.id)
+        store.pin(entry.id)  # no error
+        assert entry.id in store._pinned
+
+    def test_unpin_nonexistent_no_error(self, store, league_dir):
+        """Unpinning an entry that was never pinned should not raise."""
+        entry = _add_test_entry(store, league_dir)
+        store.unpin(entry.id)  # no error
+        assert entry.id not in store._pinned
+
+
+# ---------- log_transition ----------
+
+
+class TestLogTransition:
+    def test_log_transition_writes_to_db(self, store, league_dir):
+        """log_transition should insert a row in league_transitions."""
+        entry = _add_test_entry(store, league_dir)
+
+        store.log_transition(
+            entry_id=entry.id,
+            from_role="dynamic",
+            to_role="frontier_static",
+            from_status="active",
+            to_status="active",
+            reason="promoted",
+        )
+
+        with store._lock:
+            rows = store._conn.execute(
+                "SELECT * FROM league_transitions WHERE entry_id = ? AND reason = ?",
+                (entry.id, "promoted"),
+            ).fetchall()
+
+        assert len(rows) >= 1
+        row = dict(rows[-1])  # last matching row
+        assert row["from_role"] == "dynamic"
+        assert row["to_role"] == "frontier_static"
+        assert row["from_status"] == "active"
+        assert row["to_status"] == "active"
+        assert row["reason"] == "promoted"
+
+
+# ---------- list_all_entries vs list_entries ----------
+
+
+class TestListAllVsListEntries:
+    def test_list_all_includes_retired(self, store, league_dir):
+        """list_all_entries returns all statuses; list_entries returns only active."""
+        e1 = _add_test_entry(store, league_dir)
+        e2 = _add_test_entry(store, league_dir)
+        store.retire_entry(e2.id, "obsolete")
+
+        all_entries = store.list_all_entries()
+        active_entries = store.list_entries()
+
+        assert len(all_entries) == 2
+        assert len(active_entries) == 1
+        assert active_entries[0].id == e1.id
+
+
+# ---------- clone_entry error path ----------
+
+
+class TestCloneEntryErrorPath:
+    def test_clone_entry_source_not_found(self, store, league_dir):
+        """Cloning a non-existent entry raises ValueError."""
+        with pytest.raises(ValueError, match="not found"):
+            store.clone_entry(source_entry_id=99999, new_role=Role.DYNAMIC, reason="test")
+
+
+# ---------- load_opponent missing checkpoint ----------
+
+
+class TestLoadOpponentMissingCheckpoint:
+    def test_load_opponent_missing_checkpoint(self, store, league_dir):
+        """load_opponent raises FileNotFoundError when checkpoint file is missing."""
+        entry = _add_test_entry(store, league_dir)
+
+        # Delete the checkpoint file
+        Path(entry.checkpoint_path).unlink()
+
+        with pytest.raises(FileNotFoundError, match="Checkpoint missing"):
+            store.load_opponent(entry)
+
+
+# ---------- Transaction nesting ----------
+
+
+class TestTransactionNesting:
+    def test_inner_exception_rolls_back_outer(self, store, league_dir):
+        """An exception in a nested transaction should rollback the outer transaction."""
+        entry = _add_test_entry(store, league_dir)
+        store.set_protection(entry.id, 10)
+
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                # Outer write
+                store._conn.execute(
+                    "UPDATE league_entries SET protection_remaining = 5 WHERE id = ?",
+                    (entry.id,),
+                )
+                with store.transaction():
+                    # Inner write
+                    store._conn.execute(
+                        "UPDATE league_entries SET protection_remaining = 1 WHERE id = ?",
+                        (entry.id,),
+                    )
+                    raise RuntimeError("inner failure")
+
+        # Outer transaction should have rolled back, restoring to 10
+        after = store.get_entry(entry.id)
+        assert after is not None
+        assert after.protection_remaining == 10
+
+    def test_nested_success_commits(self, store, league_dir):
+        """Successful nested transactions commit only when outermost completes."""
+        entry = _add_test_entry(store, league_dir)
+        store.set_protection(entry.id, 10)
+
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET protection_remaining = 7 WHERE id = ?",
+                (entry.id,),
+            )
+            with store.transaction():
+                store._conn.execute(
+                    "UPDATE league_entries SET protection_remaining = 3 WHERE id = ?",
+                    (entry.id,),
+                )
+
+        after = store.get_entry(entry.id)
+        assert after is not None
+        assert after.protection_remaining == 3
