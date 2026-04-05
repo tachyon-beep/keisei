@@ -69,12 +69,20 @@ class TieredPool:
     # ------------------------------------------------------------------
 
     def _total_capacity(self) -> int:
-        """Total slots across all tiers."""
-        return (
+        """Total slots across all tiers.
+
+        When ``max_active_entries`` is set in config, it overrides the
+        derived sum.  Otherwise defaults to frontier + recent + dynamic
+        slots (20 with default config).
+        """
+        derived = (
             self.config.frontier.slots
             + self.config.recent.slots
             + self.config.dynamic.slots
         )
+        if self.config.max_active_entries is not None:
+            return self.config.max_active_entries
+        return derived
 
     def _total_active(self) -> int:
         """Count of all active entries across all tiers."""
@@ -106,6 +114,10 @@ class TieredPool:
         If the tier overflows, the oldest entry is reviewed for promotion
         to Dynamic or retirement.  Retirement is suppressed while the total
         pool has spare capacity — entries stay in overflow until slots fill.
+
+        A hard cap (``max_active_entries`` or the derived tier-slot sum)
+        is enforced after all tier-level logic runs.  If the pool still
+        exceeds capacity, the oldest Recent Fixed entry is force-retired.
         """
         entry = self.recent_manager.admit(model, arch, params, epoch)
 
@@ -141,7 +153,38 @@ class TieredPool:
                     self.store.retire_entry(oldest.id, "did not qualify for dynamic")
             # DELAY: do nothing, let it sit in overflow
 
+        # --- Hard cap enforcement ---
+        # Tier-level logic (DELAY, failed PROMOTE) can leave the pool above
+        # capacity.  Force-retire the oldest Recent Fixed entry to restore
+        # the invariant.  Only Recent Fixed entries are candidates because
+        # they are the overflow source; Frontier and Dynamic have their own
+        # slot-level enforcement.
+        self._enforce_hard_cap()
+
         return entry
+
+    def _enforce_hard_cap(self) -> None:
+        """Retire oldest Recent Fixed entries until total active <= capacity."""
+        cap = self._total_capacity()
+        while self._total_active() > cap:
+            rf = self.store.list_by_role(Role.RECENT_FIXED)
+            if not rf:
+                logger.warning(
+                    "Pool over capacity (%d/%d) but no Recent Fixed entries "
+                    "to retire — cannot enforce hard cap",
+                    self._total_active(), cap,
+                )
+                break
+            # list_by_role returns entries ordered by created_epoch ASC
+            oldest = rf[0]
+            logger.info(
+                "Hard cap enforcement: retiring Recent Fixed id=%d "
+                "(pool %d/%d)",
+                oldest.id, self._total_active(), cap,
+            )
+            self.store.retire_entry(
+                oldest.id, "hard cap: pool exceeded max_active_entries"
+            )
 
     # ------------------------------------------------------------------
     # Queries

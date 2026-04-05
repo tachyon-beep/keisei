@@ -407,6 +407,7 @@ class StorageConfig:
 class LeagueConfig:
     enabled: bool = True
     mode: str = "mixed"
+    max_active_entries: int | None = None
     snapshot_interval: int = 10
     epochs_per_seat: int = 50
     initial_elo: float = 1000.0
@@ -466,6 +467,10 @@ class LeagueConfig:
         if self.tournament_k_factor <= 0:
             raise ValueError(
                 f"tournament_k_factor must be > 0, got {self.tournament_k_factor}"
+            )
+        if self.max_active_entries is not None and self.max_active_entries < 1:
+            raise ValueError(
+                f"max_active_entries must be >= 1 or None, got {self.max_active_entries}"
             )
 
 

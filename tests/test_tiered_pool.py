@@ -372,6 +372,117 @@ class TestSnapshotLearnerDelay:
 
 
 # ===========================================================================
+# Hard cap enforcement
+# ===========================================================================
+
+
+class TestHardCapEnforcement:
+    """Pool must never exceed max_active_entries (or derived tier sum)."""
+
+    def test_delay_cannot_exceed_hard_cap(self, tmp_path):
+        """Repeated DELAY outcomes must not grow pool past capacity.
+
+        With soft_overflow=5 (large), tier-level review always DELAYs.
+        Without the hard cap, the pool would grow to 7 (2 slots + 5 overflow).
+        The hard cap (total capacity = 1+2+1 = 4) must force-retire entries.
+        """
+        db_path = str(tmp_path / "hardcap.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        # Tiny capacity: frontier=1, recent=2, dynamic=1 → 4 total
+        # Large soft_overflow so tier-level review always DELAYs
+        config = LeagueConfig(
+            recent=RecentFixedConfig(
+                slots=2, soft_overflow=5, min_games_for_review=999,
+            ),
+            dynamic=DynamicConfig(slots=1),
+            frontier=FrontierStaticConfig(slots=1),
+        )
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        # Fill other tiers to reach capacity
+        store.add_entry(model, "resnet", {}, epoch=50, role=Role.DYNAMIC)
+        store.add_entry(model, "resnet", {}, epoch=51, role=Role.FRONTIER_STATIC)
+
+        # Snapshot many times — pool must never exceed 4
+        for i in range(1, 8):
+            pool.snapshot_learner(model, "resnet", {}, epoch=i)
+            total = len(store.list_entries())
+            assert total <= 4, (
+                f"Pool exceeded hard cap: {total} entries after snapshot epoch={i}"
+            )
+
+        store.close()
+
+    def test_max_active_entries_config_overrides_derived(self, tmp_path):
+        """Explicit max_active_entries overrides the derived tier-slot sum."""
+        db_path = str(tmp_path / "override.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        # Derived capacity would be 5+5+10=20, but we cap at 6
+        config = LeagueConfig(
+            max_active_entries=6,
+            recent=RecentFixedConfig(
+                slots=5, soft_overflow=5, min_games_for_review=999,
+            ),
+        )
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        for i in range(1, 10):
+            pool.snapshot_learner(model, "resnet", {}, epoch=i)
+            total = len(store.list_entries())
+            assert total <= 6, (
+                f"Pool exceeded max_active_entries=6: {total} at epoch={i}"
+            )
+
+        store.close()
+
+    def test_failed_promote_cannot_exceed_hard_cap(self, tmp_path):
+        """When PROMOTE fails (Dynamic full+protected), hard cap still enforced."""
+        db_path = str(tmp_path / "failpromote.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        # Tiny capacity: frontier=1, recent=2, dynamic=1 → 4 total
+        # soft_overflow=0 and easy promotion criteria so PROMOTE fires
+        config = LeagueConfig(
+            recent=RecentFixedConfig(
+                slots=2, soft_overflow=0,
+                min_games_for_review=0, min_unique_opponents=0,
+                promotion_margin_elo=0.0, max_elo_spread=999.0,
+            ),
+            dynamic=DynamicConfig(
+                slots=1, protection_matches=999,  # all protected → admit fails
+            ),
+            frontier=FrontierStaticConfig(slots=1),
+        )
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        # Fill Dynamic (protected) and Frontier
+        dyn = store.add_entry(model, "resnet", {}, epoch=50, role=Role.DYNAMIC)
+        store.set_protection(dyn.id, 999)
+        store.add_entry(model, "resnet", {}, epoch=51, role=Role.FRONTIER_STATIC)
+
+        # Snapshot repeatedly — PROMOTE fires but Dynamic rejects → hard cap applies
+        for i in range(1, 6):
+            pool.snapshot_learner(model, "resnet", {}, epoch=i)
+            total = len(store.list_entries())
+            assert total <= 4, (
+                f"Pool exceeded hard cap: {total} entries after snapshot epoch={i}"
+            )
+
+        store.close()
+
+
+# ===========================================================================
 # bootstrap_from_flat_pool edge cases
 # ===========================================================================
 

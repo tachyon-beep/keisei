@@ -61,6 +61,7 @@ db_path = "data/keisei-500k-league.db"
 [league]
 enabled = true
 mode = "mixed"
+max_active_entries = 20     # hard cap: 5 frontier + 5 recent + 10 dynamic (§1, §18)
 snapshot_interval = 10      # snapshot every 10 epochs — fills pool fast early on
 epochs_per_seat = 5         # rotate opponent every 5 epochs for diversity
 elo_k_factor = 32.0
@@ -72,6 +73,11 @@ tournament_num_envs = 64
 tournament_games_per_match = 3    # best-of-3
 tournament_k_factor = 16.0
 tournament_pause_seconds = 1.0
+
+[league.active]
+frontier_static_slots = 5   # §4.1A: current measurement yardstick
+recent_fixed_slots = 5      # §4.1B: fresh blood / probation queue
+dynamic_slots = 10           # §4.1C: live trainable population
 
 [league.concurrency]
 parallel_matches = 4

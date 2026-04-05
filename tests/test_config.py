@@ -449,6 +449,24 @@ def test_league_snapshot_interval_zero_rejected() -> None:
         LeagueConfig(snapshot_interval=0)
 
 
+def test_league_max_active_entries_zero_rejected() -> None:
+    from keisei.config import LeagueConfig
+    with pytest.raises(ValueError, match="max_active_entries must be >= 1"):
+        LeagueConfig(max_active_entries=0)
+
+
+def test_league_max_active_entries_none_accepted() -> None:
+    from keisei.config import LeagueConfig
+    cfg = LeagueConfig(max_active_entries=None)
+    assert cfg.max_active_entries is None
+
+
+def test_league_max_active_entries_explicit_accepted() -> None:
+    from keisei.config import LeagueConfig
+    cfg = LeagueConfig(max_active_entries=15)
+    assert cfg.max_active_entries == 15
+
+
 # ---------------------------------------------------------------------------
 # Legacy key warning and unknown key detection (findings 11, 12)
 # ---------------------------------------------------------------------------
@@ -499,6 +517,17 @@ nonexistent_key = 42
 """)
     with pytest.raises(ValueError, match="Unknown.*league.*config.*nonexistent_key"):
         load_config(config_file)
+
+
+def test_max_active_entries_from_toml(tmp_path: Path) -> None:
+    config_file = tmp_path / "cap.toml"
+    config_file.write_text(_LEAGUE_TOML_BASE + """
+[league]
+max_active_entries = 15
+""")
+    cfg = load_config(config_file)
+    assert cfg.league is not None
+    assert cfg.league.max_active_entries == 15
 
 
 def test_priority_scorer_non_numeric_rejected() -> None:
