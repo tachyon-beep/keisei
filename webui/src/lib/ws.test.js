@@ -5,7 +5,10 @@ import { handleMessage } from './ws.js'
 import { games, selectedGameId } from '../stores/games.js'
 import { metrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
-import { leagueEntries, leagueResults, eloHistory } from '../stores/league.js'
+import {
+  leagueEntries, leagueResults, eloHistory,
+  historicalLibrary, gauntletResults, leagueTransitions,
+} from '../stores/league.js'
 
 beforeEach(() => {
   games.set([])
@@ -15,6 +18,9 @@ beforeEach(() => {
   leagueEntries.set([])
   leagueResults.set([])
   eloHistory.set([])
+  historicalLibrary.set([])
+  gauntletResults.set([])
+  leagueTransitions.set([])
 })
 
 describe('handleMessage — init', () => {
@@ -256,5 +262,75 @@ describe('handleMessage — league_update', () => {
     expect(get(leagueEntries)).toEqual([])
     expect(get(leagueResults)).toEqual([])
     expect(get(eloHistory)).toEqual([])
+  })
+})
+
+describe('handleMessage — init with dropped data streams', () => {
+  it('populates historicalLibrary from init message', () => {
+    handleMessage({
+      type: 'init',
+      games: [], metrics: [], training_state: null,
+      league_entries: [], league_results: [], elo_history: [],
+      historical_library: [{ slot_index: 0, entry_name: 'Bot-A' }],
+      gauntlet_results: [],
+      transitions: [],
+    })
+    expect(get(historicalLibrary)).toHaveLength(1)
+    expect(get(historicalLibrary)[0].slot_index).toBe(0)
+  })
+
+  it('populates gauntletResults from init message', () => {
+    handleMessage({
+      type: 'init',
+      games: [], metrics: [], training_state: null,
+      league_entries: [], league_results: [], elo_history: [],
+      historical_library: [],
+      gauntlet_results: [{ id: 1, epoch: 5, wins: 3 }],
+      transitions: [],
+    })
+    expect(get(gauntletResults)).toHaveLength(1)
+    expect(get(gauntletResults)[0].epoch).toBe(5)
+  })
+
+  it('populates leagueTransitions from msg.transitions key', () => {
+    handleMessage({
+      type: 'init',
+      games: [], metrics: [], training_state: null,
+      league_entries: [], league_results: [], elo_history: [],
+      historical_library: [],
+      gauntlet_results: [],
+      transitions: [{ id: 1, from_role: 'dynamic', to_role: 'frontier_static' }],
+    })
+    expect(get(leagueTransitions)).toHaveLength(1)
+    expect(get(leagueTransitions)[0].from_role).toBe('dynamic')
+  })
+
+  it('defaults new stores to [] when keys are absent', () => {
+    handleMessage({ type: 'init', games: [], metrics: [], training_state: null })
+    expect(get(historicalLibrary)).toEqual([])
+    expect(get(gauntletResults)).toEqual([])
+    expect(get(leagueTransitions)).toEqual([])
+  })
+})
+
+describe('handleMessage — league_update with dropped data streams', () => {
+  it('populates all 3 new stores from league_update', () => {
+    handleMessage({
+      type: 'league_update',
+      entries: [], results: [], elo_history: [],
+      historical_library: [{ slot_index: 0 }],
+      gauntlet_results: [{ id: 1 }],
+      transitions: [{ id: 1 }],
+    })
+    expect(get(historicalLibrary)).toHaveLength(1)
+    expect(get(gauntletResults)).toHaveLength(1)
+    expect(get(leagueTransitions)).toHaveLength(1)
+  })
+
+  it('defaults new stores to [] when keys are absent in league_update', () => {
+    handleMessage({ type: 'league_update' })
+    expect(get(historicalLibrary)).toEqual([])
+    expect(get(gauntletResults)).toEqual([])
+    expect(get(leagueTransitions)).toEqual([])
   })
 })
