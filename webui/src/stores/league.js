@@ -25,9 +25,9 @@ export function diffLeagueEntries(entries) {
   const newMap = new Map(entries.map(e => [e.id, e]))
   const events = []
 
-  // Arrivals
+  // Arrivals (active entries only)
   for (const [id, entry] of newMap) {
-    if (!_prevEntryMap.has(id)) {
+    if (!_prevEntryMap.has(id) && entry.status === 'active') {
       events.push({
         time: now,
         type: 'arrival',
@@ -39,7 +39,22 @@ export function diffLeagueEntries(entries) {
     }
   }
 
-  // Departures
+  // Retirements (status changed from active to retired)
+  for (const [id, entry] of newMap) {
+    const prev = _prevEntryMap.get(id)
+    if (prev && prev.status === 'active' && entry.status === 'retired') {
+      events.push({
+        time: now,
+        type: 'departure',
+        icon: '←',
+        name: entry.display_name || entry.architecture,
+        role: entry.role,
+        detail: 'retired',
+      })
+    }
+  }
+
+  // Departures (deleted from DB entirely — should be rare)
   for (const [id, entry] of _prevEntryMap) {
     if (!newMap.has(id)) {
       events.push({
@@ -53,9 +68,10 @@ export function diffLeagueEntries(entries) {
     }
   }
 
-  // Rank changes (only if pool has >1 entry and not first load)
-  if (_prevRanks.size > 0 && entries.length > 1) {
-    const sorted = [...entries].sort((a, b) => b.elo_rating - a.elo_rating)
+  // Rank changes (only active entries, not first load)
+  const activeEntries = entries.filter(e => e.status === 'active')
+  if (_prevRanks.size > 0 && activeEntries.length > 1) {
+    const sorted = [...activeEntries].sort((a, b) => b.elo_rating - a.elo_rating)
     for (let i = 0; i < sorted.length; i++) {
       const e = sorted[i]
       const newRank = i + 1
@@ -77,9 +93,9 @@ export function diffLeagueEntries(entries) {
     }
     // Update rank cache
     _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
-  } else if (entries.length > 0) {
+  } else if (activeEntries.length > 0) {
     // First load — seed ranks without generating events
-    const sorted = [...entries].sort((a, b) => b.elo_rating - a.elo_rating)
+    const sorted = [...activeEntries].sort((a, b) => b.elo_rating - a.elo_rating)
     _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
   }
 
@@ -111,7 +127,8 @@ export const entryWLD = derived(leagueResults, ($results) => {
 })
 
 export const leagueRanked = derived(leagueEntries, ($entries) => {
-  const sorted = [...$entries].sort((a, b) => b.elo_rating - a.elo_rating)
+  const active = $entries.filter(e => e.status === 'active')
+  const sorted = [...active].sort((a, b) => b.elo_rating - a.elo_rating)
   return sorted.map((entry, i) => ({ ...entry, rank: i + 1 }))
 })
 
@@ -166,12 +183,13 @@ export const headToHead = derived(leagueResults, ($results) => {
 export const leagueStats = derived(
   [leagueEntries, leagueResults],
   ([$entries, $results]) => {
-    if ($entries.length === 0) return null
-    const elos = $entries.map(e => e.elo_rating)
-    const sorted = [...$entries].sort((a, b) => b.elo_rating - a.elo_rating)
+    const active = $entries.filter(e => e.status === 'active')
+    if (active.length === 0) return null
+    const elos = active.map(e => e.elo_rating)
+    const sorted = [...active].sort((a, b) => b.elo_rating - a.elo_rating)
     const totalMatches = $results.length
     return {
-      poolSize: $entries.length,
+      poolSize: active.length,
       totalMatches,
       topEntry: sorted[0],
       eloMin: Math.round(Math.min(...elos)),

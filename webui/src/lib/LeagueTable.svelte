@@ -265,6 +265,7 @@
   .role-badge.role-dynamic { color: var(--accent-teal); }
   .role-badge.role-historical { color: #9b7ec8; }
   .role-badge.role-unknown { color: var(--text-muted); }
+  .role-badge.role-retired { color: #888; opacity: 0.6; }
 
   tr.expanded { background: var(--bg-card); }
 

@@ -18,9 +18,9 @@ describe('leagueRanked', () => {
 
   it('sorts entries by elo_rating descending and injects rank', () => {
     leagueEntries.set([
-      { id: 1, architecture: 'a', elo_rating: 900, games_played: 10, created_epoch: 1 },
-      { id: 2, architecture: 'b', elo_rating: 1200, games_played: 20, created_epoch: 2 },
-      { id: 3, architecture: 'c', elo_rating: 1100, games_played: 15, created_epoch: 3 },
+      { id: 1, architecture: 'a', elo_rating: 900, games_played: 10, created_epoch: 1, status: 'active' },
+      { id: 2, architecture: 'b', elo_rating: 1200, games_played: 20, created_epoch: 2, status: 'active' },
+      { id: 3, architecture: 'c', elo_rating: 1100, games_played: 15, created_epoch: 3, status: 'active' },
     ])
     const ranked = get(leagueRanked)
     expect(ranked[0]).toEqual(expect.objectContaining({ id: 2, rank: 1, elo_rating: 1200 }))
@@ -47,7 +47,7 @@ describe('diffLeagueEntries', () => {
   })
 
   const entry = (id, elo, name) => ({
-    id, elo_rating: elo, display_name: name, architecture: `arch-${id}`,
+    id, elo_rating: elo, display_name: name, architecture: `arch-${id}`, status: 'active',
   })
 
   it('first call generates arrival events but no rank-change events', () => {
@@ -130,7 +130,7 @@ describe('diffLeagueEntries', () => {
   })
 
   it('uses architecture as fallback when display_name is missing', () => {
-    const e = { id: 1, elo_rating: 1000, architecture: 'resnet-v2' }
+    const e = { id: 1, elo_rating: 1000, architecture: 'resnet-v2', status: 'active' }
     diffLeagueEntries([])
     diffLeagueEntries([e])
     const events = get(leagueEvents)
@@ -262,7 +262,7 @@ describe('leagueStats', () => {
   })
 
   it('computes summary for a single entry', () => {
-    leagueEntries.set([{ id: 1, elo_rating: 1000, architecture: 'a' }])
+    leagueEntries.set([{ id: 1, elo_rating: 1000, architecture: 'a', status: 'active' }])
     leagueResults.set([])
     const stats = get(leagueStats)
     expect(stats.poolSize).toBe(1)
@@ -275,9 +275,9 @@ describe('leagueStats', () => {
 
   it('computes spread across multiple entries', () => {
     leagueEntries.set([
-      { id: 1, elo_rating: 900, architecture: 'a' },
-      { id: 2, elo_rating: 1200, architecture: 'b' },
-      { id: 3, elo_rating: 1100, architecture: 'c' },
+      { id: 1, elo_rating: 900, architecture: 'a', status: 'active' },
+      { id: 2, elo_rating: 1200, architecture: 'b', status: 'active' },
+      { id: 3, elo_rating: 1100, architecture: 'c', status: 'active' },
     ])
     leagueResults.set([{ id: 10 }, { id: 11 }])
     const stats = get(leagueStats)

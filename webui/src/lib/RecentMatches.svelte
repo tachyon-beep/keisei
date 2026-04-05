@@ -39,6 +39,8 @@
       const nameB = entryB?.display_name || entryB?.architecture || `#${r.entry_b_id}`
       const roleA = entryA?.role
       const roleB = entryB?.role
+      const statusA = entryA?.status
+      const statusB = entryB?.status
       const winsA = r.wins_a || 0
       const winsB = r.wins_b || 0
       const draws = r.draws || 0
@@ -52,6 +54,8 @@
       const loserName = aWon || draw ? nameB : nameA
       const winnerRole = aWon || draw ? roleA : roleB
       const loserRole = aWon || draw ? roleB : roleA
+      const winnerStatus = aWon || draw ? statusA : statusB
+      const loserStatus = aWon || draw ? statusB : statusA
       const w = aWon || draw ? winsA : winsB
       const l = aWon || draw ? winsB : winsA
       const winPct = total > 0 ? Math.round((w / total) * 100) : 0
@@ -67,6 +71,8 @@
         loserName,
         winnerRole,
         loserRole,
+        winnerStatus,
+        loserStatus,
         w, l, draws,
         total,
         aWon,
@@ -99,9 +105,9 @@
         {:else}
           <div class="match-item">
             <div class="match-top">
-              <span class="name winner"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.winnerRole)}</span>{item.winnerName}</span>
+              <span class="name winner"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.winnerRole, item.winnerStatus)}</span>{item.winnerName}</span>
               <span class="vs">vs</span>
-              <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole)}</span>{item.loserName}</span>
+              <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole, item.loserStatus)}</span>{item.loserName}</span>
               <span class="match-score" class:win={item.aWon} class:loss={!item.aWon && !item.draw} class:tied={item.draw}>
                 {item.w}W {item.l}L {item.draws}D
               </span>

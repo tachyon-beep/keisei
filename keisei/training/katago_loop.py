@@ -48,7 +48,7 @@ from keisei.training.katago_ppo import (
 # scalar_value is used in split_merge_step to keep value computation
 # centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
 from keisei.training.historical_gauntlet import HistoricalGauntlet
-from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tiered_pool import TieredPool
 from keisei.training.concurrent_matches import ConcurrentMatchPool
@@ -1422,122 +1422,15 @@ class KataGoTrainingLoop:
             # Elo tracking (league mode, rank 0 only)
             # The main trainer is NOT a league participant — it creates
             # snapshots that become league entries, but its live training
-            # matches are not recorded as league results. Only the
-            # background tournament produces league_results rows.
-            # We still update the opponent's Elo so the pool has signal
-            # for sampling, but no result row is written.
-            if self.dist_ctx.is_main:
-                total_games = win_count + loss_count + draw_count
-                k = self.config.league.elo_k_factor if self.config.league else 32.0
-
-                if (self.store is not None
-                        and self._opponent_results is not None
-                        and self._cached_entries_by_id
-                        and total_games > 0):
-                    # Per-opponent Elo updates (Change 3).
-                    # Freeze the starting learner Elo — all opponent updates are
-                    # computed against this SAME base value, then the cumulative
-                    # delta is applied once. This prevents path-dependent Elo drift
-                    # from dict iteration order.
-                    # K is normalized by active opponent count to prevent cumulative
-                    # amplification (20 opponents × K=32 = 640 pts without normalization).
-                    assert self._learner_entry_id is not None  # set when store exists
-                    learner_entry = self.store.get_entry(self._learner_entry_id)
-                    if learner_entry is not None:
-                        base_learner_elo = learner_entry.elo_rating
-                        cumulative_learner_delta = 0.0
-                        n_active = sum(
-                            1 for w, los, d in self._opponent_results.values()
-                            if w + los + d > 0
-                        )
-                        k_per_opp = k / max(1, n_active)
-
-                        for opp_id, (w, los, d) in self._opponent_results.items():
-                            opp_total = w + los + d
-                            if opp_total == 0:
-                                continue
-                            if opp_id == self._learner_entry_id:
-                                continue
-                            opp_entry = self._cached_entries_by_id.get(opp_id)
-                            if opp_entry is None:
-                                continue
-                            result_score = (w + 0.5 * d) / opp_total
-                            new_learner_elo, new_opp_elo = compute_elo_update(
-                                base_learner_elo, opp_entry.elo_rating,
-                                result=result_score, k=k_per_opp,
-                            )
-                            learner_delta = new_learner_elo - base_learner_elo
-                            cumulative_learner_delta += learner_delta
-                            # Update opponent Elo immediately (each opponent is independent)
-                            self.store.update_elo(opp_id, new_opp_elo, epoch=self.epoch)
-                            logger.info(
-                                "Elo: learner base=%.0f delta=%.1f, "
-                                "opponent(id=%d) %.0f->%.0f | W=%d L=%d D=%d",
-                                base_learner_elo, learner_delta,
-                                opp_id, opp_entry.elo_rating, new_opp_elo,
-                                w, los, d,
-                            )
-
-                        # Apply cumulative learner Elo change once
-                        final_learner_elo = base_learner_elo + cumulative_learner_delta
-                        self.store.update_elo(
-                            self._learner_entry_id, final_learner_elo, epoch=self.epoch,
-                        )
-                        logger.info(
-                            "Elo: learner %.0f->%.0f (cumulative from %d opponents)",
-                            base_learner_elo, final_learner_elo,
-                            sum(1 for w, los, d in self._opponent_results.values()
-                                if w + los + d > 0),
-                        )
-
-                elif (self.store is not None
-                        and self._current_opponent_entry is not None
-                        and total_games > 0
-                        and self._learner_entry_id is not None
-                        and self._learner_entry_id != self._current_opponent_entry.id):
-                    # Legacy single-opponent Elo update
-                    learner_entry = self.store.get_entry(self._learner_entry_id)
-                    if learner_entry is not None:
-                        result_score = (win_count + 0.5 * draw_count) / total_games
-                        new_learner_elo, new_opp_elo = compute_elo_update(
-                            learner_entry.elo_rating,
-                            self._current_opponent_entry.elo_rating,
-                            result=result_score, k=k,
-                        )
-                        self.store.update_elo(
-                            learner_entry.id, new_learner_elo, epoch=self.epoch,
-                        )
-                        self.store.update_elo(
-                            self._current_opponent_entry.id, new_opp_elo,
-                            epoch=self.epoch,
-                        )
-                        logger.info(
-                            "Elo: learner %.0f->%.0f, opponent(id=%d) %.0f->%.0f "
-                            "| W=%d L=%d D=%d",
-                            learner_entry.elo_rating, new_learner_elo,
-                            self._current_opponent_entry.id,
-                            self._current_opponent_entry.elo_rating, new_opp_elo,
-                            win_count, loss_count, draw_count,
-                        )
+            # Elo is managed exclusively by the background tournament thread.
+            # The training loop does not update Elo — training matches are not
+            # part of the calibration system.
 
             # Carry forward Elo for entries that didn't play this epoch,
             # so the Elo chart has continuous lines with no gaps.
             if self.dist_ctx.is_main and self.store is not None:
-                played_ids = set()
-                if self._learner_entry_id is not None:
-                    played_ids.add(self._learner_entry_id)
-                if self._current_opponent_entry is not None:
-                    played_ids.add(self._current_opponent_entry.id)
-                # Change 3: include all opponents that had games this epoch.
-                # Without this, the carry-forward loop below would overwrite
-                # the per-opponent Elo updates with stale pre-epoch values.
-                if self._opponent_results is not None:
-                    for opp_id, (w, los, d) in self._opponent_results.items():
-                        if w + los + d > 0:
-                            played_ids.add(opp_id)
                 for entry in self.store.list_entries():
-                    if entry.id not in played_ids:
-                        self.store.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
+                    self.store.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
 
             if self.dist_ctx.is_main:
                 # Seat rotation (takes priority — includes its own snapshot)

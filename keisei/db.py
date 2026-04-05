@@ -400,7 +400,7 @@ def read_league_data(
             "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at, "
             "elo_frontier, elo_dynamic, elo_recent, elo_historical, "
             "optimizer_path, update_count, last_train_at "
-            "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
+            "FROM league_entries ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
             "SELECT id, epoch, entry_a_id, entry_b_id, match_type, role_a, role_b, "
