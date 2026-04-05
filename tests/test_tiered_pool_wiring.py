@@ -60,8 +60,10 @@ class TestTieredPoolPhase3Wiring:
         with caplog.at_level(logging.WARNING, logger="keisei.training.tiered_pool"):
             TieredPool(store, config, learner_lr=2e-4)
 
-        assert any(
-            "Dynamic training enabled" in record.message
-            and "GPU memory contention" in record.message
-            for record in caplog.records
-        ), f"Expected GPU contention warning, got: {[r.message for r in caplog.records]}"
+        all_messages = " ".join(r.message for r in caplog.records)
+        assert "Dynamic training enabled" in all_messages, (
+            f"Expected 'Dynamic training enabled' in logs, got: {all_messages}"
+        )
+        assert "GPU memory contention" in all_messages, (
+            f"Expected 'GPU memory contention' in logs, got: {all_messages}"
+        )

@@ -358,6 +358,53 @@ class TestTournamentTrainingTrigger:
         assert trainer.record_match.call_count == 2
         trainer.update.assert_not_called()
 
+    def test_tournament_triggers_training_for_dynamic_side_only_in_drf_match(self):
+        """In a D-vs-RF match, only the Dynamic entry gets record_match."""
+        trainer = MagicMock(spec=DynamicTrainer)
+        trainer.should_update.return_value = True
+        trainer.is_rate_limited.return_value = False
+        trainer.update.return_value = True
+
+        t = self._make_tournament(dynamic_trainer=trainer)
+
+        entry_a = _make_entry(1, Role.DYNAMIC)
+        entry_b = _make_entry(2, Role.RECENT_FIXED)
+        rollout = _make_mock_rollout()
+
+        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+            t.store.get_entry.side_effect = lambda eid: (
+                entry_a if eid == 1 else entry_b
+            )
+            t._run_one_match(MagicMock(), entry_a, entry_b, epoch=10)
+
+        # Only the Dynamic entry (entry_a, side=0) should get record_match
+        trainer.record_match.assert_called_once_with(1, rollout, side=0)
+        # update called once (for Dynamic entry only)
+        trainer.update.assert_called_once()
+
+    def test_tournament_triggers_training_for_dynamic_side_only_in_rfd_match(self):
+        """In a RF-vs-D match, only the Dynamic entry (side=1) gets record_match."""
+        trainer = MagicMock(spec=DynamicTrainer)
+        trainer.should_update.return_value = True
+        trainer.is_rate_limited.return_value = False
+        trainer.update.return_value = True
+
+        t = self._make_tournament(dynamic_trainer=trainer)
+
+        entry_a = _make_entry(1, Role.RECENT_FIXED)
+        entry_b = _make_entry(2, Role.DYNAMIC)
+        rollout = _make_mock_rollout()
+
+        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+            t.store.get_entry.side_effect = lambda eid: (
+                entry_a if eid == 1 else entry_b
+            )
+            t._run_one_match(MagicMock(), entry_a, entry_b, epoch=10)
+
+        # Only the Dynamic entry (entry_b, side=1) should get record_match
+        trainer.record_match.assert_called_once_with(2, rollout, side=1)
+        trainer.update.assert_called_once()
+
     def test_tournament_no_training_when_trainer_is_none(self):
         """dynamic_trainer=None should not crash."""
         t = self._make_tournament(dynamic_trainer=None)
@@ -375,57 +422,10 @@ class TestTournamentTrainingTrigger:
 
 
 # ---------------------------------------------------------------------------
-# Helpers for end-to-end tests (Task 15)
+# Helpers for end-to-end tests (Task 15) — shared via conftest.py
 # ---------------------------------------------------------------------------
 
-_OBS_CHANNELS = 50
-_ACTION_SPACE = 11259
-
-
-class _TinyModel(nn.Module):
-    """Minimal model satisfying DynamicTrainer's forward-pass contract."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.fc = nn.Linear(_OBS_CHANNELS * 9 * 9, 128)
-        self.policy_head = nn.Linear(128, _ACTION_SPACE)
-        self.value_head = nn.Linear(128, 3)
-
-    def forward(self, x: torch.Tensor) -> SimpleNamespace:
-        flat = x.reshape(x.shape[0], -1)
-        h = torch.relu(self.fc(flat))
-        return SimpleNamespace(
-            policy_logits=self.policy_head(h).reshape(x.shape[0], 1, -1),
-            value_logits=self.value_head(h),
-        )
-
-
-def _make_synthetic_rollout(
-    steps: int = 10,
-    num_envs: int = 1,
-    side: int = 0,
-) -> MatchRollout:
-    """Create a synthetic MatchRollout with valid data for integration tests."""
-    obs = torch.randn(steps, num_envs, _OBS_CHANNELS, 9, 9)
-    actions = torch.randint(0, _ACTION_SPACE, (steps, num_envs))
-    rewards = torch.zeros(steps, num_envs)
-    dones = torch.zeros(steps, num_envs)
-    legal_masks = torch.zeros(steps, num_envs, _ACTION_SPACE, dtype=torch.bool)
-    legal_masks[:, :, 0] = True
-    for s in range(steps):
-        for e in range(num_envs):
-            legal_masks[s, e, actions[s, e]] = True
-    perspective = torch.full((steps, num_envs), side, dtype=torch.long)
-    dones[-1, :] = 1.0
-    rewards[-1, :] = 1.0
-    return MatchRollout(
-        observations=obs,
-        actions=actions,
-        rewards=rewards,
-        dones=dones,
-        legal_masks=legal_masks,
-        perspective=perspective,
-    )
+from tests._helpers import TinyModel as _TinyModel, make_rollout as _make_synthetic_rollout
 
 
 # ---------------------------------------------------------------------------

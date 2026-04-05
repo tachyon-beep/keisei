@@ -15,7 +15,7 @@ from keisei.db import init_db
 from keisei.training.dynamic_trainer import DynamicTrainer, MatchRollout
 from keisei.training.opponent_store import OpponentStore, Role
 
-from conftest import TinyModel, make_rollout as _make_rollout
+from tests._helpers import TinyModel, make_rollout as _make_rollout
 
 
 @pytest.fixture

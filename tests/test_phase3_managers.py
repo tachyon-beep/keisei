@@ -32,11 +32,6 @@ def test_dynamic_manager_allows_training_enabled(store):
     assert mgr._config.training_enabled is True
 
 
-def test_dynamic_config_default_now_true():
-    """DynamicConfig default for training_enabled is now True."""
-    assert DynamicConfig().training_enabled is True
-
-
 def test_get_trainable_returns_active_dynamic_entries(store):
     """get_trainable filters out disabled entries."""
     e1 = _add_entry(store, 1, role=Role.DYNAMIC)

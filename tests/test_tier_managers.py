@@ -426,24 +426,8 @@ class TestFrontierReview:
             )
         promoter._topk_streaks[candidate.id] = 0
 
-        # Patch store.transaction to verify it's called
-        original_transaction = store.transaction
-        transaction_called = []
-
-        from contextlib import contextmanager
-
-        @contextmanager
-        def tracking_transaction():
-            transaction_called.append(True)
-            with original_transaction() as ctx:
-                yield ctx
-
-        store.transaction = tracking_transaction
-
         mgr = FrontierManager(store, config, promoter=promoter)
-        mgr.review(epoch=300)
 
-        assert len(transaction_called) == 1, "transaction() should be called exactly once"
-
-        # Restore
-        store.transaction = original_transaction
+        with patch.object(store, "transaction", wraps=store.transaction) as mock_txn:
+            mgr.review(epoch=300)
+            mock_txn.assert_called_once()
