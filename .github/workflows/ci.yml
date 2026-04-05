@@ -6,14 +6,49 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  python:
-    name: Python ${{ matrix.python-version }}
+  # ── Stage 1: Fast feedback (every PR + push) ─────────────────────
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-uv-
+
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]" --system
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Mypy
+        run: uv run mypy keisei/
+
+  python-fast:
+    name: Python Tests (fast)
+    runs-on: ubuntu-latest
+    needs: lint
     strategy:
+      fail-fast: true
       matrix:
         python-version: ["3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -23,22 +58,22 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-uv-py${{ matrix.python-version }}-
+
       - name: Install dependencies
         run: uv pip install -e ".[dev]" --system
 
-      - name: Lint (ruff)
-        run: uv run ruff check .
-
-      - name: Type check (mypy)
-        run: uv run mypy keisei/
-
-      - name: Test (pytest)
-        run: uv run pytest --tb=short -q
+      - name: Run fast tests
+        run: uv run pytest -x --tb=short -q -n auto -m "not slow and not integration"
 
   rust:
     name: Rust
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +92,7 @@ jobs:
             ~/.cargo/git/db/
             shogi-engine/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('shogi-engine/**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check formatting
         working-directory: shogi-engine
@@ -69,3 +105,34 @@ jobs:
       - name: Test
         working-directory: shogi-engine
         run: cargo test
+
+  # ── Stage 2: Full validation (merge to main only) ────────────────
+  python-full:
+    name: Python Tests (full)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: python-fast
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ${{ runner.os }}-uv-py${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]" --system
+
+      - name: Run all tests (including slow + integration)
+        run: uv run pytest --tb=short -q -n auto

@@ -35,7 +35,7 @@ Changelog = "https://github.com/tachyon-beep/keisei/blob/main/CHANGELOG.md"
 Issues = "https://github.com/tachyon-beep/keisei/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy", "types-chardet", "types-psutil", "types-tqdm"]
+dev = ["pytest", "pytest-asyncio", "pytest-xdist", "httpx", "ruff", "mypy", "types-chardet", "types-psutil", "types-tqdm"]
 sl = ["chardet>=5.0"]
 
 [project.scripts]
