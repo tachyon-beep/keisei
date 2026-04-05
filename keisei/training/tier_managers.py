@@ -342,12 +342,12 @@ class DynamicManager:
             logger.info("Dynamic evict_weakest: no eligible entries")
             return None
 
-        weakest = min(eligible, key=lambda e: e.elo_rating)
+        weakest = min(eligible, key=lambda e: e.elo_dynamic)
         self._store.retire_entry(weakest.id, "evicted: weakest Elo in dynamic tier")
         logger.info(
-            "Dynamic evict_weakest: retired id=%d (elo=%.1f)",
+            "Dynamic evict_weakest: retired id=%d (elo_dynamic=%.1f)",
             weakest.id,
-            weakest.elo_rating,
+            weakest.elo_dynamic,
         )
         return weakest
 
@@ -371,3 +371,16 @@ class DynamicManager:
         if not eligible:
             return None
         return min(e.elo_rating for e in eligible)
+
+    def weakest_dynamic_elo(self) -> float | None:
+        """Return the elo_dynamic of the weakest eligible entry, or None."""
+        entries = self._store.list_by_role(Role.DYNAMIC)
+        eligible = [
+            e
+            for e in entries
+            if e.protection_remaining == 0
+            and e.games_played >= self._config.min_games_before_eviction
+        ]
+        if not eligible:
+            return None
+        return min(e.elo_dynamic for e in eligible)

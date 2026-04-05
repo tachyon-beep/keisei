@@ -228,6 +228,34 @@ class TestDynamicManager:
         assert mgr._config.training_enabled is True
 
 
+class TestDynamicEloDynamic:
+    """DynamicManager.evict_weakest uses elo_dynamic, not elo_rating."""
+
+    def test_evict_weakest_uses_elo_dynamic(self, store):
+        config = DynamicConfig(slots=10, min_games_before_eviction=0, protection_matches=0)
+        mgr = DynamicManager(store, config)
+        e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
+        e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
+        # e1: HIGH elo_rating (1500) but LOW elo_dynamic (800)
+        # e2: LOW elo_rating (1000) but HIGH elo_dynamic (1200)
+        with store.transaction():
+            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
+            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+        evicted = mgr.evict_weakest()
+        assert evicted is not None
+        assert evicted.id == e1.id  # evicted despite higher elo_rating
+
+    def test_weakest_dynamic_elo_returns_elo_dynamic(self, store):
+        config = DynamicConfig(slots=10, min_games_before_eviction=0, protection_matches=0)
+        mgr = DynamicManager(store, config)
+        e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
+        e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
+        with store.transaction():
+            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
+            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+        assert mgr.weakest_dynamic_elo() == 800.0
+
+
 # ---------------------------------------------------------------------------
 # FrontierManager.review() with promoter — Phase 3 tests
 # ---------------------------------------------------------------------------
