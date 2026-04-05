@@ -18,7 +18,8 @@ def library_setup(tmp_path):
     store = OpponentStore(db_path, str(league_dir))
     config = HistoricalLibraryConfig()
     library = HistoricalLibrary(store, config)
-    return library, store
+    yield library, store
+    store.close()
 
 
 class TestComputeTargets:

@@ -125,6 +125,7 @@ class TestOpponentStoreBasics:
         entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.RECENT_FIXED)
         assert entry.role is Role.RECENT_FIXED
         assert entry.status is EntryStatus.ACTIVE
+        store.close()
 
     def test_list_by_role(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -135,6 +136,7 @@ class TestOpponentStoreBasics:
         assert len(store.list_by_role(Role.FRONTIER_STATIC)) == 1
         assert len(store.list_by_role(Role.RECENT_FIXED)) == 1
         assert len(store.list_by_role(Role.DYNAMIC)) == 1
+        store.close()
 
     def test_retire_entry_logs_transition(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -151,6 +153,7 @@ class TestOpponentStoreBasics:
         conn.close()
         assert len(rows) >= 1
         assert rows[-1]["to_status"] == "retired"
+        store.close()
 
     def test_retire_entry_does_not_delete_checkpoint(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -160,6 +163,7 @@ class TestOpponentStoreBasics:
         assert ckpt.exists()
         store.retire_entry(entry.id, "evicted")
         assert ckpt.exists()
+        store.close()
 
     def test_clone_entry(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -173,6 +177,7 @@ class TestOpponentStoreBasics:
         assert clone.checkpoint_path != source.checkpoint_path
         assert Path(clone.checkpoint_path).exists()
         assert Path(source.checkpoint_path).exists()
+        store.close()
 
     def test_update_role(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -182,6 +187,7 @@ class TestOpponentStoreBasics:
         updated = store.list_by_role(Role.FRONTIER_STATIC)
         assert len(updated) == 1
         assert updated[0].id == entry.id
+        store.close()
 
 
 class TestOpponentStoreTransaction:
@@ -191,6 +197,7 @@ class TestOpponentStoreTransaction:
         with store.transaction():
             store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
         assert len(store.list_entries()) == 1
+        store.close()
 
     def test_transaction_rolls_back_on_exception(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -200,6 +207,7 @@ class TestOpponentStoreTransaction:
                 store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
                 raise RuntimeError("abort")
         assert len(store.list_entries()) == 0
+        store.close()
 
 
 class TestRecordResultUpdates:
@@ -212,6 +220,7 @@ class TestRecordResultUpdates:
                             wins=3, losses=1, draws=0)
         updated_a = store.list_entries()[0] if store.list_entries()[0].id == a.id else store.list_entries()[1]
         assert updated_a.last_match_at is not None
+        store.close()
 
     def test_record_result_decrements_protection(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
@@ -230,6 +239,7 @@ class TestRecordResultUpdates:
         ).fetchone()
         conn.close()
         assert row[0] == 4
+        store.close()
 
 
 class TestEloCalculation:

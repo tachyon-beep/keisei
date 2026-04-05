@@ -60,6 +60,7 @@ class _MatchSlot:
     games_target: int = 0
     active: bool = False
     collect_rollout: bool = False
+    ply_count: int = 0
     # Rollout collection buffers (CPU tensors)
     _obs: list[torch.Tensor] = field(default_factory=list)
     _actions: list[torch.Tensor] = field(default_factory=list)
@@ -93,6 +94,7 @@ class _MatchSlot:
         self.games_target = games_target
         self.active = True
         self.collect_rollout = collect_rollout
+        self.ply_count = 0
         self._obs = []
         self._actions = []
         self._rewards = []
@@ -223,7 +225,6 @@ class ConcurrentMatchPool:
             next_pairing_idx += 1
 
         # Game loop
-        ply_count = 0
         active_slots = [s for s in slots if s.active]
 
         while active_slots:
@@ -231,10 +232,9 @@ class ConcurrentMatchPool:
                 logger.warning("run_round: stop_event fired, returning partial results")
                 break
 
-            if ply_count >= max_ply:
-                logger.warning("run_round: max_ply %d reached, ending round", max_ply)
-                break
-            ply_count += 1
+            # Increment ply for all active slots
+            for slot in active_slots:
+                slot.ply_count += 1
 
             # Build action tensor for ALL envs
             actions = torch.zeros(self.config.total_envs, dtype=torch.long, device=device)
@@ -347,6 +347,12 @@ class ConcurrentMatchPool:
 
                 if slot.games_completed >= slot.games_target:
                     completed_slot_indices.append(i)
+                elif slot.ply_count >= max_ply:
+                    logger.warning(
+                        "Slot %d hit max_ply %d with %d/%d games, yielding partial result",
+                        slot.index, max_ply, slot.games_completed, slot.games_target,
+                    )
+                    completed_slot_indices.append(i)
 
             # Process completed slots (iterate in reverse to allow removal)
             for i in sorted(completed_slot_indices, reverse=True):
@@ -364,7 +370,12 @@ class ConcurrentMatchPool:
 
                 slot.active = False
 
-                # Swap in next pairing if available
+                # Swap in next pairing if available.
+                # NOTE: VecEnv only supports global reset(), not per-partition.
+                # Envs auto-reset on termination, so most are at move 0 when
+                # the slot completes. However, envs that finished early may be
+                # mid-game from auto-reset. This noise is negligible for
+                # typical games_target values (64+) and washes out in Elo.
                 if next_pairing_idx < total_pairings:
                     new_pairing_idx = next_pairing_idx
                     self._assign_pairing(

@@ -59,11 +59,8 @@ moves_per_minute = 30
 db_path = "data/keisei-500k-league.db"
 
 [league]
-max_pool_size = 20          # keep up to 20 historical opponents
 snapshot_interval = 10      # snapshot every 10 epochs — fills pool fast early on
 epochs_per_seat = 5         # rotate opponent every 5 epochs for diversity
-historical_ratio = 0.8      # 80% historical, 20% current best
-current_best_ratio = 0.2
 elo_k_factor = 32.0
 elo_floor = 500.0
 opponent_device = "cuda:1"  # serve opponents on second GPU
@@ -73,3 +70,23 @@ tournament_num_envs = 64
 tournament_games_per_match = 64
 tournament_k_factor = 16.0
 tournament_pause_seconds = 2.0
+
+[league.concurrency]
+parallel_matches = 4
+envs_per_match = 8
+total_envs = 32
+max_resident_models = 10
+
+[league.dynamic]
+training_enabled = true
+lr_scale = 0.25
+update_every_matches = 4
+
+[league.history]
+slots = 5
+refresh_interval_epochs = 100
+
+[league.gauntlet]
+enabled = true
+interval_epochs = 100
+games_per_matchup = 16

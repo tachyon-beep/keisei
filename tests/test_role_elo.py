@@ -19,7 +19,8 @@ def elo_setup(tmp_path):
     config = RoleEloConfig()
     tracker = RoleEloTracker(store, config)
     model = torch.nn.Linear(10, 10)
-    return tracker, store, model
+    yield tracker, store, model
+    store.close()
 
 
 class TestUpdateFromResult:

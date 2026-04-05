@@ -23,7 +23,8 @@ def pool_with_training(tmp_path):
     config = LeagueConfig()
     assert config.dynamic.training_enabled is True
     pool = TieredPool(store, config, learner_lr=2e-4)
-    return pool, store
+    yield pool, store
+    store.close()
 
 
 @pytest.fixture
@@ -35,7 +36,8 @@ def pool_no_training(tmp_path):
     store = OpponentStore(db_path, str(league_dir))
     config = LeagueConfig(dynamic=replace(DynamicConfig(), training_enabled=False))
     pool = TieredPool(store, config, learner_lr=2e-4)
-    return pool, store
+    yield pool, store
+    store.close()
 
 
 class TestTieredPoolPhase3Wiring:
@@ -67,3 +69,4 @@ class TestTieredPoolPhase3Wiring:
         assert "GPU memory contention" in all_messages, (
             f"Expected 'GPU memory contention' in logs, got: {all_messages}"
         )
+        store.close()

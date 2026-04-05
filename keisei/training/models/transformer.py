@@ -35,7 +35,8 @@ class TransformerModel(BaseModel):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=params.num_layers
+            encoder_layer, num_layers=params.num_layers,
+            enable_nested_tensor=False,
         )
 
         self.policy_fc = nn.Linear(

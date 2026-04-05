@@ -60,9 +60,29 @@ moves_per_minute = 30
 db_path = "keisei-league.db"
 
 [league]
-max_pool_size = 20          # keep up to 20 historical opponents
 snapshot_interval = 25      # snapshot model into pool every 25 epochs
 epochs_per_seat = 10        # play 10 epochs per sampled opponent
-historical_ratio = 0.8      # 80% chance of sampling a historical opponent
-current_best_ratio = 0.2    # 20% chance of playing current best
 elo_k_factor = 32.0
+tournament_enabled = true
+tournament_device = "cuda:0" # single-GPU: share with learner
+tournament_num_envs = 32     # smaller than learner to reduce contention
+tournament_games_per_match = 32
+tournament_pause_seconds = 5.0
+
+[league.concurrency]
+parallel_matches = 2
+envs_per_match = 8
+total_envs = 16
+max_resident_models = 6
+
+[league.dynamic]
+training_enabled = false     # single-GPU: disable dynamic training to save VRAM
+
+[league.history]
+slots = 5
+refresh_interval_epochs = 50
+
+[league.gauntlet]
+enabled = true
+interval_epochs = 50
+games_per_matchup = 8

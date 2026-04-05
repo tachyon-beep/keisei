@@ -100,7 +100,9 @@ def league_dir(tmp_path: Path) -> str:
 
 @pytest.fixture
 def store(tournament_db: str, league_dir: str) -> OpponentStore:
-    return OpponentStore(tournament_db, league_dir)
+    s = OpponentStore(tournament_db, league_dir)
+    yield s
+    s.close()
 
 
 # ===========================================================================
@@ -441,6 +443,7 @@ class TestConcurrentTournament:
         pool = ConcurrentMatchPool(config)
         t = _make_tournament(store, scheduler, concurrent_pool=pool)
         assert t.concurrent_pool is pool
+        store.close()
 
     def test_tournament_without_pool_still_works(self, tmp_path):
         db_path = str(tmp_path / "test.db")
@@ -450,3 +453,4 @@ class TestConcurrentTournament:
         store = OpponentStore(db_path, str(league_dir))
         t = _make_tournament(store)
         assert t.concurrent_pool is None
+        store.close()

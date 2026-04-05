@@ -32,7 +32,8 @@ def gauntlet_setup(tmp_path):
         num_envs=4,
         max_ply=10,
     )
-    return gauntlet, store, stop_event
+    yield gauntlet, store, stop_event
+    store.close()
 
 
 class TestIsDue:

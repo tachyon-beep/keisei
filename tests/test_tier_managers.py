@@ -25,7 +25,9 @@ def store(tmp_path):
     init_db(db_path)
     league_dir = tmp_path / "league"
     league_dir.mkdir()
-    return OpponentStore(db_path, str(league_dir))
+    s = OpponentStore(db_path, str(league_dir))
+    yield s
+    s.close()
 
 
 def _add_entry(store, epoch, role=Role.UNASSIGNED, elo=1000.0):

@@ -20,7 +20,8 @@ def pool_setup(tmp_path):
     store = OpponentStore(db_path, str(league_dir))
     config = LeagueConfig()
     pool = TieredPool(store, config)
-    return pool, store, db_path
+    yield pool, store, db_path
+    store.close()
 
 
 class TestSnapshotLearner:

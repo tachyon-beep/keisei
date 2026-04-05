@@ -38,6 +38,7 @@ class TieredPool:
         self.dynamic_manager = DynamicManager(store, config.dynamic)
         self.recent_manager.set_weakest_elo_fn(self.dynamic_manager.weakest_elo)
         self.historical_library = HistoricalLibrary(store, config.history)
+        self.historical_library.refresh(0)
         self.role_elo_tracker = RoleEloTracker(store, config.role_elo)
 
         if config.dynamic.training_enabled:

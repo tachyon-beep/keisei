@@ -41,7 +41,7 @@ class FrontierPromoter:
         """Find the best promotion candidate, or None."""
         # Sort by Elo descending
         sorted_dynamics = sorted(
-            dynamic_entries, key=lambda e: e.elo_rating, reverse=True
+            dynamic_entries, key=lambda e: e.elo_frontier, reverse=True
         )
 
         # Identify top-K
