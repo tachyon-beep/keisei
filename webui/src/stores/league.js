@@ -214,3 +214,41 @@ export const learnerEntry = derived(
     return $entries.find(e => e.display_name === name) || null
   }
 )
+
+const KNOWN_ROLES = new Set(['frontier_static', 'recent_fixed', 'dynamic', 'historical'])
+
+/** Groups active entries by role. Unknown/null roles go to 'other'. */
+export const leagueByRole = derived(leagueRanked, ($ranked) => {
+  const map = new Map()
+  for (const entry of $ranked) {
+    const key = KNOWN_ROLES.has(entry.role) ? entry.role : 'other'
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(entry)
+  }
+  return map
+})
+
+const PROMOTION_PAIRS = new Set([
+  'recent_fixed->frontier_static',
+  'dynamic->frontier_static',
+  'dynamic->recent_fixed',
+])
+
+/** Counts promotions, evictions, and admissions from backend transition records. */
+export const transitionCounts = derived(leagueTransitions, ($transitions) => {
+  let promotions = 0, evictions = 0, admissions = 0
+  for (const t of $transitions) {
+    // Status transitions take precedence
+    if (!t.from_status && t.to_status === 'active') {
+      admissions++
+    } else if (t.from_status === 'active' && t.to_status === 'retired') {
+      evictions++
+    } else if (
+      t.from_status === 'active' && t.to_status === 'active' &&
+      PROMOTION_PAIRS.has(`${t.from_role}->${t.to_role}`)
+    ) {
+      promotions++
+    }
+  }
+  return { promotions, evictions, admissions }
+})

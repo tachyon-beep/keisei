@@ -4,7 +4,7 @@ import {
   leagueEntries, leagueResults, eloHistory,
   leagueRanked, entryWLD, headToHead, eloDelta, leagueStats,
   historicalLibrary, gauntletResults, leagueTransitions,
-  learnerEntry,
+  learnerEntry, leagueByRole, transitionCounts,
 } from './league.js'
 import { trainingState } from './training.js'
 
@@ -320,5 +320,95 @@ describe('learnerEntry', () => {
     expect(entry).not.toBeNull()
     expect(entry.id).toBe(1)
     expect(entry.display_name).toBe('Bot-A')
+  })
+})
+
+describe('leagueByRole', () => {
+  it('returns empty map when no entries', () => {
+    expect(get(leagueByRole).size).toBe(0)
+  })
+
+  it('groups active entries by role', () => {
+    leagueEntries.set([
+      { id: 1, role: 'frontier_static', elo_rating: 1200, status: 'active' },
+      { id: 2, role: 'frontier_static', elo_rating: 1100, status: 'active' },
+      { id: 3, role: 'dynamic', elo_rating: 1000, status: 'active' },
+    ])
+    const byRole = get(leagueByRole)
+    expect(byRole.get('frontier_static')).toHaveLength(2)
+    expect(byRole.get('dynamic')).toHaveLength(1)
+  })
+
+  it('places entries with null/unknown role in "other" bucket', () => {
+    leagueEntries.set([
+      { id: 1, role: null, elo_rating: 1000, status: 'active' },
+      { id: 2, role: 'some_future_role', elo_rating: 900, status: 'active' },
+    ])
+    const byRole = get(leagueByRole)
+    expect(byRole.get('other')).toHaveLength(2)
+  })
+
+  it('excludes retired entries (inherited from leagueRanked)', () => {
+    leagueEntries.set([
+      { id: 1, role: 'dynamic', elo_rating: 1000, status: 'active' },
+      { id: 2, role: 'dynamic', elo_rating: 900, status: 'retired' },
+    ])
+    const byRole = get(leagueByRole)
+    expect(byRole.get('dynamic')).toHaveLength(1)
+  })
+})
+
+describe('transitionCounts', () => {
+  it('returns zeros when no transitions', () => {
+    const counts = get(transitionCounts)
+    expect(counts).toEqual({ promotions: 0, evictions: 0, admissions: 0 })
+  })
+
+  it('counts admissions (null from_status to active)', () => {
+    leagueTransitions.set([
+      { id: 1, from_status: null, to_status: 'active', from_role: null, to_role: 'dynamic' },
+    ])
+    expect(get(transitionCounts).admissions).toBe(1)
+  })
+
+  it('counts admissions (from_status key absent)', () => {
+    leagueTransitions.set([
+      { id: 1, to_status: 'active', from_role: null, to_role: 'dynamic' },
+    ])
+    expect(get(transitionCounts).admissions).toBe(1)
+  })
+
+  it('counts evictions (active to retired)', () => {
+    leagueTransitions.set([
+      { id: 1, from_status: 'active', to_status: 'retired', from_role: 'dynamic', to_role: 'dynamic' },
+    ])
+    expect(get(transitionCounts).evictions).toBe(1)
+  })
+
+  it('counts promotions (role upgrade while active)', () => {
+    leagueTransitions.set([
+      { id: 1, from_status: 'active', to_status: 'active', from_role: 'dynamic', to_role: 'frontier_static' },
+      { id: 2, from_status: 'active', to_status: 'active', from_role: 'recent_fixed', to_role: 'frontier_static' },
+      { id: 3, from_status: 'active', to_status: 'active', from_role: 'dynamic', to_role: 'recent_fixed' },
+    ])
+    expect(get(transitionCounts).promotions).toBe(3)
+  })
+
+  it('ignores unrecognised transition types', () => {
+    leagueTransitions.set([
+      { id: 1, from_status: 'active', to_status: 'active', from_role: 'dynamic', to_role: 'dynamic' },
+      { id: 2, from_status: 'retired', to_status: 'active', from_role: 'dynamic', to_role: 'dynamic' },
+    ])
+    const counts = get(transitionCounts)
+    expect(counts).toEqual({ promotions: 0, evictions: 0, admissions: 0 })
+  })
+
+  it('status transitions take precedence over role transitions', () => {
+    leagueTransitions.set([
+      { id: 1, from_status: 'active', to_status: 'retired', from_role: 'dynamic', to_role: 'frontier_static' },
+    ])
+    const counts = get(transitionCounts)
+    expect(counts.evictions).toBe(1)
+    expect(counts.promotions).toBe(0)
   })
 })
