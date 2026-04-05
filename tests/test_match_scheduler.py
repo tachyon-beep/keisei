@@ -4,9 +4,10 @@ from collections import Counter
 
 import pytest
 
-from keisei.config import MatchSchedulerConfig
+from keisei.config import MatchSchedulerConfig, PriorityScorerConfig
 from keisei.training.opponent_store import OpponentEntry, Role, EntryStatus
 from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.priority_scorer import PriorityScorer
 
 
 def _make_entry(id: int, role: Role, elo: float = 1000.0) -> OpponentEntry:
@@ -18,6 +19,17 @@ def _make_entry(id: int, role: Role, elo: float = 1000.0) -> OpponentEntry:
         parent_entry_id=None, lineage_group=None,
         protection_remaining=0, last_match_at=None,
     )
+
+
+def _make_scheduler(priority_scorer=None, **overrides):
+    defaults = dict(
+        learner_dynamic_ratio=0.50,
+        learner_frontier_ratio=0.30,
+        learner_recent_ratio=0.20,
+    )
+    defaults.update(overrides)
+    config = MatchSchedulerConfig(**defaults)
+    return MatchScheduler(config, priority_scorer=priority_scorer)
 
 
 @pytest.fixture
@@ -120,3 +132,22 @@ class TestEffectiveRatios:
         ratios = sched.effective_ratios(entries)
         assert ratios[Role.DYNAMIC] == 0.0
         assert abs(ratios[Role.FRONTIER_STATIC] + ratios[Role.RECENT_FIXED] - 1.0) < 0.01
+
+
+class TestPriorityRound:
+    def test_generate_round_returns_priority_sorted(self):
+        scorer = PriorityScorer(PriorityScorerConfig())
+        scheduler = _make_scheduler(priority_scorer=scorer)
+        e1 = _make_entry(1, Role.DYNAMIC, elo=1000.0)
+        e2 = _make_entry(2, Role.DYNAMIC, elo=1050.0)
+        e3 = _make_entry(3, Role.DYNAMIC, elo=1500.0)
+        entries = [e1, e2, e3]
+        pairings = scheduler.generate_round(entries)
+        scores = [scorer.score(a, b) for a, b in pairings]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_generate_round_without_scorer_still_works(self):
+        scheduler = _make_scheduler()
+        entries = [_make_entry(i, Role.DYNAMIC) for i in range(1, 5)]
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) == 6

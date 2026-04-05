@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import random
+from typing import TYPE_CHECKING
 
 from keisei.config import MatchSchedulerConfig
 from keisei.training.opponent_store import OpponentEntry, Role
 
+if TYPE_CHECKING:
+    from keisei.training.priority_scorer import PriorityScorer
+
 
 class MatchScheduler:
-    def __init__(self, config: MatchSchedulerConfig) -> None:
+    def __init__(
+        self,
+        config: MatchSchedulerConfig,
+        priority_scorer: PriorityScorer | None = None,
+    ) -> None:
         self.config = config
+        self._priority_scorer = priority_scorer
 
     def sample_for_learner(
         self, entries_by_role: dict[Role, list[OpponentEntry]],
@@ -27,11 +36,17 @@ class MatchScheduler:
     def generate_round(
         self, entries: list[OpponentEntry],
     ) -> list[tuple[OpponentEntry, OpponentEntry]]:
-        """Generate all N*(N-1)/2 pairings for a full round-robin round."""
-        pairings = []
+        """Generate all N*(N-1)/2 pairings for a full round-robin round.
+
+        If a PriorityScorer is configured, returns pairings sorted by priority
+        (highest first). Otherwise, returns shuffled pairings.
+        """
+        pairings: list[tuple[OpponentEntry, OpponentEntry]] = []
         for i in range(len(entries)):
             for j in range(i + 1, len(entries)):
                 pairings.append((entries[i], entries[j]))
+        if self._priority_scorer is not None:
+            return self._priority_scorer.score_round(pairings)
         random.shuffle(pairings)
         return pairings
 
