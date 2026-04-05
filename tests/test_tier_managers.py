@@ -583,6 +583,74 @@ class TestFrontierReview:
         assert store.get_entry(f800.id).status == EntryStatus.ACTIVE
         assert store.get_entry(f1200.id).status == EntryStatus.ACTIVE
 
+    def test_span_selection_staleness_tips_balance(self, store):
+        """Ancient entry slightly further from candidate is retired due to staleness penalty."""
+        config = _make_frontier_config(
+            slots=3, min_tenure_epochs=50, span_selection=True,
+        )
+        promoter = FrontierPromoter(config)
+
+        # Candidate at Elo 1050.
+        # Entry A: ancient (epoch 0), Elo 1065 — distance 15 from candidate
+        # Entry B: fresh (epoch 250), Elo 1040 — distance 10 from candidate
+        # Entry C: fresh (epoch 250), Elo 1200 — distance 150, safe
+        #
+        # Without staleness: B is retired (distance 10 < 15) — pure proximity wins.
+        # With staleness at epoch 300, min_tenure=50:
+        #   A extra_tenure = (300 - 0 - 50)/50 = 5.0 → penalty = 5*5 = 25 Elo
+        #   A adjusted proximity = 15 - 25 = -10
+        #   B extra_tenure = max(0, 300 - 250 - 50)/50 = 0 → no penalty
+        #   B adjusted proximity = 10
+        #   min(-10, 10) → A is retired.
+        f_ancient = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=1065)
+        f_fresh = _add_entry(store, epoch=250, role=Role.FRONTIER_STATIC, elo=1040)
+        f_far = _add_entry(store, epoch=250, role=Role.FRONTIER_STATIC, elo=1200)
+
+        candidate = _add_entry(store, epoch=300, role=Role.DYNAMIC, elo=1050)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+
+        # Ancient entry retired: staleness penalty overcomes its 5-Elo proximity disadvantage
+        assert store.get_entry(f_ancient.id).status == EntryStatus.RETIRED
+        assert store.get_entry(f_fresh.id).status == EntryStatus.ACTIVE
+        assert store.get_entry(f_far.id).status == EntryStatus.ACTIVE
+
+    def test_span_selection_proximity_still_dominates(self, store):
+        """Very close fresh entry beats ancient distant entry — proximity wins."""
+        config = _make_frontier_config(
+            slots=3, min_tenure_epochs=50, span_selection=True,
+        )
+        promoter = FrontierPromoter(config)
+
+        # Entry A: ancient (epoch 0), Elo 1200 — distance 150 from candidate at 1050
+        # Entry B: fresh (epoch 250), Elo 1050 — distance 0 from candidate
+        # Proximity dominates: B is much closer, should be retired even though fresh
+        f_ancient = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=1200)
+        f_close = _add_entry(store, epoch=250, role=Role.FRONTIER_STATIC, elo=1050)
+        f_mid = _add_entry(store, epoch=250, role=Role.FRONTIER_STATIC, elo=900)
+
+        candidate = _add_entry(store, epoch=300, role=Role.DYNAMIC, elo=1050)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+        promoter._topk_streaks[candidate.id] = 0
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+        mgr.review(epoch=300)
+
+        # f_close should be retired (distance=0 is minimal), not the ancient one (distance=150)
+        assert store.get_entry(f_close.id).status == EntryStatus.RETIRED
+        assert store.get_entry(f_ancient.id).status == EntryStatus.ACTIVE
+
     def test_frontier_review_blocks_promotion_when_all_under_tenure(self, store):
         """When all Frontier entries are under min_tenure, no retirement or promotion occurs."""
         config = _make_frontier_config(slots=3, min_tenure_epochs=100)

@@ -9,6 +9,7 @@ import random
 import shutil
 import sqlite3
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -241,6 +242,7 @@ class OpponentStore:
         # NOTE: Pins are in-memory only — lost on restart. This is a known
         # limitation; persisting to DB is tracked as keisei-76cc7fdc85.
         self._pinned: set[int] = set()
+        self._model_cache: OrderedDict[tuple[int, str, str], torch.nn.Module] = OrderedDict()
         self._lock = threading.RLock()
         self._transaction_depth: int = 0
         # Rollback actions: ("delete", path) for new files,
@@ -739,6 +741,39 @@ class OpponentStore:
         model = model.to(device)
         model.eval()
         return model
+
+    def load_opponent_cached(
+        self, entry: OpponentEntry, device: str = "cpu", max_cached: int = 0,
+    ) -> torch.nn.Module:
+        """Load with LRU caching.  max_cached=0 disables caching."""
+        if max_cached <= 0:
+            return self.load_opponent(entry, device=device)
+        key = (entry.id, entry.checkpoint_path, device)
+        with self._lock:
+            if key in self._model_cache:
+                self._model_cache.move_to_end(key)
+                return self._model_cache[key]
+        # Load outside lock (disk I/O + GPU transfer can be slow)
+        model = self.load_opponent(entry, device=device)
+        with self._lock:
+            # Re-check after releasing lock — another thread may have loaded same key
+            if key in self._model_cache:
+                self._model_cache.move_to_end(key)
+                return self._model_cache[key]
+            self._model_cache[key] = model
+            while len(self._model_cache) > max_cached:
+                self._model_cache.popitem(last=False)
+        return model
+
+    def cache_size(self) -> int:
+        """Number of models currently in the LRU cache."""
+        with self._lock:
+            return len(self._model_cache)
+
+    def clear_model_cache(self) -> None:
+        """Drop all cached models."""
+        with self._lock:
+            self._model_cache.clear()
 
     def load_all_opponents(self, device: str = "cpu") -> dict[int, torch.nn.Module]:
         """Load all active entries. Skips entries with missing/corrupt checkpoints."""

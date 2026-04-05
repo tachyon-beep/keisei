@@ -184,9 +184,16 @@ class FrontierManager:
             return None
         elif self._config.span_selection and candidate_elo is not None:
             # §6.1 span_selection: retire the entry closest in Elo to the
-            # incoming candidate, preserving difficulty spread.  This prevents
-            # Frontier from clustering at the high end over time.
-            target = min(eligible, key=lambda e: (abs(e.elo_frontier - candidate_elo), e.created_epoch))
+            # incoming candidate, preserving difficulty spread.  Ancient entries
+            # get a gentle staleness discount (5 Elo per extra tenure period)
+            # so they don't occupy seats indefinitely.
+            tenure = self._config.min_tenure_epochs or 1
+            def _span_score(e: OpponentEntry) -> tuple[float, int]:
+                proximity = abs(e.elo_frontier - candidate_elo)
+                age = epoch - e.created_epoch
+                extra_tenure = max(0, age - tenure) / tenure
+                return (proximity - extra_tenure * 5.0, e.created_epoch)
+            target = min(eligible, key=_span_score)
         else:
             # §6.1 "weakest OR stalest": composite score that considers both
             # low Elo and excessive age.  An entry that has held a seat for
