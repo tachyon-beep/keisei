@@ -105,17 +105,24 @@ def init_db(db_path: str) -> None:
                 last_train_at   TEXT
             );
             CREATE TABLE IF NOT EXISTS league_results (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                epoch           INTEGER NOT NULL,
-                learner_id      INTEGER NOT NULL REFERENCES league_entries(id),
-                opponent_id     INTEGER NOT NULL REFERENCES league_entries(id),
-                wins            INTEGER NOT NULL,
-                losses          INTEGER NOT NULL,
-                draws           INTEGER NOT NULL,
-                elo_delta_a     REAL NOT NULL DEFAULT 0.0,
-                elo_delta_b     REAL NOT NULL DEFAULT 0.0,
-                match_context   TEXT,
-                recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                epoch               INTEGER NOT NULL,
+                entry_a_id          INTEGER NOT NULL REFERENCES league_entries(id),
+                entry_b_id          INTEGER NOT NULL REFERENCES league_entries(id),
+                match_type          TEXT NOT NULL,
+                role_a              TEXT,
+                role_b              TEXT,
+                num_games           INTEGER NOT NULL,
+                wins_a              INTEGER NOT NULL,
+                wins_b              INTEGER NOT NULL,
+                draws               INTEGER NOT NULL,
+                elo_before_a        REAL,
+                elo_after_a         REAL,
+                elo_before_b        REAL,
+                elo_after_b         REAL,
+                training_updates_a  INTEGER,
+                training_updates_b  INTEGER,
+                recorded_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
             CREATE INDEX IF NOT EXISTS idx_league_entries_elo ON league_entries(elo_rating);
@@ -138,7 +145,8 @@ def init_db(db_path: str) -> None:
                 created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_transitions_entry ON league_transitions(entry_id);
-            CREATE INDEX IF NOT EXISTS idx_league_results_learner ON league_results(learner_id);
+            CREATE INDEX IF NOT EXISTS idx_league_results_entry_a ON league_results(entry_a_id);
+            CREATE INDEX IF NOT EXISTS idx_league_results_entry_b ON league_results(entry_b_id);
             CREATE TABLE IF NOT EXISTS league_meta (
                 id           INTEGER PRIMARY KEY CHECK (id = 1),
                 bootstrapped INTEGER NOT NULL DEFAULT 0
@@ -374,7 +382,10 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
-            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b, match_context, recorded_at "
+            "SELECT id, epoch, entry_a_id, entry_b_id, match_type, role_a, role_b, "
+            "num_games, wins_a, wins_b, draws, "
+            "elo_before_a, elo_after_a, elo_before_b, elo_after_b, "
+            "training_updates_a, training_updates_b, recorded_at "
             "FROM league_results ORDER BY id DESC"
         ).fetchall()
         parsed_entries = []

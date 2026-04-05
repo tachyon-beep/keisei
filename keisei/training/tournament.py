@@ -310,14 +310,20 @@ class LeagueTournament:
             )
             self.store.record_result(
                 epoch=epoch,
-                learner_id=result.entry_a.id,
-                opponent_id=result.entry_b.id,
-                wins=result.a_wins,
-                losses=result.b_wins,
+                entry_a_id=result.entry_a.id,
+                entry_b_id=result.entry_b.id,
+                wins_a=result.a_wins,
+                wins_b=result.b_wins,
                 draws=result.draws,
-                elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
-                elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
-                match_context=context,
+                match_type="calibration",
+                role_a=current_a.role,
+                role_b=current_b.role,
+                elo_before_a=current_a.elo_rating,
+                elo_after_a=new_a_elo,
+                elo_before_b=current_b.elo_rating,
+                elo_after_b=new_b_elo,
+                training_updates_a=current_a.update_count,
+                training_updates_b=current_b.update_count,
             )
             # result.entry_a.id == current_a.id by construction (current_a
             # is fetched by result.entry_a.id on line 285).
@@ -410,11 +416,17 @@ class LeagueTournament:
                 current_a, current_b,
             )
             self.store.record_result(
-                epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
-                wins=wins_a, losses=wins_b, draws=draws,
-                elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
-                elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
-                match_context=context,
+                epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,
+                wins_a=wins_a, wins_b=wins_b, draws=draws,
+                match_type="calibration",
+                role_a=current_a.role,
+                role_b=current_b.role,
+                elo_before_a=current_a.elo_rating,
+                elo_after_a=new_a_elo,
+                elo_before_b=current_b.elo_rating,
+                elo_after_b=new_b_elo,
+                training_updates_a=current_a.update_count,
+                training_updates_b=current_b.update_count,
             )
             self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)

@@ -91,18 +91,18 @@ export function diffLeagueEntries(entries) {
 export const entryWLD = derived(leagueResults, ($results) => {
   const map = new Map()
   for (const r of $results) {
-    // Learner side
-    const l = map.get(r.learner_id) || { w: 0, l: 0, d: 0 }
-    l.w += r.wins || 0
-    l.l += r.losses || 0
-    l.d += r.draws || 0
-    map.set(r.learner_id, l)
-    // Opponent side (mirror)
-    const o = map.get(r.opponent_id) || { w: 0, l: 0, d: 0 }
-    o.w += r.losses || 0
-    o.l += r.wins || 0
-    o.d += r.draws || 0
-    map.set(r.opponent_id, o)
+    // Side A
+    const a = map.get(r.entry_a_id) || { w: 0, l: 0, d: 0 }
+    a.w += r.wins_a || 0
+    a.l += r.wins_b || 0
+    a.d += r.draws || 0
+    map.set(r.entry_a_id, a)
+    // Side B (mirror)
+    const b = map.get(r.entry_b_id) || { w: 0, l: 0, d: 0 }
+    b.w += r.wins_b || 0
+    b.l += r.wins_a || 0
+    b.d += r.draws || 0
+    map.set(r.entry_b_id, b)
   }
   return map
 })
@@ -135,20 +135,20 @@ export const eloDelta = derived(eloHistory, ($history) => {
 export const headToHead = derived(leagueResults, ($results) => {
   const map = new Map()
   for (const r of $results) {
-    // Learner vs Opponent
-    const keyLO = `${r.learner_id}-${r.opponent_id}`
-    const lo = map.get(keyLO) || { w: 0, l: 0, d: 0 }
-    lo.w += r.wins || 0
-    lo.l += r.losses || 0
-    lo.d += r.draws || 0
-    map.set(keyLO, lo)
-    // Opponent vs Learner (mirror)
-    const keyOL = `${r.opponent_id}-${r.learner_id}`
-    const ol = map.get(keyOL) || { w: 0, l: 0, d: 0 }
-    ol.w += r.losses || 0
-    ol.l += r.wins || 0
-    ol.d += r.draws || 0
-    map.set(keyOL, ol)
+    // A vs B
+    const keyAB = `${r.entry_a_id}-${r.entry_b_id}`
+    const ab = map.get(keyAB) || { w: 0, l: 0, d: 0 }
+    ab.w += r.wins_a || 0
+    ab.l += r.wins_b || 0
+    ab.d += r.draws || 0
+    map.set(keyAB, ab)
+    // B vs A (mirror)
+    const keyBA = `${r.entry_b_id}-${r.entry_a_id}`
+    const ba = map.get(keyBA) || { w: 0, l: 0, d: 0 }
+    ba.w += r.wins_b || 0
+    ba.l += r.wins_a || 0
+    ba.d += r.draws || 0
+    map.set(keyBA, ba)
   }
   // Compute win rates
   for (const [key, rec] of map) {

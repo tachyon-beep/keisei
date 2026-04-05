@@ -533,9 +533,9 @@ class OpponentStore:
         with self._lock:
             row = self._conn.execute(
                 """SELECT COUNT(DISTINCT other_id) AS cnt FROM (
-                       SELECT opponent_id AS other_id FROM league_results WHERE learner_id = ?
+                       SELECT entry_b_id AS other_id FROM league_results WHERE entry_a_id = ?
                        UNION ALL
-                       SELECT learner_id AS other_id FROM league_results WHERE opponent_id = ?
+                       SELECT entry_a_id AS other_id FROM league_results WHERE entry_b_id = ?
                    )""",
                 (entry_id, entry_id),
             ).fetchone()
@@ -652,42 +652,50 @@ class OpponentStore:
             )
 
     def record_result(
-        self, epoch: int, learner_id: int, opponent_id: int,
-        wins: int, losses: int, draws: int,
-        elo_delta_a: float = 0.0, elo_delta_b: float = 0.0,
-        *, match_context: str | None = None,
+        self, epoch: int, entry_a_id: int, entry_b_id: int,
+        wins_a: int, wins_b: int, draws: int,
+        *, match_type: str,
+        role_a: str | None = None, role_b: str | None = None,
+        elo_before_a: float | None = None, elo_after_a: float | None = None,
+        elo_before_b: float | None = None, elo_after_b: float | None = None,
+        training_updates_a: int | None = None,
+        training_updates_b: int | None = None,
     ) -> None:
+        num_games = wins_a + wins_b + draws
         with self.transaction():
             self._conn.execute(
                 """INSERT INTO league_results
-                   (epoch, learner_id, opponent_id, wins, losses, draws,
-                    elo_delta_a, elo_delta_b, match_context)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (epoch, learner_id, opponent_id, wins, losses, draws,
-                 elo_delta_a, elo_delta_b, match_context),
+                   (epoch, entry_a_id, entry_b_id, match_type,
+                    role_a, role_b, num_games, wins_a, wins_b, draws,
+                    elo_before_a, elo_after_a, elo_before_b, elo_after_b,
+                    training_updates_a, training_updates_b)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (epoch, entry_a_id, entry_b_id, match_type,
+                 role_a, role_b, num_games, wins_a, wins_b, draws,
+                 elo_before_a, elo_after_a, elo_before_b, elo_after_b,
+                 training_updates_a, training_updates_b),
             )
-            total_games = wins + losses + draws
             self._conn.execute(
                 "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-                (total_games, learner_id),
+                (num_games, entry_a_id),
             )
             self._conn.execute(
                 "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
-                (total_games, opponent_id),
+                (num_games, entry_b_id),
             )
             # Update last_match_at for both participants
             self._conn.execute(
                 "UPDATE league_entries SET last_match_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                (learner_id,),
+                (entry_a_id,),
             )
             self._conn.execute(
                 "UPDATE league_entries SET last_match_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                (opponent_id,),
+                (entry_b_id,),
             )
             # Decrement protection for both participants (deduplicate if same)
-            self._decrement_protection_unlocked(learner_id)
-            if opponent_id != learner_id:
-                self._decrement_protection_unlocked(opponent_id)
+            self._decrement_protection_unlocked(entry_a_id)
+            if entry_b_id != entry_a_id:
+                self._decrement_protection_unlocked(entry_b_id)
 
     # ------------------------------------------------------------------
     # Role-specific Elo

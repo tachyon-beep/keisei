@@ -145,29 +145,29 @@ describe('entryWLD', () => {
     expect(get(entryWLD).size).toBe(0)
   })
 
-  it('aggregates W/L/D for learner and mirrors for opponent', () => {
+  it('aggregates W/L/D for A and mirrors for B', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2, wins: 3, losses: 1, draws: 2 },
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 3, wins_b: 1, draws: 2 },
     ])
     const wld = get(entryWLD)
-    // Learner side
+    // Side A
     expect(wld.get(1)).toEqual({ w: 3, l: 1, d: 2 })
-    // Opponent side (mirrored)
+    // Side B (mirrored)
     expect(wld.get(2)).toEqual({ w: 1, l: 3, d: 2 })
   })
 
   it('accumulates across multiple result rows', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2, wins: 2, losses: 0, draws: 0 },
-      { learner_id: 1, opponent_id: 3, wins: 1, losses: 1, draws: 1 },
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 2, wins_b: 0, draws: 0 },
+      { entry_a_id: 1, entry_b_id: 3, wins_a: 1, wins_b: 1, draws: 1 },
     ])
     const wld = get(entryWLD)
     expect(wld.get(1)).toEqual({ w: 3, l: 1, d: 1 })
   })
 
-  it('handles zero/missing wins/losses/draws', () => {
+  it('handles zero/missing wins_a/wins_b/draws', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2 }, // all undefined
+      { entry_a_id: 1, entry_b_id: 2 }, // all undefined
     ])
     const wld = get(entryWLD)
     expect(wld.get(1)).toEqual({ w: 0, l: 0, d: 0 })
@@ -181,22 +181,22 @@ describe('headToHead', () => {
 
   it('computes bidirectional win rates', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2, wins: 3, losses: 1, draws: 0 },
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 3, wins_b: 1, draws: 0 },
     ])
     const h2h = get(headToHead)
-    const lo = h2h.get('1-2')
-    expect(lo.w).toBe(3)
-    expect(lo.l).toBe(1)
-    expect(lo.winRate).toBe(0.75)
-    const ol = h2h.get('2-1')
-    expect(ol.w).toBe(1)
-    expect(ol.l).toBe(3)
-    expect(ol.winRate).toBe(0.25)
+    const ab = h2h.get('1-2')
+    expect(ab.w).toBe(3)
+    expect(ab.l).toBe(1)
+    expect(ab.winRate).toBe(0.75)
+    const ba = h2h.get('2-1')
+    expect(ba.w).toBe(1)
+    expect(ba.l).toBe(3)
+    expect(ba.winRate).toBe(0.25)
   })
 
   it('returns null winRate when total is 0', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2, wins: 0, losses: 0, draws: 0 },
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 0, wins_b: 0, draws: 0 },
     ])
     const h2h = get(headToHead)
     expect(h2h.get('1-2').winRate).toBeNull()
@@ -204,7 +204,7 @@ describe('headToHead', () => {
 
   it('includes draws in total', () => {
     leagueResults.set([
-      { learner_id: 1, opponent_id: 2, wins: 1, losses: 1, draws: 2 },
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 1, wins_b: 1, draws: 2 },
     ])
     const h2h = get(headToHead)
     expect(h2h.get('1-2').total).toBe(4)

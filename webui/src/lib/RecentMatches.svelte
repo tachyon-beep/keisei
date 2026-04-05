@@ -9,7 +9,7 @@
   $: clashCounts = (() => {
     const map = new Map()
     for (const r of $leagueResults) {
-      const key = [r.learner_id, r.opponent_id].sort().join('-')
+      const key = [r.entry_a_id, r.entry_b_id].sort().join('-')
       map.set(key, (map.get(key) || 0) + 1)
     }
     return map
@@ -32,17 +32,17 @@
         lastEpoch = r.epoch
       }
 
-      const entryA = entryMap.get(r.learner_id)
-      const entryB = entryMap.get(r.opponent_id)
-      const nameA = entryA?.display_name || entryA?.architecture || `#${r.learner_id}`
-      const nameB = entryB?.display_name || entryB?.architecture || `#${r.opponent_id}`
-      const winsA = r.wins || 0
-      const winsB = r.losses || 0
+      const entryA = entryMap.get(r.entry_a_id)
+      const entryB = entryMap.get(r.entry_b_id)
+      const nameA = entryA?.display_name || entryA?.architecture || `#${r.entry_a_id}`
+      const nameB = entryB?.display_name || entryB?.architecture || `#${r.entry_b_id}`
+      const winsA = r.wins_a || 0
+      const winsB = r.wins_b || 0
       const draws = r.draws || 0
       const total = winsA + winsB + draws
       const aWon = winsA > winsB
       const draw = winsA === winsB
-      const clashes = pairClashes(r.learner_id, r.opponent_id)
+      const clashes = pairClashes(r.entry_a_id, r.entry_b_id)
 
       // Always show from winner's perspective (or A's if draw)
       const winnerName = aWon || draw ? nameA : nameB
@@ -50,8 +50,10 @@
       const w = aWon || draw ? winsA : winsB
       const l = aWon || draw ? winsB : winsA
       const winPct = total > 0 ? Math.round((w / total) * 100) : 0
-      const eloWinner = aWon || draw ? (r.elo_delta_a || 0) : (r.elo_delta_b || 0)
-      const eloLoser = aWon || draw ? (r.elo_delta_b || 0) : (r.elo_delta_a || 0)
+      const eloDeltaA = r.elo_after_a != null && r.elo_before_a != null ? Math.round(r.elo_after_a - r.elo_before_a) : 0
+      const eloDeltaB = r.elo_after_b != null && r.elo_before_b != null ? Math.round(r.elo_after_b - r.elo_before_b) : 0
+      const eloWinner = aWon || draw ? eloDeltaA : eloDeltaB
+      const eloLoser = aWon || draw ? eloDeltaB : eloDeltaA
 
       out.push({
         type: 'match',

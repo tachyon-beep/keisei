@@ -82,10 +82,15 @@ class TestSchemaV2:
         db_path = str(tmp_path / "fresh.db")
         init_db(db_path)
         cols = _get_table_columns(db_path, "league_results")
-        assert "learner_id" in cols
-        assert "opponent_id" in cols
-        assert "wins" in cols
+        assert "entry_a_id" in cols
+        assert "entry_b_id" in cols
+        assert "wins_a" in cols
+        assert "wins_b" in cols
         assert "draws" in cols
+        assert "match_type" in cols
+        assert "role_a" in cols
+        assert "role_b" in cols
+        assert "num_games" in cols
 
     def test_creates_elo_history_table(self, tmp_path):
         db_path = str(tmp_path / "test.db")

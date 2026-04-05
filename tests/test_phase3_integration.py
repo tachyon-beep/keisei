@@ -570,11 +570,12 @@ class TestFullFrontierPromotionCycle:
                 # Record enough games to meet min_games_for_promotion
                 store.record_result(
                     epoch=100,
-                    learner_id=entry.id,
-                    opponent_id=frontier_ids[0],
-                    wins=100,
-                    losses=100,
+                    entry_a_id=entry.id,
+                    entry_b_id=frontier_ids[0],
+                    wins_a=100,
+                    wins_b=100,
                     draws=0,
+                    match_type="calibration",
                 )
                 dynamic_ids.append(entry.id)
 

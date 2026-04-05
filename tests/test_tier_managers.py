@@ -129,10 +129,10 @@ class TestRecentFixedManager:
 
         other1 = _add_entry(store, 10, role=Role.FRONTIER_STATIC, elo=1000)
         other2 = _add_entry(store, 11, role=Role.FRONTIER_STATIC, elo=1000)
-        store.record_result(epoch=1, learner_id=oldest.id, opponent_id=other1.id,
-                            wins=1, losses=0, draws=0)
-        store.record_result(epoch=2, learner_id=oldest.id, opponent_id=other2.id,
-                            wins=1, losses=0, draws=0)
+        store.record_result(epoch=1, entry_a_id=oldest.id, entry_b_id=other1.id,
+                            wins_a=1, wins_b=0, draws=0, match_type="calibration")
+        store.record_result(epoch=2, entry_a_id=oldest.id, entry_b_id=other2.id,
+                            wins_a=1, wins_b=0, draws=0, match_type="calibration")
         store.update_elo(oldest.id, 1000.0)
 
         mgr.admit(model, "resnet", {}, epoch=3)
@@ -202,13 +202,13 @@ class TestRecentFixedManager:
                 (oldest.id,),
             )
             store._conn.execute(
-                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+                "VALUES (?, ?, ?, 'calibration', 1, ?, ?, ?)",
                 (1, oldest.id, other.id, 1, 0, 0),
             )
             store._conn.execute(
-                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+                "VALUES (?, ?, ?, 'calibration', 1, ?, ?, ?)",
                 (2, oldest.id, other.id, 0, 1, 0),
             )
 

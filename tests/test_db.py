@@ -227,8 +227,8 @@ class TestLeagueDataReaders:
             "VALUES ('transformer', '{}', '/tmp/ckpt.pt', 5)"
         )
         conn.execute(
-            "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
-            "VALUES (5, 1, 1, 3, 1, 1)"
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (5, 1, 1, 'calibration', 5, 3, 1, 1)"
         )
         conn.commit()
         conn.close()
@@ -236,7 +236,7 @@ class TestLeagueDataReaders:
         assert len(data["entries"]) == 1
         assert data["entries"][0]["architecture"] == "transformer"
         assert len(data["results"]) == 1
-        assert data["results"][0]["wins"] == 3
+        assert data["results"][0]["wins_a"] == 3
 
     def test_read_elo_history_empty(self, tmp_path):
         db_path = str(tmp_path / "test.db")
@@ -296,13 +296,14 @@ class TestSchemaV4:
         assert row is not None
         assert row[0] == 0
 
-    def test_league_results_learner_index_exists(self, tmp_path):
+    def test_league_results_entry_indexes_exist(self, tmp_path):
         db_path = str(tmp_path / "v4.db")
         init_db(db_path)
         conn = sqlite3.connect(db_path)
         indexes = [r[1] for r in conn.execute("PRAGMA index_list(league_results)").fetchall()]
         conn.close()
-        assert "idx_league_results_learner" in indexes
+        assert "idx_league_results_entry_a" in indexes
+        assert "idx_league_results_entry_b" in indexes
 
 
 class TestForeignKeyEnforcement:
@@ -311,11 +312,11 @@ class TestForeignKeyEnforcement:
 
     def test_db_connect_enforces_foreign_keys(self, db: Path) -> None:
         """_connect() should enable FK enforcement — inserting a league_results
-        row with a nonexistent learner_id must raise IntegrityError."""
+        row with a nonexistent entry_a_id must raise IntegrityError."""
         conn = _connect(str(db))
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
-                "VALUES (1, 9999, 9999, 1, 0, 0)"
+                "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+                "VALUES (1, 9999, 9999, 'calibration', 1, 1, 0, 0)"
             )
         conn.close()

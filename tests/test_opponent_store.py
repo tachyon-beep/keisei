@@ -218,8 +218,8 @@ class TestRecordResultUpdates:
         model = torch.nn.Linear(10, 10)
         a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
         b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.FRONTIER_STATIC)
-        store.record_result(epoch=1, learner_id=a.id, opponent_id=b.id,
-                            wins=3, losses=1, draws=0)
+        store.record_result(epoch=1, entry_a_id=a.id, entry_b_id=b.id,
+                            wins_a=3, wins_b=1, draws=0, match_type="calibration")
         updated_a = store.get_entry(a.id)
         assert updated_a is not None
         assert updated_a.last_match_at is not None
@@ -235,8 +235,8 @@ class TestRecordResultUpdates:
                 "UPDATE league_entries SET protection_remaining = 5 WHERE id = ?",
                 (a.id,),
             )
-        store.record_result(epoch=1, learner_id=a.id, opponent_id=b.id,
-                            wins=1, losses=0, draws=0)
+        store.record_result(epoch=1, entry_a_id=a.id, entry_b_id=b.id,
+                            wins_a=1, wins_b=0, draws=0, match_type="calibration")
         conn = sqlite3.connect(store_db)
         row = conn.execute(
             "SELECT protection_remaining FROM league_entries WHERE id = ?", (a.id,)

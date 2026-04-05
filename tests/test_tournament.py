@@ -186,10 +186,11 @@ class TestRecordResult:
         assert new_b < 1000.0
 
         store.record_result(
-            epoch=5, learner_id=1, opponent_id=2,
-            wins=10, losses=0, draws=0,
-            elo_delta_a=round(new_a - 1000.0, 1),
-            elo_delta_b=round(new_b - 1000.0, 1),
+            epoch=5, entry_a_id=1, entry_b_id=2,
+            wins_a=10, wins_b=0, draws=0,
+            match_type="calibration",
+            elo_before_a=1000.0, elo_after_a=new_a,
+            elo_before_b=1000.0, elo_after_b=new_b,
         )
         store.update_elo(1, new_a, epoch=5)
         store.update_elo(2, new_b, epoch=5)
@@ -216,16 +217,17 @@ class TestRecordResult:
         conn.close()
 
         store.record_result(
-            epoch=10, learner_id=1, opponent_id=2,
-            wins=5, losses=3, draws=2,
+            epoch=10, entry_a_id=1, entry_b_id=2,
+            wins_a=5, wins_b=3, draws=2,
+            match_type="calibration",
         )
 
         check_conn = sqlite3.connect(tournament_db)
         check_conn.row_factory = sqlite3.Row
         row = check_conn.execute("SELECT * FROM league_results").fetchone()
         assert row is not None
-        assert row["wins"] == 5
-        assert row["losses"] == 3
+        assert row["wins_a"] == 5
+        assert row["wins_b"] == 3
         assert row["draws"] == 2
         assert row["epoch"] == 10
         check_conn.close()
@@ -272,8 +274,9 @@ class TestRecordResult:
         pre_conn.close()
 
         store.record_result(
-            epoch=1, learner_id=1, opponent_id=2,
-            wins=3, losses=4, draws=1,
+            epoch=1, entry_a_id=1, entry_b_id=2,
+            wins_a=3, wins_b=4, draws=1,
+            match_type="calibration",
         )
 
         check_conn = sqlite3.connect(tournament_db)

@@ -314,7 +314,7 @@ class TestReadLeagueDataPhase3:
 
 class TestRecordResultSelfPlay:
     def test_record_result_self_play(self, store, league_dir):
-        """When learner_id == opponent_id, protection_remaining decrements only once."""
+        """When entry_a_id == entry_b_id, protection_remaining decrements only once."""
         entry = _add_test_entry(store, league_dir)
         store.set_protection(entry.id, 5)
 
@@ -324,8 +324,8 @@ class TestRecordResultSelfPlay:
         assert before.protection_remaining == 5
 
         store.record_result(
-            epoch=1, learner_id=entry.id, opponent_id=entry.id,
-            wins=1, losses=0, draws=0,
+            epoch=1, entry_a_id=entry.id, entry_b_id=entry.id,
+            wins_a=1, wins_b=0, draws=0, match_type="calibration",
         )
 
         after = store.get_entry(entry.id)

@@ -60,14 +60,14 @@
     const map = new Map()
     for (const r of $leagueResults) {
       // Direct entry-to-entry
-      addResult(map, r.learner_id, r.opponent_id, r.wins, r.losses, r.draws)
-      // If learner is a trainer snapshot, also aggregate into trainer row
-      if (trainerSnapshotIds.has(r.learner_id)) {
-        addResult(map, 'trainer', r.opponent_id, r.wins, r.losses, r.draws)
+      addResult(map, r.entry_a_id, r.entry_b_id, r.wins_a, r.wins_b, r.draws)
+      // If A is a trainer snapshot, also aggregate into trainer row
+      if (trainerSnapshotIds.has(r.entry_a_id)) {
+        addResult(map, 'trainer', r.entry_b_id, r.wins_a, r.wins_b, r.draws)
       }
-      // If opponent is a trainer snapshot, aggregate into trainer row (as opponent)
-      if (trainerSnapshotIds.has(r.opponent_id)) {
-        addResult(map, 'trainer', r.learner_id, r.losses, r.wins, r.draws)
+      // If B is a trainer snapshot, aggregate into trainer row (as opponent)
+      if (trainerSnapshotIds.has(r.entry_b_id)) {
+        addResult(map, 'trainer', r.entry_a_id, r.wins_b, r.wins_a, r.draws)
       }
     }
     // Compute win rates

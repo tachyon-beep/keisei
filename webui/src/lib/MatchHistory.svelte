@@ -7,11 +7,11 @@
   $: entryMap = new Map($leagueEntries.map(e => [e.id, e]))
 
   $: matches = $leagueResults.filter(
-    r => r.learner_id === entryId || r.opponent_id === entryId
+    r => r.entry_a_id === entryId || r.entry_b_id === entryId
   ).sort((a, b) => b.epoch - a.epoch)
 
   function opponent(result) {
-    const oppId = result.learner_id === entryId ? result.opponent_id : result.learner_id
+    const oppId = result.entry_a_id === entryId ? result.entry_b_id : result.entry_a_id
     return entryMap.get(oppId) || null
   }
 </script>
@@ -39,17 +39,17 @@
               <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
               <td>{opponent(m).display_name || opponent(m).architecture}</td>
               <td class="num elo">{Math.round(opponent(m).elo_rating)}</td>
-              <td class="num win">{m.learner_id === entryId ? m.wins : m.losses}</td>
-              <td class="num loss">{m.learner_id === entryId ? m.losses : m.wins}</td>
+              <td class="num win">{m.entry_a_id === entryId ? m.wins_a : m.wins_b}</td>
+              <td class="num loss">{m.entry_a_id === entryId ? m.wins_b : m.wins_a}</td>
               <td class="num draw">{m.draws}</td>
             </tr>
           {:else}
             <tr>
               <td>{m.epoch === -1 ? 'T' : m.epoch}</td>
-              <td class="unknown">#{m.learner_id === entryId ? m.opponent_id : m.learner_id}</td>
+              <td class="unknown">#{m.entry_a_id === entryId ? m.entry_b_id : m.entry_a_id}</td>
               <td class="num elo">—</td>
-              <td class="num win">{m.learner_id === entryId ? m.wins : m.losses}</td>
-              <td class="num loss">{m.learner_id === entryId ? m.losses : m.wins}</td>
+              <td class="num win">{m.entry_a_id === entryId ? m.wins_a : m.wins_b}</td>
+              <td class="num loss">{m.entry_a_id === entryId ? m.wins_b : m.wins_a}</td>
               <td class="num draw">{m.draws}</td>
             </tr>
           {/if}
