@@ -159,16 +159,17 @@ class TestMatchRolloutFilterByPerspective:
 
 
 class TestShouldUpdateThreshold:
-    """test_should_update_threshold — 4 matches needed by default."""
+    """test_should_update_threshold — update_every_matches matches needed."""
 
     def test_should_update_threshold(self, trainer, store_and_entry) -> None:
         _store, entry = store_and_entry
+        threshold = trainer.config.update_every_matches
         # Not enough matches yet
-        for i in range(3):
+        for i in range(threshold - 1):
             trainer.record_match(entry.id, _make_rollout(side=0), 0)
             assert not trainer.should_update(entry.id), f"should_update at {i + 1} matches"
 
-        # Fourth match triggers
+        # Threshold-th match triggers
         trainer.record_match(entry.id, _make_rollout(side=0), 0)
         assert trainer.should_update(entry.id)
 
@@ -192,6 +193,20 @@ class TestIsRateLimited:
             trainer._update_timestamps.append(old_time)
 
         assert not trainer.is_rate_limited()
+
+    def test_rate_limited_at_exact_boundary(self, trainer) -> None:
+        """Timestamps at exactly 60s ago are kept (>= cutoff), so still rate-limited."""
+        config = trainer.config
+        frozen_now = 1000.0  # arbitrary fixed point
+        boundary_time = frozen_now - 60.0  # exactly 60 seconds ago
+        for _ in range(config.max_updates_per_minute):
+            trainer._update_timestamps.append(boundary_time)
+
+        # Freeze time so cutoff = 1000.0 - 60.0 = 940.0 == boundary_time
+        with patch("keisei.training.dynamic_trainer.time") as mock_time:
+            mock_time.monotonic.return_value = frozen_now
+            # cutoff = now - 60.0; timestamps at cutoff satisfy t >= cutoff
+            assert trainer.is_rate_limited()
 
 
 class TestUpdateModifiesWeights:
@@ -275,7 +290,16 @@ class TestUpdateCallsModelTrain:
         ), patch.object(TinyModel, "train", patched_train):
             trainer.update(entry, "cpu")
 
-        assert True in call_log
+        assert len(call_log) > 0, "model.train() was never called"
+        # load_opponent calls model.eval() (train(False)) first, then
+        # _update_inner calls model.train() (train(True)) for training.
+        # Verify train(True) was called and is the last mode set before training.
+        assert True in call_log, "model.train(True) was never called"
+        last_true_idx = max(i for i, m in enumerate(call_log) if m is True)
+        modes_after_train = call_log[last_true_idx + 1:]
+        assert all(m is True for m in modes_after_train), (
+            f"model switched to eval mode after train(True): {call_log}"
+        )
 
 
 class TestUpdateSavesWeightsAfterUpdate:
@@ -320,6 +344,12 @@ class TestUpdateSavesOptimizerAtFlushInterval:
             # First update: total_matches becomes 1, not divisible by 2
             trainer.record_match(entry.id, _make_rollout(side=0), 0)
             trainer.update(entry, "cpu")
+            # Confirm the update actually ran (update_count incremented)
+            refreshed = store.get_entry(entry.id)
+            assert refreshed is not None and refreshed.update_count == 1, (
+                "Update should have run (update_count == 1)"
+            )
+            # Optimizer not yet saved because flush interval hasn't triggered
             assert store.load_optimizer(entry.id) is None
 
             # Second update: total_matches becomes 2, divisible by 2 -> save
@@ -411,22 +441,34 @@ class TestUpdateUsesRewardSignedAdvantages:
 
         trainer.record_match(entry.id, rollout_loss, 0)
 
-        # Prepare batch and check advantage values
-        _obs, _actions, all_rewards, all_dones, _masks = trainer._prepare_batch(
-            entry.id, "cpu"
-        )
-        advantages = all_rewards * all_dones.float()
+        # Spy on ppo_clip_loss to capture the actual advantages used in training
+        captured_advantages: list[torch.Tensor] = []
+        from keisei.training.katago_ppo import ppo_clip_loss as real_ppo_clip_loss
 
-        # Terminal step should have advantage = -1.0 (loss)
-        terminal_advantages = advantages[all_dones.bool()]
-        assert (terminal_advantages < 0).all(), (
-            f"Expected negative advantages for losses, got {terminal_advantages}"
-        )
+        def spy_ppo_clip_loss(new_lp, old_lp, advantages, **kwargs):
+            captured_advantages.append(advantages.detach().clone())
+            return real_ppo_clip_loss(new_lp, old_lp, advantages, **kwargs)
 
-        # Non-terminal steps should have advantage = 0.0
-        non_terminal_advantages = advantages[~all_dones.bool()]
-        assert (non_terminal_advantages == 0).all(), (
-            f"Expected zero advantages for non-terminal, got {non_terminal_advantages}"
+        with patch(
+            "keisei.training.dynamic_trainer.ppo_clip_loss",
+            side_effect=spy_ppo_clip_loss,
+        ), patch(
+            "keisei.training.opponent_store.build_model",
+            return_value=TinyModel(),
+        ):
+            result = trainer.update(entry, "cpu")
+
+        assert result is True
+        assert len(captured_advantages) == 1, "Expected 1 epoch of training"
+        advs = captured_advantages[0]
+
+        # Loss terminal steps should produce negative advantages
+        assert (advs < 0).any(), (
+            f"Expected at least one negative advantage for loss, got {advs}"
+        )
+        # Non-terminal steps should have zero advantage (reward=0 * done=0)
+        assert (advs == 0).any(), (
+            f"Expected some zero advantages for non-terminal steps, got {advs}"
         )
 
 

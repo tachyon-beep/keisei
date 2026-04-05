@@ -172,40 +172,44 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                last_epoch = epoch
                 pairings = self.scheduler.generate_round(entries)
                 if not pairings:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
+                last_epoch = epoch
                 logger.info("Tournament round E%d: %d pairings", epoch, len(pairings))
 
                 if self.concurrent_pool is not None:
                     self._run_concurrent_round(vecenv, pairings, epoch)
                 else:
+                    any_played = False
                     for entry_a, entry_b in pairings:
                         if self._stop_event.is_set():
                             break
                         try:
-                            self._run_one_match(vecenv, entry_a, entry_b, epoch=epoch)
+                            games_played = self._run_one_match(
+                                vecenv, entry_a, entry_b,
+                                epoch=epoch, num_envs=num_envs,
+                            )
                         except Exception:
                             logger.exception(
                                 "Match failed: %s vs %s",
                                 entry_a.display_name, entry_b.display_name,
                             )
                             continue
-                        if self.scheduler.priority_scorer is not None:
+                        if games_played > 0 and self.scheduler.priority_scorer is not None:
+                            any_played = True
                             self.scheduler.priority_scorer.record_round_result(
                                 entry_a.id, entry_b.id,
                             )
-                            # Track per-game counts (games_per_match games played)
-                            for _ in range(self.games_per_match):
+                            for _ in range(games_played):
                                 self.scheduler.priority_scorer.record_result(
                                     entry_a.id, entry_b.id,
                                 )
                         self._stop_event.wait(self.pause_seconds)
 
-                    if self.scheduler.priority_scorer is not None:
+                    if any_played and self.scheduler.priority_scorer is not None:
                         self.scheduler.priority_scorer.advance_round()
 
                 logger.info("Tournament round E%d complete", epoch)
@@ -213,7 +217,7 @@ class LeagueTournament:
                 # Run historical gauntlet if due (Phase 2)
                 if (
                     self.gauntlet
-                    and self.learner_entry_id
+                    and self.learner_entry_id is not None
                     and self.historical_library
                     and self.gauntlet.is_due(epoch)
                     and not self._stop_event.is_set()
@@ -287,6 +291,9 @@ class LeagueTournament:
                 current_a.elo_rating, current_b.elo_rating,
                 result=result_score, k=self.k_factor,
             )
+            context = RoleEloTracker.determine_match_context(
+                current_a, current_b,
+            )
             self.store.record_result(
                 epoch=epoch,
                 learner_id=result.entry_a.id,
@@ -296,13 +303,11 @@ class LeagueTournament:
                 draws=result.draws,
                 elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
                 elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
+                match_context=context,
             )
             self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
             if self.role_elo_tracker:
-                context = RoleEloTracker.determine_match_context(
-                    current_a, current_b,
-                )
                 self.role_elo_tracker.update_from_result(
                     current_a, current_b, result_score, context,
                 )
@@ -312,7 +317,7 @@ class LeagueTournament:
                 result.a_wins, result.b_wins, result.draws,
             )
             if self.dynamic_trainer and result.rollout is not None:
-                for i, entry in enumerate([result.entry_a, result.entry_b]):
+                for i, entry in enumerate([current_a, current_b]):
                     if entry.role == Role.DYNAMIC:
                         self.dynamic_trainer.record_match(
                             entry.id, result.rollout, side=i,
@@ -327,8 +332,12 @@ class LeagueTournament:
 
         # Update priority scorer state after concurrent round
         if self.scheduler.priority_scorer is not None:
+            any_played = False
             for result in results:
                 total = result.a_wins + result.b_wins + result.draws
+                if total == 0:
+                    continue
+                any_played = True
                 for _ in range(total):
                     self.scheduler.priority_scorer.record_result(
                         result.entry_a.id, result.entry_b.id,
@@ -336,7 +345,8 @@ class LeagueTournament:
                 self.scheduler.priority_scorer.record_round_result(
                     result.entry_a.id, result.entry_b.id,
                 )
-            self.scheduler.priority_scorer.advance_round()
+            if any_played:
+                self.scheduler.priority_scorer.advance_round()
 
     # ── Per-match logic ─────────────────────────────────────
 
@@ -346,8 +356,12 @@ class LeagueTournament:
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
         epoch: int,
-    ) -> None:
-        """Play a single match, update Elo, and trigger training if applicable."""
+        num_envs: int | None = None,
+    ) -> int:
+        """Play a single match, update Elo, and trigger training if applicable.
+
+        Returns the total number of games actually played.
+        """
         is_trainable = (
             self.dynamic_trainer is not None
             and self._is_trainable_match(entry_a, entry_b)
@@ -356,10 +370,13 @@ class LeagueTournament:
         if is_trainable:
             result = self._play_match(
                 vecenv, entry_a, entry_b, collect_rollout=True,
+                num_envs=num_envs,
             )
             wins_a, wins_b, draws, rollout = result
         else:
-            wins_a, wins_b, draws = self._play_match(vecenv, entry_a, entry_b)
+            wins_a, wins_b, draws = self._play_match(
+                vecenv, entry_a, entry_b, num_envs=num_envs,
+            )
             rollout = None
 
         total = wins_a + wins_b + draws
@@ -367,24 +384,25 @@ class LeagueTournament:
             current_a = self.store.get_entry(entry_a.id)
             current_b = self.store.get_entry(entry_b.id)
             if current_a is None or current_b is None:
-                return  # entry retired mid-round
+                return total  # entry retired mid-round
             result_score = (wins_a + 0.5 * draws) / total
             new_a_elo, new_b_elo = compute_elo_update(
                 current_a.elo_rating, current_b.elo_rating,
                 result=result_score, k=self.k_factor,
+            )
+            context = RoleEloTracker.determine_match_context(
+                current_a, current_b,
             )
             self.store.record_result(
                 epoch=epoch, learner_id=entry_a.id, opponent_id=entry_b.id,
                 wins=wins_a, losses=wins_b, draws=draws,
                 elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
                 elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
+                match_context=context,
             )
             self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
             if self.role_elo_tracker:
-                context = RoleEloTracker.determine_match_context(
-                    current_a, current_b,
-                )
                 self.role_elo_tracker.update_from_result(
                     current_a, current_b, result_score, context,
                 )
@@ -394,16 +412,21 @@ class LeagueTournament:
                 wins_a, wins_b, draws,
             )
 
-        # Training trigger (after Elo update)
-        if is_trainable and rollout is not None:
-            for i, entry in enumerate([entry_a, entry_b]):
-                if entry.role == Role.DYNAMIC:
-                    self.dynamic_trainer.record_match(entry.id, rollout, side=i)
-                    if (
-                        self.dynamic_trainer.should_update(entry.id)
-                        and not self.dynamic_trainer.is_rate_limited()
-                    ):
-                        self.dynamic_trainer.update(entry, device=str(self.device))
+            # Training trigger (after Elo update) — use re-fetched entries
+            # so role changes between pairing and completion are respected.
+            if is_trainable and rollout is not None:
+                for i, entry in enumerate([current_a, current_b]):
+                    if entry.role == Role.DYNAMIC:
+                        self.dynamic_trainer.record_match(entry.id, rollout, side=i)
+                        if (
+                            self.dynamic_trainer.should_update(entry.id)
+                            and not self.dynamic_trainer.is_rate_limited()
+                        ):
+                            self.dynamic_trainer.update(
+                                entry, device=str(self.device),
+                            )
+
+        return total
 
     # ── Helpers ──────────────────────────────────────────────
 
@@ -419,6 +442,7 @@ class LeagueTournament:
         entry_a: OpponentEntry,
         entry_b: OpponentEntry,
         collect_rollout: bool = False,
+        num_envs: int | None = None,
     ) -> tuple[int, int, int] | tuple[int, int, int, MatchRollout]:
         """Play a set of games between two frozen models.
 
@@ -431,7 +455,7 @@ class LeagueTournament:
         try:
             return play_match(
                 vecenv, model_a, model_b,
-                device=self.device, num_envs=self.num_envs,
+                device=self.device, num_envs=num_envs or self.num_envs,
                 max_ply=self.max_ply, games_target=self.games_per_match,
                 stop_event=self._stop_event,
                 collect_rollout=collect_rollout,

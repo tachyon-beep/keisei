@@ -60,7 +60,7 @@ class TestSchemaV6Migration:
         assert "update_count" in cols
         assert "last_train_at" in cols
         row = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 6
+        assert row[0] == SCHEMA_VERSION
         conn.close()
 
     def test_schema_v6_migration_real(self, tmp_path):
@@ -168,7 +168,7 @@ class TestSchemaV6Migration:
         assert "update_count" in cols
         assert "last_train_at" in cols
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 6
+        assert version == SCHEMA_VERSION
         conn.close()
 
     def test_fresh_db_has_v6_columns(self, tmp_path):
@@ -181,11 +181,11 @@ class TestSchemaV6Migration:
         assert "update_count" in cols
         assert "last_train_at" in cols
         row = conn.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 6
+        assert row[0] == SCHEMA_VERSION
         conn.close()
 
-    def test_schema_version_constant_is_6(self):
-        assert SCHEMA_VERSION == 6
+    def test_schema_version_constant_is_7(self):
+        assert SCHEMA_VERSION == 7
 
 
 # ---------- Task 2: OpponentEntry new fields ----------
@@ -366,7 +366,7 @@ class TestSaveLoadOptimizer:
         with caplog.at_level(logging.WARNING):
             result = store.load_optimizer(entry.id)
         assert result is None
-        assert "missing" in caplog.text.lower() or "not found" in caplog.text.lower() or "does not exist" in caplog.text.lower()
+        assert "does not exist" in caplog.text.lower()
 
     def test_atomic_write_no_tmp_left(self, store, league_dir):
         """After save_optimizer, no .tmp files should remain."""

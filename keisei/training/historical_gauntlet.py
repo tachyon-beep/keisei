@@ -147,14 +147,15 @@ class HistoricalGauntlet:
                 if game_count == 0:
                     continue
 
-                # Re-read learner for accurate elo_before
+                # Re-read learner for accurate elo_before (and for the Elo computation,
+                # which reads Elo from the entry object's attributes).
                 current_learner = self.store.get_entry(learner_entry.id)
                 elo_before = current_learner.elo_historical if current_learner else 1000.0
 
                 # Update role Elo via RoleEloTracker (atomic two-entry update)
                 result_score = (wins + 0.5 * draws) / game_count
                 self.role_elo_tracker.update_from_result(
-                    learner_entry, hist_entry, result_score, "historical",
+                    current_learner or learner_entry, hist_entry, result_score, "historical",
                 )
 
                 # Re-read to get elo_after

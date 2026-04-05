@@ -1,11 +1,12 @@
 """Tests for TieredPool -- the orchestrator."""
 
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 import torch
 
-from keisei.config import LeagueConfig
+from keisei.config import HistoricalLibraryConfig, LeagueConfig
 from keisei.db import init_db
 from keisei.training.opponent_store import OpponentStore, Role, EntryStatus
 from keisei.training.tiered_pool import TieredPool
@@ -87,12 +88,21 @@ class TestBootstrapFromFlatPool:
         for i in range(5):
             store.add_entry(model, "resnet", {}, epoch=i, role=Role.UNASSIGNED)
         pool.bootstrap_from_flat_pool()
+        # Capture role distribution after first bootstrap
+        fs_first = len(store.list_by_role(Role.FRONTIER_STATIC))
+        rf_first = len(store.list_by_role(Role.RECENT_FIXED))
+        dy_first = len(store.list_by_role(Role.DYNAMIC))
         pool.bootstrap_from_flat_pool()
+        # Second bootstrap should not change count or role distribution
         assert len(store.list_entries()) == 5
+        assert len(store.list_by_role(Role.FRONTIER_STATIC)) == fs_first
+        assert len(store.list_by_role(Role.RECENT_FIXED)) == rf_first
+        assert len(store.list_by_role(Role.DYNAMIC)) == dy_first
 
 
 class TestFullLifecycle:
-    def test_lifecycle_snapshot_to_eviction(self, pool_setup):
+    def test_lifecycle_snapshot_overflow_retires_oldest(self, pool_setup):
+        """Snapshot fills Recent Fixed; overflow triggers retirement of oldest entry."""
         pool, store, db_path = pool_setup
         model = torch.nn.Linear(10, 10)
 
@@ -105,6 +115,7 @@ class TestFullLifecycle:
             e = store.add_entry(model, "resnet", {}, epoch=100 + i, role=Role.DYNAMIC)
             store.update_elo(e.id, 900 + i * 10)
 
+        # This snapshot overflows Recent Fixed, triggering review of oldest (epoch=1)
         pool.snapshot_learner(model, "resnet", {}, epoch=7)
         rf = store.list_by_role(Role.RECENT_FIXED)
         assert all(e.created_epoch != 1 for e in rf)
@@ -128,3 +139,43 @@ class TestListAllActive:
         e = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
         store.retire_entry(e.id, "test")
         assert len(pool.list_all_active()) == 0
+
+
+class TestOnEpochEndHistoricalRefresh:
+    """Regression: on_epoch_end must respect min_epoch_for_selection."""
+
+    def test_no_refresh_before_min_epoch(self, tmp_path):
+        """Historical refresh should NOT fire at epochs below min_epoch_for_selection."""
+        db_path = str(tmp_path / "pool.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        # refresh_interval=5, min_epoch=20: epoch 5/10/15 should NOT refresh
+        config = LeagueConfig(
+            history=HistoricalLibraryConfig(
+                refresh_interval_epochs=5,
+                min_epoch_for_selection=20,
+            )
+        )
+        pool = TieredPool(store, config)
+
+        with patch.object(pool.historical_library, "refresh") as mock_refresh:
+            pool.on_epoch_end(5)
+            pool.on_epoch_end(10)
+            pool.on_epoch_end(15)
+            mock_refresh.assert_not_called()
+
+            # Epoch 20 should trigger
+            pool.on_epoch_end(20)
+            mock_refresh.assert_called_once_with(20)
+
+        store.close()
+
+    def test_refresh_at_valid_epoch(self, pool_setup):
+        """Historical refresh fires at epochs meeting both interval and min_epoch."""
+        pool, store, _ = pool_setup
+        # Default: refresh_interval=100, min_epoch=10
+        with patch.object(pool.historical_library, "refresh") as mock_refresh:
+            pool.on_epoch_end(100)
+            mock_refresh.assert_called_once_with(100)

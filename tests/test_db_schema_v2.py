@@ -1,8 +1,8 @@
-"""Tests for DB schema v2: league tables and game_snapshots extensions."""
+"""Tests for DB schema: league tables, game_snapshots, and schema version."""
 
 import sqlite3
 
-from keisei.db import init_db
+from keisei.db import SCHEMA_VERSION, init_db
 
 
 def _get_schema_version(db_path: str) -> int:
@@ -51,7 +51,7 @@ class TestSchemaV2:
     def test_schema_version_is_current(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
         init_db(db_path)
-        assert _get_schema_version(db_path) == 6
+        assert _get_schema_version(db_path) == SCHEMA_VERSION
 
     def test_league_entries_columns(self, tmp_path):
         db_path = str(tmp_path / "fresh.db")
@@ -161,102 +161,21 @@ class TestSchemaV5:
         assert "elo_before" in cols
         assert "elo_after" in cols
 
-    def test_v4_to_v5_migration(self, tmp_path):
-        """Simulate a v4 DB and verify migration to v5."""
-        db_path = str(tmp_path / "v4_to_v5.db")
-        # Create a minimal v4 DB
+    def test_mismatched_version_raises(self, tmp_path):
+        """A database with a different schema version should raise RuntimeError."""
+        db_path = str(tmp_path / "old.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-        conn.execute("INSERT INTO schema_version VALUES (4)")
-        conn.execute("""
-            CREATE TABLE league_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                display_name TEXT NOT NULL DEFAULT '',
-                flavour_facts TEXT NOT NULL DEFAULT '[]',
-                architecture TEXT NOT NULL,
-                model_params TEXT NOT NULL,
-                checkpoint_path TEXT NOT NULL,
-                elo_rating REAL NOT NULL DEFAULT 1000.0,
-                created_epoch INTEGER NOT NULL,
-                games_played INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT 'unassigned',
-                status TEXT NOT NULL DEFAULT 'active',
-                parent_entry_id INTEGER,
-                lineage_group TEXT,
-                protection_remaining INTEGER NOT NULL DEFAULT 0,
-                last_match_at TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE league_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                epoch INTEGER NOT NULL,
-                learner_id INTEGER NOT NULL,
-                opponent_id INTEGER NOT NULL,
-                wins INTEGER NOT NULL,
-                losses INTEGER NOT NULL,
-                draws INTEGER NOT NULL,
-                elo_delta_a REAL NOT NULL DEFAULT 0.0,
-                elo_delta_b REAL NOT NULL DEFAULT 0.0,
-                recorded_at TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_league_entries_elo ON league_entries(elo_rating)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_league_results_learner ON league_results(learner_id)")
-        conn.execute("""
-            CREATE TABLE elo_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_id INTEGER NOT NULL,
-                epoch INTEGER NOT NULL,
-                elo_rating REAL NOT NULL,
-                recorded_at TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        conn.execute("CREATE TABLE training_state (id INTEGER PRIMARY KEY CHECK (id = 1), config_json TEXT NOT NULL, display_name TEXT NOT NULL, model_arch TEXT NOT NULL, algorithm_name TEXT NOT NULL, started_at TEXT NOT NULL, current_epoch INTEGER NOT NULL DEFAULT 0, current_step INTEGER NOT NULL DEFAULT 0, checkpoint_path TEXT, total_epochs INTEGER, status TEXT NOT NULL DEFAULT 'running', phase TEXT NOT NULL DEFAULT 'init', heartbeat_at TEXT NOT NULL DEFAULT '')")
-        conn.execute("CREATE TABLE metrics (id INTEGER PRIMARY KEY AUTOINCREMENT, epoch INTEGER, step INTEGER, timestamp TEXT NOT NULL DEFAULT '')")
-        conn.execute("CREATE TABLE game_snapshots (game_id INTEGER PRIMARY KEY, board_json TEXT NOT NULL, hands_json TEXT NOT NULL, current_player TEXT NOT NULL, ply INTEGER NOT NULL, is_over INTEGER NOT NULL, result TEXT NOT NULL, sfen TEXT NOT NULL, in_check INTEGER NOT NULL, move_history_json TEXT NOT NULL, value_estimate REAL NOT NULL DEFAULT 0.0, game_type TEXT NOT NULL DEFAULT 'live', demo_slot INTEGER, opponent_id INTEGER, updated_at TEXT NOT NULL DEFAULT '')")
-        conn.execute("""
-            CREATE TABLE league_transitions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entry_id INTEGER NOT NULL,
-                from_role TEXT, to_role TEXT, from_status TEXT, to_status TEXT, reason TEXT,
-                created_at TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        conn.execute("CREATE TABLE league_meta (id INTEGER PRIMARY KEY CHECK (id = 1), bootstrapped INTEGER NOT NULL DEFAULT 0)")
-        conn.execute("INSERT INTO league_meta (id, bootstrapped) VALUES (1, 0)")
-        # Insert a test entry pre-migration
-        conn.execute(
-            "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch) "
-            "VALUES ('resnet', '{}', '/tmp/x.pt', 42)"
-        )
+        conn.execute("INSERT INTO schema_version VALUES (99)")
         conn.commit()
         conn.close()
+        import pytest
+        with pytest.raises(RuntimeError, match="schema version 99"):
+            init_db(db_path)
 
-        # Run migration
-        init_db(db_path)
-
-        # Verify
-        assert _get_schema_version(db_path) == 6
-        cols = _get_table_columns(db_path, "league_entries")
-        assert "elo_frontier" in cols
-        assert "elo_dynamic" in cols
-        assert "elo_recent" in cols
-        assert "elo_historical" in cols
-        assert _table_exists(db_path, "historical_library")
-        assert _table_exists(db_path, "gauntlet_results")
-
-        # Pre-existing entry should have defaults
-        conn = sqlite3.connect(db_path)
-        row = conn.execute("SELECT elo_frontier, elo_dynamic, elo_recent, elo_historical FROM league_entries").fetchone()
-        conn.close()
-        assert row == (1000.0, 1000.0, 1000.0, 1000.0)
-
-    def test_idempotent_migration(self, tmp_path):
-        """Running init_db twice on a v6 DB should be a no-op."""
+    def test_idempotent_init(self, tmp_path):
+        """Running init_db twice should be a no-op."""
         db_path = str(tmp_path / "idempotent.db")
         init_db(db_path)
         init_db(db_path)  # Should not raise
-        assert _get_schema_version(db_path) == 6
+        assert _get_schema_version(db_path) == SCHEMA_VERSION

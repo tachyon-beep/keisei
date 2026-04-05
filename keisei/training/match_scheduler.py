@@ -36,6 +36,8 @@ class MatchScheduler:
         roles = list(non_empty.keys())
         weights = [non_empty[r] for r in roles]
         chosen_role = random.choices(roles, weights=weights, k=1)[0]
+        # Safe: effective_ratios() uses .get() to filter roles, so only roles
+        # present in entries_by_role with non-empty lists survive into non_empty.
         return random.choice(entries_by_role[chosen_role])
 
     def generate_round(
@@ -51,7 +53,7 @@ class MatchScheduler:
             for j in range(i + 1, len(entries)):
                 pairings.append((entries[i], entries[j]))
         if self._priority_scorer is not None:
-            return self._priority_scorer.score_round(pairings)
+            return self._priority_scorer.sort_by_priority(pairings)
         random.shuffle(pairings)
         return pairings
 

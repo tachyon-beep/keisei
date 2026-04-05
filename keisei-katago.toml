@@ -49,7 +49,7 @@ entropy_decay_epochs = 200      # R5
 
 [display]
 moves_per_minute = 30
-db_path = "keisei-katago.db"
+db_path = "data/keisei-katago.db"
 
 # For league mode, use keisei-league.toml + run-league.sh instead.
 # League requires matching architecture between checkpoint and config.

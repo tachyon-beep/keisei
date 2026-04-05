@@ -820,10 +820,22 @@ class KataGoTrainingLoop:
                     ]
                     self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
 
+                    # C3 guard: if every checkpoint was corrupt/missing,
+                    # fall back to single-opponent mode rather than crash
+                    # with an inscrutable ValueError from sample_for_learner.
+                    if not self._cached_entries:
+                        logger.warning(
+                            "All opponent checkpoints failed to load — "
+                            "falling back to single-opponent mode for epoch %d",
+                            epoch_i,
+                        )
+                        use_per_env_opps = False
+
+                if use_per_env_opps:
                     # Per-env opponent assignment — sample only from entries
                     # whose models were successfully loaded (self._cached_entries),
                     # NOT from the full DB which may include corrupt checkpoints.
-                    self._loaded_by_role: dict[Role, list[OpponentEntry]] = {
+                    self._loaded_by_role = {
                         role: [] for role in (Role.FRONTIER_STATIC, Role.RECENT_FIXED, Role.DYNAMIC)
                     }
                     for e in self._cached_entries:
@@ -834,9 +846,14 @@ class KataGoTrainingLoop:
                         entry = self.scheduler.sample_for_learner(self._loaded_by_role)
                         self._env_opponent_ids[env_i] = entry.id
 
-                    # Per-opponent W/L/D tracking for epoch-end Elo update
+                    # Per-opponent W/L/D tracking for epoch-end Elo update.
+                    # Only track entries with assigned roles (the ones that
+                    # can actually be sampled for play); UNASSIGNED entries
+                    # are pre-bootstrap transitional state and never sampled.
                     self._opponent_results = {
                         eid: [0, 0, 0] for eid in self._opponent_models
+                        if eid in self._cached_entries_by_id
+                        and self._cached_entries_by_id[eid].role != Role.UNASSIGNED
                     }
 
                     # Reuse an already-loaded model for _current_opponent (used by

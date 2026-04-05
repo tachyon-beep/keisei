@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 1
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -114,6 +114,7 @@ def init_db(db_path: str) -> None:
                 draws           INTEGER NOT NULL,
                 elo_delta_a     REAL NOT NULL DEFAULT 0.0,
                 elo_delta_b     REAL NOT NULL DEFAULT 0.0,
+                match_context   TEXT,
                 recorded_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_league_results_epoch ON league_results(epoch);
@@ -170,93 +171,13 @@ def init_db(db_path: str) -> None:
         if row is None:
             conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
         else:
-            db_version = row[0]
-            if db_version < 3:
-                # v2 → v3: add display_name and flavour_facts to league_entries
-                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
-                if "display_name" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
-                if "flavour_facts" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN flavour_facts TEXT NOT NULL DEFAULT '[]'")
-                conn.execute("UPDATE schema_version SET version = 3")
-            if db_version < 4:
-                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
-                if "role" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN role TEXT NOT NULL DEFAULT 'unassigned'")
-                if "status" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-                if "parent_entry_id" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN parent_entry_id INTEGER REFERENCES league_entries(id)")
-                if "lineage_group" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN lineage_group TEXT")
-                if "protection_remaining" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN protection_remaining INTEGER NOT NULL DEFAULT 0")
-                if "last_match_at" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN last_match_at TEXT")
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS league_transitions (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
-                        from_role   TEXT,
-                        to_role     TEXT,
-                        from_status TEXT,
-                        to_status   TEXT,
-                        reason      TEXT,
-                        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_transitions_entry ON league_transitions(entry_id);
-                    CREATE INDEX IF NOT EXISTS idx_league_results_learner ON league_results(learner_id);
-                    CREATE TABLE IF NOT EXISTS league_meta (
-                        id           INTEGER PRIMARY KEY CHECK (id = 1),
-                        bootstrapped INTEGER NOT NULL DEFAULT 0
-                    );
-                    INSERT OR IGNORE INTO league_meta (id, bootstrapped) VALUES (1, 0);
-                """)
-                conn.execute("UPDATE schema_version SET version = 4")
-            if db_version < 5:
-                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
-                if "elo_frontier" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_frontier REAL NOT NULL DEFAULT 1000.0")
-                if "elo_dynamic" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_dynamic REAL NOT NULL DEFAULT 1000.0")
-                if "elo_recent" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_recent REAL NOT NULL DEFAULT 1000.0")
-                if "elo_historical" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN elo_historical REAL NOT NULL DEFAULT 1000.0")
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS historical_library (
-                        slot_index     INTEGER NOT NULL PRIMARY KEY,
-                        target_epoch   INTEGER NOT NULL,
-                        entry_id       INTEGER REFERENCES league_entries(id),
-                        actual_epoch   INTEGER,
-                        selected_at    TEXT NOT NULL,
-                        selection_mode TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS gauntlet_results (
-                        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                        epoch               INTEGER NOT NULL,
-                        entry_id            INTEGER NOT NULL REFERENCES league_entries(id),
-                        historical_slot     INTEGER NOT NULL,
-                        historical_entry_id INTEGER NOT NULL REFERENCES league_entries(id),
-                        wins                INTEGER NOT NULL,
-                        losses              INTEGER NOT NULL,
-                        draws               INTEGER NOT NULL,
-                        elo_before          REAL,
-                        elo_after           REAL,
-                        created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_gauntlet_epoch ON gauntlet_results(epoch);
-                """)
-                conn.execute("UPDATE schema_version SET version = 5")
-            if db_version < 6:
-                cols = [c[1] for c in conn.execute("PRAGMA table_info(league_entries)").fetchall()]
-                if "optimizer_path" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN optimizer_path TEXT")
-                if "update_count" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN update_count INTEGER NOT NULL DEFAULT 0")
-                if "last_train_at" not in cols:
-                    conn.execute("ALTER TABLE league_entries ADD COLUMN last_train_at TEXT")
-                conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+            db_version: int = row[0]
+            if db_version != SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Database schema version {db_version} does not match "
+                    f"expected version {SCHEMA_VERSION}. "
+                    f"Delete the database and start fresh."
+                )
         conn.commit()
     finally:
         conn.close()
@@ -452,7 +373,7 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
-            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b, recorded_at "
+            "SELECT id, epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b, match_context, recorded_at "
             "FROM league_results ORDER BY id DESC"
         ).fetchall()
         parsed_entries = []
@@ -464,39 +385,28 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
                 e["model_params"] = json.loads(e["model_params"])
             parsed_entries.append(e)
 
-        # Historical library slots (5 rows max)
-        historical_slots: list[dict[str, Any]] = []
-        try:
-            rows = conn.execute(
-                "SELECT h.slot_index, h.target_epoch, h.entry_id, h.actual_epoch, "
-                "h.selected_at, h.selection_mode, e.display_name AS entry_name, "
-                "e.elo_rating AS entry_elo "
-                "FROM historical_library h "
-                "LEFT JOIN league_entries e ON h.entry_id = e.id "
-                "ORDER BY h.slot_index"
-            ).fetchall()
-            historical_slots = [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            pass  # table doesn't exist in pre-v5 DBs
+        historical_slots = [dict(r) for r in conn.execute(
+            "SELECT h.slot_index, h.target_epoch, h.entry_id, h.actual_epoch, "
+            "h.selected_at, h.selection_mode, e.display_name AS entry_name, "
+            "e.elo_rating AS entry_elo "
+            "FROM historical_library h "
+            "LEFT JOIN league_entries e ON h.entry_id = e.id "
+            "ORDER BY h.slot_index"
+        ).fetchall()]
 
-        # Recent gauntlet results (last 50 runs = 250 rows max)
-        gauntlet_results: list[dict[str, Any]] = []
-        try:
-            rows = conn.execute(
-                "SELECT g.id, g.epoch, g.entry_id, g.historical_slot, "
-                "g.historical_entry_id, g.wins, g.losses, g.draws, "
-                "g.elo_before, g.elo_after, g.created_at "
-                "FROM gauntlet_results g "
-                "WHERE g.epoch >= ("
-                "  SELECT COALESCE(MIN(epoch), 0) FROM ("
-                "    SELECT DISTINCT epoch FROM gauntlet_results ORDER BY epoch DESC LIMIT 50"
-                "  )"
-                ") "
-                "ORDER BY g.epoch DESC, g.historical_slot"
-            ).fetchall()
-            gauntlet_results = [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            pass  # table doesn't exist in pre-v5 DBs
+        # Recent gauntlet results (last 50 distinct epochs)
+        gauntlet_results = [dict(r) for r in conn.execute(
+            "SELECT g.id, g.epoch, g.entry_id, g.historical_slot, "
+            "g.historical_entry_id, g.wins, g.losses, g.draws, "
+            "g.elo_before, g.elo_after, g.created_at "
+            "FROM gauntlet_results g "
+            "WHERE g.epoch >= ("
+            "  SELECT COALESCE(MIN(epoch), 0) FROM ("
+            "    SELECT DISTINCT epoch FROM gauntlet_results ORDER BY epoch DESC LIMIT 50"
+            "  )"
+            ") "
+            "ORDER BY g.epoch DESC, g.historical_slot"
+        ).fetchall()]
 
         return {
             "entries": parsed_entries,

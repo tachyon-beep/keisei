@@ -1,6 +1,8 @@
 """Tests for HistoricalGauntlet -- periodic benchmark runner."""
 
+import logging
 import threading
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -56,18 +58,22 @@ class TestIsDue:
     def test_false_when_disabled(self, tmp_path):
         db_path = str(tmp_path / "disabled.db")
         init_db(db_path)
-        store = OpponentStore(db_path, str(tmp_path / "league"))
-        role_elo = RoleEloTracker(store, RoleEloConfig())
-        config = GauntletConfig(enabled=False)
-        gauntlet = HistoricalGauntlet(
-            store=store, role_elo_tracker=role_elo, config=config,
-        )
-        assert not gauntlet.is_due(100)
-        store.close()
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        try:
+            role_elo = RoleEloTracker(store, RoleEloConfig())
+            config = GauntletConfig(enabled=False)
+            gauntlet = HistoricalGauntlet(
+                store=store, role_elo_tracker=role_elo, config=config,
+            )
+            assert not gauntlet.is_due(100)
+        finally:
+            store.close()
 
 
 class TestRunGauntlet:
-    def test_skips_empty_slots(self, gauntlet_setup):
+    def test_skips_empty_slots(self, gauntlet_setup, caplog):
         """Gauntlet with all-empty slots should log warning and return."""
         gauntlet, store, _ = gauntlet_setup
         model = torch.nn.Linear(10, 10)
@@ -78,8 +84,12 @@ class TestRunGauntlet:
             for i in range(5)
         ]
 
-        # Should not raise
-        gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=empty_slots)
+        with caplog.at_level(logging.WARNING, logger="keisei.training.historical_gauntlet"):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=empty_slots)
+
+        # Verify warning was logged
+        assert any("no filled historical slots" in r.message.lower() or "empty" in r.message.lower()
+                    for r in caplog.records), "Expected a warning about empty/no filled slots"
 
         # No gauntlet results should be recorded
         with store._lock:
@@ -87,7 +97,7 @@ class TestRunGauntlet:
             assert rows[0] == 0
 
     def test_stop_event_interrupts(self, gauntlet_setup):
-        """Setting stop_event should cause early exit."""
+        """Pre-set stop_event causes early exit before any slot is played."""
         gauntlet, store, stop_event = gauntlet_setup
         model = torch.nn.Linear(10, 10)
         learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
@@ -99,11 +109,11 @@ class TestRunGauntlet:
             HistoricalSlot(1, target_epoch=100, entry_id=hist.id, actual_epoch=50, selection_mode="log_spaced"),
         ]
 
-        # Set stop before running
+        # Set stop before running — the slot loop checks stop_event at each iteration
         stop_event.set()
         gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots)
 
-        # Stop was set before call — zero results expected
+        # Stop was set before call — zero gauntlet results expected
         with store._lock:
             rows = store._conn.execute("SELECT COUNT(*) FROM gauntlet_results").fetchone()
             assert rows[0] == 0
@@ -128,6 +138,9 @@ class TestRecordResult:
             assert len(rows) == 1
             r = dict(rows[0])
             assert r["epoch"] == 100
+            assert r["entry_id"] == a.id
+            assert r["historical_slot"] == 0
+            assert r["historical_entry_id"] == b.id
             assert r["wins"] == 10
             assert r["losses"] == 5
             assert r["draws"] == 1
@@ -137,7 +150,7 @@ class TestRecordResult:
 
 class TestEloColumnUpdate:
     def test_update_role_elo(self, gauntlet_setup):
-        """Verify update_role_elo writes the correct column."""
+        """Verify update_role_elo writes the correct column without touching others."""
         _, store, _ = gauntlet_setup
         model = torch.nn.Linear(10, 10)
         e = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
@@ -146,8 +159,10 @@ class TestEloColumnUpdate:
         store.update_role_elo(e.id, EloColumn.HISTORICAL, 1050.0)
 
         after = store._get_entry(e.id)
+        # The targeted column was actually written
         assert after.elo_historical == 1050.0
-        # Other columns unchanged
+        # Other role columns unchanged (non-vacuous: elo_historical proves the
+        # function writes, so 1000.0 here means it didn't write these columns)
         assert after.elo_frontier == 1000.0
         assert after.elo_dynamic == 1000.0
         assert after.elo_recent == 1000.0
@@ -161,3 +176,52 @@ class TestEloColumnUpdate:
 
         with pytest.raises(ValueError, match="Invalid Elo column"):
             store.update_role_elo(e.id, "not_a_column", 1050.0)  # type: ignore[arg-type]
+
+
+class TestStaleEloAccumulation:
+    """Regression: multi-slot gauntlet must accumulate Elo, not reset each slot."""
+
+    def test_elo_accumulates_across_slots(self, gauntlet_setup):
+        """Two sequential wins should accumulate: 1000→X→Y, not 1000→X→X."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist_a = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+        hist_b = store.add_entry(model, "resnet", {}, epoch=100, role=Role.RECENT_FIXED)
+        store.retire_entry(hist_a.id, "archive")
+        store.retire_entry(hist_b.id, "archive")
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist_a.id, actual_epoch=50, selection_mode="log_spaced"),
+            HistoricalSlot(1, target_epoch=100, entry_id=hist_b.id, actual_epoch=100, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+
+        with (
+            patch.object(store, "load_opponent", return_value=dummy_model),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=(16, 0, 0)),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
+
+        # Read gauntlet results
+        with store._lock:
+            rows = store._conn.execute(
+                "SELECT elo_before, elo_after FROM gauntlet_results ORDER BY historical_slot"
+            ).fetchall()
+
+        assert len(rows) == 2
+        slot0_before, slot0_after = rows[0]
+        slot1_before, slot1_after = rows[1]
+
+        # Slot 0: starts at 1000, wins → elo increases
+        assert slot0_before == 1000.0
+        assert slot0_after > 1000.0
+
+        # Slot 1: must start where slot 0 left off (accumulated), not reset to 1000
+        assert slot1_before == slot0_after, (
+            f"Stale learner bug: slot1 started at {slot1_before} instead of {slot0_after}"
+        )
+        assert slot1_after > slot1_before

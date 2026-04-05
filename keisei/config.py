@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import tomllib
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,12 @@ class FrontierStaticConfig:
     def __post_init__(self) -> None:
         if self.slots < 1:
             raise ValueError(f"slots must be >= 1, got {self.slots}")
+        if self.topk < 1:
+            raise ValueError(f"topk must be >= 1, got {self.topk}")
+        if self.review_interval_epochs < 1:
+            raise ValueError(
+                f"review_interval_epochs must be >= 1, got {self.review_interval_epochs}"
+            )
         if self.min_games_for_promotion < 0:
             raise ValueError(
                 f"min_games_for_promotion must be >= 0, got {self.min_games_for_promotion}"
@@ -73,6 +80,14 @@ class RecentFixedConfig:
     promotion_margin_elo: float = 25.0
     soft_overflow: int = 1
 
+    def __post_init__(self) -> None:
+        if self.slots < 1:
+            raise ValueError(f"slots must be >= 1, got {self.slots}")
+        if self.min_games_for_review < 0:
+            raise ValueError(
+                f"min_games_for_review must be >= 0, got {self.min_games_for_review}"
+            )
+
 
 @dataclass(frozen=True)
 class DynamicConfig:
@@ -82,7 +97,7 @@ class DynamicConfig:
     training_enabled: bool = True
     update_epochs_per_batch: int = 2
     lr_scale: float = 0.25
-    grad_clip: float = 1.0
+    grad_clip: float = 1.0  # must be > 0; PyTorch clips all grads to zero otherwise
     update_every_matches: int = 4
     max_updates_per_minute: int = 20
     checkpoint_flush_every: int = 8
@@ -91,6 +106,14 @@ class DynamicConfig:
     max_consecutive_errors: int = 3
 
     def __post_init__(self) -> None:
+        if self.update_epochs_per_batch < 1:
+            raise ValueError(
+                f"update_epochs_per_batch must be >= 1, got {self.update_epochs_per_batch}"
+            )
+        if self.grad_clip <= 0:
+            raise ValueError(
+                f"grad_clip must be > 0, got {self.grad_clip}"
+            )
         if not (0 < self.lr_scale <= 1.0):
             raise ValueError(
                 f"lr_scale must be in (0, 1.0], got {self.lr_scale}"
@@ -112,12 +135,35 @@ class MatchSchedulerConfig:
     learner_recent_ratio: float = 0.20
     tournament_games_per_pair: int = 3  # best-of-3 round-robin
 
+    def __post_init__(self) -> None:
+        learner_sum = (
+            self.learner_dynamic_ratio
+            + self.learner_frontier_ratio
+            + self.learner_recent_ratio
+        )
+        if abs(learner_sum - 1.0) > 1e-6:
+            raise ValueError(
+                f"learner mix ratio sum must be 1.0, got {learner_sum}"
+            )
+        if self.tournament_games_per_pair < 1:
+            raise ValueError(
+                f"tournament_games_per_pair must be >= 1, got {self.tournament_games_per_pair}"
+            )
+
 
 @dataclass(frozen=True)
 class HistoricalLibraryConfig:
     slots: int = 5
     refresh_interval_epochs: int = 100
     min_epoch_for_selection: int = 10
+
+    def __post_init__(self) -> None:
+        if self.slots < 1:
+            raise ValueError(f"slots must be >= 1, got {self.slots}")
+        if self.refresh_interval_epochs < 1:
+            raise ValueError(
+                f"refresh_interval_epochs must be >= 1, got {self.refresh_interval_epochs}"
+            )
 
 
 @dataclass(frozen=True)
@@ -126,6 +172,16 @@ class GauntletConfig:
     interval_epochs: int = 100
     games_per_matchup: int = 16
 
+    def __post_init__(self) -> None:
+        if self.interval_epochs < 1:
+            raise ValueError(
+                f"interval_epochs must be >= 1, got {self.interval_epochs}"
+            )
+        if self.games_per_matchup < 1:
+            raise ValueError(
+                f"games_per_matchup must be >= 1, got {self.games_per_matchup}"
+            )
+
 
 @dataclass(frozen=True)
 class RoleEloConfig:
@@ -133,6 +189,12 @@ class RoleEloConfig:
     dynamic_k: float = 24.0
     recent_k: float = 32.0
     historical_k: float = 12.0
+
+    def __post_init__(self) -> None:
+        for name in ("frontier_k", "dynamic_k", "recent_k", "historical_k"):
+            val = getattr(self, name)
+            if val <= 0:
+                raise ValueError(f"{name} must be > 0, got {val}")
 
 
 @dataclass(frozen=True)
@@ -155,8 +217,14 @@ class PriorityScorerConfig:
             "lineage_penalty",
         ):
             val = getattr(self, field_name)
-            if not isinstance(val, (int, float)) or not math.isfinite(val):
+            if not math.isfinite(val):
                 raise ValueError(f"{field_name} must be finite, got {val}")
+        for penalty_name in ("repeat_penalty", "lineage_penalty"):
+            val = getattr(self, penalty_name)
+            if val > 0:
+                raise ValueError(
+                    f"{penalty_name} must be <= 0 (penalty, not bonus), got {val}"
+                )
         if self.repeat_window_rounds < 1:
             raise ValueError(
                 f"repeat_window_rounds must be >= 1, got {self.repeat_window_rounds}"
@@ -177,12 +245,16 @@ class ConcurrencyConfig:
                 f"parallel_matches * envs_per_match ({needed_envs}) "
                 f"exceeds total_envs ({self.total_envs})"
             )
-        min_models = self.parallel_matches * 2
-        if self.max_resident_models < min_models:
+        if self.max_resident_models < 2:
             raise ValueError(
-                f"max_resident_models ({self.max_resident_models}) must be >= "
-                f"parallel_matches * 2 ({min_models})"
+                f"max_resident_models ({self.max_resident_models}) must be >= 2 "
+                f"(at least one model pair)"
             )
+
+    @property
+    def effective_parallel(self) -> int:
+        """Max concurrent slots, capped by max_resident_models // 2."""
+        return min(self.parallel_matches, self.max_resident_models // 2)
 
 
 @dataclass(frozen=True)
@@ -220,15 +292,21 @@ class LeagueConfig:
             raise ValueError(
                 f"league.snapshot_interval must be >= 1, got {self.snapshot_interval}"
             )
-        s = self.scheduler
-        learner_sum = s.learner_dynamic_ratio + s.learner_frontier_ratio + s.learner_recent_ratio
-        if abs(learner_sum - 1.0) > 1e-6:
+        if self.elo_floor > self.initial_elo:
             raise ValueError(
-                f"learner mix ratio sum must be 1.0, got {learner_sum}"
+                f"elo_floor ({self.elo_floor}) must be <= initial_elo ({self.initial_elo})"
             )
-        if self.scheduler.tournament_games_per_pair < 1:
+        if self.tournament_games_per_match < 1:
             raise ValueError(
-                f"tournament_games_per_pair must be >= 1, got {self.scheduler.tournament_games_per_pair}"
+                f"tournament_games_per_match must be >= 1, got {self.tournament_games_per_match}"
+            )
+        if self.elo_k_factor <= 0:
+            raise ValueError(
+                f"elo_k_factor must be > 0, got {self.elo_k_factor}"
+            )
+        if self.tournament_k_factor <= 0:
+            raise ValueError(
+                f"tournament_k_factor must be > 0, got {self.tournament_k_factor}"
             )
 
 
@@ -346,10 +424,30 @@ def load_config(path: Path) -> AppConfig:
         role_elo_raw = lg.pop("role_elo", {})
         priority_raw = lg.pop("priority", {})
         concurrency_raw = lg.pop("concurrency", {})
-        # Strip legacy keys removed during tiered-pool migration
         _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
+        found_legacy = _legacy_league_keys & set(lg.keys())
+        if found_legacy:
+            warnings.warn(
+                f"Ignoring deprecated [league] keys: {sorted(found_legacy)}. "
+                f"These were removed during the tiered-pool migration.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         for key in _legacy_league_keys:
             lg.pop(key, None)
+        _sub_config_names = {
+            "frontier", "recent", "dynamic", "scheduler", "history",
+            "gauntlet", "role_elo", "priority", "concurrency",
+        }
+        valid_league_keys = {
+            f.name for f in fields(LeagueConfig)
+        } - _sub_config_names
+        unknown_league = set(lg.keys()) - valid_league_keys
+        if unknown_league:
+            raise ValueError(
+                f"Unknown [league] config keys: {sorted(unknown_league)}. "
+                f"Valid keys: {sorted(valid_league_keys)}"
+            )
         league_config = LeagueConfig(
             **lg,
             frontier=FrontierStaticConfig(**frontier_raw),

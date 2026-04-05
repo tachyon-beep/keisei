@@ -75,7 +75,16 @@ export function handleMessage(msg) {
 
     case 'game_update': {
       const snapshots = msg.snapshots || []
-      games.set(snapshots)
+      // Merge delta snapshots into existing store (backend sends only changed games)
+      games.update(existing => {
+        const updated = [...existing]
+        for (const snap of snapshots) {
+          const idx = updated.findIndex(g => g.game_id === snap.game_id)
+          if (idx >= 0) updated[idx] = snap
+          else updated.push(snap)
+        }
+        return updated
+      })
       // Auto-switch away from ended games
       selectedGameId.update(id => {
         const current = snapshots.find(g => g.game_id === id)

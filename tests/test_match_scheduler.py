@@ -45,13 +45,16 @@ def full_entries():
 class TestSampleForLearner:
     def test_respects_tier_ratios(self, full_entries):
         sched = MatchScheduler(MatchSchedulerConfig())
+        n = 2000  # more samples for tighter bounds
         counts = Counter()
-        for _ in range(1000):
+        for _ in range(n):
             entry = sched.sample_for_learner(full_entries)
             counts[entry.role] += 1
-        assert 400 < counts[Role.DYNAMIC] < 600
-        assert 200 < counts[Role.FRONTIER_STATIC] < 400
-        assert 100 < counts[Role.RECENT_FIXED] < 300
+        # Expected: Dynamic=50%, Frontier=30%, Recent=20% of n=2000
+        # Bounds: ±15% relative (narrower than before)
+        assert 850 < counts[Role.DYNAMIC] < 1150      # 1000 ± 150
+        assert 510 < counts[Role.FRONTIER_STATIC] < 690  # 600 ± 90
+        assert 340 < counts[Role.RECENT_FIXED] < 460   # 400 ± 60
 
     def test_empty_tier_redistributes(self):
         sched = MatchScheduler(MatchSchedulerConfig())
@@ -112,6 +115,9 @@ class TestGenerateRound:
         ]
         pairings = sched.generate_round(entries)
         assert len(pairings) == 3
+        # Verify all pairs are unique (no duplicate pairings)
+        pair_ids = {(min(a.id, b.id), max(a.id, b.id)) for a, b in pairings}
+        assert len(pair_ids) == 3
 
 
 class TestEffectiveRatios:
@@ -143,8 +149,13 @@ class TestPriorityRound:
         e3 = _make_entry(3, Role.DYNAMIC, elo=1500.0)
         entries = [e1, e2, e3]
         pairings = scheduler.generate_round(entries)
+        # Verify descending order by independently computing scores
+        # (Note: uses same scorer instance, but PriorityScorer.score is
+        # stateless given the same inputs, so re-scoring is valid here.)
         scores = [scorer.score(a, b) for a, b in pairings]
         assert scores == sorted(scores, reverse=True)
+        # Verify we actually got distinct scores (not all equal)
+        assert len(set(scores)) > 1, "All scores equal — sorting is vacuous"
 
     def test_generate_round_without_scorer_still_works(self):
         scheduler = _make_scheduler()

@@ -182,7 +182,10 @@ class ConcurrentMatchPool:
                 rollout data should be collected for this pairing.
 
         Returns:
-            List of MatchResult in the same order as input pairings.
+            List of MatchResult for successfully completed pairings,
+            ordered by their original index. Pairings that failed to load
+            are silently omitted — the returned list may be shorter than
+            the input.
         """
         if not pairings:
             return []
@@ -194,7 +197,7 @@ class ConcurrentMatchPool:
         results: dict[int, MatchResult] = {}
         next_pairing_idx = 0
         total_pairings = len(pairings)
-        parallel = min(self.config.parallel_matches, total_pairings)
+        parallel = min(self.config.effective_parallel, total_pairings)
 
         # Create slots
         slots: list[_MatchSlot] = []
@@ -208,6 +211,8 @@ class ConcurrentMatchPool:
         legal_masks = torch.from_numpy(
             np.asarray(reset_result.legal_masks)
         ).to(device)
+        # Black (player 0) always moves first in shogi; no colour
+        # randomisation exists.  Matches match_utils.play_batch init.
         current_players = np.zeros(self.config.total_envs, dtype=np.uint8)
 
         # Assign initial pairings and track slot→pairing mapping
@@ -245,7 +250,10 @@ class ConcurrentMatchPool:
                 partition_legal = legal_masks[s:e]
                 partition_players = current_players[s:e]
 
-                # Collect pre-step rollout data
+                # Collect pre-step rollout data.  Exactly one append per
+                # slot per loop iteration — the loop structure guarantees
+                # the single-pass-per-ply invariant that rollout buffers
+                # depend on.
                 if slot.collect_rollout:
                     slot._obs.append(partition_obs.cpu())
                     slot._masks.append(partition_legal.cpu())
@@ -334,7 +342,10 @@ class ConcurrentMatchPool:
                         torch.from_numpy(partition_done.astype(np.float32))
                     )
 
-                # Count completed games
+                # Count completed games.  shogi-gym rewards are from
+                # Black's (player 0) fixed perspective: +1 = Black won,
+                # -1 = White won.  Model A = Black, so r > 0 → a_wins.
+                # Same convention as match_utils.play_batch.
                 for env_i in range(e - s):
                     if partition_done[env_i]:
                         r = float(partition_rewards[env_i])
@@ -347,12 +358,21 @@ class ConcurrentMatchPool:
 
                 if slot.games_completed >= slot.games_target:
                     completed_slot_indices.append(i)
-                elif slot.ply_count >= max_ply:
-                    logger.warning(
-                        "Slot %d hit max_ply %d with %d/%d games, yielding partial result",
-                        slot.index, max_ply, slot.games_completed, slot.games_target,
-                    )
-                    completed_slot_indices.append(i)
+                else:
+                    # Safety bound: allow enough plies for all game waves.
+                    # Each wave fills envs_per_match envs; with auto-reset
+                    # we need ceil(games_target / envs_per_match) waves.
+                    envs_in_slot = slot.env_end - slot.env_start
+                    waves_needed = -(-slot.games_target // max(1, envs_in_slot))
+                    ply_ceiling = max_ply * (waves_needed + 1)
+                    if slot.ply_count >= ply_ceiling:
+                        logger.warning(
+                            "Slot %d hit ply ceiling %d (max_ply=%d × %d waves) "
+                            "with %d/%d games, yielding partial result",
+                            slot.index, ply_ceiling, max_ply, waves_needed + 1,
+                            slot.games_completed, slot.games_target,
+                        )
+                        completed_slot_indices.append(i)
 
             # Process completed slots (iterate in reverse to allow removal)
             for i in sorted(completed_slot_indices, reverse=True):
@@ -376,8 +396,9 @@ class ConcurrentMatchPool:
                 # the slot completes. However, envs that finished early may be
                 # mid-game from auto-reset. This noise is negligible for
                 # typical games_target values (64+) and washes out in Elo.
-                if next_pairing_idx < total_pairings:
+                while next_pairing_idx < total_pairings:
                     new_pairing_idx = next_pairing_idx
+                    next_pairing_idx += 1
                     self._assign_pairing(
                         slot, new_pairing_idx, pairings[new_pairing_idx],
                         load_fn, games_per_match, trainable_fn,
@@ -385,9 +406,14 @@ class ConcurrentMatchPool:
                     if slot.active:
                         slot_pairing_map[slot.index] = new_pairing_idx
                         active_slots.append(slot)
-                    next_pairing_idx += 1
+                        break
+                    # Load failed — try next pairing instead of skipping
 
-        # Release any remaining active models (early termination)
+        # Release any remaining active models (early termination via stop_event).
+        # No double-release risk: completed slots are pop()-ed from active_slots
+        # and their models released above.  If swap-in loads new models, the slot
+        # is re-appended with those new refs.  If swap-in fails, the slot is NOT
+        # re-appended.  So active_slots only contains unreleased models.
         for slot in active_slots:
             try:
                 release_fn(slot.model_a, slot.model_b)

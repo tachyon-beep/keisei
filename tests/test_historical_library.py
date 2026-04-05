@@ -28,8 +28,8 @@ class TestComputeTargets:
         assert len(targets) == 5
         assert targets[0] == 1
         assert targets[-1] == 10
-        # All targets should be distinct at E=10
-        assert len(set(targets)) >= 4
+        # At E=10 the log-spacing produces [1, 2, 3, 6, 10] — all distinct
+        assert len(set(targets)) == 5
 
     def test_targets_at_epoch_1000(self):
         targets = HistoricalLibrary._compute_targets(1000)
@@ -47,13 +47,14 @@ class TestComputeTargets:
 
     def test_targets_at_epoch_2(self):
         targets = HistoricalLibrary._compute_targets(2)
-        assert len(targets) == 5
-        assert targets[0] == 1
-        assert targets[-1] == 2
+        # At E=2 the rounding collapses to [1, 1, 1, 2, 2]
+        assert targets == [1, 1, 1, 2, 2]
 
     def test_targets_at_epoch_1_clamped(self):
-        """epoch=1 is clamped to 2 by max(E, 2)."""
+        """epoch=1 is clamped to 2 by max(E, 2), producing the same [1,1,1,2,2]."""
         targets = HistoricalLibrary._compute_targets(1)
+        assert targets == [1, 1, 1, 2, 2]
+        # Verify the clamping equivalence explicitly
         assert targets == HistoricalLibrary._compute_targets(2)
 
 
@@ -97,6 +98,9 @@ class TestRefresh:
         slots = library.get_slots()
         filled = [s for s in slots if s.entry_id is not None]
         assert len(filled) == 5  # Dense coverage should fill all slots
+        # With >= 5 candidates, filled slots should use log_spaced mode
+        for s in filled:
+            assert s.selection_mode == "log_spaced"
 
     def test_refresh_idempotency(self, library_setup):
         library, store = library_setup
@@ -106,10 +110,16 @@ class TestRefresh:
             store.retire_entry(e.id, "archive")
 
         library.refresh(1000)
-        slots_1 = [(s.slot_index, s.entry_id) for s in library.get_slots()]
+        slots_1 = [
+            (s.slot_index, s.entry_id, s.actual_epoch, s.selection_mode)
+            for s in library.get_slots()
+        ]
 
         library.refresh(1000)
-        slots_2 = [(s.slot_index, s.entry_id) for s in library.get_slots()]
+        slots_2 = [
+            (s.slot_index, s.entry_id, s.actual_epoch, s.selection_mode)
+            for s in library.get_slots()
+        ]
 
         assert slots_1 == slots_2
 
@@ -125,9 +135,15 @@ class TestRefresh:
         library.refresh(100)
         slots = library.get_slots()
         filled = [s for s in slots if s.entry_id is not None]
+        # 2 candidates, targets at E=100 are [1,3,10,32,100].
+        # Epoch 5 snaps to target 3 (dist=2, threshold=1.0 → rejected) or target 10 (dist=5).
+        # Epoch 10 snaps to target 10 (dist=0).
+        # With proximity threshold, at least epoch 10→target 10 always fills.
         assert len(filled) >= 1
+        assert len(filled) <= 2
         for s in slots:
             if s.entry_id is not None:
+                # Fewer candidates than slots → fallback mode
                 assert s.selection_mode == "fallback"
 
     def test_prefers_retired_over_active(self, library_setup):
@@ -140,11 +156,14 @@ class TestRefresh:
 
         library.refresh(100)
         slots = library.get_slots()
-        # The slot closest to epoch 100 should prefer the retired entry
+        # Targets at E=100: [1, 3, 10, 32, 100]. Only target=100 is within
+        # proximity threshold of epoch-100 candidates (dist=0).
+        # _snap_to_nearest prefers retired entries on distance ties.
         filled = [s for s in slots if s.entry_id is not None]
         assert len(filled) >= 1, "At least one slot should be filled"
-        closest_to_100 = min(filled, key=lambda s: abs((s.actual_epoch or 0) - 100))
-        assert closest_to_100.entry_id == retired.id
+        slot_100 = [s for s in filled if s.target_epoch == 100]
+        assert len(slot_100) == 1, "Exactly one slot targets epoch 100"
+        assert slot_100[0].entry_id == retired.id
 
 
 class TestProximityThreshold:
@@ -165,6 +184,11 @@ class TestProximityThreshold:
         empty = [s for s in slots if s.entry_id is None]
         assert len(filled) == 2  # exactly the two endpoints
         assert len(empty) == 3  # middle slots rejected by proximity threshold
+        # Verify the filled slots are the two endpoints
+        filled_epochs = {s.actual_epoch for s in filled}
+        assert filled_epochs == {1, 10000}
+        filled_ids = {s.entry_id for s in filled}
+        assert filled_ids == {e1.id, e2.id}
 
 
 class TestGetSlots:

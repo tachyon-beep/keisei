@@ -71,6 +71,10 @@ class TieredPool:
         if self.recent_manager.count() > self.config.recent.slots:
             outcome, oldest = self.recent_manager.review_oldest()
             if outcome is ReviewOutcome.PROMOTE:
+                # Outer transaction wraps the full promote-and-retire sequence.
+                # admit() opens a nested transaction internally, but
+                # OpponentStore.transaction() supports nesting — only the
+                # outermost level commits, so the whole operation is atomic.
                 with self.store.transaction():
                     clone = self.dynamic_manager.admit(oldest)
                     if clone is not None:
@@ -106,7 +110,7 @@ class TieredPool:
         """Run end-of-epoch maintenance (frontier review, historical refresh, etc.)."""
         if self.frontier_manager.is_due_for_review(epoch):
             self.frontier_manager.review(epoch)
-        if epoch > 0 and epoch % self.config.history.refresh_interval_epochs == 0:
+        if self.historical_library.is_due_for_refresh(epoch):
             self.historical_library.refresh(epoch)
 
     def get_historical_slots(self) -> list[HistoricalSlot]:
@@ -152,6 +156,11 @@ class TieredPool:
                 )
 
             # --- Frontier Static: quintile Elo spread from remaining ---
+            # n_frontier is computed from total n (not len(remaining_after_recent))
+            # so each tier gets a fixed ~25% share of the original pool.  If
+            # n_frontier > len(remaining_after_recent), select_initial() safely
+            # returns all available entries.  n_dynamic below uses actual selected
+            # counts, so no entries are double-assigned or lost.
             remaining_after_recent = [e for e in entries if e.id not in recent_ids]
             n_frontier = (
                 max(1, round(n * 0.25)) if n >= 3 else (1 if n >= 1 else 0)

@@ -48,7 +48,7 @@ entropy_decay_epochs = 200      # R5
 
 [display]
 moves_per_minute = 30
-db_path = "keisei-ddp.db"
+db_path = "data/keisei-ddp.db"
 
 [distributed]
 sync_batchnorm = true

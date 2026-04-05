@@ -127,20 +127,32 @@ def test_concurrency_config_defaults():
 def test_concurrency_config_validation_env_budget():
     from keisei.config import ConcurrencyConfig
 
-    with pytest.raises(ValueError, match="total_envs"):
-        ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=16)
+    # 4 * 8 = 32 > 16 → should fail
+    with pytest.raises(ValueError, match="exceeds total_envs"):
+        ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=16, max_resident_models=10)
 
 
 def test_concurrency_config_validation_model_budget():
     from keisei.config import ConcurrencyConfig
 
+    # Explicitly specify valid env budget so only model validation fires
     with pytest.raises(ValueError, match="max_resident_models"):
-        ConcurrencyConfig(parallel_matches=4, max_resident_models=4)
+        ConcurrencyConfig(parallel_matches=4, envs_per_match=2, total_envs=8, max_resident_models=1)
+
+    # max_resident < parallel*2 is now allowed (runtime caps active slots)
+    c = ConcurrencyConfig(parallel_matches=4, envs_per_match=2, total_envs=8, max_resident_models=4)
+    assert c.effective_parallel == 2  # 4 // 2 = 2 slots
 
 
 def test_league_scheduler_ratio_validation(tmp_path):
     """learner mix ratios must sum to 1.0."""
-    bad_toml = LEAGUE_TOML + "\n[league.scheduler]\nlearner_dynamic_ratio = 0.9\n"
+    # Explicitly set all three ratios to values that sum != 1.0
+    bad_toml = LEAGUE_TOML + (
+        "\n[league.scheduler]\n"
+        "learner_dynamic_ratio = 0.5\n"
+        "learner_frontier_ratio = 0.4\n"
+        "learner_recent_ratio = 0.4\n"
+    )
     toml_file = tmp_path / "badratio.toml"
     toml_file.write_text(bad_toml)
     with pytest.raises(ValueError, match="ratio"):

@@ -82,7 +82,7 @@ class PriorityScorer:
             + c.lineage_penalty * self._lineage_closeness(a, b)
         )
 
-    def score_round(
+    def sort_by_priority(
         self,
         pairings: list[tuple[OpponentEntry, OpponentEntry]],
     ) -> list[tuple[OpponentEntry, OpponentEntry]]:

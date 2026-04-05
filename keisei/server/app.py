@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from keisei.db import (
+    init_db,
     read_elo_history,
     read_game_snapshots,
     read_game_snapshots_since,
@@ -126,6 +127,9 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Server starting, db_path=%s", db_path)
+        # Apply any pending schema migrations so dashboard queries
+        # don't crash on columns added since the DB was created.
+        await asyncio.to_thread(init_db, db_path)
         yield
         logger.info("Server shutting down")
 

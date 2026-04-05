@@ -73,13 +73,13 @@ class FrontierPromoter:
         epoch: int,
     ) -> bool:
         """Check if a candidate meets all promotion criteria."""
-        # Special case: empty Frontier — always promote to seed
-        if not frontier_entries:
-            return True
-
-        # 1. Games played threshold
+        # 1. Games played threshold (always required, even when seeding)
         if candidate.games_played < self.config.min_games_for_promotion:
             return False
+
+        # Special case: empty Frontier — promote to seed once calibrated
+        if not frontier_entries:
+            return True
 
         # 2. Must be in top-K (caller ensures this, but verify)
         if candidate.id not in self._topk_streaks:

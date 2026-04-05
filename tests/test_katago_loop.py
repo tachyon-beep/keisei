@@ -1037,6 +1037,7 @@ class TestRotateSeat:
                         "patience": 50,
                         "min_lr": 1e-5,
                     },
+                    "rl_warmup": {"epochs": 3, "entropy_bonus": 0.05},
                 },
             ),
             display=DisplayConfig(
@@ -1100,9 +1101,10 @@ class TestRotateSeat:
         """Warmup should be extended relative to the rotation epoch."""
         mock_env = _make_mock_katago_vecenv(num_envs=2, alternate_players=True)
         loop = KataGoTrainingLoop(league_config, vecenv=mock_env)
+        assert loop._original_warmup_duration == 3  # from rl_warmup config
         loop._rotate_seat(epoch=10)
-        # warmup should be epoch+1 + original_duration
-        assert loop.ppo.warmup_epochs == 11 + loop._original_warmup_duration
+        # warmup should be epoch+1 + original_duration = 11 + 3 = 14
+        assert loop.ppo.warmup_epochs == 14
 
     def test_rotate_seat_updates_learner_entry(self, league_config):
         """Rotation should create a new pool entry and update the learner ID."""

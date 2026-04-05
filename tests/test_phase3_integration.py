@@ -317,6 +317,8 @@ class TestTournamentTrainingTrigger:
         trainer.record_match.assert_any_call(2, rollout, side=1)
         # should_update returns True and not rate limited => update called for both
         assert trainer.update.call_count == 2
+        updated_ids = {call.args[0].id for call in trainer.update.call_args_list}
+        assert updated_ids == {1, 2}, f"Expected updates for entries 1 and 2, got {updated_ids}"
 
     def test_tournament_skips_training_for_non_trainable_match(self):
         """D-vs-FS match does NOT trigger training."""
@@ -328,6 +330,8 @@ class TestTournamentTrainingTrigger:
 
         assert not t._is_trainable_match(entry_a, entry_b)
 
+        # 3-tuple is correct: non-trainable path calls _play_match without
+        # collect_rollout, so it returns (wins_a, wins_b, draws) only.
         with patch.object(t, "_play_match", return_value=(2, 1, 1)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
@@ -413,6 +417,9 @@ class TestTournamentTrainingTrigger:
 
         assert t._is_trainable_match(entry_a, entry_b) is True
 
+        # 3-tuple is correct despite D-vs-D being trainable by _is_trainable_match:
+        # with dynamic_trainer=None, is_trainable evaluates to False in _run_one_match,
+        # so _play_match is called without collect_rollout and returns 3-tuple.
         with patch.object(t, "_play_match", return_value=(2, 1, 1)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
@@ -502,10 +509,9 @@ class TestFullDynamicTrainingCycle:
         # 3. last_train_at set
         assert refreshed_a.last_train_at is not None
 
-        # 4. Checkpoint file on disk was updated
+        # 4. Checkpoint file on disk was updated (hash check above is authoritative;
+        #    mtime may equal before_mtime on fast filesystems with coarse timestamps)
         assert ckpt_a_path.exists()
-        after_mtime = ckpt_a_path.stat().st_mtime
-        assert after_mtime >= before_mtime
 
         store.close()
 
@@ -593,6 +599,8 @@ class TestFullFrontierPromotionCycle:
         frontier_manager = FrontierManager(
             store=store, config=frontier_config, promoter=promoter,
         )
+        # Verify the manager uses our promoter instance (streak state continuity)
+        assert frontier_manager._promoter is promoter
 
         # --- Build streak: two consecutive evaluate() calls ---
         dynamic_entries = store.list_by_role(Role.DYNAMIC)

@@ -63,10 +63,13 @@ class TestDemonstratorRunner:
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         runner.start()
+        # Poll for thread to become alive (avoids fixed sleep on slow CI)
+        deadline = time.monotonic() + 2.0
+        while not runner.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert runner.is_alive()
-        time.sleep(0.1)
         runner.stop()
-        runner.join(timeout=2.0)
+        runner.join(timeout=5.0)
         assert not runner.is_alive()
 
     def test_crash_is_non_fatal(self):
@@ -78,11 +81,15 @@ class TestDemonstratorRunner:
             num_slots=1, moves_per_minute=6000, device="cpu",
         )
         runner.start()
-        time.sleep(0.2)  # let it attempt and fail
+        # Wait for the thread to attempt at least one game cycle
+        deadline = time.monotonic() + 2.0
+        while pool.load_opponent.call_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pool.load_opponent.call_count > 0, "Thread never attempted load_opponent"
         # Thread should still be alive — per-slot crashes don't kill the loop
         assert runner.is_alive()
         runner.stop()
-        runner.join(timeout=2.0)
+        runner.join(timeout=5.0)
         assert not runner.is_alive()
 
     def test_slot_fallback_insufficient_entries(self):
@@ -96,7 +103,7 @@ class TestDemonstratorRunner:
         assert len(matchups) == 0
 
     def test_select_matchups_with_3_entries(self):
-        """With 3 entries and 3 slots, should get 3 matchups."""
+        """With 3 entries and 3 slots, should get 3 matchups with correct slot numbers."""
         pool = _make_mock_pool(num_entries=3)
         runner = DemonstratorRunner(
             store=pool, db_path="/tmp/test.db",
@@ -105,6 +112,8 @@ class TestDemonstratorRunner:
         matchups = runner._select_matchups()
         assert len(matchups) == 3
         assert matchups[0].slot == 1  # championship
+        assert matchups[1].slot == 2  # cross-architecture or random
+        assert matchups[2].slot == 3  # random
 
 
 class TestPlayGamePinUnpin:
@@ -353,8 +362,9 @@ class TestPlayGameWithMockedVecEnv:
             else:
                 sys.modules.pop("shogi_gym", None)
 
-        # Should have exited early (0 or 1 steps, not 999)
-        assert step_count[0] <= 1
+        # Stop was set before the game loop — the while condition checks
+        # _stop_event.is_set() immediately, so zero steps should execute
+        assert step_count[0] == 0
 
 
 class TestMoveDelay:

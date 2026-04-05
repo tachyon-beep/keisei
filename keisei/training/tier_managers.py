@@ -142,7 +142,10 @@ class FrontierManager:
         ]
 
         if not eligible:
-            # If no entries past tenure, retire the oldest
+            # Fallback: if no entries are past tenure, retire the oldest anyway.
+            # This guarantees a retirement always occurs when called at capacity,
+            # so the caller (review()) can safely clone before checking capacity
+            # without risk of exceeding the slot limit.
             eligible = sorted(frontier_entries, key=lambda e: e.created_epoch)
             target = eligible[0]
         else:
@@ -212,6 +215,8 @@ class RecentFixedManager:
         3. Otherwise -> RETIRE
         """
         entries = self._store.list_by_role(Role.RECENT_FIXED)
+        if not entries:
+            raise ValueError("review_oldest called with no Recent Fixed entries")
         # Oldest first (list_by_role orders by created_epoch ASC)
         oldest = entries[0]
 
@@ -242,19 +247,24 @@ class RecentFixedManager:
             )
             return ReviewOutcome.PROMOTE, oldest
 
-        # Check soft overflow budget: count - slots tells us overflow used
+        # Check soft overflow budget: count - slots tells us overflow used.
+        # Delay if under-calibrated (insufficient games OR insufficient
+        # unique opponents) and the soft-overflow budget is not exceeded.
         overflow_used = self.count() - self._config.slots
-        overflow_budget = self._config.soft_overflow
-        can_delay = overflow_used <= overflow_budget and not games_ok
+        can_delay = overflow_used <= self._config.soft_overflow and (
+            not games_ok or not opponents_ok
+        )
 
-        if can_delay and overflow_used < overflow_budget:
+        if can_delay:
             logger.info(
-                "RecentFixed review: DELAY id=%d (games=%d < %d, overflow %d/%d)",
+                "RecentFixed review: DELAY id=%d (games=%d/%d, opponents=%d/%d, overflow %d/%d)",
                 oldest.id,
                 games_played,
                 self._config.min_games_for_review,
+                unique_opponents,
+                self._config.min_unique_opponents,
                 overflow_used,
-                overflow_budget,
+                self._config.soft_overflow,
             )
             return ReviewOutcome.DELAY, oldest
 
@@ -352,7 +362,12 @@ class DynamicManager:
         return weakest
 
     def get_trainable(self, disabled_entries: set[int] | None = None) -> list[OpponentEntry]:
-        """Return Dynamic entries eligible for training updates."""
+        """Return Dynamic entries eligible for training updates.
+
+        Note: protected entries ARE included — protection prevents eviction,
+        not training.  Newly admitted Dynamic entries should receive updates
+        immediately so they begin diverging from their frozen source.
+        """
         if not self._config.training_enabled:
             return []
         disabled = disabled_entries or set()

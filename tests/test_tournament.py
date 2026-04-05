@@ -113,14 +113,14 @@ def store(tournament_db: str, league_dir: str) -> OpponentStore:
 class TestGenerateRound:
     """Test the round-robin pairing algorithm via MatchScheduler."""
 
-    def test_even_pool_produces_full_round_robin(self, store):
+    def test_even_pool_produces_full_round_robin(self):
         """4 entries → 6 pairings (full round-robin, N*(N-1)/2)."""
         scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 5)]
         pairings = scheduler.generate_round(entries)
         assert len(pairings) == 6  # 4*3/2
 
-    def test_two_entries_produces_one_pairing(self, store):
+    def test_two_entries_produces_one_pairing(self):
         """Minimum viable pool: 2 entries → 1 pairing."""
         scheduler = _make_scheduler()
         entries = [_make_entry(1), _make_entry(2)]
@@ -129,19 +129,19 @@ class TestGenerateRound:
         ids = {pairings[0][0].id, pairings[0][1].id}
         assert ids == {1, 2}
 
-    def test_single_entry_produces_no_pairings(self, store):
+    def test_single_entry_produces_no_pairings(self):
         """1 entry → no pairings."""
         scheduler = _make_scheduler()
         entries = [_make_entry(1)]
         pairings = scheduler.generate_round(entries)
         assert pairings == []
 
-    def test_empty_pool_produces_no_pairings(self, store):
+    def test_empty_pool_produces_no_pairings(self):
         scheduler = _make_scheduler()
         pairings = scheduler.generate_round([])
         assert pairings == []
 
-    def test_no_self_matches(self, store):
+    def test_no_self_matches(self):
         """No entry should be paired with itself."""
         scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 9)]
@@ -149,7 +149,7 @@ class TestGenerateRound:
         for a, b in pairings:
             assert a.id != b.id, f"Self-match: {a.id} vs {b.id}"
 
-    def test_large_pool_all_pairs_covered(self, store):
+    def test_large_pool_all_pairs_covered(self):
         """With N entries, exactly N*(N-1)/2 pairings are generated."""
         scheduler = _make_scheduler()
         entries = [_make_entry(i) for i in range(1, 11)]  # 10 entries
@@ -166,7 +166,7 @@ class TestRecordResult:
     """Test Elo recording via OpponentStore."""
 
     def test_elo_updates_via_store(self, store, tournament_db):
-        """After recording a result via store, both entries' Elo ratings should change."""
+        """Full pipeline: compute_elo_update → record_result → update_elo → verify DB."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
         entry_a = _make_entry(1, elo=1000.0)
@@ -179,6 +179,10 @@ class TestRecordResult:
         result_score = 1.0  # A wins everything
         new_a, new_b = compute_elo_update(1000.0, 1000.0, result=result_score, k=32.0)
 
+        # Verify compute_elo_update produced meaningful deltas
+        assert new_a > 1000.0
+        assert new_b < 1000.0
+
         store.record_result(
             epoch=5, learner_id=1, opponent_id=2,
             wins=10, losses=0, draws=0,
@@ -188,7 +192,7 @@ class TestRecordResult:
         store.update_elo(1, new_a, epoch=5)
         store.update_elo(2, new_b, epoch=5)
 
-        # Verify via direct DB query
+        # Verify DB values match what compute_elo_update returned
         check_conn = sqlite3.connect(tournament_db)
         check_conn.row_factory = sqlite3.Row
         row_a = check_conn.execute(
@@ -197,8 +201,8 @@ class TestRecordResult:
         row_b = check_conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = ?", (2,)
         ).fetchone()
-        assert row_a["elo_rating"] > 1000.0, "Winner's Elo should increase"
-        assert row_b["elo_rating"] < 1000.0, "Loser's Elo should decrease"
+        assert row_a["elo_rating"] == pytest.approx(new_a)
+        assert row_b["elo_rating"] == pytest.approx(new_b)
         check_conn.close()
 
     def test_league_results_row_inserted(self, store, tournament_db):
@@ -225,7 +229,7 @@ class TestRecordResult:
         check_conn.close()
 
     def test_elo_history_rows_inserted(self, store, tournament_db):
-        """Both entries should get elo_history rows at the given epoch."""
+        """update_elo writes both league_entries and elo_history rows."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
         _insert_entry(conn, _make_entry(1))
@@ -238,20 +242,32 @@ class TestRecordResult:
         check_conn = sqlite3.connect(tournament_db)
         check_conn.row_factory = sqlite3.Row
         rows = check_conn.execute(
-            "SELECT * FROM elo_history WHERE epoch = ?", (7,)
+            "SELECT * FROM elo_history WHERE epoch = ? ORDER BY entry_id", (7,)
         ).fetchall()
         assert len(rows) == 2
-        entry_ids = {r["entry_id"] for r in rows}
-        assert entry_ids == {1, 2}
+        # Verify both the entry_ids and the Elo values stored in history
+        assert rows[0]["entry_id"] == 1
+        assert rows[0]["elo_rating"] == pytest.approx(1010.0)
+        assert rows[1]["entry_id"] == 2
+        assert rows[1]["elo_rating"] == pytest.approx(990.0)
         check_conn.close()
 
     def test_games_played_incremented(self, store, tournament_db):
-        """games_played should increase by total games for both entries."""
+        """games_played should increase by total games (wins+losses+draws) for both entries."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
         _insert_entry(conn, _make_entry(1))
         _insert_entry(conn, _make_entry(2))
         conn.close()
+
+        # Verify initial state
+        pre_conn = sqlite3.connect(tournament_db)
+        pre_conn.row_factory = sqlite3.Row
+        pre_a = pre_conn.execute("SELECT games_played FROM league_entries WHERE id = 1").fetchone()
+        pre_b = pre_conn.execute("SELECT games_played FROM league_entries WHERE id = 2").fetchone()
+        assert pre_a["games_played"] == 0, "Initial games_played should be 0"
+        assert pre_b["games_played"] == 0, "Initial games_played should be 0"
+        pre_conn.close()
 
         store.record_result(
             epoch=1, learner_id=1, opponent_id=2,
@@ -260,35 +276,40 @@ class TestRecordResult:
 
         check_conn = sqlite3.connect(tournament_db)
         check_conn.row_factory = sqlite3.Row
-        row_a = check_conn.execute(
-            "SELECT games_played FROM league_entries WHERE id = 1"
-        ).fetchone()
-        row_b = check_conn.execute(
-            "SELECT games_played FROM league_entries WHERE id = 2"
-        ).fetchone()
-        assert row_a["games_played"] == 8  # 3 + 4 + 1
+        row_a = check_conn.execute("SELECT games_played FROM league_entries WHERE id = 1").fetchone()
+        row_b = check_conn.execute("SELECT games_played FROM league_entries WHERE id = 2").fetchone()
+        assert row_a["games_played"] == 8  # 0 + 3 + 4 + 1
         assert row_b["games_played"] == 8
         check_conn.close()
 
     def test_draw_result_elo_changes_minimal(self, store, tournament_db):
-        """Equal-rated opponents drawing should have near-zero Elo change."""
+        """Draw between unequal-rated opponents: weaker gains, stronger loses slightly."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
-        _insert_entry(conn, _make_entry(1, elo=1000.0))
-        _insert_entry(conn, _make_entry(2, elo=1000.0))
+        _insert_entry(conn, _make_entry(1, elo=1100.0))
+        _insert_entry(conn, _make_entry(2, elo=900.0))
         conn.close()
 
-        result_score = 0.5
-        new_a, new_b = compute_elo_update(1000.0, 1000.0, result=result_score, k=16.0)
+        result_score = 0.5  # draw
+        new_a, new_b = compute_elo_update(1100.0, 900.0, result=result_score, k=16.0)
+
+        # Draw between unequal players: stronger (A) loses a little, weaker (B) gains a little
+        assert new_a < 1100.0, "Stronger player should lose Elo on a draw"
+        assert new_b > 900.0, "Weaker player should gain Elo on a draw"
+
         store.update_elo(1, new_a, epoch=1)
+        store.update_elo(2, new_b, epoch=1)
 
         check_conn = sqlite3.connect(tournament_db)
         check_conn.row_factory = sqlite3.Row
-        row_a = check_conn.execute(
-            "SELECT elo_rating FROM league_entries WHERE id = 1"
-        ).fetchone()
-        # 50/50 result between equal-rated players → minimal Elo change
-        assert abs(row_a["elo_rating"] - 1000.0) < 1.0
+        row_a = check_conn.execute("SELECT elo_rating FROM league_entries WHERE id = 1").fetchone()
+        row_b = check_conn.execute("SELECT elo_rating FROM league_entries WHERE id = 2").fetchone()
+        # Both should have changed from their starting values
+        assert row_a["elo_rating"] == pytest.approx(new_a)
+        assert row_b["elo_rating"] == pytest.approx(new_b)
+        # But changes should be small (draw ≈ expected result)
+        assert abs(row_a["elo_rating"] - 1100.0) < 10.0
+        assert abs(row_b["elo_rating"] - 900.0) < 10.0
         check_conn.close()
 
 
@@ -322,15 +343,19 @@ class TestDBHelpers:
         assert t._current_epoch() == 0
 
     def test_list_entries_returns_opponent_entries(self, store, tournament_db):
-        """store.list_entries should return OpponentEntry objects from the DB."""
+        """store.list_entries should return OpponentEntry objects ordered by created_epoch ASC."""
         conn = sqlite3.connect(tournament_db)
         conn.row_factory = sqlite3.Row
-        _insert_entry(conn, _make_entry(1, elo=1200.0))
+        # Insert in reverse Elo order to verify sort is by epoch, not Elo
         _insert_entry(conn, _make_entry(2, elo=800.0))
+        _insert_entry(conn, _make_entry(1, elo=1200.0))
         conn.close()
 
         entries = store.list_entries()
         assert len(entries) == 2
+        assert isinstance(entries[0], OpponentEntry)
+        # Ordered by created_epoch ASC (id==created_epoch in _make_entry)
+        assert entries[0].created_epoch <= entries[1].created_epoch
 
 
 # ===========================================================================
@@ -410,6 +435,8 @@ class TestConstructor:
         assert t.k_factor == 16.0
         assert t.pause_seconds == 5.0
         assert t.min_pool_size == 3
+        assert str(t.device) == "cpu"
+        assert t.learner_entry_id is None
 
     def test_constructor_overrides(self, store):
         scheduler = _make_scheduler()

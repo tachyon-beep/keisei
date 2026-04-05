@@ -103,7 +103,7 @@ class TestEvaluate:
     def test_evaluate_returns_candidate_when_all_criteria_met(
         self, config: FrontierStaticConfig
     ) -> None:
-        """Top Dynamic (Elo 1250, games=100) with streak -> returns candidate."""
+        """Top Dynamic (Elo 1250, games=200) with streak -> returns candidate."""
         promoter = FrontierPromoter(config)
         dynamics = [
             _make_entry(1, elo=1250, games=200, lineage="lineage-a"),
@@ -116,14 +116,20 @@ class TestEvaluate:
             _make_entry(12, elo=1000, role=Role.FRONTIER_STATIC, lineage="lineage-z"),
         ]
 
-        result = None
+        first_promotion_epoch = None
         for epoch in range(60):
             result = promoter.evaluate(dynamics, frontier, epoch)
             if result is not None:
+                first_promotion_epoch = epoch
                 break
 
         assert result is not None
         assert result.id == 1
+        # Promotion shouldn't happen before the streak requirement is met
+        assert first_promotion_epoch is not None
+        assert first_promotion_epoch >= config.streak_epochs, (
+            f"Promoted at epoch {first_promotion_epoch}, but streak_epochs={config.streak_epochs}"
+        )
 
     def test_streak_tracking_across_reviews(self, config: FrontierStaticConfig) -> None:
         """Build streak, verify qualification, then drop out + reset."""
@@ -185,20 +191,30 @@ class TestShouldPromote:
         promoter._topk_streaks[1] = 0
         assert promoter.should_promote(low_games, frontier, 100) is False
 
-        # Criterion 3: streak too short
-        short_streak = _make_entry(2, elo=1200, games=200, lineage="lineage-a")
-        promoter._topk_streaks[2] = 80  # first seen at 80, current epoch 100 => 20 < 50
-        assert promoter.should_promote(short_streak, frontier, 100) is False
-
         # Criterion 2: not in top-K tracking
         no_streak = _make_entry(3, elo=1200, games=200, lineage="lineage-a")
         # Don't add to _topk_streaks
         assert promoter.should_promote(no_streak, frontier, 100) is False
 
+        # Criterion 3: streak too short
+        short_streak = _make_entry(2, elo=1200, games=200, lineage="lineage-a")
+        promoter._topk_streaks[2] = 80  # first seen at 80, current epoch 100 => 20 < 50
+        assert promoter.should_promote(short_streak, frontier, 100) is False
+
         # Criterion 4: elo margin too low
         low_elo = _make_entry(4, elo=1120, games=200, lineage="lineage-a")
         promoter._topk_streaks[4] = 0
         assert promoter.should_promote(low_elo, frontier, 100) is False
+
+        # Criterion 4 boundary: exactly at the margin (1100 + 50 = 1150) -> passes
+        boundary_elo = _make_entry(7, elo=1150, games=200, lineage="lineage-a")
+        promoter._topk_streaks[7] = 0
+        assert promoter.should_promote(boundary_elo, frontier, 100) is True
+
+        # Criterion 4 boundary: one below the margin (1149) -> fails
+        below_boundary = _make_entry(8, elo=1149, games=200, lineage="lineage-a")
+        promoter._topk_streaks[8] = 0
+        assert promoter.should_promote(below_boundary, frontier, 100) is False
 
         # Criterion 5: lineage overlap
         overlap = _make_entry(5, elo=1200, games=200, lineage="lineage-x")
@@ -217,10 +233,14 @@ class TestShouldPromote:
     def test_should_promote_when_frontier_empty(
         self, config: FrontierStaticConfig
     ) -> None:
-        """Empty frontier -> True (seed the tier)."""
+        """Empty frontier with calibrated entry -> True (seed the tier)."""
         promoter = FrontierPromoter(config)
-        candidate = _make_entry(1, elo=1000, games=0)
-        assert promoter.should_promote(candidate, [], 0) is True
+        # Still requires min_games even when seeding
+        uncalibrated = _make_entry(1, elo=1000, games=0)
+        assert promoter.should_promote(uncalibrated, [], 0) is False
+        # Calibrated entry seeds the empty frontier
+        calibrated = _make_entry(2, elo=1000, games=100)
+        assert promoter.should_promote(calibrated, [], 0) is True
 
     def test_lineage_overlap_limit(self, config: FrontierStaticConfig) -> None:
         """2 Frontier with same lineage, Dynamic same lineage -> False. Different -> True."""

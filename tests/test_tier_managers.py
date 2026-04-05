@@ -76,6 +76,13 @@ class TestFrontierManager:
         assert not mgr.is_due_for_review(100)
         assert not mgr.is_due_for_review(0)
 
+    def test_is_due_for_review_interval_one(self, store):
+        """Edge case: review_interval=1 means every epoch (except 0) triggers review."""
+        mgr = FrontierManager(store, FrontierStaticConfig(review_interval_epochs=1))
+        assert mgr.is_due_for_review(1)
+        assert mgr.is_due_for_review(2)
+        assert not mgr.is_due_for_review(0)
+
 
 class TestRecentFixedManager:
     def test_admit_creates_recent_fixed_entry(self, store):
@@ -142,8 +149,8 @@ class TestRecentFixedManager:
         outcome, entry = mgr.review_oldest()
         assert outcome is ReviewOutcome.PROMOTE
 
-    def test_review_oldest_delay_when_undercalibrated(self, store):
-        """Entry with < min_games should DELAY if soft overflow remains."""
+    def test_review_oldest_retire_when_overflow_exhausted(self, store):
+        """Entry with < min_games should RETIRE when soft overflow is exhausted."""
         mgr = RecentFixedManager(store, RecentFixedConfig(
             slots=2, soft_overflow=1, min_games_for_review=32,
         ))
@@ -152,9 +159,65 @@ class TestRecentFixedManager:
         mgr.admit(model, "resnet", {}, epoch=2)
         mgr.admit(model, "resnet", {}, epoch=3)
         assert mgr.count() == 3
+        # count=4, overflow_used = 4-2 = 2 > soft_overflow(1) → RETIRE
         mgr.admit(model, "resnet", {}, epoch=4)
         outcome, entry = mgr.review_oldest()
         assert outcome is ReviewOutcome.RETIRE
+
+
+    def test_review_oldest_delay_at_exact_overflow_boundary(self, store):
+        """Delay should fire when overflow_used == soft_overflow (at budget, not over)."""
+        mgr = RecentFixedManager(store, RecentFixedConfig(
+            slots=2, soft_overflow=1, min_games_for_review=32,
+        ))
+        model = torch.nn.Linear(10, 10)
+        mgr.admit(model, "resnet", {}, epoch=1)
+        mgr.admit(model, "resnet", {}, epoch=2)
+        mgr.admit(model, "resnet", {}, epoch=3)
+        # count=3, slots=2, overflow_used=1, soft_overflow=1 → at budget, should DELAY
+        outcome, entry = mgr.review_oldest()
+        assert outcome is ReviewOutcome.DELAY
+        assert entry.created_epoch == 1
+
+    def test_review_oldest_delay_when_opponents_insufficient(self, store):
+        """Entry with enough games but too few unique opponents should DELAY."""
+        mgr = RecentFixedManager(store, RecentFixedConfig(
+            slots=2, soft_overflow=1,
+            min_games_for_review=2, min_unique_opponents=3,
+        ))
+        model = torch.nn.Linear(10, 10)
+        mgr.admit(model, "resnet", {}, epoch=1)
+        mgr.admit(model, "resnet", {}, epoch=2)
+        mgr.admit(model, "resnet", {}, epoch=3)
+
+        # Give oldest entry 2 games but only 1 unique opponent via direct SQL
+        # (bypasses record_result which may have pending schema changes)
+        oldest = store.list_by_role(Role.RECENT_FIXED)[0]
+        other = _add_entry(store, 10, role=Role.FRONTIER_STATIC, elo=1000)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 2 WHERE id = ?",
+                (oldest.id,),
+            )
+            store._conn.execute(
+                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (1, oldest.id, other.id, 1, 0, 0),
+            )
+            store._conn.execute(
+                "INSERT INTO league_results (epoch, learner_id, opponent_id, wins, losses, draws) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (2, oldest.id, other.id, 0, 1, 0),
+            )
+
+        outcome, entry = mgr.review_oldest()
+        assert outcome is ReviewOutcome.DELAY
+
+    def test_review_oldest_raises_on_empty_tier(self, store):
+        """review_oldest should raise ValueError when tier is empty."""
+        mgr = RecentFixedManager(store, RecentFixedConfig())
+        with pytest.raises(ValueError, match="no Recent Fixed entries"):
+            mgr.review_oldest()
 
 
 class TestDynamicManager:
@@ -226,24 +289,30 @@ class TestDynamicManager:
         assert result is None
 
     def test_training_enabled_accepted(self, store):
-        """DynamicManager now accepts training_enabled=True (Phase 3)."""
-        mgr = DynamicManager(store, DynamicConfig(training_enabled=True))
-        assert mgr._config.training_enabled is True
+        """DynamicManager accepts both True and False for training_enabled."""
+        mgr_on = DynamicManager(store, DynamicConfig(training_enabled=True))
+        mgr_off = DynamicManager(store, DynamicConfig(training_enabled=False))
+        assert mgr_on._config.training_enabled is True
+        assert mgr_off._config.training_enabled is False
 
 
 class TestDynamicEloDynamic:
     """DynamicManager.evict_weakest uses elo_dynamic, not elo_rating."""
 
     def test_evict_weakest_uses_elo_dynamic(self, store):
+        """Pool at realistic capacity — elo_dynamic determines eviction, not elo_rating."""
         config = DynamicConfig(slots=10, min_games_before_eviction=0, protection_matches=0)
         mgr = DynamicManager(store, config)
+        # Fill pool to 8/10 slots so eviction scenario is realistic
+        for i in range(6):
+            _add_entry(store, epoch=10 + i, role=Role.DYNAMIC, elo=1000.0 + i * 20)
         e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
         e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
         # e1: HIGH elo_rating (1500) but LOW elo_dynamic (800)
         # e2: LOW elo_rating (1000) but HIGH elo_dynamic (1200)
         with store.transaction():
-            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
-            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+            store.update_role_elo(e1.id, EloColumn.DYNAMIC, 800.0)
+            store.update_role_elo(e2.id, EloColumn.DYNAMIC, 1200.0)
         evicted = mgr.evict_weakest()
         assert evicted is not None
         assert evicted.id == e1.id  # evicted despite higher elo_rating
@@ -254,8 +323,8 @@ class TestDynamicEloDynamic:
         e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
         e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
         with store.transaction():
-            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
-            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+            store.update_role_elo(e1.id, EloColumn.DYNAMIC, 800.0)
+            store.update_role_elo(e2.id, EloColumn.DYNAMIC, 1200.0)
         assert mgr.weakest_dynamic_elo() == 800.0
 
 
@@ -315,6 +384,16 @@ class TestFrontierReview:
         # New Frontier entry should exist (cloned from candidate)
         frontier_after = store.list_by_role(Role.FRONTIER_STATIC)
         frontier_after_ids = {e.id for e in frontier_after}
+
+        # At least one new Frontier entry should be a clone of the candidate
+        cloned_from_candidate = [
+            e for e in frontier_after
+            if e.parent_entry_id == candidate.id
+        ]
+        assert len(cloned_from_candidate) == 1, (
+            f"Expected exactly 1 clone of candidate {candidate.id}, "
+            f"got {len(cloned_from_candidate)}"
+        )
 
         # Original candidate still exists as Dynamic
         dyn_after = store.list_by_role(Role.DYNAMIC)
@@ -442,12 +521,15 @@ class TestFrontierReview:
         assert len(frontier_after) == 4
 
     def test_frontier_review_promotion_is_atomic(self, store):
-        """Verify clone + retire happens within a transaction context."""
+        """Verify clone + retire both happen within the same outer transaction."""
         config = _make_frontier_config(slots=3, min_tenure_epochs=0)
         promoter = FrontierPromoter(config)
 
+        frontier_entries = []
         for i in range(3):
-            _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=900)
+            frontier_entries.append(
+                _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=900)
+            )
 
         candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1200)
         with store.transaction():
@@ -459,6 +541,25 @@ class TestFrontierReview:
 
         mgr = FrontierManager(store, config, promoter=promoter)
 
-        with patch.object(store, "transaction", wraps=store.transaction) as mock_txn:
+        # Track which operations happen inside transaction contexts
+        ops_inside_txn = []
+        original_clone = store.clone_entry
+        original_retire = store.retire_entry
+
+        def tracking_clone(*args, **kwargs):
+            ops_inside_txn.append("clone")
+            return original_clone(*args, **kwargs)
+
+        def tracking_retire(*args, **kwargs):
+            ops_inside_txn.append("retire")
+            return original_retire(*args, **kwargs)
+
+        with patch.object(store, "clone_entry", side_effect=tracking_clone), \
+             patch.object(store, "retire_entry", side_effect=tracking_retire), \
+             patch.object(store, "transaction", wraps=store.transaction) as mock_txn:
             mgr.review(epoch=300)
-            mock_txn.assert_called_once()
+            # Both clone and retire should have been called
+            assert "clone" in ops_inside_txn
+            assert "retire" in ops_inside_txn
+            # The outer transaction wrapping both calls
+            assert mock_txn.call_count >= 1

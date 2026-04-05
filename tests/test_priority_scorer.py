@@ -116,12 +116,26 @@ class TestScore:
         cfg = PriorityScorerConfig(repeat_window_rounds=2)
         scorer = PriorityScorer(cfg)
         a, b = _make_entry(1), _make_entry(2)
+
+        # Round 1: record (a,b), advance → history = [{(1,2)}]
         scorer.record_round_result(a.id, b.id)
         scorer.advance_round()
+        # Round 2: record (a,b), advance → history = [{(1,2)}, {(1,2)}]
         scorer.record_round_result(a.id, b.id)
         scorer.advance_round()
+        two_repeat_score = scorer.score(a, b)
+
+        # Round 3: empty round, advance → history = [{(1,2)}, {}]
+        # Round 1's entry was evicted by deque maxlen=2
         scorer.advance_round()
         one_repeat_score = scorer.score(a, b)
+
+        # After eviction, penalty should be lighter (1 repeat vs 2)
+        assert one_repeat_score > two_repeat_score, (
+            "After window slide, repeat count should decrease from 2 to 1"
+        )
+
+        # Compared to a fresh scorer, there should still be SOME penalty
         fresh_score = PriorityScorer(cfg).score(a, b)
         assert fresh_score > one_repeat_score
 
@@ -133,6 +147,6 @@ class TestScoreRound:
         b = _make_entry(2, elo=1050.0)
         c = _make_entry(3, elo=1500.0)
         pairings = [(a, b), (a, c), (b, c)]
-        sorted_pairings = scorer.score_round(pairings)
+        sorted_pairings = scorer.sort_by_priority(pairings)
         scores = [scorer.score(p[0], p[1]) for p in sorted_pairings]
         assert scores == sorted(scores, reverse=True)

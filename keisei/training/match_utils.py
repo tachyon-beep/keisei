@@ -78,6 +78,8 @@ def play_match(
 
     if collect_rollout:
         assert all_rollouts is not None
+        if not all_rollouts:
+            return total_a_wins, total_b_wins, total_draws, None
         combined = _combine_rollouts(all_rollouts)
         return total_a_wins, total_b_wins, total_draws, combined
     return total_a_wins, total_b_wins, total_draws
@@ -123,9 +125,13 @@ def play_batch(
         if stop_event is not None and stop_event.is_set():
             break
 
-        # CAPTURE PERSPECTIVE BEFORE STEP
+        # Save pre-step perspective (who is about to move).
+        # VecEnv rewards are from the last-mover's perspective, so we
+        # need this to attribute wins to the correct player.
+        pre_step_players = current_players.copy()
+
         if collect_rollout:
-            step_perspective.append(torch.from_numpy(current_players.copy()))
+            step_perspective.append(torch.from_numpy(pre_step_players))
             step_obs.append(obs.cpu())
             step_legal_masks.append(legal_masks.cpu())
 
@@ -173,12 +179,22 @@ def play_batch(
                 torch.from_numpy((terminated | truncated).astype(np.float32))
             )
 
-        # Vectorized result counting
+        # Vectorized result counting.
+        # Rewards are from the last-mover's perspective:
+        #   reward > 0 means the mover won, reward < 0 means the mover lost.
+        # pre_step_players tells us who moved (0=A/black, 1=B/white).
         done = terminated | truncated
-        a_wins += int(((rewards > 0) & done).sum())
-        b_wins += int(((rewards < 0) & done).sum())
+        a_moved = pre_step_players == 0
+        b_moved = pre_step_players == 1
+        a_wins += int(((rewards > 0) & done & a_moved).sum())
+        a_wins += int(((rewards < 0) & done & b_moved).sum())
+        b_wins += int(((rewards > 0) & done & b_moved).sum())
+        b_wins += int(((rewards < 0) & done & a_moved).sum())
         draws += int(((rewards == 0) & done).sum())
 
+        # Heuristic: stop once enough games finish. May exceed num_envs on
+        # VecEnv auto-reset (a fast game can finish and restart within one batch),
+        # but that's fine — the outer play_match() manages games_remaining exactly.
         if a_wins + b_wins + draws >= num_envs:
             break
 

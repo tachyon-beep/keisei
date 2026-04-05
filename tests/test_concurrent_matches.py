@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock
-
 import numpy as np
 import pytest
 import torch
@@ -66,15 +64,6 @@ def _make_entry(entry_id: int, name: str = "test") -> OpponentEntry:
         flavour_facts=[],
         role=Role.FRONTIER_STATIC,
     )
-
-
-def _make_mock_store(entries: list[OpponentEntry]) -> MagicMock:
-    """Returns MagicMock OpponentStore that loads TinyModel."""
-    from keisei.training.opponent_store import OpponentStore
-
-    store = MagicMock(spec=OpponentStore)
-    store.load_opponent = MagicMock(side_effect=lambda entry, device="cpu": TinyModel())
-    return store
 
 
 def _make_pool(
@@ -187,7 +176,6 @@ class TestRunRound:
             (entries[0], entries[1]),
             (entries[2], entries[3]),
         ]
-        store = _make_mock_store(entries)
 
         results = pool.run_round(
             vecenv,
@@ -204,7 +192,7 @@ class TestRunRound:
             assert total_games >= 4
 
     def test_more_pairings_than_parallel_slots(self) -> None:
-        """1 slot, 3 pairings -> 3 results in correct order."""
+        """1 slot, 3 pairings -> 3 results in correct order with games completed."""
         pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
         vecenv = MockVecEnv(num_envs=2, terminate_after=2)
         entries = [_make_entry(i) for i in range(6)]
@@ -230,6 +218,10 @@ class TestRunRound:
         assert results[1].entry_b.id == 3
         assert results[2].entry_a.id == 4
         assert results[2].entry_b.id == 5
+        # Each pairing should have completed the target number of games
+        for r in results:
+            total = r.a_wins + r.b_wins + r.draws
+            assert total >= 4, f"Pairing {r.entry_a.id}v{r.entry_b.id} only completed {total} games"
 
     def test_empty_pairings(self) -> None:
         """[] -> []"""
@@ -245,7 +237,7 @@ class TestRunRound:
         assert results == []
 
     def test_stop_event_interrupts(self) -> None:
-        """Immediate stop -> returns list (no hang)."""
+        """Pre-set stop -> returns empty list without loading any models."""
         pool = _make_pool()
         vecenv = MockVecEnv(num_envs=4)
         entries = [_make_entry(i) for i in range(4)]
@@ -253,20 +245,20 @@ class TestRunRound:
         stop_event = threading.Event()
         stop_event.set()  # Set before calling
 
+        load_calls = []
         results = pool.run_round(
             vecenv,
             pairings,
-            load_fn=lambda entry: TinyModel(),
+            load_fn=lambda entry: load_calls.append(entry.id) or TinyModel(),
             release_fn=lambda ma, mb: None,
             device="cpu",
             stop_event=stop_event,
         )
-        assert isinstance(results, list)
-        # Should return empty since stop was set before start
         assert len(results) == 0
+        assert len(load_calls) == 0, "load_fn should never be called when stop is pre-set"
 
     def test_rollout_collection_for_trainable(self) -> None:
-        """trainable_fn=True -> rollout not None, observations.ndim==4."""
+        """trainable_fn=True -> rollout not None, observations.ndim==5 (steps, envs, C, 9, 9)."""
         pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
         vecenv = MockVecEnv(num_envs=2, terminate_after=2)
         entries = [_make_entry(i) for i in range(2)]
@@ -304,3 +296,60 @@ class TestRunRound:
         )
         assert len(results) == 1
         assert results[0].rollout is None
+
+
+# ---------------------------------------------------------------------------
+# TestMaxResidentModels
+# ---------------------------------------------------------------------------
+
+
+class TestMaxResidentModels:
+    def test_concurrent_slots_capped_by_max_resident(self) -> None:
+        """With 4 parallel slots but max_resident=4 (2 slots worth),
+        only 2 slots should be active at once."""
+        config = ConcurrencyConfig(
+            parallel_matches=4,
+            envs_per_match=2,
+            total_envs=8,
+            max_resident_models=4,  # only 2 slots can be active (4 // 2)
+        )
+        pool = ConcurrentMatchPool(config)
+        vecenv = MockVecEnv(num_envs=8, terminate_after=2)
+        entries = [_make_entry(i) for i in range(8)]
+        pairings = [
+            (entries[0], entries[1]),
+            (entries[2], entries[3]),
+            (entries[4], entries[5]),
+            (entries[6], entries[7]),
+        ]
+
+        # Track peak concurrent model loads
+        loaded_models: list[object] = []
+        peak_loaded = 0
+
+        def tracking_load(entry: OpponentEntry) -> TinyModel:
+            nonlocal peak_loaded
+            m = TinyModel()
+            loaded_models.append(m)
+            peak_loaded = max(peak_loaded, len(loaded_models))
+            return m
+
+        def tracking_release(ma: object, mb: object) -> None:
+            if ma in loaded_models:
+                loaded_models.remove(ma)
+            if mb in loaded_models:
+                loaded_models.remove(mb)
+
+        results = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=tracking_load,
+            release_fn=tracking_release,
+            device="cpu",
+            games_per_match=4,
+        )
+
+        assert len(results) == 4  # all pairings completed
+        assert peak_loaded <= 4, (
+            f"Peak loaded models {peak_loaded} exceeded max_resident_models 4"
+        )

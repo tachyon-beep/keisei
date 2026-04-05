@@ -72,7 +72,12 @@ class TestUpdateFromResult:
         a_after = store._get_entry(a.id)
         b_after = store._get_entry(b.id)
         assert a_after.elo_historical > 1000.0
+        # result_score=1.0 means a wins; if b were updated it would DROP below 1000.
+        # Staying at exactly 1000.0 proves the code skipped b's update.
         assert b_after.elo_historical == 1000.0  # anchor stays frozen
+        # Other columns should be untouched for both
+        assert a_after.elo_dynamic == 1000.0
+        assert b_after.elo_dynamic == 1000.0
 
     def test_cross_dynamic_recent(self, elo_setup):
         tracker, store, model = elo_setup
@@ -87,6 +92,9 @@ class TestUpdateFromResult:
         assert dyn_after.elo_dynamic > 1000.0
         # Recent entry's elo_recent should go down
         assert rec_after.elo_recent < 1000.0
+        # Non-updated columns must stay at default
+        assert dyn_after.elo_recent == 1000.0
+        assert rec_after.elo_dynamic == 1000.0
 
     def test_k_factors_differ_by_context(self, elo_setup):
         tracker, store, model = elo_setup
@@ -115,22 +123,30 @@ class TestUpdateFromResult:
 
         a_after = store._get_entry(a.id)
         b_after = store._get_entry(b.id)
+        # Prove the update actually happened (elo_dynamic changed)...
+        assert a_after.elo_dynamic > 1000.0
+        assert b_after.elo_dynamic < 1000.0
+        # ...then verify composite elo_rating was NOT touched
         assert a_after.elo_rating == 1000.0
         assert b_after.elo_rating == 1000.0
 
     def test_atomic_update_both_entries(self, elo_setup):
-        """Both entry updates happen in the same transaction."""
+        """Both entries are updated in a single transaction — winner up, loser down."""
         tracker, store, model = elo_setup
         a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
         b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
 
-        tracker.update_from_result(a, b, result_score=0.5, match_context="dynamic")
+        tracker.update_from_result(a, b, result_score=1.0, match_context="dynamic")
 
         a_after = store._get_entry(a.id)
         b_after = store._get_entry(b.id)
-        # Draw: both should stay at 1000 (within floating point)
-        assert abs(a_after.elo_dynamic - 1000.0) < 0.1
-        assert abs(b_after.elo_dynamic - 1000.0) < 0.1
+        # Both entries must have been updated: a goes up, b goes down
+        assert a_after.elo_dynamic > 1000.0
+        assert b_after.elo_dynamic < 1000.0
+        # Elo is zero-sum: combined delta should be zero
+        delta_a = a_after.elo_dynamic - 1000.0
+        delta_b = b_after.elo_dynamic - 1000.0
+        assert abs(delta_a + delta_b) < 0.01
 
     def test_unknown_context_raises(self, elo_setup):
         tracker, store, model = elo_setup

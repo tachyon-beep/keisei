@@ -218,20 +218,22 @@ class TestRecordResultUpdates:
         b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.FRONTIER_STATIC)
         store.record_result(epoch=1, learner_id=a.id, opponent_id=b.id,
                             wins=3, losses=1, draws=0)
-        updated_a = store.list_entries()[0] if store.list_entries()[0].id == a.id else store.list_entries()[1]
+        updated_a = store.get_entry(a.id)
+        assert updated_a is not None
         assert updated_a.last_match_at is not None
         store.close()
 
     def test_record_result_decrements_protection(self, store_db, league_dir):
         store = OpponentStore(store_db, str(league_dir))
         model = torch.nn.Linear(10, 10)
+        b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.FRONTIER_STATIC)
         with store.transaction():
             a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
             store._conn.execute(
                 "UPDATE league_entries SET protection_remaining = 5 WHERE id = ?",
                 (a.id,),
             )
-        store.record_result(epoch=1, learner_id=a.id, opponent_id=a.id,
+        store.record_result(epoch=1, learner_id=a.id, opponent_id=b.id,
                             wins=1, losses=0, draws=0)
         conn = sqlite3.connect(store_db)
         row = conn.execute(

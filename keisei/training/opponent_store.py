@@ -109,15 +109,23 @@ def _generate_flavour_facts(epoch: int, num_facts: int = 3) -> list[list[str]]:
     return [[cat, rng.choice(_FLAVOUR_POOLS[cat])] for cat in categories]
 
 
-def _generate_display_name(epoch: int, existing_names: set[str]) -> str:
-    """Generate a unique display name for a league entry."""
-    rng = random.Random(f"name-{epoch}")
+def _generate_display_name(epoch: int, existing_names: set[str], entry_count: int = 0) -> str:
+    """Generate a unique display name for a league entry.
+
+    Args:
+        epoch: Training epoch, used to seed the RNG.
+        existing_names: Names already in use (across ALL statuses, not just active).
+        entry_count: Total number of entries ever created, used to break ties
+            when multiple entries are created at the same epoch.
+    """
+    rng = random.Random(f"name-{epoch}-{entry_count}")
     shuffled = list(LEAGUE_NAMES)
     rng.shuffle(shuffled)
     for name in shuffled:
         if name not in existing_names:
             return name
-    return f"{shuffled[0]} E{epoch}"
+    # Pool exhausted — use a monotonic suffix that cannot collide
+    return f"{shuffled[0]} #{entry_count}"
 
 
 @dataclass(frozen=True)
@@ -277,9 +285,10 @@ class OpponentStore:
         """Save a checkpoint snapshot and add it to the store."""
         raw_model: torch.nn.Module = model.module if hasattr(model, "module") else model  # type: ignore[assignment]
 
-        with self._lock:
-            existing_names = {e.display_name for e in self._list_entries_unlocked()}
-            display_name = _generate_display_name(epoch, existing_names)
+        with self.transaction():
+            existing_names = self._all_display_names_unlocked()
+            entry_count = self._entry_count_unlocked()
+            display_name = _generate_display_name(epoch, existing_names, entry_count)
             flavour_facts = _generate_flavour_facts(epoch)
 
             cursor = self._conn.execute(
@@ -294,19 +303,20 @@ class OpponentStore:
             assert entry_id is not None
 
             ckpt_path = self.league_dir / f"{architecture}_ep{epoch:05d}_id{entry_id}.pt"
-            tmp_path = ckpt_path.with_suffix(".pt.tmp")
+            tmp_path = Path(str(ckpt_path) + ".tmp")
             torch.save(raw_model.state_dict(), tmp_path)
             tmp_path.rename(ckpt_path)
 
-            self._conn.execute(
-                "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
-                (str(ckpt_path), entry_id),
-            )
+            try:
+                self._conn.execute(
+                    "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
+                    (str(ckpt_path), entry_id),
+                )
 
-            self.log_transition(entry_id, None, role, None, EntryStatus.ACTIVE, "added")
-
-            if self._transaction_depth == 0:
-                self._conn.commit()
+                self._log_transition_unlocked(entry_id, None, role, None, EntryStatus.ACTIVE, "added")
+            except Exception:
+                ckpt_path.unlink(missing_ok=True)
+                raise
 
             logger.info(
                 "Store entry: %s (%s) epoch %d -> %s (id=%d)",
@@ -319,13 +329,14 @@ class OpponentStore:
 
     def clone_entry(self, source_entry_id: int, new_role: Role, reason: str) -> OpponentEntry:
         """Clone an entry: copy checkpoint file, create new DB row with lineage."""
-        with self._lock:
+        with self.transaction():
             source = self._get_entry(source_entry_id)
             if source is None:
                 raise ValueError(f"Source entry {source_entry_id} not found")
             src_path = Path(source.checkpoint_path)
-            existing_names = {e.display_name for e in self._list_entries_unlocked()}
-            display_name = _generate_display_name(source.created_epoch, existing_names)
+            existing_names = self._all_display_names_unlocked()
+            entry_count = self._entry_count_unlocked()
+            display_name = _generate_display_name(source.created_epoch, existing_names, entry_count)
             flavour_facts = _generate_flavour_facts(source.created_epoch + source_entry_id)
             cursor = self._conn.execute(
                 """INSERT INTO league_entries
@@ -342,20 +353,22 @@ class OpponentStore:
             assert entry_id is not None
             dst_path = self.league_dir / f"{source.architecture}_ep{source.created_epoch:05d}_id{entry_id}.pt"
             shutil.copy2(str(src_path), str(dst_path))
-            self._conn.execute(
-                "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
-                (str(dst_path), entry_id),
-            )
-            self.log_transition(entry_id, None, new_role, None, EntryStatus.ACTIVE, reason)
-            if self._transaction_depth == 0:
-                self._conn.commit()
+            try:
+                self._conn.execute(
+                    "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
+                    (str(dst_path), entry_id),
+                )
+                self._log_transition_unlocked(entry_id, None, new_role, None, EntryStatus.ACTIVE, reason)
+            except Exception:
+                dst_path.unlink(missing_ok=True)
+                raise
             entry = self._get_entry(entry_id)
             assert entry is not None
             return entry
 
     def retire_entry(self, entry_id: int, reason: str) -> None:
         """Mark an entry as retired. Does NOT delete the checkpoint file."""
-        with self._lock:
+        with self.transaction():
             entry = self._get_entry(entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} not found")
@@ -364,16 +377,14 @@ class OpponentStore:
                 "UPDATE league_entries SET status = ? WHERE id = ?",
                 (EntryStatus.RETIRED, entry_id),
             )
-            self.log_transition(
+            self._log_transition_unlocked(
                 entry_id, old_role, old_role,
                 EntryStatus.ACTIVE, EntryStatus.RETIRED, reason,
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     def update_role(self, entry_id: int, new_role: Role, reason: str) -> None:
         """Change the role of an entry."""
-        with self._lock:
+        with self.transaction():
             entry = self._get_entry(entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} not found")
@@ -382,12 +393,10 @@ class OpponentStore:
                 "UPDATE league_entries SET role = ? WHERE id = ?",
                 (new_role, entry_id),
             )
-            self.log_transition(
+            self._log_transition_unlocked(
                 entry_id, old_role, new_role,
                 entry.status, entry.status, reason,
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Queries
@@ -435,6 +444,18 @@ class OpponentStore:
         ).fetchall()
         return [OpponentEntry.from_db_row(r) for r in rows]
 
+    def _all_display_names_unlocked(self) -> set[str]:
+        """Internal: return display names across ALL statuses for uniqueness checks."""
+        rows = self._conn.execute(
+            "SELECT display_name FROM league_entries WHERE display_name != ''",
+        ).fetchall()
+        return {row["display_name"] for row in rows}
+
+    def _entry_count_unlocked(self) -> int:
+        """Internal: total number of entries ever created."""
+        row = self._conn.execute("SELECT COUNT(*) AS cnt FROM league_entries").fetchone()
+        return row["cnt"] if row else 0
+
     def list_entries(self) -> list[OpponentEntry]:
         """List all active entries."""
         with self._lock:
@@ -453,6 +474,27 @@ class OpponentStore:
     # Transitions and protection
     # ------------------------------------------------------------------
 
+    def _log_transition_unlocked(
+        self,
+        entry_id: int,
+        from_role: Role | str | None,
+        to_role: Role | str | None,
+        from_status: EntryStatus | str | None,
+        to_status: EntryStatus | str | None,
+        reason: str,
+    ) -> None:
+        """Internal: insert transition row without acquiring lock or committing."""
+        self._conn.execute(
+            """INSERT INTO league_transitions
+               (entry_id, from_role, to_role, from_status, to_status, reason)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entry_id, str(from_role) if from_role else None,
+             str(to_role) if to_role else None,
+             str(from_status) if from_status else None,
+             str(to_status) if to_status else None,
+             reason),
+        )
+
     def log_transition(
         self,
         entry_id: int,
@@ -463,19 +505,10 @@ class OpponentStore:
         reason: str,
     ) -> None:
         """Record a role/status transition in the league_transitions table."""
-        with self._lock:
-            self._conn.execute(
-                """INSERT INTO league_transitions
-                   (entry_id, from_role, to_role, from_status, to_status, reason)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (entry_id, str(from_role) if from_role else None,
-                 str(to_role) if to_role else None,
-                 str(from_status) if from_status else None,
-                 str(to_status) if to_status else None,
-                 reason),
+        with self.transaction():
+            self._log_transition_unlocked(
+                entry_id, from_role, to_role, from_status, to_status, reason,
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     def count_unique_opponents(self, entry_id: int) -> int:
         """Count distinct opponents this entry has faced (in either seat)."""
@@ -492,25 +525,25 @@ class OpponentStore:
 
     def set_protection(self, entry_id: int, count: int) -> None:
         """Set the protection_remaining value for an entry."""
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 "UPDATE league_entries SET protection_remaining = ? WHERE id = ?",
                 (count, entry_id),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
+
+    def _decrement_protection_unlocked(self, entry_id: int) -> None:
+        """Internal: decrement protection without acquiring lock or committing."""
+        self._conn.execute(
+            """UPDATE league_entries
+               SET protection_remaining = MAX(protection_remaining - 1, 0)
+               WHERE id = ?""",
+            (entry_id,),
+        )
 
     def decrement_protection(self, entry_id: int) -> None:
         """Decrement protection_remaining by 1, floor at 0."""
-        with self._lock:
-            self._conn.execute(
-                """UPDATE league_entries
-                   SET protection_remaining = MAX(protection_remaining - 1, 0)
-                   WHERE id = ?""",
-                (entry_id,),
-            )
-            if self._transaction_depth == 0:
-                self._conn.commit()
+        with self.transaction():
+            self._decrement_protection_unlocked(entry_id)
 
     # ------------------------------------------------------------------
     # Pins
@@ -540,12 +573,10 @@ class OpponentStore:
 
     def set_bootstrapped(self) -> None:
         """Mark the league as bootstrapped."""
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 "UPDATE league_meta SET bootstrapped = 1 WHERE id = 1"
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Model loading
@@ -584,7 +615,7 @@ class OpponentStore:
     # ------------------------------------------------------------------
 
     def update_elo(self, entry_id: int, new_elo: float, epoch: int = 0) -> None:
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
                 (new_elo, entry_id),
@@ -593,8 +624,6 @@ class OpponentStore:
                 "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
                 (entry_id, epoch, new_elo),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     def record_result(
         self, epoch: int, learner_id: int, opponent_id: int,
@@ -602,12 +631,14 @@ class OpponentStore:
         elo_delta_a: float = 0.0, elo_delta_b: float = 0.0,
         *, match_context: str | None = None,
     ) -> None:
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 """INSERT INTO league_results
-                   (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (epoch, learner_id, opponent_id, wins, losses, draws, elo_delta_a, elo_delta_b),
+                   (epoch, learner_id, opponent_id, wins, losses, draws,
+                    elo_delta_a, elo_delta_b, match_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (epoch, learner_id, opponent_id, wins, losses, draws,
+                 elo_delta_a, elo_delta_b, match_context),
             )
             total_games = wins + losses + draws
             self._conn.execute(
@@ -628,11 +659,9 @@ class OpponentStore:
                 (opponent_id,),
             )
             # Decrement protection for both participants (deduplicate if same)
-            self.decrement_protection(learner_id)
+            self._decrement_protection_unlocked(learner_id)
             if opponent_id != learner_id:
-                self.decrement_protection(opponent_id)
-            if self._transaction_depth == 0:
-                self._conn.commit()
+                self._decrement_protection_unlocked(opponent_id)
 
     # ------------------------------------------------------------------
     # Role-specific Elo
@@ -650,10 +679,8 @@ class OpponentStore:
         sql = self._ROLE_ELO_SQL.get(column)
         if sql is None:
             raise ValueError(f"Invalid Elo column: {column!r}")
-        with self._lock:
+        with self.transaction():
             self._conn.execute(sql, (new_elo, entry_id))
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Historical Library
@@ -668,7 +695,7 @@ class OpponentStore:
         selection_mode: str,
     ) -> None:
         """Insert or update a historical library slot."""
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 """INSERT INTO historical_library
                    (slot_index, target_epoch, entry_id, actual_epoch, selected_at, selection_mode)
@@ -681,8 +708,6 @@ class OpponentStore:
                      selection_mode = excluded.selection_mode""",
                 (slot_index, target_epoch, entry_id, actual_epoch, selection_mode),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     def get_historical_slots(self) -> list[dict[str, Any]]:
         """Read all historical library slots joined with entry data."""
@@ -710,25 +735,29 @@ class OpponentStore:
 
         Writes atomically via .tmp + rename. Updates optimizer_path in the DB.
         """
-        with self._lock:
+        with self.transaction():
             entry = self._get_entry(entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} not found")
             ckpt = Path(entry.checkpoint_path)
             opt_path = ckpt.with_name(f"{ckpt.stem}_optimizer{ckpt.suffix}")
-            tmp_path = opt_path.with_suffix(opt_path.suffix + ".tmp")
+            tmp_path = Path(str(opt_path) + ".tmp")
             torch.save(optimizer_state_dict, tmp_path)
             tmp_path.rename(opt_path)
             self._conn.execute(
                 "UPDATE league_entries SET optimizer_path = ? WHERE id = ?",
                 (str(opt_path), entry_id),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
             logger.info("Saved optimizer for entry %d -> %s", entry_id, opt_path.name)
 
     def load_optimizer(self, entry_id: int, device: str = "cpu") -> dict[str, Any] | None:
-        """Load a saved optimizer state dict, or None if unavailable."""
+        """Load a saved optimizer state dict, or None if unavailable.
+
+        Note: the lock is intentionally released before torch.load to avoid
+        serializing all store operations during slow I/O. save_optimizer uses
+        atomic rename (tmp -> final), so a concurrent save produces either the
+        old or new version — both valid states.
+        """
         with self._lock:
             entry = self._get_entry(entry_id)
         if entry is None or entry.optimizer_path is None:
@@ -746,15 +775,13 @@ class OpponentStore:
 
     def increment_update_count(self, entry_id: int) -> None:
         """Increment the update_count and set last_train_at to now."""
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 "UPDATE league_entries SET update_count = update_count + 1, "
                 "last_train_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
                 "WHERE id = ?",
                 (entry_id,),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()
 
     # ------------------------------------------------------------------
     # Gauntlet results
@@ -773,7 +800,7 @@ class OpponentStore:
         elo_after: float | None = None,
     ) -> None:
         """Record a gauntlet matchup result."""
-        with self._lock:
+        with self.transaction():
             self._conn.execute(
                 """INSERT INTO gauntlet_results
                    (epoch, entry_id, historical_slot, historical_entry_id,
@@ -782,5 +809,3 @@ class OpponentStore:
                 (epoch, entry_id, historical_slot, historical_entry_id,
                  wins, losses, draws, elo_before, elo_after),
             )
-            if self._transaction_depth == 0:
-                self._conn.commit()

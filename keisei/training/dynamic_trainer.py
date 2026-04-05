@@ -147,7 +147,7 @@ class DynamicTrainer:
                         if isinstance(v, torch.Tensor):
                             state[k] = v.to(device)
             except ValueError:
-                logger.debug("Optimizer state mismatch for entry %d, starting fresh", entry_id)
+                logger.warning("Optimizer state mismatch for entry %d, resetting momentum", entry_id)
             return new_opt
 
         # Try loading from store
@@ -204,6 +204,8 @@ class DynamicTrainer:
 
     def _update_inner(self, entry: OpponentEntry, device: str) -> bool:
         """Internal update logic — may raise."""
+        # load_opponent() builds a fresh model instance each call (no cache),
+        # so .train() is safe — it won't affect other callers' eval-mode models.
         model = self.store.load_opponent(entry, device)
         model.train()
 
@@ -219,6 +221,8 @@ class DynamicTrainer:
         value_cats = torch.full(
             (all_obs.shape[0],), -1, dtype=torch.long, device=device
         )
+        # Exact float comparison is safe: Rust VecEnv compute_reward() returns
+        # literal 1.0 / -1.0 / 0.0 with no arithmetic — no epsilon needed.
         terminal_mask = all_dones.bool()
         value_cats[terminal_mask & (all_rewards > 0)] = 0  # win
         value_cats[terminal_mask & (all_rewards == 0)] = 1  # draw
@@ -251,7 +255,9 @@ class DynamicTrainer:
                 .squeeze(1)
             )
 
-            # Reward-signed advantage: +1 for wins, -1 for losses, 0 for draws/non-terminal
+            # Reward-signed advantage: +1 for wins, -1 for losses, 0 for draws/non-terminal.
+            # Zero advantage for draws is intentional — draws don't indicate which move
+            # was good or bad. The value head still learns from draws via WDL cross-entropy above.
             advantages = all_rewards[indices] * all_dones[indices].float()
 
             policy_loss = ppo_clip_loss(
@@ -280,18 +286,16 @@ class DynamicTrainer:
                 if isinstance(v, torch.Tensor):
                     state[k] = v.cpu()
 
-        # Track total matches for checkpoint flushing
+        # Track matches since last checkpoint flush
         match_count = self._match_counts.get(entry.id, 0)
         self._total_matches[entry.id] = (
             self._total_matches.get(entry.id, 0) + match_count
         )
 
         # Checkpoint optimizer periodically
-        if (
-            self._total_matches[entry.id] > 0
-            and self._total_matches[entry.id] % self.config.checkpoint_flush_every == 0
-        ):
+        if self._total_matches[entry.id] >= self.config.checkpoint_flush_every:
             self.store.save_optimizer(entry.id, optimizer.state_dict())
+            self._total_matches[entry.id] = 0
 
         self.store.increment_update_count(entry.id)
         self._match_counts[entry.id] = 0
