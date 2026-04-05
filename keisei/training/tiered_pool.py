@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 from keisei.config import LeagueConfig
+from keisei.training.dynamic_trainer import DynamicTrainer
+from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.historical_library import HistoricalLibrary, HistoricalSlot
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
@@ -21,15 +23,35 @@ logger = logging.getLogger(__name__)
 class TieredPool:
     """High-level orchestrator tying together the three tier managers."""
 
-    def __init__(self, store: OpponentStore, config: LeagueConfig) -> None:
+    def __init__(
+        self,
+        store: OpponentStore,
+        config: LeagueConfig,
+        learner_lr: float = 0.0,
+    ) -> None:
         self.store = store
         self.config = config
-        self.frontier_manager = FrontierManager(store, config.frontier)
+
+        promoter = FrontierPromoter(config.frontier)
+        self.frontier_manager = FrontierManager(store, config.frontier, promoter=promoter)
         self.recent_manager = RecentFixedManager(store, config.recent)
         self.dynamic_manager = DynamicManager(store, config.dynamic)
         self.recent_manager.set_weakest_elo_fn(self.dynamic_manager.weakest_elo)
         self.historical_library = HistoricalLibrary(store, config.history)
         self.role_elo_tracker = RoleEloTracker(store, config.role_elo)
+
+        if config.dynamic.training_enabled:
+            self.dynamic_trainer: DynamicTrainer | None = DynamicTrainer(
+                store=self.store,
+                config=config.dynamic,
+                learner_lr=learner_lr,
+            )
+            logger.warning(
+                "Dynamic training enabled — ensure tournament_device differs from "
+                "learner device to avoid GPU memory contention"
+            )
+        else:
+            self.dynamic_trainer = None
 
     # ------------------------------------------------------------------
     # Snapshot

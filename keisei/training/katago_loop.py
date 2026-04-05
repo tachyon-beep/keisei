@@ -573,7 +573,7 @@ class KataGoTrainingLoop:
         if config.league is not None:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
             self.store = OpponentStore(self.db_path, league_dir)
-            self.tiered_pool = TieredPool(self.store, config.league)
+            self.tiered_pool = TieredPool(self.store, config.league, learner_lr=self.ppo.params.learning_rate)
             self.scheduler = MatchScheduler(config.league.scheduler)
             # Bootstrap snapshot so pool is never empty
             bootstrap_entry = self.tiered_pool.snapshot_learner(
