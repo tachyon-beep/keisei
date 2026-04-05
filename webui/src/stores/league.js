@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store'
 import { get } from 'svelte/store'
+import { trainingState } from './training.js'
 
 export const leagueEntries = writable([])
 export const leagueResults = writable([])
@@ -8,6 +9,10 @@ export const tournamentStats = writable(null)
 
 /** Currently expanded/focused entry in leaderboard — used for cross-highlighting */
 export const focusedEntryId = writable(null)
+
+export const historicalLibrary = writable([])
+export const gauntletResults = writable([])
+export const leagueTransitions = writable([])
 
 /** Event log: tracks arrivals, departures, and rank changes */
 const MAX_EVENTS = 50
@@ -197,5 +202,15 @@ export const leagueStats = derived(
       eloMax: Math.round(Math.max(...elos)),
       eloSpread: Math.round(Math.max(...elos) - Math.min(...elos)),
     }
+  }
+)
+
+/** The league entry matching the current learner (by display_name from trainingState) */
+export const learnerEntry = derived(
+  [leagueEntries, trainingState],
+  ([$entries, $state]) => {
+    const name = $state?.display_name
+    if (!name) return null
+    return $entries.find(e => e.display_name === name) || null
   }
 )

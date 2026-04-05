@@ -3,12 +3,19 @@ import { get } from 'svelte/store'
 import {
   leagueEntries, leagueResults, eloHistory,
   leagueRanked, entryWLD, headToHead, eloDelta, leagueStats,
+  historicalLibrary, gauntletResults, leagueTransitions,
+  learnerEntry,
 } from './league.js'
+import { trainingState } from './training.js'
 
 beforeEach(() => {
   leagueEntries.set([])
   leagueResults.set([])
   eloHistory.set([])
+  historicalLibrary.set([])
+  gauntletResults.set([])
+  leagueTransitions.set([])
+  trainingState.set(null)
 })
 
 describe('leagueRanked', () => {
@@ -287,5 +294,31 @@ describe('leagueStats', () => {
     expect(stats.eloMax).toBe(1200)
     expect(stats.eloSpread).toBe(300)
     expect(stats.topEntry.id).toBe(2)
+  })
+})
+
+describe('learnerEntry', () => {
+  it('returns null when trainingState is null', () => {
+    expect(get(learnerEntry)).toBeNull()
+  })
+
+  it('returns null when display_name is set but no entry matches', () => {
+    trainingState.set({ display_name: 'NonExistent' })
+    leagueEntries.set([
+      { id: 1, display_name: 'Bot-A', elo_rating: 1000, status: 'active' },
+    ])
+    expect(get(learnerEntry)).toBeNull()
+  })
+
+  it('returns matching entry when display_name matches', () => {
+    trainingState.set({ display_name: 'Bot-A' })
+    leagueEntries.set([
+      { id: 1, display_name: 'Bot-A', elo_rating: 1000, status: 'active' },
+      { id: 2, display_name: 'Bot-B', elo_rating: 1100, status: 'active' },
+    ])
+    const entry = get(learnerEntry)
+    expect(entry).not.toBeNull()
+    expect(entry.id).toBe(1)
+    expect(entry.display_name).toBe('Bot-A')
   })
 })
