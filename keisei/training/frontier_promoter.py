@@ -91,8 +91,8 @@ class FrontierPromoter:
             return False
 
         # 4. Elo margin above weakest Frontier
-        weakest_frontier_elo = min(e.elo_rating for e in frontier_entries)
-        if candidate.elo_rating < weakest_frontier_elo + self.config.promotion_margin_elo:
+        weakest_frontier_elo = min(e.elo_frontier for e in frontier_entries)
+        if candidate.elo_frontier < weakest_frontier_elo + self.config.promotion_margin_elo:
             return False
 
         # 5. Lineage overlap

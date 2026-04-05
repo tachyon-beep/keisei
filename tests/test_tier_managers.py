@@ -10,7 +10,7 @@ import torch
 from keisei.config import FrontierStaticConfig, RecentFixedConfig, DynamicConfig
 from keisei.db import init_db
 from keisei.training.frontier_promoter import FrontierPromoter
-from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, EntryStatus
+from keisei.training.opponent_store import EloColumn, OpponentEntry, OpponentStore, Role, EntryStatus
 from keisei.training.tier_managers import (
     FrontierManager,
     RecentFixedManager,
@@ -33,6 +33,7 @@ def _add_entry(store, epoch, role=Role.UNASSIGNED, elo=1000.0):
     entry = store.add_entry(model, "resnet", {}, epoch=epoch, role=role)
     if elo != 1000.0:
         store.update_elo(entry.id, elo)
+        store.update_role_elo(entry.id, EloColumn.FRONTIER, elo)
     return store._get_entry(entry.id)
 
 

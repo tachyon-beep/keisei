@@ -17,7 +17,7 @@ from keisei.db import init_db
 from keisei.training.dynamic_trainer import DynamicTrainer, MatchRollout
 from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.match_utils import play_batch, play_match
-from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role
+from keisei.training.opponent_store import EloColumn, EntryStatus, OpponentEntry, OpponentStore, Role
 from keisei.training.tier_managers import FrontierManager
 from keisei.training.tournament import LeagueTournament
 
@@ -545,6 +545,7 @@ class TestFullFrontierPromotionCycle:
                     role=Role.FRONTIER_STATIC,
                 )
                 store.update_elo(entry.id, elo)
+                store.update_role_elo(entry.id, EloColumn.FRONTIER, elo)
                 frontier_ids.append(entry.id)
 
             # --- Create 10 Dynamic entries ---
@@ -558,6 +559,7 @@ class TestFullFrontierPromotionCycle:
                     role=Role.DYNAMIC,
                 )
                 store.update_elo(entry.id, 1050.0 + i * 10)
+                store.update_role_elo(entry.id, EloColumn.FRONTIER, 1050.0 + i * 10)
                 # Record enough games to meet min_games_for_promotion
                 store.record_result(
                     epoch=100,
@@ -572,6 +574,7 @@ class TestFullFrontierPromotionCycle:
             # --- Best Dynamic entry: Elo 1250, unique lineage ---
             best_dynamic_id = dynamic_ids[-1]
             store.update_elo(best_dynamic_id, 1250.0)
+            store.update_role_elo(best_dynamic_id, EloColumn.FRONTIER, 1250.0)
             store._conn.execute(
                 "UPDATE league_entries SET lineage_group = ? WHERE id = ?",
                 ("lineage-new", best_dynamic_id),

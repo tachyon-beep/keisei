@@ -9,12 +9,29 @@ from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.opponent_store import OpponentEntry, Role
 
 
+def _make_frontier_config(**overrides: object) -> FrontierStaticConfig:
+    """Helper to build FrontierStaticConfig with sensible defaults and overrides."""
+    defaults = dict(
+        slots=5,
+        review_interval_epochs=250,
+        min_tenure_epochs=100,
+        promotion_margin_elo=50.0,
+        min_games_for_promotion=100,
+        topk=3,
+        streak_epochs=50,
+        max_lineage_overlap=2,
+    )
+    defaults.update(overrides)
+    return FrontierStaticConfig(**defaults)  # type: ignore[arg-type]
+
+
 def _make_entry(
     id: int,
     elo: float = 1000.0,
     games: int = 0,
     role: Role = Role.DYNAMIC,
     lineage: str | None = None,
+    elo_frontier: float | None = None,
 ) -> OpponentEntry:
     """Helper to build minimal OpponentEntry for promoter tests."""
     return OpponentEntry(
@@ -24,6 +41,7 @@ def _make_entry(
         model_params={},
         checkpoint_path="/tmp/test.pt",
         elo_rating=elo,
+        elo_frontier=elo_frontier if elo_frontier is not None else elo,
         created_epoch=0,
         games_played=games,
         created_at="2026-01-01T00:00:00Z",
@@ -227,3 +245,67 @@ class TestShouldPromote:
         no_lin = _make_entry(3, elo=1200, games=200, lineage=None)
         promoter._topk_streaks[3] = 0
         assert promoter.should_promote(no_lin, frontier, 100) is True
+
+
+class TestEloFrontierPromotion:
+    """should_promote uses elo_frontier, not elo_rating."""
+
+    def test_promotes_on_high_elo_frontier_despite_low_elo_rating(self) -> None:
+        config = _make_frontier_config(
+            promotion_margin_elo=10.0,
+            min_tenure_epochs=0,
+            min_games_for_promotion=0,
+            streak_epochs=0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        frontier = [
+            OpponentEntry(
+                **{
+                    **_make_entry(1, elo=1500.0, role=Role.FRONTIER_STATIC).__dict__,
+                    "elo_frontier": 900.0,
+                }
+            ),
+            OpponentEntry(
+                **{
+                    **_make_entry(2, elo=1500.0, role=Role.FRONTIER_STATIC).__dict__,
+                    "elo_frontier": 900.0,
+                }
+            ),
+        ]
+        candidate = OpponentEntry(
+            **{
+                **_make_entry(10, elo=800.0, games=100).__dict__,
+                "elo_frontier": 950.0,
+            }
+        )
+        promoter._topk_streaks[candidate.id] = 0
+        result = promoter.should_promote(candidate, frontier, epoch=100)
+        assert result is True  # 950 >= 900 + 10
+
+    def test_rejects_low_elo_frontier_despite_high_elo_rating(self) -> None:
+        config = _make_frontier_config(
+            promotion_margin_elo=10.0,
+            min_tenure_epochs=0,
+            min_games_for_promotion=0,
+            streak_epochs=0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        frontier = [
+            OpponentEntry(
+                **{
+                    **_make_entry(1, elo=500.0, role=Role.FRONTIER_STATIC).__dict__,
+                    "elo_frontier": 1000.0,
+                }
+            ),
+        ]
+        candidate = OpponentEntry(
+            **{
+                **_make_entry(10, elo=2000.0, games=100).__dict__,
+                "elo_frontier": 900.0,
+            }
+        )
+        promoter._topk_streaks[candidate.id] = 0
+        result = promoter.should_promote(candidate, frontier, epoch=100)
+        assert result is False  # 900 < 1000 + 10
