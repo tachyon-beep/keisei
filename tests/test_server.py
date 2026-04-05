@@ -8,6 +8,8 @@ from starlette.testclient import TestClient
 from keisei.db import init_db, write_metrics, write_training_state
 from keisei.server.app import TEST_ALLOWED_HOSTS, create_app
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:

@@ -14,6 +14,8 @@ from starlette.testclient import TestClient
 from keisei.db import init_db, update_heartbeat, write_training_state
 from keisei.server.app import TEST_ALLOWED_HOSTS, _db_accessible, _get_system_stats, create_app
 
+pytestmark = pytest.mark.integration
+
 
 class TestGetSystemStatsNvidiaSmi:
     """nvidia-smi failure modes in _get_system_stats."""

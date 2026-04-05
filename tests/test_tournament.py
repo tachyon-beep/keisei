@@ -21,6 +21,8 @@ from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.tournament import LeagueTournament
 
+pytestmark = pytest.mark.integration
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

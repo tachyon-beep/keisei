@@ -3,6 +3,8 @@
 import sqlite3
 import time
 
+import pytest
+
 from keisei.db import (
     SCHEMA_VERSION,
     init_db,
@@ -14,6 +16,8 @@ from keisei.db import (
     write_metrics,
     write_training_state,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _get_schema_version(db_path: str) -> int:

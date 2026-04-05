@@ -10,6 +10,8 @@ import torch
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def model():

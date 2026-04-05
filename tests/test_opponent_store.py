@@ -16,6 +16,8 @@ from keisei.training.opponent_store import (
     compute_elo_update,
 )
 
+pytestmark = pytest.mark.integration
+
 
 class TestEnums:
     def test_role_values(self):

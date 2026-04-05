@@ -8,6 +8,8 @@ import pytest
 
 from keisei.db import init_db
 
+pytestmark = pytest.mark.integration
+
 
 class TestCreateAppFromEnv:
     """Verify the uvicorn factory function reads KEISEI_CONFIG correctly."""

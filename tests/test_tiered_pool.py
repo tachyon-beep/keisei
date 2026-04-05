@@ -11,6 +11,8 @@ from keisei.db import init_db
 from keisei.training.opponent_store import OpponentStore, Role, EntryStatus
 from keisei.training.tiered_pool import TieredPool
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def pool_setup(tmp_path):

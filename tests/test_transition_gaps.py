@@ -14,6 +14,8 @@ import pytest
 
 from keisei.db import init_db, read_training_state
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def sl_data_dir(tmp_path: Path) -> Path:

@@ -8,6 +8,8 @@ from keisei.db import init_db
 from keisei.training.opponent_store import OpponentStore, Role
 from keisei.training.tier_managers import DynamicManager
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def store(tmp_path):

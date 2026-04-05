@@ -20,6 +20,8 @@ from keisei.db import (
     write_training_state,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:

@@ -8,6 +8,8 @@ from keisei.db import init_db
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.opponent_store import EntryStatus, OpponentStore, Role
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def library_setup(tmp_path):

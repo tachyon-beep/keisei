@@ -6,6 +6,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from keisei.db import (
     read_game_snapshots,
     read_game_snapshots_since,
@@ -13,6 +15,8 @@ from keisei.db import (
     update_heartbeat,
     write_game_snapshots,
 )
+
+pytestmark = pytest.mark.integration
 
 # ===================================================================
 # H2 — write_game_snapshots with empty list

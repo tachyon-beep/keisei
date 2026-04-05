@@ -6,6 +6,8 @@ import torch
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
 from keisei.training.models.resnet import ResNetModel, ResNetParams
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def model() -> ResNetModel:

@@ -21,6 +21,7 @@ from keisei.training.opponent_store import EloColumn, EntryStatus, OpponentEntry
 from keisei.training.tier_managers import FrontierManager
 from keisei.training.tournament import LeagueTournament
 
+pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
 # Mock helpers

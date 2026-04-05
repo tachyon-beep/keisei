@@ -17,6 +17,8 @@ from keisei.training.opponent_store import OpponentStore, Role
 
 from tests._helpers import TinyModel, make_rollout as _make_rollout
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def store_and_entry(tmp_path):

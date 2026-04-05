@@ -10,6 +10,8 @@ from keisei.db import init_db
 from keisei.training.opponent_store import EloColumn, OpponentEntry, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def elo_setup(tmp_path):

@@ -11,6 +11,8 @@ import torch
 
 from keisei.db import init_db, read_training_state
 
+pytestmark = pytest.mark.integration
+
 
 class TestSLToRL:
     """Verify sl_to_rl() orchestrates the SL→RL handoff correctly."""

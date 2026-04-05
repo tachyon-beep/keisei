@@ -14,6 +14,8 @@ from keisei.training.historical_library import HistoricalSlot
 from keisei.training.opponent_store import EloColumn, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def gauntlet_setup(tmp_path):

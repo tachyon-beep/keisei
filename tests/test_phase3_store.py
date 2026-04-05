@@ -15,6 +15,8 @@ from keisei.training.opponent_store import (
     Role,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def store_db(tmp_path):

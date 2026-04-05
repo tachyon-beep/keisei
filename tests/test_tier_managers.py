@@ -18,6 +18,8 @@ from keisei.training.tier_managers import (
     ReviewOutcome,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def store(tmp_path):

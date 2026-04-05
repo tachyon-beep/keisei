@@ -26,6 +26,8 @@ from keisei.training.distributed import (
 )
 from keisei.training.katago_loop import KataGoTrainingLoop
 
+pytestmark = pytest.mark.integration
+
 
 def _find_free_port() -> int:
     """Find a free TCP port for MASTER_PORT to avoid collisions in CI."""

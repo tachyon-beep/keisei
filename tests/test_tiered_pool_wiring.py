@@ -12,6 +12,8 @@ from keisei.training.frontier_promoter import FrontierPromoter
 from keisei.training.opponent_store import OpponentStore
 from keisei.training.tiered_pool import TieredPool
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def pool_with_training(tmp_path):
