@@ -146,10 +146,15 @@ class HistoricalLibrary:
         )
 
     def get_slots(self) -> list[HistoricalSlot]:
-        """Returns list of HistoricalSlot dataclasses for all slots."""
+        """Returns list of HistoricalSlot dataclasses for configured slots only.
+
+        Filters out stale DB rows from prior configs with more slots.
+        """
         raw_slots = self.store.get_historical_slots()
         result: list[HistoricalSlot] = []
         for row in raw_slots:
+            if row["slot_index"] >= self.config.slots:
+                continue
             result.append(HistoricalSlot(
                 slot_index=row["slot_index"],
                 target_epoch=row["target_epoch"],

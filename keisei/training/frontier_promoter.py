@@ -111,12 +111,17 @@ class FrontierPromoter:
         #    the total after promotion would exceed the limit.  E.g. with
         #    max_lineage_overlap=2: 1 existing same-lineage entry passes (total
         #    becomes 2), 2 existing same-lineage entries blocks (total would be 3).
+        #
+        #    Normalize lineage: entries created via add_entry() may have
+        #    lineage_group=None, but clone_entry() assigns a synthetic
+        #    "lineage-{source_id}". Use the same fallback so null-lineage
+        #    candidates are still subject to the diversity cap.
+        candidate_lineage = candidate.lineage_group or f"lineage-{candidate.id}"
         same_lineage_count = sum(
             1
             for e in frontier_entries
-            if e.lineage_group
-            and candidate.lineage_group
-            and e.lineage_group == candidate.lineage_group
+            if (e.lineage_group or f"lineage-{e.parent_entry_id or e.id}")
+            == candidate_lineage
         )
         if same_lineage_count >= self.config.max_lineage_overlap:
             return False

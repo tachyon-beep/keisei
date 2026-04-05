@@ -116,6 +116,7 @@ def _play_evaluation_games(
         done = False
 
         a_color = 0 if a_is_black else 1
+        early_draw = False
 
         while not done:
             mover = current_player
@@ -129,6 +130,7 @@ def _play_evaluation_games(
                         game_i,
                     )
                     draws += 1
+                    early_draw = True
                     break
 
                 output = model(obs)
@@ -143,15 +145,16 @@ def _play_evaluation_games(
             legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
             current_player = int(step_result.current_players[0])
 
-        # Reward is from last-mover perspective. Convert to A's perspective.
-        reward = float(step_result.rewards[0])
-        a_reward = reward if mover == a_color else -reward
-        if a_reward > 0:
-            wins += 1
-        elif a_reward < 0:
-            losses += 1
-        else:
-            draws += 1
+        if not early_draw:
+            # Reward is from last-mover perspective. Convert to A's perspective.
+            reward = float(step_result.rewards[0])
+            a_reward = reward if mover == a_color else -reward
+            if a_reward > 0:
+                wins += 1
+            elif a_reward < 0:
+                losses += 1
+            else:
+                draws += 1
 
         if (game_i + 1) % 50 == 0:
             logger.info("Evaluation: %d/%d games (W=%d L=%d D=%d)",

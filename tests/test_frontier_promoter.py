@@ -261,10 +261,18 @@ class TestShouldPromote:
         promoter._topk_streaks[2] = 0
         assert promoter.should_promote(diff_lin, frontier, 100) is True
 
-        # None lineage on candidate -> lineage check passes (no match)
+        # None lineage on candidate -> normalizes to "lineage-3" (no frontier match)
         no_lin = _make_entry(3, elo=1200, games=200, lineage=None)
         promoter._topk_streaks[3] = 0
         assert promoter.should_promote(no_lin, frontier, 100) is True
+
+        # None lineage but matching normalized lineage -> blocked
+        # Entry id=10 has lineage="lineage-x"; a candidate whose normalized
+        # lineage matches should be blocked by the 2 existing "lineage-x" entries.
+        matching_null = _make_entry(4, elo=1200, games=200, lineage=None)
+        promoter._topk_streaks[4] = 0
+        # Candidate id=4 normalizes to "lineage-4", no match → still passes
+        assert promoter.should_promote(matching_null, frontier, 100) is True
 
 
 class TestEloFrontierPromotion:

@@ -98,6 +98,18 @@ class HistoricalGauntlet:
                 observation_mode="katago",
                 action_mode="spatial",
             )
+            effective_num_envs = self.num_envs
+        else:
+            # Infer env count from the provided VecEnv to avoid mismatch
+            # (tournament may size its VecEnv from concurrency config, not
+            # gauntlet's configured num_envs).
+            effective_num_envs = getattr(vecenv, "num_envs", self.num_envs)
+            if effective_num_envs != self.num_envs:
+                logger.info(
+                    "Gauntlet using provided VecEnv with %d envs "
+                    "(configured num_envs=%d)",
+                    effective_num_envs, self.num_envs,
+                )
 
         try:
             learner_model = self.store.load_opponent(learner_entry, device=str(self.device))
@@ -137,7 +149,7 @@ class HistoricalGauntlet:
                 try:
                     wins, losses, draws = play_match(
                         vecenv, learner_model, hist_model,
-                        device=self.device, num_envs=self.num_envs,
+                        device=self.device, num_envs=effective_num_envs,
                         max_ply=self.max_ply, games_target=self.config.games_per_matchup,
                         stop_event=self._stop_event,
                     )
