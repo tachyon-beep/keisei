@@ -4,6 +4,7 @@ import { get } from 'svelte/store'
 export const leagueEntries = writable([])
 export const leagueResults = writable([])
 export const eloHistory = writable([])
+export const tournamentStats = writable(null)
 
 /** Currently expanded/focused entry in leaderboard — used for cross-highlighting */
 export const focusedEntryId = writable(null)

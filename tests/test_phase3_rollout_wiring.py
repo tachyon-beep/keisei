@@ -668,6 +668,7 @@ class TestFullFrontierPromotionCycle:
             min_games_for_promotion=100,
             min_tenure_epochs=1,
             promotion_margin_elo=50.0,
+            span_selection=False,
         )
         promoter = FrontierPromoter(config=frontier_config)
         frontier_manager = FrontierManager(

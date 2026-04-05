@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -41,6 +42,21 @@ class MatchResult:
     b_wins: int
     draws: int
     rollout: MatchRollout | None
+
+
+@dataclass
+class RoundStats:
+    """Monitoring metrics for a single run_round execution."""
+
+    round_duration_s: float = 0.0
+    pairings_requested: int = 0
+    pairings_completed: int = 0
+    total_games: int = 0
+    total_plies: int = 0
+    active_slots: int = 0
+    model_load_time_s: float = 0.0
+    model_load_count: int = 0
+    cache_hits: int = 0
 
 
 @dataclass
@@ -173,7 +189,7 @@ class ConcurrentMatchPool:
         max_ply: int = 512,
         stop_event: threading.Event | None = None,
         trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
-    ) -> list[MatchResult]:
+    ) -> tuple[list[MatchResult], RoundStats]:
         """Execute pairings with true concurrent partitioned inference.
 
         Args:
@@ -189,22 +205,25 @@ class ConcurrentMatchPool:
                 if rollout data should be collected for this pairing.
 
         Returns:
-            List of MatchResult for successfully completed pairings,
-            ordered by their original index. Pairings that failed to load
-            are silently omitted — the returned list may be shorter than
-            the input.
+            Tuple of (results, stats). Results is a list of MatchResult for
+            successfully completed pairings, ordered by their original index.
+            Stats contains timing and throughput metrics for the round.
         """
+        stats = RoundStats(pairings_requested=len(pairings))
+
         if not pairings:
-            return []
+            return [], stats
 
         if stop_event is not None and stop_event.is_set():
             logger.warning("run_round: stop_event already set, returning empty results")
-            return []
+            return [], stats
 
+        round_start = time.monotonic()
         results: dict[int, MatchResult] = {}
         next_pairing_idx = 0
         total_pairings = len(pairings)
         parallel = min(self.config.effective_parallel, total_pairings)
+        stats.active_slots = parallel
 
         # Create slots
         slots: list[_MatchSlot] = []
@@ -233,7 +252,7 @@ class ConcurrentMatchPool:
             pairing_idx = next_pairing_idx
             self._assign_pairing(
                 slot, pairing_idx, pairings[pairing_idx],
-                load_fn, games_per_match, trainable_fn,
+                load_fn, games_per_match, trainable_fn, stats=stats,
             )
             if slot.active:
                 slot_pairing_map[slot.index] = pairing_idx
@@ -438,7 +457,7 @@ class ConcurrentMatchPool:
                     next_pairing_idx += 1
                     self._assign_pairing(
                         slot, new_pairing_idx, pairings[new_pairing_idx],
-                        load_fn, games_per_match, trainable_fn,
+                        load_fn, games_per_match, trainable_fn, stats=stats,
                     )
                     if slot.active:
                         slot_pairing_map[slot.index] = new_pairing_idx
@@ -461,8 +480,24 @@ class ConcurrentMatchPool:
             slot.model_a = None
             slot.model_b = None
 
-        # Return results in original pairing order
-        return [results[i] for i in sorted(results.keys())]
+        # Collect stats
+        stats.round_duration_s = time.monotonic() - round_start
+        ordered = [results[i] for i in sorted(results.keys())]
+        stats.pairings_completed = len(ordered)
+        stats.total_games = sum(r.a_wins + r.b_wins + r.draws for r in ordered)
+        stats.total_plies = sum(s.ply_count for s in slots)
+
+        if stats.round_duration_s > 0:
+            gpm = stats.total_games / stats.round_duration_s * 60
+            logger.info(
+                "Round complete: %d/%d pairings, %d games, %d plies in %.1fs "
+                "(%.0f games/min, %d loads in %.2fs)",
+                stats.pairings_completed, stats.pairings_requested,
+                stats.total_games, stats.total_plies, stats.round_duration_s,
+                gpm, stats.model_load_count, stats.model_load_time_s,
+            )
+
+        return ordered, stats
 
     def _assign_pairing(
         self,
@@ -472,10 +507,12 @@ class ConcurrentMatchPool:
         load_fn: Callable[[OpponentEntry], Any],
         games_target: int,
         trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
+        stats: RoundStats | None = None,
     ) -> None:
         """Load models and assign a pairing to a slot."""
         entry_a, entry_b = pairing
         try:
+            t0 = time.monotonic()
             model_a = load_fn(entry_a)
             try:
                 model_b = load_fn(entry_b)
@@ -503,6 +540,11 @@ class ConcurrentMatchPool:
             slot.model_b = None
             slot.active = False
             return
+
+        load_elapsed = time.monotonic() - t0
+        if stats is not None:
+            stats.model_load_time_s += load_elapsed
+            stats.model_load_count += 2
 
         collect_rollout = False
         if trainable_fn is not None:

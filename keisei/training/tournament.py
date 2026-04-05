@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from keisei.training.concurrent_matches import ConcurrentMatchPool
+from keisei.training.concurrent_matches import ConcurrentMatchPool, RoundStats
 from keisei.training.dynamic_trainer import DynamicTrainer
 
 if TYPE_CHECKING:
@@ -263,6 +263,16 @@ class LeagueTournament:
         finally:
             logger.info("Tournament thread stopped")
 
+    # ── Tournament stats ──────────────────────────────────────
+
+    def _write_tournament_stats(self, stats: RoundStats) -> None:
+        """Persist latest round stats to DB for dashboard consumption."""
+        try:
+            from keisei.db import write_tournament_stats
+            write_tournament_stats(self.store.db_path, stats)
+        except Exception:
+            logger.debug("Failed to write tournament stats", exc_info=True)
+
     # ── Trainability ──────────────────────────────────────────
 
     def _is_trainable_match(
@@ -284,13 +294,17 @@ class LeagueTournament:
 
         # Closures capture self.device by reference — safe because device is
         # set once in __init__ and never reassigned.
+        max_cached = self.concurrent_pool.config.max_resident_models
+
         def _load_fn(entry: OpponentEntry) -> object:
-            return self.store.load_opponent(entry, device=str(self.device))
+            return self.store.load_opponent_cached(
+                entry, device=str(self.device), max_cached=max_cached,
+            )
 
         def _release_fn(model_a: object, model_b: object) -> None:
             release_models(model_a, model_b, device_type=self.device.type)
 
-        results = self.concurrent_pool.run_round(
+        results, round_stats = self.concurrent_pool.run_round(
             vecenv,
             pairings,
             load_fn=_load_fn,
@@ -301,6 +315,7 @@ class LeagueTournament:
             stop_event=self._stop_event,
             trainable_fn=self._is_trainable_match if self.dynamic_trainer else None,
         )
+        self._write_tournament_stats(round_stats)
         for result in results:
             total = result.a_wins + result.b_wins + result.draws
             if total == 0:

@@ -1,5 +1,5 @@
 <script>
-  import { eloHistory, leagueEntries, leagueStats } from '../stores/league.js'
+  import { eloHistory, leagueEntries, leagueStats, tournamentStats } from '../stores/league.js'
   import { trainingState } from '../stores/training.js'
   import { buildEloChartData } from './eloChartData.js'
   import LeagueTable from './LeagueTable.svelte'
@@ -10,6 +10,7 @@
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
   $: stats = $leagueStats
+  $: tStats = $tournamentStats
   $: learnerName = $trainingState?.display_name || null
 </script>
 
@@ -32,6 +33,12 @@
         <span class="stat-value">{stats.eloMin} – {stats.eloMax}</span>
         <span class="stat-label">Elo Range · {stats.eloSpread} spread</span>
       </div>
+      {#if tStats}
+        <div class="stat-card">
+          <span class="stat-value">{Math.round(tStats.games_per_min)}</span>
+          <span class="stat-label">Games/min · {tStats.active_slots} slots</span>
+        </div>
+      {/if}
     </div>
   {/if}
 

@@ -177,7 +177,7 @@ class TestRunRound:
             (entries[2], entries[3]),
         ]
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),
@@ -202,7 +202,7 @@ class TestRunRound:
             (entries[4], entries[5]),
         ]
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),
@@ -227,7 +227,7 @@ class TestRunRound:
         """[] -> []"""
         pool = _make_pool()
         vecenv = MockVecEnv(num_envs=4)
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             [],
             load_fn=lambda entry: TinyModel(),
@@ -246,7 +246,7 @@ class TestRunRound:
         stop_event.set()  # Set before calling
 
         load_calls = []
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: load_calls.append(entry.id) or TinyModel(),
@@ -264,7 +264,7 @@ class TestRunRound:
         entries = [_make_entry(i) for i in range(2)]
         pairings = [(entries[0], entries[1])]
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),
@@ -285,7 +285,7 @@ class TestRunRound:
         entries = [_make_entry(i) for i in range(2)]
         pairings = [(entries[0], entries[1])]
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),
@@ -340,7 +340,7 @@ class TestMaxResidentModels:
             if mb in loaded_models:
                 loaded_models.remove(mb)
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=tracking_load,
@@ -387,7 +387,7 @@ class TestRunRoundStopEventMidGame:
             released_models.append(ma)
             released_models.append(mb)
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),
@@ -434,7 +434,7 @@ class TestRunRoundModelBLoadFailure:
                 raise RuntimeError("Simulated model_b load failure")
             return TinyModel()
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=failing_load,
@@ -463,7 +463,7 @@ class TestRunRoundPlyCeiling:
         entries = [_make_entry(i) for i in range(2)]
         pairings = [(entries[0], entries[1])]
 
-        results = pool.run_round(
+        results, _stats = pool.run_round(
             vecenv,
             pairings,
             load_fn=lambda entry: TinyModel(),

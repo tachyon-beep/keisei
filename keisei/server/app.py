@@ -23,6 +23,7 @@ from keisei.db import (
     read_game_snapshots_since,
     read_league_data,
     read_metrics_since,
+    read_tournament_stats,
     read_training_state,
 )
 
@@ -203,6 +204,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
 
     league_data = await asyncio.to_thread(read_league_data, db_path)
     elo_history = await asyncio.to_thread(read_elo_history, db_path)
+    t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
 
     await asyncio.wait_for(
         ws.send_json({
@@ -216,6 +218,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             "gauntlet_results": league_data["gauntlet_results"],
             "transitions": league_data["transitions"],
             "elo_history": elo_history,
+            "tournament_stats": t_stats,
         }),
         timeout=WS_SEND_TIMEOUT_S,
     )
@@ -286,6 +289,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             league_poll_elapsed = 0.0
             new_league = await asyncio.to_thread(read_league_data, db_path)
             new_elo_hist = await asyncio.to_thread(read_elo_history, db_path)
+            new_t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
             new_entry_ids = frozenset(e["id"] for e in new_league["entries"])
             new_result_id = new_league["results"][0]["id"] if new_league["results"] else 0
             new_transition_id = new_league["transitions"][0]["id"] if new_league["transitions"] else 0
@@ -306,6 +310,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                         "gauntlet_results": new_league["gauntlet_results"],
                         "transitions": new_league["transitions"],
                         "elo_history": new_elo_hist,
+                        "tournament_stats": new_t_stats,
                     }),
                     timeout=WS_SEND_TIMEOUT_S,
                 )
