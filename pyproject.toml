@@ -26,7 +26,6 @@ dependencies = [
     "numpy",
     "fastapi",
     "uvicorn[standard]",
-    "websockets",
 ]
 
 [project.urls]
