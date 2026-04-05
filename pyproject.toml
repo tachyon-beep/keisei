@@ -56,6 +56,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "slow: marks tests as slow-running (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring DB, filesystem, or subprocess resources (deselect with '-m \"not integration\"')",
 ]
 
 [tool.ruff]
