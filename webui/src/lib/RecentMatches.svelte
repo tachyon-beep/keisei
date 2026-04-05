@@ -1,5 +1,6 @@
 <script>
   import { leagueResults, leagueEntries } from '../stores/league.js'
+  import { getRoleIcon } from './roleIcons.js'
 
   const MAX_ITEMS = 30
 
@@ -36,6 +37,8 @@
       const entryB = entryMap.get(r.entry_b_id)
       const nameA = entryA?.display_name || entryA?.architecture || `#${r.entry_a_id}`
       const nameB = entryB?.display_name || entryB?.architecture || `#${r.entry_b_id}`
+      const roleA = entryA?.role
+      const roleB = entryB?.role
       const winsA = r.wins_a || 0
       const winsB = r.wins_b || 0
       const draws = r.draws || 0
@@ -47,6 +50,8 @@
       // Always show from winner's perspective (or A's if draw)
       const winnerName = aWon || draw ? nameA : nameB
       const loserName = aWon || draw ? nameB : nameA
+      const winnerRole = aWon || draw ? roleA : roleB
+      const loserRole = aWon || draw ? roleB : roleA
       const w = aWon || draw ? winsA : winsB
       const l = aWon || draw ? winsB : winsA
       const winPct = total > 0 ? Math.round((w / total) * 100) : 0
@@ -60,6 +65,8 @@
         ...r,
         winnerName,
         loserName,
+        winnerRole,
+        loserRole,
         w, l, draws,
         total,
         aWon,
@@ -92,9 +99,9 @@
         {:else}
           <div class="match-item">
             <div class="match-top">
-              <span class="name winner">{item.winnerName}</span>
+              <span class="name winner"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.winnerRole)}</span>{item.winnerName}</span>
               <span class="vs">vs</span>
-              <span class="name">{item.loserName}</span>
+              <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole)}</span>{item.loserName}</span>
               <span class="match-score" class:win={item.aWon} class:loss={!item.aWon && !item.draw} class:tied={item.draw}>
                 {item.w}W {item.l}L {item.draws}D
               </span>
@@ -184,6 +191,11 @@
   .name.winner {
     color: var(--text-primary);
     font-weight: 600;
+  }
+
+  .role-icon {
+    font-size: 10px;
+    margin-right: 3px;
   }
 
   .vs {

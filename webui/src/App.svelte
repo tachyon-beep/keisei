@@ -173,7 +173,7 @@
       <div class="player-panel">
         <PlayerCard role="learner" name={learnerName} elo={learnerElo} detail={learnerDetail} stats={learnerStats} />
         <div class="vs-separator">VS</div>
-        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} stats={opponentStats} />
+        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} stats={opponentStats} tierRole={opp?.role} />
       </div>
 
       <main id="game-panel" class="game-panel" aria-label="Game viewer">

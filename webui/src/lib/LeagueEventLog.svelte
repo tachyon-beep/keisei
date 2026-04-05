@@ -1,5 +1,6 @@
 <script>
   import { leagueEvents } from '../stores/league.js'
+  import { getRoleIcon } from './roleIcons.js'
 </script>
 
 <div class="event-log">
@@ -13,6 +14,7 @@
           <span class="event-time">{event.time}</span>
           <span class="event-icon" aria-hidden="true">{event.icon}</span>
           <span class="sr-only">{event.type}</span>
+          {#if event.role}<span class="role-icon" aria-hidden="true">{getRoleIcon(event.role)}</span>{/if}
           <span class="event-name">{event.name}</span>
           <span class="event-detail">{event.detail}</span>
         </div>
@@ -75,6 +77,11 @@
   .departure .event-icon { color: var(--danger); }
   .promotion .event-icon { color: var(--accent-gold); }
   .demotion .event-icon { color: var(--text-muted); }
+
+  .role-icon {
+    font-size: 11px;
+    flex-shrink: 0;
+  }
 
   .event-name {
     color: var(--text-primary);

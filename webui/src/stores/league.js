@@ -33,6 +33,7 @@ export function diffLeagueEntries(entries) {
         type: 'arrival',
         icon: '→',
         name: entry.display_name || entry.architecture,
+        role: entry.role,
         detail: `joined at Elo ${Math.round(entry.elo_rating)}`,
       })
     }
@@ -46,6 +47,7 @@ export function diffLeagueEntries(entries) {
         type: 'departure',
         icon: '←',
         name: entry.display_name || entry.architecture,
+        role: entry.role,
         detail: 'removed from pool',
       })
     }
@@ -67,6 +69,7 @@ export function diffLeagueEntries(entries) {
             type: newRank < oldRank ? 'promotion' : 'demotion',
             icon: direction,
             name: e.display_name || e.architecture,
+            role: e.role,
             detail: `rank ${oldRank} → ${newRank}`,
           })
         }

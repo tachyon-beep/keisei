@@ -1,5 +1,6 @@
 <script>
   import { leagueRanked, entryWLD, eloDelta, focusedEntryId } from '../stores/league.js'
+  import { getRoleInfo } from './roleIcons.js'
   import MatchHistory from './MatchHistory.svelte'
 
   /** Current learner's display_name (used to highlight their row) */
@@ -120,6 +121,7 @@
                 {/if}
               </td>
               <td class="name-cell">
+                <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).label} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
                 {entry.display_name || entry.architecture}
                 {#if isLearner(entry)}
                   <span class="learner-badge">YOU</span>
@@ -247,6 +249,22 @@
     white-space: nowrap;
     width: 28%;
   }
+
+  .role-badge {
+    display: inline-block;
+    font-size: 11px;
+    width: 18px;
+    text-align: center;
+    margin-right: 4px;
+    vertical-align: middle;
+    border-radius: 3px;
+    padding: 1px 0;
+  }
+  .role-badge.role-frontier { color: #7b8fa8; }
+  .role-badge.role-recent { color: #c8962e; }
+  .role-badge.role-dynamic { color: var(--accent-teal); }
+  .role-badge.role-historical { color: #9b7ec8; }
+  .role-badge.role-unknown { color: var(--text-muted); }
 
   tr.expanded { background: var(--bg-card); }
 

@@ -1,6 +1,10 @@
 <script>
+  import { getRoleInfo } from './roleIcons.js'
+
   /** @type {'learner' | 'opponent'} */
   export let role = 'learner'
+  /** @type {string | null} Tier role: frontier_static, recent_fixed, dynamic, historical */
+  export let tierRole = null
   /** @type {string} */
   export let name = ''
   /** @type {number | null} */
@@ -13,6 +17,7 @@
   $: icon = role === 'learner' ? '☗' : '☖'
   $: roleLabel = role === 'learner' ? 'Learner' : 'Opponent'
   $: colorClass = role === 'learner' ? 'learner' : 'opponent'
+  $: tierInfo = tierRole ? getRoleInfo(tierRole) : null
 </script>
 
 <div
@@ -25,6 +30,9 @@
       <span class="elo-badge">{Math.round(elo)}</span>
     {/if}
   </div>
+  {#if tierInfo}
+    <span class="tier-badge {tierInfo.cssClass}">{tierInfo.icon} {tierInfo.label}</span>
+  {/if}
   <div class="name">{name || '—'}</div>
   {#if detail}
     <div class="detail">{detail}</div>
@@ -83,6 +91,21 @@
     background: var(--elo-bg-opponent);
     color: var(--player-opponent);
   }
+
+  .tier-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-top: 6px;
+  }
+  .tier-badge.role-frontier { color: #7b8fa8; background: rgba(123, 143, 168, 0.12); }
+  .tier-badge.role-recent { color: #c8962e; background: rgba(200, 150, 46, 0.12); }
+  .tier-badge.role-dynamic { color: var(--accent-teal); background: rgba(77, 184, 168, 0.12); }
+  .tier-badge.role-historical { color: #9b7ec8; background: rgba(155, 126, 200, 0.12); }
+  .tier-badge.role-unknown { color: var(--text-muted); background: rgba(128, 128, 128, 0.12); }
 
   .name {
     font-size: 16px;

@@ -1,5 +1,6 @@
 <script>
   import { leagueRanked, leagueResults, leagueEntries, focusedEntryId } from '../stores/league.js'
+  import { getRoleIcon } from './roleIcons.js'
 
   /** Current learner display_name — used to build an aggregate "Trainer" row */
   export let learnerName = null
@@ -25,7 +26,7 @@
     const p = entries.map(e => ({
       id: e.id,
       label: e.display_name || e.architecture,
-      shortLabel: shortName(e.display_name || e.architecture),
+      shortLabel: getRoleIcon(e.role) + ' ' + shortName(e.display_name || e.architecture),
       isTrainer: false,
     }))
     if (hasTrainerRow) {
