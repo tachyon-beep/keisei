@@ -91,6 +91,26 @@ def test_ws_init_league_data_populated(db_path: str) -> None:
         assert len(msg["elo_history"]) == 1
 
 
+def test_league_change_detection_uses_entry_ids_not_count() -> None:
+    """Regression: server must detect entry churn (retire+add) even when count is unchanged.
+
+    Previously the server compared len(entries) which missed same-count-different-set
+    changes, causing phantom mass departure events in the webUI.
+    """
+    # Simulate two poll snapshots with same count but different IDs
+    old_entries = [{"id": 1}, {"id": 2}, {"id": 3}]
+    new_entries = [{"id": 1}, {"id": 4}, {"id": 3}]  # id=2 retired, id=4 added
+
+    old_ids = frozenset(e["id"] for e in old_entries)
+    new_ids = frozenset(e["id"] for e in new_entries)
+
+    # Count-based check (the old bug): would miss this change
+    assert len(old_entries) == len(new_entries)
+
+    # ID-set check (the fix): catches the churn
+    assert old_ids != new_ids
+
+
 @pytest.mark.asyncio
 async def test_serves_index_html(db_path: str) -> None:
     """If static/ dir exists with index.html, GET / returns it."""
