@@ -220,8 +220,15 @@ class RecentFixedManager:
         """Count distinct opponents this entry has faced (in either seat)."""
         return self._store.count_unique_opponents(entry_id)
 
-    def review_oldest(self) -> tuple[ReviewOutcome, OpponentEntry]:
+    def review_oldest(
+        self, total_active_count: int | None = None,
+    ) -> tuple[ReviewOutcome, OpponentEntry]:
         """Review the oldest active Recent Fixed entry for promotion/retirement.
+
+        Args:
+            total_active_count: Total active entries across all tiers.  When
+                provided, ``min_unique_opponents`` is scaled down so that
+                promotion remains achievable with a small pool.
 
         Decision logic:
         1. If games >= min_games AND unique_opponents >= min_unique AND Elo qualifies -> PROMOTE
@@ -238,7 +245,15 @@ class RecentFixedManager:
         unique_opponents = self.get_unique_opponent_count(oldest.id)
 
         games_ok = games_played >= self._config.min_games_for_review
-        opponents_ok = unique_opponents >= self._config.min_unique_opponents
+        # Scale min_unique_opponents so promotion is achievable with a small
+        # pool.  An entry can face at most (pool_size - 1) unique opponents.
+        effective_min_opponents = self._config.min_unique_opponents
+        if total_active_count is not None:
+            effective_min_opponents = min(
+                effective_min_opponents,
+                max(1, total_active_count - 1),
+            )
+        opponents_ok = unique_opponents >= effective_min_opponents
 
         # Elo check: pass if Dynamic tier is empty (weakest_elo_fn returns None)
         floor_elo: float | None = None

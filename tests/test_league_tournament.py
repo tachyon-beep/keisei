@@ -19,7 +19,7 @@ from keisei.db import init_db
 from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, compute_elo_update
-from keisei.training.tournament import LeagueTournament
+from keisei.training.tournament import LeagueTournament, majority_wins_result
 
 pytestmark = pytest.mark.integration
 
@@ -436,7 +436,7 @@ class TestConstructor:
         t = LeagueTournament(store=store, scheduler=scheduler, device="cpu")
         assert t.num_envs == 64
         assert t.max_ply == 512
-        assert t.games_per_match == 64
+        assert t.games_per_match == 3
         assert t.k_factor == 16.0
         assert t.pause_seconds == 5.0
         assert t.min_pool_size == 3
@@ -587,3 +587,40 @@ class TestIsTrainableMatch:
         a = _make_entry_with_role(1, Role.RECENT_FIXED)
         b = _make_entry_with_role(2, Role.FRONTIER_STATIC)
         assert t._is_trainable_match(a, b) is False
+
+
+# ---------------------------------------------------------------------------
+# Best-of-3 match result
+# ---------------------------------------------------------------------------
+
+
+class TestMajorityWinsResult:
+    """Tests for majority_wins_result() — majority-wins Elo scoring."""
+
+    def test_a_wins_cleanly(self):
+        assert majority_wins_result(3, 0, 0) == 1.0
+
+    def test_a_wins_2_1(self):
+        assert majority_wins_result(2, 1, 0) == 1.0
+
+    def test_b_wins_cleanly(self):
+        assert majority_wins_result(0, 3, 0) == 0.0
+
+    def test_b_wins_2_1(self):
+        assert majority_wins_result(1, 2, 0) == 0.0
+
+    def test_draw_1_1_1(self):
+        """1 win each + 1 draw = tied match."""
+        assert majority_wins_result(1, 1, 1) == 0.5
+
+    def test_all_draws(self):
+        """0-0-3 = draw."""
+        assert majority_wins_result(0, 0, 3) == 0.5
+
+    def test_a_wins_with_draw(self):
+        """2 wins for A + 1 draw."""
+        assert majority_wins_result(2, 0, 1) == 1.0
+
+    def test_b_wins_with_draw(self):
+        """2 wins for B + 1 draw."""
+        assert majority_wins_result(0, 2, 1) == 0.0

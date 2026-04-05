@@ -66,8 +66,8 @@ elo_k_factor = 32.0
 tournament_enabled = true
 tournament_device = "cuda:0" # single-GPU: share with learner
 tournament_num_envs = 32     # smaller than learner to reduce contention
-tournament_games_per_match = 32
-tournament_pause_seconds = 5.0
+tournament_games_per_match = 3    # best-of-3
+tournament_pause_seconds = 1.0
 
 [league.concurrency]
 parallel_matches = 2

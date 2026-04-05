@@ -270,9 +270,9 @@ class LeagueConfig:
     tournament_enabled: bool = False
     tournament_device: str | None = None
     tournament_num_envs: int = 64
-    tournament_games_per_match: int = 64
+    tournament_games_per_match: int = 3
     tournament_k_factor: float = 16.0
-    tournament_pause_seconds: float = 5.0
+    tournament_pause_seconds: float = 1.0
     # Mutable-default-argument pitfall does NOT apply here: every sub-config
     # dataclass is frozen=True, so shared default instances can't be mutated.
     frontier: FrontierStaticConfig = FrontierStaticConfig()

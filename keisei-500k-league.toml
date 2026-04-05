@@ -67,9 +67,9 @@ opponent_device = "cuda:1"  # serve opponents on second GPU
 tournament_enabled = true
 tournament_device = "cuda:1"
 tournament_num_envs = 64
-tournament_games_per_match = 64
+tournament_games_per_match = 3    # best-of-3
 tournament_k_factor = 16.0
-tournament_pause_seconds = 2.0
+tournament_pause_seconds = 1.0
 
 [league.concurrency]
 parallel_matches = 4

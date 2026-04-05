@@ -55,6 +55,26 @@ class TieredPool:
             self.dynamic_trainer = None
 
     # ------------------------------------------------------------------
+    # Capacity
+    # ------------------------------------------------------------------
+
+    def _total_capacity(self) -> int:
+        """Total slots across all tiers."""
+        return (
+            self.config.frontier.slots
+            + self.config.recent.slots
+            + self.config.dynamic.slots
+        )
+
+    def _total_active(self) -> int:
+        """Count of all active entries across all tiers."""
+        return len(self.store.list_entries())
+
+    def has_spare_capacity(self) -> bool:
+        """True when total active entries are below total tier capacity."""
+        return self._total_active() < self._total_capacity()
+
+    # ------------------------------------------------------------------
     # Snapshot
     # ------------------------------------------------------------------
 
@@ -64,7 +84,8 @@ class TieredPool:
         """Take a learner snapshot and admit it to the Recent Fixed tier.
 
         If the tier overflows, the oldest entry is reviewed for promotion
-        to Dynamic or retirement.
+        to Dynamic or retirement.  Retirement is suppressed while the total
+        pool has spare capacity — entries stay in overflow until slots fill.
         """
         entry = self.recent_manager.admit(model, arch, params, epoch)
 
@@ -73,7 +94,10 @@ class TieredPool:
         # overflow).  Self-correcting: protection eventually expires or overflow
         # budget is exceeded, triggering RETIRE.
         if self.recent_manager.count() > self.config.recent.slots:
-            outcome, oldest = self.recent_manager.review_oldest()
+            total_active = self._total_active()
+            outcome, oldest = self.recent_manager.review_oldest(
+                total_active_count=total_active,
+            )
             if outcome is ReviewOutcome.PROMOTE:
                 # Outer transaction wraps the full promote-and-retire sequence.
                 # admit() opens a nested transaction internally, but
@@ -85,7 +109,14 @@ class TieredPool:
                         self.store.retire_entry(oldest.id, "promoted to dynamic")
                     # else: Dynamic full and all protected — keep in Recent Fixed overflow
             elif outcome is ReviewOutcome.RETIRE:
-                self.store.retire_entry(oldest.id, "did not qualify for dynamic")
+                if total_active < self._total_capacity():
+                    logger.info(
+                        "Skipping retirement of id=%d: pool has spare capacity "
+                        "(%d/%d slots used)",
+                        oldest.id, total_active, self._total_capacity(),
+                    )
+                else:
+                    self.store.retire_entry(oldest.id, "did not qualify for dynamic")
             # DELAY: do nothing, let it sit in overflow
 
         return entry

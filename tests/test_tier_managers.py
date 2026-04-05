@@ -221,6 +221,53 @@ class TestRecentFixedManager:
         with pytest.raises(ValueError, match="no Recent Fixed entries"):
             mgr.review_oldest()
 
+    def test_review_oldest_scales_min_opponents_to_pool_size(self, store):
+        """min_unique_opponents should scale down for small pools.
+
+        With 3 total entries, an entry can face at most 2 opponents.
+        min_unique_opponents=6 is unreachable, but scaled to min(6, 2)=2.
+        """
+        mgr = RecentFixedManager(store, RecentFixedConfig(
+            slots=2, soft_overflow=1,
+            min_games_for_review=2, min_unique_opponents=6,
+        ))
+        model = torch.nn.Linear(10, 10)
+        mgr.admit(model, "resnet", {}, epoch=1)
+        mgr.admit(model, "resnet", {}, epoch=2)
+        mgr.admit(model, "resnet", {}, epoch=3)
+
+        # Give oldest entry enough games and 2 unique opponents
+        oldest = store.list_by_role(Role.RECENT_FIXED)[0]
+        other1 = _add_entry(store, 10, role=Role.FRONTIER_STATIC, elo=1000)
+        other2 = _add_entry(store, 11, role=Role.FRONTIER_STATIC, elo=1000)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 4 WHERE id = ?",
+                (oldest.id,),
+            )
+            store._conn.execute(
+                "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+                "VALUES (?, ?, ?, 'calibration', 1, ?, ?, ?)",
+                (1, oldest.id, other1.id, 1, 0, 0),
+            )
+            store._conn.execute(
+                "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+                "VALUES (?, ?, ?, 'calibration', 1, ?, ?, ?)",
+                (2, oldest.id, other2.id, 1, 0, 0),
+            )
+
+        # With total_active_count=5 (3 RF + 2 FS), scaled min = min(6, 4) = 4
+        # Entry has 2 unique opponents < 4, so should NOT qualify for promote
+        outcome_no_scale, _ = mgr.review_oldest()
+        # Without scaling (total_active_count=None), 2 < 6 -> DELAY (soft overflow)
+        assert outcome_no_scale is ReviewOutcome.DELAY
+
+        # Now pass total_active_count=3 (small pool): min(6, 2)=2, and
+        # entry has 2 unique opponents >= 2 → qualifies for PROMOTE
+        # (Elo check: weakest_elo_fn returns None → always passes)
+        outcome_scaled, _ = mgr.review_oldest(total_active_count=3)
+        assert outcome_scaled is ReviewOutcome.PROMOTE
+
 
 class TestDynamicManager:
     def test_admit_clones_entry(self, store):

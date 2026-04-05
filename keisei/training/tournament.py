@@ -35,6 +35,19 @@ from keisei.training.role_elo import RoleEloTracker
 logger = logging.getLogger(__name__)
 
 
+def majority_wins_result(a_wins: int, b_wins: int, draws: int) -> float:
+    """Compute match result for Elo using majority-wins scoring.
+
+    Works for any game count. Returns 1.0 if A won more games,
+    0.0 if B won more, 0.5 if tied (including all-draws).
+    """
+    if a_wins > b_wins:
+        return 1.0
+    elif b_wins > a_wins:
+        return 0.0
+    return 0.5
+
+
 class LeagueTournament:
     """Background thread that runs round-robin matches between pool entries."""
 
@@ -46,7 +59,7 @@ class LeagueTournament:
         device: str = "cuda:1",
         num_envs: int = 64,
         max_ply: int = 512,
-        games_per_match: int = 64,
+        games_per_match: int = 3,
         k_factor: float = 16.0,
         pause_seconds: float = 5.0,
         min_pool_size: int = 3,
@@ -160,7 +173,7 @@ class LeagueTournament:
             action_mode="spatial",
         )
 
-        last_epoch = -1
+        round_number = 0
 
         try:
             while not self._stop_event.is_set():
@@ -172,8 +185,10 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds * 2)
                     continue
 
+                # Wait for training to reach epoch 5 before starting rounds
+                # (ensures a few entries exist and initial instability settles).
                 epoch = self._current_epoch()
-                if epoch < 5 or epoch == last_epoch:
+                if epoch < 5:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
@@ -182,8 +197,11 @@ class LeagueTournament:
                     self._stop_event.wait(self.pause_seconds)
                     continue
 
-                last_epoch = epoch
-                logger.info("Tournament round E%d: %d pairings", epoch, len(pairings))
+                round_number += 1
+                logger.info(
+                    "Tournament round %d (epoch %d): %d entries, %d pairings",
+                    round_number, epoch, len(entries), len(pairings),
+                )
 
                 if self.concurrent_pool is not None:
                     self._run_concurrent_round(vecenv, pairings, epoch)
@@ -208,10 +226,6 @@ class LeagueTournament:
                             self.scheduler.priority_scorer.record_round_result(
                                 entry_a.id, entry_b.id,
                             )
-                            # Record once per match, not per game: _under_sample_bonus
-                            # uses 1/(count+1), so per-game inflates count by
-                            # games_per_match (e.g. 32x), collapsing the bonus to
-                            # near-zero after a single match.
                             self.scheduler.priority_scorer.record_result(
                                 entry_a.id, entry_b.id,
                             )
@@ -224,7 +238,7 @@ class LeagueTournament:
                     if any_played and self.scheduler.priority_scorer is not None:
                         self.scheduler.priority_scorer.advance_round()
 
-                logger.info("Tournament round E%d complete", epoch)
+                logger.info("Tournament round %d complete", round_number)
 
                 # Run historical gauntlet if due (Phase 2)
                 if (
@@ -300,7 +314,7 @@ class LeagueTournament:
             current_b = self.store.get_entry(result.entry_b.id)
             if current_a is None or current_b is None:
                 continue
-            result_score = (result.a_wins + 0.5 * result.draws) / total
+            result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
             new_a_elo, new_b_elo = compute_elo_update(
                 current_a.elo_rating, current_b.elo_rating,
                 result=result_score, k=self.k_factor,
@@ -360,10 +374,12 @@ class LeagueTournament:
                 if total == 0:
                     continue
                 any_played = True
-                for _ in range(total):
-                    self.scheduler.priority_scorer.record_result(
-                        result.entry_a.id, result.entry_b.id,
-                    )
+                # Record once per match (not per game) to match
+                # the sequential path — per-game recording inflates
+                # _pair_games count and collapses _under_sample_bonus.
+                self.scheduler.priority_scorer.record_result(
+                    result.entry_a.id, result.entry_b.id,
+                )
                 self.scheduler.priority_scorer.record_round_result(
                     result.entry_a.id, result.entry_b.id,
                 )
@@ -407,7 +423,7 @@ class LeagueTournament:
             current_b = self.store.get_entry(entry_b.id)
             if current_a is None or current_b is None:
                 return total  # entry retired mid-round
-            result_score = (wins_a + 0.5 * draws) / total
+            result_score = majority_wins_result(wins_a, wins_b, draws)
             new_a_elo, new_b_elo = compute_elo_update(
                 current_a.elo_rating, current_b.elo_rating,
                 result=result_score, k=self.k_factor,
