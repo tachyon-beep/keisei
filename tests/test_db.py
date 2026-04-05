@@ -262,6 +262,24 @@ class TestLeagueDataReaders:
         assert history[0]["elo_rating"] == 1050.0
         assert history[1]["epoch"] == 6
 
+    def test_read_league_data_includes_games_vs_counts(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO league_entries (architecture, model_params, checkpoint_path, created_epoch, "
+            "games_vs_frontier, games_vs_dynamic, games_vs_recent) "
+            "VALUES ('transformer', '{}', '/tmp/ckpt.pt', 5, 10, 20, 30)"
+        )
+        conn.commit()
+        conn.close()
+        data = read_league_data(db_path)
+        entry = data["entries"][0]
+        assert entry["games_vs_frontier"] == 10
+        assert entry["games_vs_dynamic"] == 20
+        assert entry["games_vs_recent"] == 30
+
 
 class TestSchemaV4:
     def test_league_entries_has_role_column(self, tmp_path):

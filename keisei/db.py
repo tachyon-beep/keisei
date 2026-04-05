@@ -412,7 +412,8 @@ def read_league_data(
             "elo_rating, games_played, created_epoch, created_at, "
             "role, status, parent_entry_id, lineage_group, protection_remaining, last_match_at, "
             "elo_frontier, elo_dynamic, elo_recent, elo_historical, "
-            "optimizer_path, update_count, last_train_at "
+            "optimizer_path, update_count, last_train_at, "
+            "games_vs_frontier, games_vs_dynamic, games_vs_recent "
             "FROM league_entries ORDER BY elo_rating DESC"
         ).fetchall()
         results = conn.execute(
