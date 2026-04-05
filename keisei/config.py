@@ -48,7 +48,7 @@ class FrontierStaticConfig:
     review_interval_epochs: int = 250
     min_tenure_epochs: int = 100
     promotion_margin_elo: float = 50.0
-    min_games_for_promotion: int = 100
+    min_games_for_promotion: int = 64
     topk: int = 3
     streak_epochs: int = 50
     max_lineage_overlap: int = 2
@@ -78,6 +78,7 @@ class RecentFixedConfig:
     min_games_for_review: int = 32
     min_unique_opponents: int = 6
     promotion_margin_elo: float = 25.0
+    max_elo_spread: float = 200.0  # §7.1 criterion 4: volatility ceiling
     soft_overflow: int = 1
 
     def __post_init__(self) -> None:
@@ -434,15 +435,29 @@ def load_config(path: Path) -> AppConfig:
     league_config = None
     if "league" in raw:
         lg = dict(raw["league"])
-        frontier_raw = lg.pop("frontier", {})
-        recent_raw = lg.pop("recent", {})
+        # Accept both short names (code convention) and spec §17 names.
+        # Short names take priority if both are present.
+        frontier_raw = lg.pop("frontier", None) or lg.pop("frontier_static", {})
+        recent_raw = lg.pop("recent", None) or lg.pop("recent_fixed", {})
         dynamic_raw = lg.pop("dynamic", {})
-        scheduler_raw = lg.pop("scheduler", {})
+        # §17 aliases: [league.sampling] → scheduler, [league.matchmaking] → concurrency
+        scheduler_raw = lg.pop("scheduler", None) or lg.pop("sampling", {})
         history_raw = lg.pop("history", {})
         gauntlet_raw = lg.pop("gauntlet", {})
-        role_elo_raw = lg.pop("role_elo", {})
-        priority_raw = lg.pop("priority", {})
+        role_elo_raw = lg.pop("role_elo", None) or lg.pop("elo", {})
+        priority_raw = lg.pop("priority", None) or lg.pop("matchmaking", {})
         concurrency_raw = lg.pop("concurrency", {})
+        # §17 [league.active] slot counts merge into sub-configs
+        active_raw = lg.pop("active", {})
+        if active_raw:
+            if "frontier_static_slots" in active_raw:
+                frontier_raw.setdefault("slots", active_raw["frontier_static_slots"])
+            if "recent_fixed_slots" in active_raw:
+                recent_raw.setdefault("slots", active_raw["recent_fixed_slots"])
+            if "dynamic_slots" in active_raw:
+                dynamic_raw.setdefault("slots", active_raw["dynamic_slots"])
+        # §17 [league.storage] flags are implicit in current implementation
+        lg.pop("storage", None)
         _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
         found_legacy = _legacy_league_keys & set(lg.keys())
         if found_legacy:
@@ -455,8 +470,10 @@ def load_config(path: Path) -> AppConfig:
         for key in _legacy_league_keys:
             lg.pop(key, None)
         _sub_config_names = {
-            "frontier", "recent", "dynamic", "scheduler", "history",
-            "gauntlet", "role_elo", "priority", "concurrency",
+            "frontier", "frontier_static", "recent", "recent_fixed",
+            "dynamic", "scheduler", "sampling", "history",
+            "gauntlet", "role_elo", "elo", "priority", "matchmaking",
+            "concurrency", "active", "storage",
         }
         valid_league_keys = {
             f.name for f in fields(LeagueConfig)

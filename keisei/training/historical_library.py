@@ -20,7 +20,7 @@ class HistoricalSlot:
     target_epoch: int
     entry_id: int | None
     actual_epoch: int | None
-    selection_mode: str  # 'log_spaced', 'fallback', or 'threshold_rejected'
+    selection_mode: str  # 'log_spaced' or 'fallback'
     display_name: str | None = None
     checkpoint_path: str | None = None
 

@@ -74,6 +74,16 @@ class TieredPool:
         """True when total active entries are below total tier capacity."""
         return self._total_active() < self._total_capacity()
 
+    def _frontier_promotion_candidate_ids(self) -> frozenset[int]:
+        """Return IDs of Dynamic entries currently in top-K for Frontier promotion.
+
+        These entries are protected from eviction per §7.2.
+        """
+        promoter = self.frontier_manager._promoter
+        if promoter is None:
+            return frozenset()
+        return frozenset(promoter._topk_streaks.keys())
+
     # ------------------------------------------------------------------
     # Snapshot
     # ------------------------------------------------------------------
@@ -104,7 +114,9 @@ class TieredPool:
                 # OpponentStore.transaction() supports nesting — only the
                 # outermost level commits, so the whole operation is atomic.
                 with self.store.transaction():
-                    clone = self.dynamic_manager.admit(oldest)
+                    # §7.2: exclude current Frontier promotion candidates from eviction
+                    promo_ids = self._frontier_promotion_candidate_ids()
+                    clone = self.dynamic_manager.admit(oldest, promotion_candidate_ids=promo_ids)
                     if clone is not None:
                         self.store.retire_entry(oldest.id, "promoted to dynamic")
                     # else: Dynamic full and all protected — keep in Recent Fixed overflow

@@ -268,13 +268,18 @@ class RecentFixedManager:
                 oldest.elo_rating >= floor_elo - self._config.promotion_margin_elo
             )
 
-        if games_ok and opponents_ok and elo_qualified:
+        # §7.1 criterion 4: Elo must have settled (spread below threshold)
+        spread = self._store.elo_spread(oldest.id)
+        stable_ok = spread <= self._config.max_elo_spread
+
+        if games_ok and opponents_ok and elo_qualified and stable_ok:
             logger.info(
-                "RecentFixed review: PROMOTE id=%d (games=%d, opponents=%d, elo=%.1f)",
+                "RecentFixed review: PROMOTE id=%d (games=%d, opponents=%d, elo=%.1f, spread=%.1f)",
                 oldest.id,
                 games_played,
                 unique_opponents,
                 oldest.elo_rating,
+                spread,
             )
             return ReviewOutcome.PROMOTE, oldest
 
@@ -287,9 +292,8 @@ class RecentFixedManager:
         # thread; the tournament thread reads but doesn't modify Recent Fixed
         # entries, so count() is effectively single-threaded here.
         overflow_used = self.count() - self._config.slots
-        can_delay = overflow_used <= self._config.soft_overflow and (
-            not games_ok or not opponents_ok
-        )
+        under_calibrated = not games_ok or not opponents_ok or not stable_ok
+        can_delay = overflow_used <= self._config.soft_overflow and under_calibrated
 
         if can_delay:
             logger.info(
@@ -334,10 +338,15 @@ class DynamicManager:
         """Whether the Dynamic tier has reached its slot limit."""
         return self.count() >= self._config.slots
 
-    def admit(self, source_entry: OpponentEntry) -> OpponentEntry | None:
+    def admit(
+        self,
+        source_entry: OpponentEntry,
+        promotion_candidate_ids: frozenset[int] | None = None,
+    ) -> OpponentEntry | None:
         """Clone *source_entry* into the Dynamic tier.
 
-        If full, evicts the weakest eligible entry first.
+        If full, evicts the weakest eligible entry first (excluding any
+        current Frontier promotion candidates per §7.2).
         Returns None if full and no entry can be evicted.
 
         Note: is_full() and evict_weakest() acquire the store lock inside
@@ -345,7 +354,9 @@ class DynamicManager:
         """
         with self._store.transaction():
             if self.is_full():
-                evicted = self.evict_weakest()
+                evicted = self.evict_weakest(
+                    protected_candidate_ids=promotion_candidate_ids,
+                )
                 if evicted is None:
                     logger.warning(
                         "DynamicManager.admit: full and all entries protected, "
@@ -370,22 +381,30 @@ class DynamicManager:
             assert refreshed is not None
             return refreshed
 
-    def evict_weakest(self, disabled_entry_ids: set[int] | None = None) -> OpponentEntry | None:
+    def evict_weakest(
+        self,
+        disabled_entry_ids: set[int] | None = None,
+        protected_candidate_ids: frozenset[int] | None = None,
+    ) -> OpponentEntry | None:
         """Evict the lowest-Elo eligible entry (not protected, enough games).
 
         Disabled entries (passed via *disabled_entry_ids*) are always eligible
         for eviction regardless of protection or games played.
+        Entries in *protected_candidate_ids* (current Frontier promotion
+        candidates per §7.2) are excluded from eviction.
 
         Returns the evicted entry, or None if all entries are protected.
         """
         entries = self._store.list_by_role(Role.DYNAMIC)
         disabled = disabled_entry_ids or set()
+        candidates = protected_candidate_ids or frozenset()
         eligible = [
             e
             for e in entries
-            if (e.protection_remaining == 0
-                and e.games_played >= self._config.min_games_before_eviction)
-            or e.id in disabled
+            if ((e.protection_remaining == 0
+                 and e.games_played >= self._config.min_games_before_eviction)
+                or e.id in disabled)
+            and e.id not in candidates
         ]
         if not eligible:
             logger.info("Dynamic evict_weakest: no eligible entries")

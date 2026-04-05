@@ -155,6 +155,11 @@ class OpponentEntry:
     optimizer_path: str | None = None
     update_count: int = 0
     last_train_at: str | None = None
+    retired_at: str | None = None
+    training_enabled: bool = True
+    games_vs_frontier: int = 0
+    games_vs_dynamic: int = 0
+    games_vs_recent: int = 0
 
     @classmethod
     def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
@@ -184,6 +189,11 @@ class OpponentEntry:
             optimizer_path=row["optimizer_path"] if "optimizer_path" in keys else None,
             update_count=row["update_count"] if "update_count" in keys else 0,
             last_train_at=row["last_train_at"] if "last_train_at" in keys else None,
+            retired_at=row["retired_at"] if "retired_at" in keys else None,
+            training_enabled=bool(row["training_enabled"]) if "training_enabled" in keys else True,
+            games_vs_frontier=row["games_vs_frontier"] if "games_vs_frontier" in keys else 0,
+            games_vs_dynamic=row["games_vs_dynamic"] if "games_vs_dynamic" in keys else 0,
+            games_vs_recent=row["games_vs_recent"] if "games_vs_recent" in keys else 0,
         )
 
 
@@ -423,7 +433,7 @@ class OpponentStore:
                 raise ValueError(f"Entry {entry_id} not found")
             old_role = entry.role
             self._conn.execute(
-                "UPDATE league_entries SET status = ? WHERE id = ?",
+                "UPDATE league_entries SET status = ?, retired_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
                 (EntryStatus.RETIRED, entry_id),
             )
             self._log_transition_unlocked(
@@ -687,6 +697,22 @@ class OpponentStore:
                 "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
                 (entry_id, epoch, new_elo),
             )
+
+    def elo_spread(self, entry_id: int) -> float:
+        """Return Elo spread (max - min) from elo_history for an entry.
+
+        Returns 0.0 if fewer than 2 history points exist (insufficient data
+        to assess volatility).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(elo_rating) - MIN(elo_rating) AS spread, COUNT(*) AS cnt "
+                "FROM elo_history WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None or row["cnt"] < 2:
+                return 0.0
+            return float(row["spread"])
 
     def record_result(
         self, epoch: int, entry_a_id: int, entry_b_id: int,

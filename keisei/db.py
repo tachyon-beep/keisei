@@ -102,7 +102,12 @@ def init_db(db_path: str) -> None:
                 elo_historical  REAL NOT NULL DEFAULT 1000.0,
                 optimizer_path  TEXT,
                 update_count    INTEGER NOT NULL DEFAULT 0,
-                last_train_at   TEXT
+                last_train_at   TEXT,
+                retired_at      TEXT,
+                training_enabled INTEGER NOT NULL DEFAULT 1,
+                games_vs_frontier INTEGER NOT NULL DEFAULT 0,
+                games_vs_dynamic  INTEGER NOT NULL DEFAULT 0,
+                games_vs_recent   INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS league_results (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,

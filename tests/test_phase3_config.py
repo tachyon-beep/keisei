@@ -83,7 +83,7 @@ def test_dynamic_config_validation():
 def test_frontier_config_promotion_defaults():
     """No-args construct, assert new promotion fields."""
     fc = FrontierStaticConfig()
-    assert fc.min_games_for_promotion == 100
+    assert fc.min_games_for_promotion == 64
     assert fc.topk == 3
     assert fc.streak_epochs == 50
     assert fc.max_lineage_overlap == 2
@@ -142,5 +142,5 @@ def test_load_config_without_phase3_fields(tmp_path):
     assert config.league.dynamic.lr_scale == 0.25
     assert config.league.dynamic.update_every_matches == 4
     # Frontier defaults too
-    assert config.league.frontier.min_games_for_promotion == 100
+    assert config.league.frontier.min_games_for_promotion == 64
     assert config.league.frontier.topk == 3
