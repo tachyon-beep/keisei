@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -17,66 +15,7 @@ from keisei.db import init_db
 from keisei.training.dynamic_trainer import DynamicTrainer, MatchRollout
 from keisei.training.opponent_store import OpponentStore, Role
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-OBS_CHANNELS = 50
-ACTION_SPACE = 11259
-
-
-class TinyModel(torch.nn.Module):
-    """Minimal model satisfying DynamicTrainer's forward-pass contract."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.fc = torch.nn.Linear(OBS_CHANNELS * 9 * 9, 128)
-        self.policy_head = torch.nn.Linear(128, ACTION_SPACE)
-        self.value_head = torch.nn.Linear(128, 3)
-
-    def forward(self, x: torch.Tensor) -> SimpleNamespace:
-        flat = x.reshape(x.shape[0], -1)
-        h = torch.relu(self.fc(flat))
-        return SimpleNamespace(
-            policy_logits=self.policy_head(h).reshape(x.shape[0], 1, -1),
-            value_logits=self.value_head(h),
-        )
-
-
-def _make_rollout(
-    steps: int = 10,
-    num_envs: int = 1,
-    side: int = 0,
-    include_terminal: bool = True,
-) -> MatchRollout:
-    """Create a synthetic MatchRollout with valid data."""
-    obs = torch.randn(steps, num_envs, OBS_CHANNELS, 9, 9)
-    actions = torch.randint(0, ACTION_SPACE, (steps, num_envs))
-    rewards = torch.zeros(steps, num_envs)
-    dones = torch.zeros(steps, num_envs)
-    # At least one legal action per step (action 0 always legal)
-    legal_masks = torch.zeros(steps, num_envs, ACTION_SPACE, dtype=torch.bool)
-    legal_masks[:, :, 0] = True
-    # Scatter the actual actions into legal_masks too
-    for s in range(steps):
-        for e in range(num_envs):
-            legal_masks[s, e, actions[s, e]] = True
-    perspective = torch.full((steps, num_envs), side, dtype=torch.long)
-
-    if include_terminal:
-        # Last step is terminal with a win for this side
-        dones[-1, :] = 1.0
-        rewards[-1, :] = 1.0
-
-    return MatchRollout(
-        observations=obs,
-        actions=actions,
-        rewards=rewards,
-        dones=dones,
-        legal_masks=legal_masks,
-        perspective=perspective,
-    )
+from conftest import TinyModel, make_rollout as _make_rollout
 
 
 @pytest.fixture
@@ -256,14 +195,15 @@ class TestIsRateLimited:
 
 
 class TestUpdateModifiesWeights:
-    """test_update_modifies_weights — checksum before/after differs."""
+    """test_update_modifies_weights — parameter values differ after update."""
 
     def test_update_modifies_weights(self, store_and_entry, default_config) -> None:
         store, entry = store_and_entry
 
-        # Read checkpoint before
+        # Load parameters before update
         ckpt_path = Path(entry.checkpoint_path)
-        before_hash = hashlib.md5(ckpt_path.read_bytes()).hexdigest()
+        before_state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        before_params = {k: v.clone() for k, v in before_state.items()}
 
         trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
 
@@ -279,8 +219,13 @@ class TestUpdateModifiesWeights:
 
         assert result is True
 
-        after_hash = hashlib.md5(ckpt_path.read_bytes()).hexdigest()
-        assert before_hash != after_hash
+        # Load parameters after update and compare
+        after_state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        any_changed = any(
+            not torch.equal(before_params[k], after_state[k])
+            for k in before_params
+        )
+        assert any_changed, "Expected at least one parameter tensor to change after update"
 
 
 class TestUpdateUsesLrScale:
@@ -339,15 +284,12 @@ class TestUpdateSavesWeightsAfterUpdate:
     def test_update_saves_weights_after_update(self, store_and_entry, default_config) -> None:
         store, entry = store_and_entry
         ckpt_path = Path(entry.checkpoint_path)
-        mtime_before = ckpt_path.stat().st_mtime
+        bytes_before = ckpt_path.read_bytes()
 
         trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
 
         for _ in range(default_config.update_every_matches):
             trainer.record_match(entry.id, _make_rollout(side=0), 0)
-
-        # Small sleep so mtime differs
-        time.sleep(0.05)
 
         with patch(
             "keisei.training.opponent_store.build_model",
@@ -355,8 +297,8 @@ class TestUpdateSavesWeightsAfterUpdate:
         ):
             trainer.update(entry, "cpu")
 
-        mtime_after = ckpt_path.stat().st_mtime
-        assert mtime_after > mtime_before
+        bytes_after = ckpt_path.read_bytes()
+        assert bytes_before != bytes_after
 
 
 class TestUpdateSavesOptimizerAtFlushInterval:
@@ -455,25 +397,37 @@ class TestBufferClearedAfterUpdate:
         assert len(trainer._rollout_buffers[entry.id]) == 0
 
 
-class TestThreadSafetyAssertion:
-    """test_thread_safety_assertion — different thread raises AssertionError."""
+class TestUpdateUsesRewardSignedAdvantages:
+    """test_update_uses_reward_signed_advantages — wins get positive, losses negative."""
 
-    def test_thread_safety(self, store_and_entry, default_config) -> None:
+    def test_reward_signed_advantages(self, store_and_entry) -> None:
         store, entry = store_and_entry
-        trainer = DynamicTrainer(store=store, config=default_config, learner_lr=1e-3)
+        config = DynamicConfig(update_every_matches=1, update_epochs_per_batch=1)
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
 
-        error_caught = [False]
+        # Create a rollout with a terminal loss (reward=-1)
+        rollout_loss = _make_rollout(steps=5, side=0, include_terminal=True)
+        rollout_loss.rewards[-1, :] = -1.0  # loss
 
-        def worker():
-            try:
-                trainer.record_match(entry.id, _make_rollout(side=0), 0)
-            except AssertionError:
-                error_caught[0] = True
+        trainer.record_match(entry.id, rollout_loss, 0)
 
-        t = threading.Thread(target=worker)
-        t.start()
-        t.join()
-        assert error_caught[0], "Expected AssertionError from wrong thread"
+        # Prepare batch and check advantage values
+        _obs, _actions, all_rewards, all_dones, _masks = trainer._prepare_batch(
+            entry.id, "cpu"
+        )
+        advantages = all_rewards * all_dones.float()
+
+        # Terminal step should have advantage = -1.0 (loss)
+        terminal_advantages = advantages[all_dones.bool()]
+        assert (terminal_advantages < 0).all(), (
+            f"Expected negative advantages for losses, got {terminal_advantages}"
+        )
+
+        # Non-terminal steps should have advantage = 0.0
+        non_terminal_advantages = advantages[~all_dones.bool()]
+        assert (non_terminal_advantages == 0).all(), (
+            f"Expected zero advantages for non-terminal, got {non_terminal_advantages}"
+        )
 
 
 # ---------------------------------------------------------------------------

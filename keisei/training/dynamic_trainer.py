@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -55,14 +55,8 @@ class DynamicTrainer:
         self._update_timestamps: list[float] = []
         self._optimizers: dict[int, torch.optim.Adam] = {}
         self._disabled_entries: set[int] = set()
-        self._rollout_buffers: dict[int, list[tuple[MatchRollout, int]]] = {}
+        self._rollout_buffers: dict[int, deque[tuple[MatchRollout, int]]] = {}
         self._error_counts: dict[int, int] = {}
-        self._owner_thread: int | None = threading.current_thread().ident
-
-    def _assert_owner(self) -> None:
-        assert (
-            threading.current_thread().ident == self._owner_thread
-        ), "DynamicTrainer must only be called from its owning thread"
 
     # ------------------------------------------------------------------
     # Record & query
@@ -70,14 +64,11 @@ class DynamicTrainer:
 
     def record_match(self, entry_id: int, rollout: MatchRollout, side: int) -> None:
         """Record a match rollout for a Dynamic entry."""
-        self._assert_owner()
         if entry_id in self._disabled_entries:
             return
-        buf = self._rollout_buffers.setdefault(entry_id, [])
-        buf.append((rollout, side))
-        # Cap buffer at max_buffer_depth (drop oldest)
-        while len(buf) > self.config.max_buffer_depth:
-            buf.pop(0)
+        if entry_id not in self._rollout_buffers:
+            self._rollout_buffers[entry_id] = deque(maxlen=self.config.max_buffer_depth)
+        self._rollout_buffers[entry_id].append((rollout, side))
         self._match_counts[entry_id] = self._match_counts.get(entry_id, 0) + 1
 
     def should_update(self, entry_id: int) -> bool:
@@ -89,8 +80,9 @@ class DynamicTrainer:
     def is_rate_limited(self) -> bool:
         """Check if updates are rate-limited (too many in the last 60 seconds)."""
         now = time.monotonic()
-        count = sum(1 for t in self._update_timestamps if now - t < 60.0)
-        return count >= self.config.max_updates_per_minute
+        cutoff = now - 60.0
+        self._update_timestamps = [t for t in self._update_timestamps if t >= cutoff]
+        return len(self._update_timestamps) >= self.config.max_updates_per_minute
 
     def get_update_stats(self, entry_id: int) -> tuple[int, str | None]:
         """Return (update_count, last_train_at) from the store entry."""
@@ -148,8 +140,14 @@ class DynamicTrainer:
             # Try to load state from the cached optimizer
             try:
                 new_opt.load_state_dict(opt.state_dict())
-            except Exception:
-                pass  # If state doesn't match, start fresh
+                # Move optimizer state to training device
+                device = next(model.parameters()).device
+                for state in new_opt.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+            except ValueError:
+                logger.debug("Optimizer state mismatch for entry %d, starting fresh", entry_id)
             return new_opt
 
         # Try loading from store
@@ -160,7 +158,13 @@ class DynamicTrainer:
         if saved_state is not None:
             try:
                 optimizer.load_state_dict(saved_state)
-            except Exception:
+                # Move optimizer state to training device
+                device = next(model.parameters()).device
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+            except (ValueError, RuntimeError):
                 logger.warning(
                     "Failed to load optimizer state for entry %d, starting fresh",
                     entry_id,
@@ -173,12 +177,14 @@ class DynamicTrainer:
         Returns True on success, False if an error was caught and handled.
         Raises on error when config.disable_on_error is False.
         """
-        self._assert_owner()
         try:
             return self._update_inner(entry, device)
         except Exception:
             if not self.config.disable_on_error:
                 raise
+            # Clear stale rollout data to prevent training on corrupted buffers
+            self._match_counts[entry.id] = 0
+            self._rollout_buffers[entry.id] = deque(maxlen=self.config.max_buffer_depth)
             self._error_counts[entry.id] = self._error_counts.get(entry.id, 0) + 1
             logger.warning(
                 "DynamicTrainer update failed for entry %d (error %d/%d)",
@@ -245,8 +251,8 @@ class DynamicTrainer:
                 .squeeze(1)
             )
 
-            # Advantage = 1.0 for terminal steps, 0.0 for non-terminal (simplified)
-            advantages = all_dones[indices].float()
+            # Reward-signed advantage: +1 for wins, -1 for losses, 0 for draws/non-terminal
+            advantages = all_rewards[indices] * all_dones[indices].float()
 
             policy_loss = ppo_clip_loss(
                 new_log_probs, old_log_probs[indices], advantages, clip_epsilon=0.2
@@ -289,7 +295,7 @@ class DynamicTrainer:
 
         self.store.increment_update_count(entry.id)
         self._match_counts[entry.id] = 0
-        self._rollout_buffers[entry.id] = []
+        self._rollout_buffers[entry.id] = deque(maxlen=self.config.max_buffer_depth)
         self._update_timestamps.append(time.monotonic())
         self._error_counts[entry.id] = 0
         self._optimizers[entry.id] = optimizer
