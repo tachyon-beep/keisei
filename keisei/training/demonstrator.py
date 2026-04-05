@@ -133,68 +133,75 @@ class DemonstratorRunner(threading.Thread):
 
     def _play_game(self, matchup: DemoMatchup) -> None:
         """Play a single demonstrator game to completion."""
+        # Pin entries for the ENTIRE duration of model usage (load + inference),
+        # not just during loading.  Unpinning early would allow eviction to
+        # delete the checkpoint while the model is still in use.
         self.store.pin(matchup.entry_a.id)
         self.store.pin(matchup.entry_b.id)
         try:
-            model_a = self.store.load_opponent(matchup.entry_a, device=self.device)
-            model_b = self.store.load_opponent(matchup.entry_b, device=self.device)
-        except FileNotFoundError:
-            logger.warning("Checkpoint missing for demo slot %d — skipping", matchup.slot)
-            return
+            try:
+                model_a = self.store.load_opponent(matchup.entry_a, device=self.device)
+                model_b = self.store.load_opponent(matchup.entry_b, device=self.device)
+            except FileNotFoundError:
+                logger.warning("Checkpoint missing for demo slot %d — skipping", matchup.slot)
+                return
+            except Exception:
+                logger.exception("Failed to load models for demo slot %d — skipping", matchup.slot)
+                return
+
+            logger.info(
+                "Demo slot %d: %s (elo=%.0f) vs %s (elo=%.0f)",
+                matchup.slot,
+                matchup.entry_a.architecture, matchup.entry_a.elo_rating,
+                matchup.entry_b.architecture, matchup.entry_b.elo_rating,
+            )
+
+            try:
+                from shogi_gym import VecEnv
+                env = VecEnv(
+                    num_envs=1, max_ply=512,
+                    observation_mode="katago",  # type: ignore[call-arg]
+                    action_mode="spatial",
+                )
+            except ImportError:
+                logger.warning("shogi_gym not available — demo slot %d inactive", matchup.slot)
+                return
+
+            reset_result = env.reset()
+            obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
+            legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(self.device)
+            current_player = 0
+            models = [model_a, model_b]
+            done = False
+
+            while not done and not self._stop_event.is_set():
+                model = models[current_player]
+                ctx = torch.cuda.stream(self._stream) if self._stream else nullcontext()
+                with ctx:
+                    with torch.no_grad():
+                        # Guard: zero legal actions → all-inf softmax → NaN crash
+                        legal_counts = legal_masks.sum(dim=-1)
+                        if (legal_counts == 0).any():
+                            logger.warning(
+                                "Demo slot %d: zero legal actions detected — ending game",
+                                matchup.slot,
+                            )
+                            break
+
+                        output = model(obs)
+                        flat = _get_policy_flat(output, obs.shape[0])
+                        masked = flat.masked_fill(~legal_masks, float("-inf"))
+                        probs = F.softmax(masked, dim=-1)
+                        action = torch.distributions.Categorical(probs).sample()
+
+                step_result = env.step(action.tolist())
+                done = bool(step_result.terminated[0] or step_result.truncated[0])
+                obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
+                legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
+                current_player = int(step_result.current_players[0])
+                time.sleep(self.move_delay)
+
+            logger.info("Demo slot %d game completed", matchup.slot)
         finally:
             self.store.unpin(matchup.entry_a.id)
             self.store.unpin(matchup.entry_b.id)
-
-        logger.info(
-            "Demo slot %d: %s (elo=%.0f) vs %s (elo=%.0f)",
-            matchup.slot,
-            matchup.entry_a.architecture, matchup.entry_a.elo_rating,
-            matchup.entry_b.architecture, matchup.entry_b.elo_rating,
-        )
-
-        try:
-            from shogi_gym import VecEnv
-            env = VecEnv(
-                num_envs=1, max_ply=512,
-                observation_mode="katago",  # type: ignore[call-arg]
-                action_mode="spatial",
-            )
-        except ImportError:
-            logger.warning("shogi_gym not available — demo slot %d inactive", matchup.slot)
-            return
-
-        reset_result = env.reset()
-        obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
-        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(self.device)
-        current_player = 0
-        models = [model_a, model_b]
-        done = False
-
-        while not done and not self._stop_event.is_set():
-            model = models[current_player]
-            ctx = torch.cuda.stream(self._stream) if self._stream else nullcontext()
-            with ctx:
-                with torch.no_grad():
-                    # Guard: zero legal actions → all-inf softmax → NaN crash
-                    legal_counts = legal_masks.sum(dim=-1)
-                    if (legal_counts == 0).any():
-                        logger.warning(
-                            "Demo slot %d: zero legal actions detected — ending game",
-                            matchup.slot,
-                        )
-                        break
-
-                    output = model(obs)
-                    flat = _get_policy_flat(output, obs.shape[0])
-                    masked = flat.masked_fill(~legal_masks, float("-inf"))
-                    probs = F.softmax(masked, dim=-1)
-                    action = torch.distributions.Categorical(probs).sample()
-
-            step_result = env.step(action.tolist())
-            done = bool(step_result.terminated[0] or step_result.truncated[0])
-            obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
-            legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
-            current_player = int(step_result.current_players[0])
-            time.sleep(self.move_delay)
-
-        logger.info("Demo slot %d game completed", matchup.slot)

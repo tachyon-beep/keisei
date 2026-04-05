@@ -158,8 +158,8 @@ class OpponentEntry:
 
     @classmethod
     def from_db_row(cls, row: sqlite3.Row) -> OpponentEntry:
-        raw_facts = row["flavour_facts"] if "flavour_facts" in row.keys() else "[]"
         keys = row.keys()
+        raw_facts = row["flavour_facts"] if "flavour_facts" in keys else "[]"
         return cls(
             id=row["id"],
             display_name=row["display_name"],
@@ -228,6 +228,10 @@ class OpponentStore:
         self._conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
+        # check_same_thread=False is required: the connection is shared between
+        # the main training thread and the tournament thread.  Thread safety is
+        # provided by self._lock (RLock), which serializes all access.  WAL mode
+        # is set for crash resilience, not multi-writer concurrency.
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -255,6 +259,14 @@ class OpponentStore:
         """Atomic multi-operation context. Holds lock, defers commit.
 
         Supports nesting: only the outermost transaction commits/rollbacks.
+
+        Important: do NOT mix raw ``with self._lock:`` blocks with nested
+        ``self.transaction()`` calls — the transaction tracks depth via
+        _transaction_depth, but raw lock acquisitions don't increment it.
+        A ``transaction()`` inside a raw ``with self._lock:`` would see
+        depth=1 (outermost) and commit mid-operation.  All current callers
+        use either ``_lock`` (for simple reads) or ``transaction()`` (for
+        writes), never both.
         """
         with self._lock:
             self._transaction_depth += 1
@@ -433,7 +445,8 @@ class OpponentStore:
                     "SELECT current_epoch FROM training_state WHERE id = 1"
                 ).fetchone()
                 return row["current_epoch"] if row else 0
-            except Exception:
+            except sqlite3.OperationalError:
+                # Table may not exist yet (pre-init or schema mismatch)
                 return 0
 
     def _list_entries_unlocked(self) -> list[OpponentEntry]:
@@ -483,7 +496,12 @@ class OpponentStore:
         to_status: EntryStatus | str | None,
         reason: str,
     ) -> None:
-        """Internal: insert transition row without acquiring lock or committing."""
+        """Internal: insert transition row without acquiring lock or committing.
+
+        Must be called inside an active transaction() — the INSERT is only
+        committed when the outermost transaction scope exits successfully.
+        The ``_unlocked`` suffix signals this requirement.
+        """
         self._conn.execute(
             """INSERT INTO league_transitions
                (entry_id, from_role, to_role, from_status, to_status, reason)
@@ -572,7 +590,11 @@ class OpponentStore:
             return bool(row and row[0])
 
     def set_bootstrapped(self) -> None:
-        """Mark the league as bootstrapped."""
+        """Mark the league as bootstrapped.
+
+        The league_meta row with id=1 is guaranteed to exist — created by
+        init_db() via INSERT OR IGNORE.
+        """
         with self.transaction():
             self._conn.execute(
                 "UPDATE league_meta SET bootstrapped = 1 WHERE id = 1"

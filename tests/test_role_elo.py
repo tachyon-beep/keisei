@@ -96,6 +96,34 @@ class TestUpdateFromResult:
         assert dyn_after.elo_recent == 1000.0
         assert rec_after.elo_dynamic == 1000.0
 
+    def test_cross_dynamic_recent_reversed_uses_recent_k(self, elo_setup):
+        """When entry_a is Recent, K-factor should be recent_k (32), not dynamic_k (24)."""
+        tracker, store, model = elo_setup
+        rec = store.add_entry(model, "resnet", {}, epoch=1, role=Role.RECENT_FIXED)
+        dyn = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
+
+        # entry_a is Recent this time
+        tracker.update_from_result(rec, dyn, result_score=1.0, match_context="cross_dynamic_recent")
+
+        rec_after = store._get_entry(rec.id)
+        dyn_after = store._get_entry(dyn.id)
+        # Recent entry's elo_recent should go up (it won)
+        assert rec_after.elo_recent > 1000.0
+        # Dynamic entry's elo_dynamic should go down
+        assert dyn_after.elo_dynamic < 1000.0
+
+        # Compare delta magnitude against a "dyn as entry_a" match to verify
+        # different K-factors are used (recent_k=32 > dynamic_k=24)
+        rec2 = store.add_entry(model, "resnet", {}, epoch=3, role=Role.RECENT_FIXED)
+        dyn2 = store.add_entry(model, "resnet", {}, epoch=4, role=Role.DYNAMIC)
+        tracker.update_from_result(dyn2, rec2, result_score=1.0, match_context="cross_dynamic_recent")
+        dyn2_after = store._get_entry(dyn2.id)
+
+        # recent_k=32 produces larger deltas than dynamic_k=24
+        recent_as_a_delta = rec_after.elo_recent - 1000.0
+        dynamic_as_a_delta = dyn2_after.elo_dynamic - 1000.0
+        assert recent_as_a_delta > dynamic_as_a_delta
+
     def test_k_factors_differ_by_context(self, elo_setup):
         tracker, store, model = elo_setup
         # Two matches with same result_score but different contexts

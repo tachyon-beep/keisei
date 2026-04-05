@@ -64,9 +64,9 @@ class RoleEloTracker:
             if column_b is not None:
                 self.store.update_role_elo(entry_b.id, column_b, new_b)
 
-    def get_role_elos(self, entry_id: int) -> dict[str, float]:
-        """Returns dict of {role: elo_value} for an entry."""
-        entry = self.store._get_entry(entry_id)
+    def get_role_elos(self, entry_id: int) -> dict[EloColumn, float]:
+        """Returns dict of {EloColumn: elo_value} for an entry."""
+        entry = self.store.get_entry(entry_id)
         if entry is None:
             return {}
         return {
@@ -92,6 +92,8 @@ class RoleEloTracker:
         anchor (historical benchmarks) whose Elo should not drift.
         """
         if match_context == "historical":
+            # entry_a's elo_historical tracks "how well this entry performs against
+            # historical benchmarks" — distinct from elo_dynamic/elo_frontier.
             # entry_b is a frozen anchor — read its elo_historical for the
             # computation, but column_b=None signals "don't write back".
             return EloColumn.HISTORICAL, None, self.config.historical_k
@@ -106,11 +108,11 @@ class RoleEloTracker:
             return EloColumn.RECENT, EloColumn.RECENT, self.config.recent_k
 
         if match_context == "cross_dynamic_recent":
-            # Dynamic vs Recent Fixed: different columns for each
+            # Dynamic vs Recent Fixed: different columns for each, K tracks entry_a's role
             if entry_a.role == Role.DYNAMIC:
                 return EloColumn.DYNAMIC, EloColumn.RECENT, self.config.dynamic_k
             else:
-                return EloColumn.RECENT, EloColumn.DYNAMIC, self.config.dynamic_k
+                return EloColumn.RECENT, EloColumn.DYNAMIC, self.config.recent_k
 
         raise ValueError(f"Unknown match context: {match_context!r}")
 
@@ -124,6 +126,10 @@ class RoleEloTracker:
         """Infer the match context from participant roles."""
         roles = {entry_a.role, entry_b.role}
 
+        # Frontier context takes priority: any match involving a Frontier entry
+        # updates elo_frontier for BOTH participants.  This is intentional —
+        # Dynamic entries accumulate a meaningful elo_frontier that tracks how
+        # well they perform against the Frontier benchmark tier.
         if Role.FRONTIER_STATIC in roles:
             return "frontier"
 
@@ -136,5 +142,10 @@ class RoleEloTracker:
         if Role.DYNAMIC in roles and Role.RECENT_FIXED in roles:
             return "cross_dynamic_recent"
 
-        # Fallback: treat as dynamic context
+        # Fallback: treat as dynamic context (e.g. UNASSIGNED vs UNASSIGNED)
+        logger.warning(
+            "Unrecognised role combination %s vs %s — falling back to 'dynamic' context",
+            entry_a.role,
+            entry_b.role,
+        )
         return "dynamic"

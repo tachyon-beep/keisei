@@ -146,6 +146,8 @@ class LeagueTournament:
         # Lazy-import VecEnv so the module can be imported without shogi_gym
         from shogi_gym import VecEnv
 
+        # Local num_envs intentionally overrides self.num_envs when
+        # concurrent pool is configured (pool manages its own env count).
         num_envs = (
             self.concurrent_pool.config.total_envs
             if self.concurrent_pool is not None
@@ -162,6 +164,9 @@ class LeagueTournament:
 
         try:
             while not self._stop_event.is_set():
+                # Total entry count is sufficient: generate_round pairs ALL
+                # entries regardless of role.  Role diversity is irrelevant for
+                # round-robin — any entry can play any other.
                 entries = self.store.list_entries()
                 if len(entries) < self.min_pool_size:
                     self._stop_event.wait(self.pause_seconds * 2)
@@ -209,6 +214,10 @@ class LeagueTournament:
                                 )
                         self._stop_event.wait(self.pause_seconds)
 
+                    # Advance round even if stop_event fired mid-round: a partial
+                    # round is still a round for scorer state purposes.  Not
+                    # advancing would freeze repeat-penalty decay, and since
+                    # stop is typically for shutdown, the next session starts fresh.
                     if any_played and self.scheduler.priority_scorer is not None:
                         self.scheduler.priority_scorer.advance_round()
 
@@ -261,6 +270,8 @@ class LeagueTournament:
         """Run a round using the ConcurrentMatchPool."""
         assert self.concurrent_pool is not None
 
+        # Closures capture self.device by reference — safe because device is
+        # set once in __init__ and never reassigned.
         def _load_fn(entry: OpponentEntry) -> object:
             return self.store.load_opponent(entry, device=str(self.device))
 
@@ -305,6 +316,8 @@ class LeagueTournament:
                 elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
                 match_context=context,
             )
+            # result.entry_a.id == current_a.id by construction (current_a
+            # is fetched by result.entry_a.id on line 285).
             self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
             self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
             if self.role_elo_tracker:

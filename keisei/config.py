@@ -273,6 +273,8 @@ class LeagueConfig:
     tournament_games_per_match: int = 64
     tournament_k_factor: float = 16.0
     tournament_pause_seconds: float = 5.0
+    # Mutable-default-argument pitfall does NOT apply here: every sub-config
+    # dataclass is frozen=True, so shared default instances can't be mutated.
     frontier: FrontierStaticConfig = FrontierStaticConfig()
     recent: RecentFixedConfig = RecentFixedConfig()
     dynamic: DynamicConfig = DynamicConfig()
@@ -284,6 +286,10 @@ class LeagueConfig:
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
 
     def __post_init__(self) -> None:
+        # These validate LeagueConfig's OWN scalar fields — none overlap with
+        # sub-config validation.  In particular, tournament_games_per_match
+        # (total games in a tournament match) is distinct from
+        # MatchSchedulerConfig.tournament_games_per_pair (round-robin pair count).
         if self.epochs_per_seat < 1:
             raise ValueError(
                 f"league.epochs_per_seat must be >= 1, got {self.epochs_per_seat}"

@@ -57,6 +57,16 @@ class TestComputeTargets:
         # Verify the clamping equivalence explicitly
         assert targets == HistoricalLibrary._compute_targets(2)
 
+    def test_targets_with_single_slot(self):
+        """num_slots=1 should return [current_epoch] without ZeroDivisionError."""
+        targets = HistoricalLibrary._compute_targets(500, num_slots=1)
+        assert targets == [500]
+
+    def test_targets_with_single_slot_epoch_1(self):
+        """num_slots=1 at epoch 1 (clamped to 2)."""
+        targets = HistoricalLibrary._compute_targets(1, num_slots=1)
+        assert targets == [2]
+
 
 class TestIsDueForRefresh:
     def test_false_before_min_epoch(self, library_setup):

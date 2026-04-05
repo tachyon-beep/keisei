@@ -564,7 +564,10 @@ class KataGoTrainingLoop:
         self._learner_entry_id: int | None = None
         self._tournament: LeagueTournament | None = None
 
-        # Per-env opponent state (Change 3) — initialized at epoch start when enabled
+        # Per-env opponent state (Change 3) — populated at epoch start when
+        # per-env opponents are enabled.  The re-sample path (which reads
+        # _loaded_by_role) is gated by _opponent_results being non-None, so an
+        # empty _loaded_by_role from __init__ can never reach sample_for_learner.
         self._opponent_models: dict[int, torch.nn.Module] | None = None
         self._env_opponent_ids: np.ndarray | None = None
         self._cached_entries: list[OpponentEntry] = []
@@ -765,6 +768,8 @@ class KataGoTrainingLoop:
 
             # Sample opponent for this epoch (if league enabled)
             if self.scheduler is not None:
+                # tiered_pool is co-initialized with scheduler in __init__
+                assert self.tiered_pool is not None
                 self._current_opponent_entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
                 opp_device_cfg = (
                     self.config.league.opponent_device
@@ -859,16 +864,22 @@ class KataGoTrainingLoop:
                     # Reuse an already-loaded model for _current_opponent (used by
                     # PendingTransitions guard, sign_correct_bootstrap, etc.).
                     # Do NOT call load_opponent again — saves 14MB VRAM + disk I/O.
+                    # _current_opponent_entry is guaranteed non-None: set by
+                    # sample_for_learner() at the top of this scheduler block.
                     opp_entry_id = self._current_opponent_entry.id
                     if opp_entry_id in self._opponent_models:
                         self._current_opponent = self._opponent_models[opp_entry_id]
                     else:
-                        # Entry's checkpoint was corrupt/missing — use any loaded model
+                        # Entry's checkpoint was corrupt/missing, or retired between
+                        # entries_by_role() and list_entries() calls — use any loaded
+                        # model as fallback for _current_opponent (used only for
+                        # bootstrap guards, not per-env play).
                         self._current_opponent = next(iter(self._opponent_models.values()))
                 else:
                     self._opponent_models = None
                     self._env_opponent_ids = None
                     self._opponent_results = None
+                    self._loaded_by_role = {}
                     self._current_opponent = self.store.load_opponent(
                         self._current_opponent_entry, device=opp_device,
                     )
@@ -1137,8 +1148,11 @@ class KataGoTrainingLoop:
                                 else:
                                     self._opponent_results[opp_id][2] += 1  # draw
 
-                            # Re-sample opponent for next game — use loaded-only
-                            # entries to avoid sampling models that failed to load.
+                            # Re-sample for ALL done envs (terminal AND truncated) — the
+                            # Elo tracking above is terminal-only, but re-sampling must
+                            # happen for any completed episode so the next game gets a
+                            # fresh opponent.  Uses loaded-only entries to avoid sampling
+                            # models that failed to load.
                             assert self.scheduler is not None
                             new_entry = self.scheduler.sample_for_learner(self._loaded_by_role)
                             self._env_opponent_ids[env_i] = new_entry.id
@@ -1579,7 +1593,8 @@ class KataGoTrainingLoop:
 
         # B5 fix: update learner entry ID so Elo tracks the current snapshot
         self._learner_entry_id = new_entry.id
-        # Keep tournament's learner_entry_id in sync for gauntlet
+        # Keep tournament's learner_entry_id in sync for gauntlet.
+        # Thread-safe: the property setter acquires _learner_lock.
         if self._tournament is not None:
             self._tournament.learner_entry_id = new_entry.id
 

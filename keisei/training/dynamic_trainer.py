@@ -38,7 +38,13 @@ class MatchRollout:
 
 
 class DynamicTrainer:
-    """Small PPO updates for Dynamic entries from league match data."""
+    """Small PPO updates for Dynamic entries from league match data.
+
+    Threading: all methods are called from the tournament thread only.
+    record_match(), should_update(), is_rate_limited(), and update() are
+    called sequentially within _run_concurrent_round/_run_one_match.
+    No lock is needed — there is no concurrent access from other threads.
+    """
 
     def __init__(
         self,
@@ -107,6 +113,12 @@ class DynamicTrainer:
         all_legal_masks = []
 
         for rollout, side in buffers:
+            # perspective is (steps, num_envs); boolean mask selects this side's
+            # time-steps, flattening (steps, num_envs, ...) → (N, ...).
+            assert rollout.perspective.shape == rollout.actions.shape, (
+                f"perspective shape {rollout.perspective.shape} must match "
+                f"actions shape {rollout.actions.shape}"
+            )
             mask = rollout.perspective == side
             all_obs.append(rollout.observations[mask])
             all_actions.append(rollout.actions[mask])
@@ -115,6 +127,8 @@ class DynamicTrainer:
             all_legal_masks.append(rollout.legal_masks[mask])
 
         if not all_obs:
+            # Shape (0,) is sufficient: the only caller checks shape[0] == 0
+            # and returns early.  No downstream code inspects higher dimensions.
             empty = torch.zeros(0)
             return empty, empty, empty, empty, empty
 
@@ -146,7 +160,7 @@ class DynamicTrainer:
                     for k, v in state.items():
                         if isinstance(v, torch.Tensor):
                             state[k] = v.to(device)
-            except ValueError:
+            except (ValueError, RuntimeError):
                 logger.warning("Optimizer state mismatch for entry %d, resetting momentum", entry_id)
             return new_opt
 
@@ -217,7 +231,13 @@ class DynamicTrainer:
         if all_obs.shape[0] == 0:
             return False  # no relevant data
 
-        # Create WDL targets from terminal rewards
+        # Create WDL targets from terminal rewards.
+        # all_dones includes both termination and truncation (from
+        # ConcurrentMatchPool).  Truncated games at max_ply have reward 0,
+        # so they are labeled as draws — correct because no winner was
+        # determined.  The advantage calculation also handles this: reward 0 ×
+        # done 1.0 = zero advantage, so no policy gradient signal for
+        # truncated games.
         value_cats = torch.full(
             (all_obs.shape[0],), -1, dtype=torch.long, device=device
         )
@@ -228,7 +248,9 @@ class DynamicTrainer:
         value_cats[terminal_mask & (all_rewards == 0)] = 1  # draw
         value_cats[terminal_mask & (all_rewards < 0)] = 2  # loss
 
-        # Initial forward pass for old_log_probs (baseline)
+        # Initial forward pass for old_log_probs (baseline).
+        # Processes all data in a single batch.  OOM risk is bounded by
+        # config.max_buffer_depth (default 8) and update_every_matches (default 4).
         with torch.no_grad():
             output = model(all_obs)
             flat_logits = output.policy_logits.reshape(all_obs.shape[0], -1)
@@ -239,7 +261,10 @@ class DynamicTrainer:
                 .squeeze(1)
             )
 
-        # Get or create optimizer
+        # Get or create optimizer.  On failure, optimizer is NOT stored back
+        # into self._optimizers (that happens at line 305 on success only).
+        # This is intentional: failed updates discard momentum from potentially
+        # corrupted gradients, and the old cached state is preserved for retry.
         optimizer = self._get_or_create_optimizer(entry.id, model)
 
         for _ in range(self.config.update_epochs_per_batch):
@@ -267,6 +292,12 @@ class DynamicTrainer:
                 output.value_logits, value_cats[indices]
             )
 
+            # Simplified objective: equal weights, no entropy bonus, no score
+            # head.  Intentionally different from the main PPO learner — Dynamic
+            # entries are short-lived opponents, not the primary agent.  The
+            # missing entropy bonus means faster policy sharpening, which is
+            # acceptable for opponent diversity but could be revisited for
+            # long-lived Dynamic entries.
             loss = policy_loss + value_loss
 
             optimizer.zero_grad()
@@ -274,7 +305,9 @@ class DynamicTrainer:
             torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
             optimizer.step()
 
-        # Save model weights atomically
+        # Save model weights atomically.
+        # with_suffix(suffix + ".tmp") works for any extension: .pt → .pt.tmp,
+        # .ckpt → .ckpt.tmp, etc.
         ckpt_path = Path(entry.checkpoint_path)
         tmp_path = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
         torch.save(model.state_dict(), tmp_path)
@@ -286,7 +319,9 @@ class DynamicTrainer:
                 if isinstance(v, torch.Tensor):
                     state[k] = v.cpu()
 
-        # Track matches since last checkpoint flush
+        # Track matches since last checkpoint flush.  If any code below raises,
+        # the error handler in update() resets _match_counts[entry.id] = 0,
+        # preventing double-counting on the next update attempt.
         match_count = self._match_counts.get(entry.id, 0)
         self._total_matches[entry.id] = (
             self._total_matches.get(entry.id, 0) + match_count

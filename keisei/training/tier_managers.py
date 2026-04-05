@@ -6,17 +6,16 @@ import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable
 
-import torch
-
 from keisei.config import DynamicConfig, FrontierStaticConfig, RecentFixedConfig
 from keisei.training.opponent_store import (
-    EntryStatus,
     OpponentEntry,
     OpponentStore,
     Role,
 )
 
 if TYPE_CHECKING:
+    import torch
+
     from keisei.training.frontier_promoter import FrontierPromoter
 
 logger = logging.getLogger(__name__)
@@ -58,6 +57,8 @@ class FrontierManager:
         Sorts by Elo ascending, then picks at quintile-spread indices.
         If fewer entries than *count*, returns all of them.
         """
+        if count < 1:
+            return []
         if len(entries) <= count:
             logger.info(
                 "Frontier select_initial: only %d entries available (requested %d)",
@@ -91,6 +92,15 @@ class FrontierManager:
         Otherwise, evaluates Dynamic entries via the promoter, and if a
         candidate qualifies, atomically clones it into Frontier and retires
         the weakest/stalest Frontier entry if at capacity.
+
+        Only one retirement per review() call — by design, to prevent
+        wholesale turnover of the Frontier tier in a single epoch.  If the
+        tier is over capacity, successive review() calls will drain it by
+        one per review window.
+
+        Note: methods like list_by_role() acquire OpponentStore._lock inside
+        a transaction() that already holds it.  This is safe because the
+        store uses a threading.RLock (reentrant) specifically for this pattern.
         """
         if self._promoter is None:
             return  # No-op when promoter not provided (backward compat)
@@ -103,8 +113,16 @@ class FrontierManager:
             return
 
         with self._store.transaction():
-            # Re-fetch inside transaction for accurate slot count
+            # Re-fetch inside transaction for accurate slot count.
+            # Retire BEFORE clone so that if retirement fails and the
+            # transaction rolls back, no orphaned checkpoint file is left
+            # from the clone's file copy (which is non-transactional).
             frontier_entries = self._store.list_by_role(Role.FRONTIER_STATIC)
+            retired_id = None
+            if len(frontier_entries) >= self._config.slots:
+                retired_id = self._retire_weakest_or_stalest(
+                    frontier_entries, epoch
+                )
             new_entry = self._store.clone_entry(
                 candidate.id,
                 Role.FRONTIER_STATIC,
@@ -113,11 +131,6 @@ class FrontierManager:
                     f"({candidate.display_name}) at epoch {epoch}"
                 ),
             )
-            retired_id = None
-            if len(frontier_entries) >= self._config.slots:
-                retired_id = self._retire_weakest_or_stalest(
-                    frontier_entries, epoch
-                )
 
         logger.info(
             "Frontier promotion: Dynamic entry %d (Elo=%.1f) promoted as entry %d, retired=%s",
@@ -134,7 +147,8 @@ class FrontierManager:
         if not frontier_entries:
             return None
 
-        # Filter to entries past min_tenure
+        # Filter to entries past min_tenure.  When min_tenure_epochs=0, all
+        # entries are eligible (created_epoch <= epoch is always true).
         eligible = [
             e
             for e in frontier_entries
@@ -248,8 +262,13 @@ class RecentFixedManager:
             return ReviewOutcome.PROMOTE, oldest
 
         # Check soft overflow budget: count - slots tells us overflow used.
+        # When negative (under capacity), delay is always appropriate — no
+        # pressure to evict when slots are available.
         # Delay if under-calibrated (insufficient games OR insufficient
         # unique opponents) and the soft-overflow budget is not exceeded.
+        # Concurrency note: review_oldest is called from the main training
+        # thread; the tournament thread reads but doesn't modify Recent Fixed
+        # entries, so count() is effectively single-threaded here.
         overflow_used = self.count() - self._config.slots
         can_delay = overflow_used <= self._config.soft_overflow and (
             not games_ok or not opponents_ok
@@ -303,6 +322,9 @@ class DynamicManager:
 
         If full, evicts the weakest eligible entry first.
         Returns None if full and no entry can be evicted.
+
+        Note: is_full() and evict_weakest() acquire the store lock inside
+        this transaction — safe due to RLock (see FrontierManager.review).
         """
         with self._store.transaction():
             if self.is_full():

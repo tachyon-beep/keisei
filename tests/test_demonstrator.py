@@ -187,11 +187,11 @@ class TestPlayGamePinUnpin:
         entries = pool.list_entries()
         matchup = DemoMatchup(slot=1, entry_a=entries[0], entry_b=entries[1])
 
-        # RuntimeError is NOT caught by _play_game — it propagates
-        with pytest.raises(RuntimeError, match="unexpected failure"):
-            runner._play_game(matchup)
+        # RuntimeError is caught by the except Exception handler and logged —
+        # _play_game returns gracefully instead of propagating.
+        runner._play_game(matchup)  # must not raise
 
-        # But unpin must still have been called (finally block)
+        # Unpin must still have been called (finally block)
         assert pool.unpin.call_count == 2
 
     def test_file_not_found_returns_without_crashing(self):

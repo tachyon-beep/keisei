@@ -19,7 +19,7 @@ from keisei.training.models.katago_base import KataGoBaseModel
 def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dtype, str]:
     """Return (autocast_dtype, autocast_device_type) for AMP configuration."""
     if not use_amp:
-        dtype = torch.float16  # unused — autocast disabled
+        dtype = torch.float16  # placeholder — ignored by autocast(enabled=False)
     elif device.type == "cpu":
         dtype = torch.bfloat16  # CPU autocast only supports bfloat16
     elif torch.cuda.is_bf16_supported():
@@ -284,6 +284,9 @@ class KataGoPPOAlgorithm:
 
         # Compile + grad clipping requires forward_model and model to share parameters.
         # Unwrap DataParallel/DDP if present to compare underlying modules.
+        # Note: callers must NOT pass pre-compiled models here — torch.compile
+        # wrapping happens below.  OptimizedModule uses _orig_mod, not .module,
+        # so it would not be unwrapped by this check.
         fm_base = self.forward_model.module if hasattr(self.forward_model, "module") else self.forward_model
         m_base = self.model.module if hasattr(self.model, "module") else self.model
         assert fm_base is m_base, (
@@ -596,7 +599,9 @@ class KataGoPPOAlgorithm:
             for i, L in enumerate(env_lengths):
                 advantages[env_masks[i]] = padded_adv[:L, i]
         else:
-            # Fallback: flat GAE (no env_ids — legacy split-merge behavior)
+            # Fallback: flat GAE (no env_ids — legacy split-merge behavior).
+            # Mean across all envs is a rough bootstrap approximation; the
+            # primary per-env path above is used in normal operation.
             bootstrap = next_values_cpu.mean()
             advantages = compute_gae(
                 data["rewards"], data["values"], data[gae_dones_key],

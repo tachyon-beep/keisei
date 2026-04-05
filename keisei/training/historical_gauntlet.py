@@ -38,6 +38,8 @@ class HistoricalGauntlet:
         self.store = store
         self.role_elo_tracker = role_elo_tracker
         self.config = config
+        # Fallback Event is never-set by default — gauntlet runs to completion
+        # unless the caller shares a real stop Event via constructor or set_stop_event().
         self._stop_event = stop_event or threading.Event()
         self.device = torch.device(device)
         self.num_envs = num_envs
@@ -48,7 +50,10 @@ class HistoricalGauntlet:
         self._stop_event = event
 
     def is_due(self, epoch: int) -> bool:
-        """True if epoch aligns with gauntlet interval."""
+        """True if epoch aligns with gauntlet interval.
+
+        interval_epochs is guaranteed >= 1 by GauntletConfig.__post_init__.
+        """
         if not self.config.enabled:
             return False
         if epoch < 1:
@@ -82,7 +87,9 @@ class HistoricalGauntlet:
             epoch, len(filled_slots), len(historical_slots),
         )
 
-        # Lazy-import and create VecEnv if not provided
+        # Lazy-import and create VecEnv if not provided.
+        # VecEnv is a Rust/PyO3 struct — no explicit close() needed; Rust's
+        # Drop trait releases OS resources when the Python reference is collected.
         if vecenv is None:
             from shogi_gym import VecEnv
             vecenv = VecEnv(
@@ -150,15 +157,23 @@ class HistoricalGauntlet:
                 # Re-read learner for accurate elo_before (and for the Elo computation,
                 # which reads Elo from the entry object's attributes).
                 current_learner = self.store.get_entry(learner_entry.id)
-                elo_before = current_learner.elo_historical if current_learner else 1000.0
+                if current_learner is None:
+                    logger.warning(
+                        "Gauntlet slot %d: learner entry %d vanished mid-gauntlet, skipping",
+                        slot.slot_index, learner_entry.id,
+                    )
+                    continue
+                elo_before = current_learner.elo_historical
 
                 # Update role Elo via RoleEloTracker (atomic two-entry update)
                 result_score = (wins + 0.5 * draws) / game_count
                 self.role_elo_tracker.update_from_result(
-                    current_learner or learner_entry, hist_entry, result_score, "historical",
+                    current_learner, hist_entry, result_score, "historical",
                 )
 
-                # Re-read to get elo_after
+                # Re-read to get elo_after (if entry vanished between update and
+                # re-read, use elo_before as conservative fallback — the DB write
+                # already happened, we just can't read the result)
                 updated_learner = self.store.get_entry(learner_entry.id)
                 elo_after = updated_learner.elo_historical if updated_learner else elo_before
 

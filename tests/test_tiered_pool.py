@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from keisei.config import HistoricalLibraryConfig, LeagueConfig
+from keisei.config import HistoricalLibraryConfig, LeagueConfig, RecentFixedConfig
 from keisei.db import init_db
 from keisei.training.opponent_store import OpponentStore, Role, EntryStatus
 from keisei.training.tiered_pool import TieredPool
@@ -101,9 +101,20 @@ class TestBootstrapFromFlatPool:
 
 
 class TestFullLifecycle:
-    def test_lifecycle_snapshot_overflow_retires_oldest(self, pool_setup):
-        """Snapshot fills Recent Fixed; overflow triggers retirement of oldest entry."""
-        pool, store, db_path = pool_setup
+    def test_lifecycle_snapshot_overflow_retires_oldest(self, tmp_path):
+        """Snapshot fills Recent Fixed; overflow triggers retirement of oldest entry.
+
+        Uses soft_overflow=0 so the first overflow immediately retires the
+        under-calibrated oldest entry instead of delaying it.
+        """
+        db_path = str(tmp_path / "overflow.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        config = LeagueConfig(recent=RecentFixedConfig(soft_overflow=0))
+        pool = TieredPool(store, config)
+
         model = torch.nn.Linear(10, 10)
 
         for i in range(1, 6):
@@ -122,6 +133,7 @@ class TestFullLifecycle:
 
         dynamic_before = store.list_by_role(Role.DYNAMIC)
         assert len(dynamic_before) == 10
+        store.close()
 
 
 class TestListAllActive:

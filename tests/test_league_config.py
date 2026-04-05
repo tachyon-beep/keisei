@@ -37,11 +37,8 @@ moves_per_minute = 0
 db_path = "test.db"
 
 [league]
-max_pool_size = 20
 snapshot_interval = 10
 epochs_per_seat = 50
-historical_ratio = 0.8
-current_best_ratio = 0.2
 initial_elo = 1000
 elo_k_factor = 32
 elo_floor = 500

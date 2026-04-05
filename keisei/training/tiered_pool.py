@@ -59,7 +59,7 @@ class TieredPool:
     # ------------------------------------------------------------------
 
     def snapshot_learner(
-        self, model: object, arch: str, params: dict, epoch: int
+        self, model: object, arch: str, params: dict[str, object], epoch: int
     ) -> OpponentEntry:
         """Take a learner snapshot and admit it to the Recent Fixed tier.
 
@@ -68,6 +68,10 @@ class TieredPool:
         """
         entry = self.recent_manager.admit(model, arch, params, epoch)
 
+        # May fire repeatedly for the same entry when Dynamic is full and all
+        # protected (PROMOTE succeeds but admit returns None → entry stays in
+        # overflow).  Self-correcting: protection eventually expires or overflow
+        # budget is exceeded, triggering RETIRE.
         if self.recent_manager.count() > self.config.recent.slots:
             outcome, oldest = self.recent_manager.review_oldest()
             if outcome is ReviewOutcome.PROMOTE:

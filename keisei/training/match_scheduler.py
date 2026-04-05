@@ -32,7 +32,10 @@ class MatchScheduler:
         ratios = self.effective_ratios(entries_by_role)
         non_empty = {r: w for r, w in ratios.items() if w > 0}
         if not non_empty:
-            raise ValueError("No entries available in any tier")
+            raise ValueError(
+                "No entries available in any tier (entries may exist but none "
+                "have roles matching configured tier ratios)"
+            )
         roles = list(non_empty.keys())
         weights = [non_empty[r] for r in roles]
         chosen_role = random.choices(roles, weights=weights, k=1)[0]

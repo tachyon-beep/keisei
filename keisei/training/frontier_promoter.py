@@ -22,7 +22,8 @@ class FrontierPromoter:
     4. Entry Elo >= weakest Frontier Elo + promotion_margin_elo
     5. Lineage overlap with existing Frontier entries < max_lineage_overlap
 
-    Special case: if Frontier tier is empty, always promote (to seed the tier).
+    Special case: if Frontier tier is empty, only criterion 1 (min_games) is
+    required — criteria 2-5 are bypassed to seed the tier with a calibrated entry.
 
     Streak tracking is IN-MEMORY ONLY — intentionally lost on restart
     (conservative: delays promotion slightly after restart).
@@ -30,7 +31,9 @@ class FrontierPromoter:
 
     def __init__(self, config: FrontierStaticConfig) -> None:
         self.config = config
-        self._topk_streaks: dict[int, int] = {}  # {entry_id: first_seen_in_topk_epoch}
+        # Maps entry_id -> epoch when entry first entered top-K.  Streak length
+        # is computed as (current_epoch - first_seen_epoch), NOT stored directly.
+        self._topk_streaks: dict[int, int] = {}
 
     def evaluate(
         self,
@@ -39,7 +42,10 @@ class FrontierPromoter:
         epoch: int,
     ) -> OpponentEntry | None:
         """Find the best promotion candidate, or None."""
-        # Sort by Elo descending
+        # Sort by elo_frontier descending.  Dynamic entries accumulate elo_frontier
+        # from matches against Frontier opponents (via RoleEloTracker "frontier"
+        # context), so this column reflects how well each Dynamic entry performs
+        # against the benchmark tier — the metric most relevant for promotion.
         sorted_dynamics = sorted(
             dynamic_entries, key=lambda e: e.elo_frontier, reverse=True
         )
@@ -77,7 +83,10 @@ class FrontierPromoter:
         if candidate.games_played < self.config.min_games_for_promotion:
             return False
 
-        # Special case: empty Frontier — promote to seed once calibrated
+        # Special case: empty Frontier — promote to seed once calibrated.
+        # Criteria 2-5 (top-K, streak, elo margin, lineage) are bypassed because
+        # there is no benchmark tier to measure consistency against.  The
+        # min_games check above ensures the entry has enough calibration matches.
         if not frontier_entries:
             return True
 
@@ -85,7 +94,8 @@ class FrontierPromoter:
         if candidate.id not in self._topk_streaks:
             return False
 
-        # 3. Streak duration
+        # 3. Streak duration (idempotent: repeated calls at the same epoch
+        #    produce the same result — no extra streak progress is granted)
         first_seen = self._topk_streaks[candidate.id]
         if epoch - first_seen < self.config.streak_epochs:
             return False
@@ -95,7 +105,12 @@ class FrontierPromoter:
         if candidate.elo_frontier < weakest_frontier_elo + self.config.promotion_margin_elo:
             return False
 
-        # 5. Lineage overlap
+        # 5. Lineage overlap — same_lineage_count is the number of EXISTING
+        #    Frontier entries sharing the candidate's lineage (excluding the
+        #    candidate itself).  Blocking when count >= max_lineage_overlap means
+        #    the total after promotion would exceed the limit.  E.g. with
+        #    max_lineage_overlap=2: 1 existing same-lineage entry passes (total
+        #    becomes 2), 2 existing same-lineage entries blocks (total would be 3).
         same_lineage_count = sum(
             1
             for e in frontier_entries

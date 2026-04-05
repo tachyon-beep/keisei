@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
@@ -76,11 +79,20 @@ def play_match(
         games_remaining -= (a_wins + b_wins + draws)
         batches_run += 1
 
+    if games_remaining > 0 and batches_run >= max_batches:
+        logger.warning(
+            "play_match hit batch ceiling (%d batches) with %d/%d games remaining",
+            max_batches, games_remaining, games_target,
+        )
+
     if collect_rollout:
         assert all_rollouts is not None
-        if not all_rollouts:
+        # Filter out empty rollouts from interrupted batches (shape (0,)
+        # tensors would crash _combine_rollouts due to rank mismatch).
+        valid_rollouts = [r for r in all_rollouts if r.observations.dim() > 1]
+        if not valid_rollouts:
             return total_a_wins, total_b_wins, total_draws, None
-        combined = _combine_rollouts(all_rollouts)
+        combined = _combine_rollouts(valid_rollouts)
         return total_a_wins, total_b_wins, total_draws, combined
     return total_a_wins, total_b_wins, total_draws
 
@@ -192,9 +204,11 @@ def play_batch(
         b_wins += int(((rewards < 0) & done & a_moved).sum())
         draws += int(((rewards == 0) & done).sum())
 
-        # Heuristic: stop once enough games finish. May exceed num_envs on
-        # VecEnv auto-reset (a fast game can finish and restart within one batch),
-        # but that's fine — the outer play_match() manages games_remaining exactly.
+        # Heuristic: stop once enough games finish. All games completing in
+        # this step are counted ABOVE before this check — no games are dropped.
+        # May exceed num_envs on VecEnv auto-reset (a fast game can finish and
+        # restart within one batch), but that's fine — the outer play_match()
+        # manages games_remaining exactly.
         if a_wins + b_wins + draws >= num_envs:
             break
 
@@ -215,7 +229,13 @@ def play_batch(
 
 
 def release_models(*models: torch.nn.Module, device_type: str = "cpu") -> None:
-    """Delete models and clear CUDA cache if on GPU."""
+    """Hint GC and clear CUDA cache if on GPU.
+
+    Note: `del m` only removes the function-local binding — the caller's
+    reference keeps the model alive until it goes out of scope or is
+    reassigned.  The primary value is `empty_cache()` which reclaims
+    cached CUDA allocator blocks (useful even with live tensors).
+    """
     for m in models:
         del m
     if device_type == "cuda":

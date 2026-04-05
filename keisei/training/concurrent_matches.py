@@ -103,7 +103,14 @@ class _MatchSlot:
         self._perspective = []
 
     def to_result(self) -> MatchResult:
-        """Convert slot state to a MatchResult."""
+        """Convert slot state to a MatchResult.
+
+        Only called on completed slots.  Buffer length consistency is guaranteed
+        by the loop structure: obs/masks/perspective, actions, and rewards/dones
+        are all appended within the same loop iteration, and stop_event is only
+        checked between iterations.  If a forward pass raises mid-iteration,
+        the slot is never completed, so to_result is never called.
+        """
         rollout: MatchRollout | None = None
         if self.collect_rollout and self._obs:
             from keisei.training.dynamic_trainer import MatchRollout
@@ -178,8 +185,8 @@ class ConcurrentMatchPool:
             games_per_match: Number of games each pairing must complete.
             max_ply: Maximum ply per game (safety bound).
             stop_event: If set, abort early and return partial results.
-            trainable_fn: If provided, called with entry_a to decide if
-                rollout data should be collected for this pairing.
+            trainable_fn: If provided, called with (entry_a, entry_b) to decide
+                if rollout data should be collected for this pairing.
 
         Returns:
             List of MatchResult for successfully completed pairings,
@@ -215,7 +222,10 @@ class ConcurrentMatchPool:
         # randomisation exists.  Matches match_utils.play_batch init.
         current_players = np.zeros(self.config.total_envs, dtype=np.uint8)
 
-        # Assign initial pairings and track slot→pairing mapping
+        # Assign initial pairings and track slot→pairing mapping.
+        # If a pairing fails to load, the slot stays idle for this round
+        # (unlike swap-in which retries with subsequent pairings).  This is
+        # acceptable: idle slots just reduce concurrency slightly.
         slot_pairing_map: dict[int, int] = {}
         for slot in slots:
             if next_pairing_idx >= total_pairings:
@@ -241,14 +251,18 @@ class ConcurrentMatchPool:
             for slot in active_slots:
                 slot.ply_count += 1
 
-            # Build action tensor for ALL envs
+            # Build action tensor for ALL envs.
+            # Save pre-step player state per slot — needed for correct reward
+            # attribution (VecEnv rewards are from last-mover perspective).
             actions = torch.zeros(self.config.total_envs, dtype=torch.long, device=device)
+            pre_step_players: dict[int, np.ndarray] = {}
 
             for slot in active_slots:
                 s, e = slot.env_start, slot.env_end
                 partition_obs = obs[s:e]
                 partition_legal = legal_masks[s:e]
                 partition_players = current_players[s:e]
+                pre_step_players[slot.index] = partition_players.copy()
 
                 # Collect pre-step rollout data.  Exactly one append per
                 # slot per loop iteration — the loop structure guarantees
@@ -302,7 +316,10 @@ class ConcurrentMatchPool:
                 if slot.collect_rollout:
                     slot._actions.append(slot_actions.cpu())
 
-            # For inactive env ranges, pick first legal action
+            # For inactive env ranges, pick first legal action.
+            # Iterates ALL parallel_matches partitions (not just effective_parallel)
+            # because the VecEnv has total_envs = parallel_matches * envs_per_match
+            # and every env needs a valid action for step().
             inactive_ranges: list[tuple[int, int]] = []
             active_ranges = {(s.env_start, s.env_end) for s in active_slots}
             for slot_idx in range(self.config.parallel_matches):
@@ -312,6 +329,8 @@ class ConcurrentMatchPool:
             for start, end in inactive_ranges:
                 for idx in range(start, end):
                     legal = legal_masks[idx].nonzero(as_tuple=True)[0]
+                    # Fallback 0 for no-legal-moves: shouldn't occur in shogi
+                    # (auto-reset ensures fresh game state for inactive envs).
                     actions[idx] = legal[0] if legal.numel() > 0 else 0
 
             # Step ALL environments at once
@@ -334,6 +353,11 @@ class ConcurrentMatchPool:
                 partition_trunc = truncated[s:e]
                 partition_done = partition_term | partition_trunc
 
+                # Post-step rollout: rewards and done flags.  After VecEnv
+                # auto-reset, the obs for the next iteration is from the NEW
+                # episode, not the terminal state.  This is correct: the done
+                # mask tells the training code to zero-bootstrap at terminal
+                # steps, making the post-reset obs irrelevant at boundaries.
                 if slot.collect_rollout:
                     slot._rewards.append(
                         torch.from_numpy(partition_rewards.copy().astype(np.float32))
@@ -342,17 +366,25 @@ class ConcurrentMatchPool:
                         torch.from_numpy(partition_done.astype(np.float32))
                     )
 
-                # Count completed games.  shogi-gym rewards are from
-                # Black's (player 0) fixed perspective: +1 = Black won,
-                # -1 = White won.  Model A = Black, so r > 0 → a_wins.
+                # Count completed games.  Rewards are from the LAST-MOVER's
+                # perspective: +1 = last mover won, -1 = last mover lost.
+                # pre_step_players tells us who moved (0=A/Black, 1=B/White).
                 # Same convention as match_utils.play_batch.
+                slot_pre_players = pre_step_players[slot.index]
                 for env_i in range(e - s):
                     if partition_done[env_i]:
                         r = float(partition_rewards[env_i])
+                        a_moved = slot_pre_players[env_i] == 0
                         if r > 0:
-                            slot.a_wins += 1
+                            if a_moved:
+                                slot.a_wins += 1
+                            else:
+                                slot.b_wins += 1
                         elif r < 0:
-                            slot.b_wins += 1
+                            if a_moved:
+                                slot.b_wins += 1
+                            else:
+                                slot.a_wins += 1
                         else:
                             slot.draws += 1
 
@@ -438,7 +470,16 @@ class ConcurrentMatchPool:
         entry_a, entry_b = pairing
         try:
             model_a = load_fn(entry_a)
-            model_b = load_fn(entry_b)
+            try:
+                model_b = load_fn(entry_b)
+            except Exception:
+                # model_a loaded successfully but model_b failed — release model_a
+                # to avoid a resource leak (model stays on GPU indefinitely).
+                try:
+                    del model_a
+                except Exception:
+                    pass
+                raise
         except Exception:
             logger.warning(
                 "Failed to load models for pairing %d (%s vs %s), skipping",

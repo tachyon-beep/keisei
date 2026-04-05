@@ -20,7 +20,7 @@ class HistoricalSlot:
     target_epoch: int
     entry_id: int | None
     actual_epoch: int | None
-    selection_mode: str  # 'log_spaced' or 'fallback'
+    selection_mode: str  # 'log_spaced', 'fallback', or 'threshold_rejected'
     display_name: str | None = None
     checkpoint_path: str | None = None
 
@@ -80,16 +80,21 @@ class HistoricalLibrary:
             distance = abs(best.created_epoch - target)
             threshold = neighbor_dists[i] * 0.5
             if threshold > 0 and distance > threshold:
-                # Too far from target — leave slot empty
+                # Too far from target — leave slot empty.  "threshold_rejected"
+                # distinguishes this from "fallback" (no candidates at all).
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
                     entry_id=None,
                     actual_epoch=None,
-                    selection_mode="log_spaced",
+                    selection_mode="threshold_rejected",
                 )
             else:
                 used_ids.add(best.id)
+                # selection_mode reflects the OVERALL selection strategy, not per-slot
+                # optimality: "log_spaced" when we had enough candidates to fill all
+                # slots (even if some were threshold-rejected), "fallback" when fewer
+                # candidates than slots forced best-effort placement.
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
@@ -128,8 +133,16 @@ class HistoricalLibrary:
 
     @staticmethod
     def _compute_targets(current_epoch: int, num_slots: int = 5) -> list[int]:
-        """Compute log-spaced target epochs."""
+        """Compute log-spaced target epochs from 1 to current_epoch.
+
+        The first target is always epoch 1 (the earliest training point) and
+        the last target is current_epoch, with intermediate targets log-spaced
+        between them.  This is intentional: the library wants coverage from the
+        very beginning of training to now.
+        """
         e = max(current_epoch, 2)
+        if num_slots == 1:
+            return [e]
         return [
             round(math.exp(math.log(e) * i / (num_slots - 1)))
             for i in range(num_slots)
@@ -143,10 +156,11 @@ class HistoricalLibrary:
         """
         entries = self.store.list_all_entries()
 
-        # Sort: prefer retired/archived (stable) over active
+        # Sort: prefer retired/archived (stable) over active.
+        # All entries are OpponentEntry instances from list_all_entries() and
+        # always have a .status attribute — no getattr guard needed.
         def stability_key(e: object) -> int:
-            status = getattr(e, "status", None)
-            if status in (EntryStatus.RETIRED, EntryStatus.ARCHIVED):
+            if e.status in (EntryStatus.RETIRED, EntryStatus.ARCHIVED):
                 return 0
             return 1
 
@@ -173,7 +187,14 @@ class HistoricalLibrary:
 
     @staticmethod
     def _neighbor_distances(targets: list[int]) -> list[float]:
-        """Compute distance to nearest neighbor for each target (for 50% threshold)."""
+        """Compute distance to nearest neighbor for each target (for 50% threshold).
+
+        Precondition: targets must be sorted in ascending order (as produced
+        by _compute_targets).
+        """
+        assert all(targets[i] <= targets[i + 1] for i in range(len(targets) - 1)), (
+            f"targets must be sorted ascending, got {targets}"
+        )
         n = len(targets)
         dists: list[float] = []
         for i in range(n):

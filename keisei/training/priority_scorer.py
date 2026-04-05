@@ -42,7 +42,9 @@ class PriorityScorer:
 
     def _under_sample_bonus(self, id_a: int, id_b: int) -> float:
         count = self._pair_games[self._pair_key(id_a, id_b)]
-        return 1.0 / max(1, count)
+        # count+1 ensures 0 games (never played) scores higher than 1 game:
+        # 0 → 1.0, 1 → 0.5, 2 → 0.33, etc.
+        return 1.0 / (count + 1)
 
     def _uncertainty_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
         return 1.0 if abs(a.elo_rating - b.elo_rating) < 100 else 0.0
@@ -51,11 +53,18 @@ class PriorityScorer:
         return 1.0 if a.role == Role.RECENT_FIXED or b.role == Role.RECENT_FIXED else 0.0
 
     def _lineage_diversity(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        # Unknown lineage (None) → assume diverse.  Returning 0.0 would
+        # penalize all untracked models; 1.0 is the optimistic default that
+        # avoids deprioritizing pairings with incomplete lineage data.
         if a.lineage_group is None or b.lineage_group is None:
             return 1.0
         return 0.0 if a.lineage_group == b.lineage_group else 1.0
 
     def _repeat_count(self, id_a: int, id_b: int) -> float:
+        # Only checks _round_history (past rounds), not _current_round_pairs.
+        # This is correct: scoring happens when generate_round() is called,
+        # before any matches run.  _current_round_pairs is empty at scoring
+        # time and accumulates as matches complete within the round.
         key = self._pair_key(id_a, id_b)
         return sum(1 for round_pairs in self._round_history if key in round_pairs)
 
@@ -71,7 +80,12 @@ class PriorityScorer:
         return 0.0
 
     def score(self, a: OpponentEntry, b: OpponentEntry) -> float:
-        """Compute priority score for a pairing. Higher = more informative."""
+        """Compute priority score for a pairing. Higher = more informative.
+
+        Penalty weights (repeat_penalty, lineage_penalty) are stored as
+        negative numbers in the config, so the multiplication naturally
+        subtracts from the score.  Config validator enforces <= 0.
+        """
         c = self.config
         return (
             c.under_sample_weight * self._under_sample_bonus(a.id, b.id)
