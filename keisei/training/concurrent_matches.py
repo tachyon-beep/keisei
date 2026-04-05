@@ -18,8 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from keisei.config import ConcurrencyConfig
-from keisei.training.match_utils import release_models
-from keisei.training.opponent_store import OpponentEntry, Role
+from keisei.training.opponent_store import OpponentEntry
 
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
@@ -220,14 +219,7 @@ class ConcurrentMatchPool:
             )
             next_pairing_idx += 1
 
-        # Map from pairing_idx -> slot for result ordering
-        slot_pairing_idx: dict[int, int] = {}
-        for slot in slots:
-            if slot.active:
-                slot_pairing_idx[slot.index] = next_pairing_idx - parallel + slot.index
-
-        # Actually track pairing indices properly
-        # Reset and redo
+        # Track which pairing index each slot is currently running
         slot_pairing_map: dict[int, int] = {}
         _next = 0
         for slot in slots:
