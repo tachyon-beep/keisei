@@ -15,6 +15,12 @@ class ResNetParams:
     hidden_size: int
     num_layers: int
 
+    def __post_init__(self) -> None:
+        if self.hidden_size <= 0:
+            raise ValueError(f"hidden_size must be > 0, got {self.hidden_size}")
+        if self.num_layers < 0:
+            raise ValueError(f"num_layers must be >= 0, got {self.num_layers}")
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int) -> None:
@@ -54,6 +60,14 @@ class ResNetModel(BaseModel):
         self.value_fc2 = nn.Linear(ch, 1)
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if obs.ndim != 4 or obs.shape[1] != self.OBS_CHANNELS or obs.shape[2] != self.BOARD_SIZE or obs.shape[3] != self.BOARD_SIZE:
+            hint = ""
+            if obs.ndim == 4 and obs.shape[-1] == self.OBS_CHANNELS:
+                hint = " (input appears to be NHWC — expected NCHW)"
+            raise ValueError(
+                f"Expected obs shape (batch, {self.OBS_CHANNELS}, {self.BOARD_SIZE}, {self.BOARD_SIZE}), "
+                f"got {tuple(obs.shape)}{hint}"
+            )
         x = torch.relu(self.input_bn(self.input_conv(obs)))
         x = self.blocks(x)
 

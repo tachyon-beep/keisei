@@ -121,6 +121,16 @@ def _play_evaluation_games(
             mover = current_player
             model = models[current_player]
             with torch.no_grad():
+                # Guard: zero legal actions → all-inf softmax → NaN crash
+                legal_counts = legal_masks.sum(dim=-1)
+                if (legal_counts == 0).any():
+                    logger.warning(
+                        "Evaluation game %d: zero legal actions — ending as draw",
+                        game_i,
+                    )
+                    draws += 1
+                    break
+
                 output = model(obs)
                 flat = _get_policy_flat(output, obs.shape[0])
                 masked = flat.masked_fill(~legal_masks, float("-inf"))

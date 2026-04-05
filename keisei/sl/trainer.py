@@ -38,6 +38,8 @@ class SLConfig:
             raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
+        if self.num_workers < 0:
+            raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
 
 
 logger = logging.getLogger(__name__)
@@ -72,21 +74,21 @@ class SLTrainer:
         self.config = config
         self.device = next(model.parameters()).device
         self.optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-        self.scaler = GradScaler(enabled=config.use_amp)
+        self.scaler = GradScaler(enabled=config.use_amp and self.device.type == "cuda")
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=max(config.total_epochs, 1), eta_min=1e-6
         )
         # Compute AMP dtype once; used by both model.configure_amp() and
-        # train_epoch()'s loss-computation autocast.
-        self._amp_dtype = (
-            torch.bfloat16
-            if (
-                config.use_amp
-                and torch.cuda.is_available()
-                and torch.cuda.is_bf16_supported()
-            )
-            else torch.float16
-        )
+        # train_epoch()'s loss-computation autocast.  Branch on actual device
+        # type — CPU autocast only supports bfloat16, not float16.
+        if not config.use_amp:
+            self._amp_dtype = torch.float16  # placeholder — ignored when disabled
+        elif self.device.type == "cpu":
+            self._amp_dtype = torch.bfloat16
+        elif torch.cuda.is_bf16_supported():
+            self._amp_dtype = torch.bfloat16
+        else:
+            self._amp_dtype = torch.float16
         self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
         model.configure_amp(
             enabled=config.use_amp, dtype=self._amp_dtype,

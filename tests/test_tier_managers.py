@@ -37,7 +37,11 @@ def _add_entry(store, epoch, role=Role.UNASSIGNED, elo=1000.0):
     entry = store.add_entry(model, "resnet", {}, epoch=epoch, role=role)
     if elo != 1000.0:
         store.update_elo(entry.id, elo)
-        store.update_role_elo(entry.id, EloColumn.FRONTIER, elo)
+        # Set ALL role-specific Elo columns so tier managers see the intended
+        # value regardless of which column they query. Production code sets
+        # these via RoleEloTracker per-match; in tests we set them uniformly.
+        for col in (EloColumn.FRONTIER, EloColumn.DYNAMIC, EloColumn.RECENT, EloColumn.HISTORICAL):
+            store.update_role_elo(entry.id, col, elo)
     return store._get_entry(entry.id)
 
 
@@ -313,6 +317,23 @@ class TestDynamicManager:
         _add_entry(store, 2, role=Role.DYNAMIC, elo=1200)
         evicted = mgr.evict_weakest()
         assert evicted is None
+
+    def test_evict_weakest_negative_protection_treated_as_unprotected(self, store):
+        """Entries with negative protection_remaining must be evictable, not permanently stuck."""
+        mgr = DynamicManager(store, DynamicConfig(
+            slots=2, protection_matches=0, min_games_before_eviction=0,
+        ))
+        e1 = _add_entry(store, 1, role=Role.DYNAMIC, elo=800)
+        _add_entry(store, 2, role=Role.DYNAMIC, elo=1200)
+        # Force negative protection via direct DB write
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET protection_remaining = -1 WHERE id = ?",
+                (e1.id,),
+            )
+        evicted = mgr.evict_weakest()
+        assert evicted is not None, "Entry with negative protection should be evictable"
+        assert evicted.id == e1.id
 
     def test_is_full(self, store):
         mgr = DynamicManager(store, DynamicConfig(slots=2))
@@ -739,3 +760,157 @@ class TestFrontierSelectInitialEdgeCases:
         result = mgr.select_initial(entries, count=1)
         assert len(result) == 1
         assert result[0].elo_rating == pytest.approx(1000.0)
+
+
+# ===========================================================================
+# T6. Tier manager rejection criteria
+# ===========================================================================
+
+
+class TestRecentFixedVolatilityGate:
+    """Elo spread (volatility) gate prevents promotion of unstable entries."""
+
+    def test_high_elo_spread_blocks_promotion(self, store):
+        """Entry with Elo spread > max_elo_spread should NOT promote."""
+        mgr = RecentFixedManager(store, RecentFixedConfig(
+            slots=2, soft_overflow=1,
+            min_games_for_review=2, min_unique_opponents=2,
+            max_elo_spread=10.0,  # very tight spread requirement
+        ))
+
+        model = torch.nn.Linear(10, 10)
+        mgr.admit(model, "resnet", {}, epoch=1)
+        mgr.admit(model, "resnet", {}, epoch=2)
+        mgr.admit(model, "resnet", {}, epoch=3)
+
+        oldest = store.list_by_role(Role.RECENT_FIXED)[0]
+
+        # Create two unique opponents and record results to satisfy games/opponents
+        other1 = _add_entry(store, 10, role=Role.FRONTIER_STATIC, elo=1000)
+        other2 = _add_entry(store, 11, role=Role.FRONTIER_STATIC, elo=1000)
+        store.record_result(epoch=1, entry_a_id=oldest.id, entry_b_id=other1.id,
+                            wins_a=1, wins_b=0, draws=0, match_type="calibration")
+        store.record_result(epoch=2, entry_a_id=oldest.id, entry_b_id=other2.id,
+                            wins_a=1, wins_b=0, draws=0, match_type="calibration")
+
+        # Insert elo_history points with large spread (> 10.0) to trigger volatility gate.
+        # update_elo appends to elo_history, so call it with divergent values.
+        store.update_elo(oldest.id, 900.0, epoch=1)
+        store.update_elo(oldest.id, 1100.0, epoch=2)
+        # Spread = 1100 - 900 = 200 >> max_elo_spread(10)
+
+        outcome, entry = mgr.review_oldest()
+        # Should NOT be PROMOTE — spread too high. Expect DELAY (within soft overflow).
+        assert outcome is not ReviewOutcome.PROMOTE
+        assert outcome in (ReviewOutcome.DELAY, ReviewOutcome.RETIRE)
+
+
+class TestFrontierStreakRejection:
+    """Streak-based rejection prevents premature Frontier promotion."""
+
+    def test_insufficient_streak_blocks_promotion(self, store):
+        """Dynamic entry meeting all criteria except streak should not promote."""
+        config = _make_frontier_config(
+            slots=5,
+            min_tenure_epochs=0,
+            streak_epochs=50,  # require 50 epochs in top-K
+            min_games_for_promotion=10,
+            promotion_margin_elo=10.0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+
+        # Seed Frontier entries so the "empty Frontier" bypass doesn't fire
+        for i in range(3):
+            _add_entry(store, epoch=i, role=Role.FRONTIER_STATIC, elo=900)
+
+        # Create a Dynamic candidate that meets games + Elo margin + lineage
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1200)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200 WHERE id = ?",
+                (candidate.id,),
+            )
+
+        # Do NOT pre-seed _topk_streaks — candidate has streak=0 at this epoch
+        mgr = FrontierManager(store, config, promoter=promoter)
+
+        frontier_before = {e.id for e in store.list_by_role(Role.FRONTIER_STATIC)}
+        mgr.review(epoch=300)
+        frontier_after = {e.id for e in store.list_by_role(Role.FRONTIER_STATIC)}
+
+        # No promotion should have occurred
+        assert frontier_before == frontier_after
+
+
+class TestFrontierLineageOverlapRejection:
+    """Lineage overlap gate prevents over-representation of one lineage."""
+
+    def test_lineage_overlap_blocks_promotion(self, store):
+        """Candidate sharing lineage with too many Frontier entries is rejected."""
+        config = _make_frontier_config(
+            slots=5,
+            min_tenure_epochs=0,
+            streak_epochs=0,
+            min_games_for_promotion=10,
+            promotion_margin_elo=10.0,
+            max_lineage_overlap=1,  # allow at most 0 existing same-lineage entries
+        )
+        promoter = FrontierPromoter(config)
+
+        shared_lineage = "lineage-42"
+
+        # Seed Frontier entries — one already has the same lineage group
+        fe1 = _add_entry(store, epoch=0, role=Role.FRONTIER_STATIC, elo=900)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET lineage_group = ? WHERE id = ?",
+                (shared_lineage, fe1.id),
+            )
+        _add_entry(store, epoch=1, role=Role.FRONTIER_STATIC, elo=950)
+        _add_entry(store, epoch=2, role=Role.FRONTIER_STATIC, elo=1000)
+
+        # Dynamic candidate with the same lineage group
+        candidate = _add_entry(store, epoch=100, role=Role.DYNAMIC, elo=1200)
+        with store.transaction():
+            store._conn.execute(
+                "UPDATE league_entries SET games_played = 200, lineage_group = ? WHERE id = ?",
+                (shared_lineage, candidate.id),
+            )
+        promoter._topk_streaks[candidate.id] = 0  # streak satisfied
+
+        mgr = FrontierManager(store, config, promoter=promoter)
+
+        frontier_before = {e.id for e in store.list_by_role(Role.FRONTIER_STATIC)}
+        mgr.review(epoch=300)
+        frontier_after = {e.id for e in store.list_by_role(Role.FRONTIER_STATIC)}
+
+        # No promotion: 1 existing same-lineage entry >= max_lineage_overlap(1)
+        assert frontier_before == frontier_after
+
+
+class TestDynamicProtectedCandidateEviction:
+    """protected_candidate_ids shields entries from eviction."""
+
+    def test_protected_candidate_not_evicted(self, store):
+        """Lowest-Elo entry in protected set is skipped; second-lowest evicted."""
+        mgr = DynamicManager(store, DynamicConfig(
+            slots=3, protection_matches=0, min_games_before_eviction=0,
+        ))
+
+        e_lowest = _add_entry(store, 1, role=Role.DYNAMIC, elo=800)
+        e_second = _add_entry(store, 2, role=Role.DYNAMIC, elo=900)
+        e_high = _add_entry(store, 3, role=Role.DYNAMIC, elo=1200)
+
+        # Protect the lowest-Elo entry via protected_candidate_ids
+        evicted = mgr.evict_weakest(protected_candidate_ids=frozenset({e_lowest.id}))
+
+        assert evicted is not None
+        assert evicted.id == e_second.id  # second-lowest evicted instead
+
+        # Verify the protected entry is still active
+        remaining = store.list_by_role(Role.DYNAMIC)
+        remaining_ids = {e.id for e in remaining}
+        assert e_lowest.id in remaining_ids
+        assert e_high.id in remaining_ids
+        assert e_second.id not in remaining_ids

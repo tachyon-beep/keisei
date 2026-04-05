@@ -56,9 +56,6 @@ class TestSchemaVersion:
         assert row[0] == SCHEMA_VERSION
         conn.close()
 
-    def test_schema_version_constant_is_1(self):
-        assert SCHEMA_VERSION == 1
-
     def test_mismatched_version_raises(self, tmp_path):
         """A database with a different schema version should raise RuntimeError."""
         db_path = str(tmp_path / "old.db")
@@ -489,3 +486,103 @@ class TestTransactionNesting:
         after = store.get_entry(entry.id)
         assert after is not None
         assert after.protection_remaining == 3
+
+
+# ---------- T5: training_enabled field coverage ----------
+
+
+class TestTrainingEnabledField:
+    def test_default_training_enabled_by_role(self, store, league_dir):
+        """Dynamic entries default to training_enabled=True, others to False."""
+        model = _make_dummy_model()
+        dyn = store.add_entry(model, "linear", {}, epoch=1, role=Role.DYNAMIC)
+        fs = store.add_entry(model, "linear", {}, epoch=2, role=Role.FRONTIER_STATIC)
+        rf = store.add_entry(model, "linear", {}, epoch=3, role=Role.RECENT_FIXED)
+        ua = store.add_entry(model, "linear", {}, epoch=4, role=Role.UNASSIGNED)
+
+        assert dyn.training_enabled is True
+        assert fs.training_enabled is False
+        assert rf.training_enabled is False
+        assert ua.training_enabled is False
+
+    def test_cloned_frontier_static_has_training_disabled(self, store, league_dir):
+        """Cloning to Frontier Static produces training_enabled=False."""
+        model = _make_dummy_model()
+        source = store.add_entry(model, "linear", {}, epoch=1, role=Role.DYNAMIC)
+        clone = store.clone_entry(source.id, Role.FRONTIER_STATIC, "snapshot")
+        assert clone.training_enabled is False
+
+    def test_cloned_dynamic_has_training_enabled(self, store, league_dir):
+        """Cloning to Dynamic produces training_enabled=True."""
+        model = _make_dummy_model()
+        source = store.add_entry(model, "linear", {}, epoch=1, role=Role.FRONTIER_STATIC)
+        clone = store.clone_entry(source.id, Role.DYNAMIC, "promoted")
+        assert clone.training_enabled is True
+
+
+# ---------- T5: games_vs_* field coverage ----------
+
+
+class TestGamesVsFields:
+    def test_games_vs_counters_updated_by_role(self, store, league_dir):
+        """record_result with role labels updates per-role game counters."""
+        model = _make_dummy_model()
+        a = store.add_entry(model, "linear", {}, epoch=1, role=Role.DYNAMIC)
+        b = store.add_entry(model, "linear", {}, epoch=2, role=Role.FRONTIER_STATIC)
+
+        store.record_result(
+            epoch=1, entry_a_id=a.id, entry_b_id=b.id,
+            wins_a=2, wins_b=1, draws=1, match_type="calibration",
+            role_a="dynamic", role_b="frontier_static",
+        )
+
+        updated_a = store.get_entry(a.id)
+        updated_b = store.get_entry(b.id)
+        assert updated_a is not None
+        assert updated_b is not None
+
+        # A played vs B whose role is frontier_static -> A's games_vs_frontier += 4
+        assert updated_a.games_vs_frontier == 4
+        assert updated_a.games_vs_dynamic == 0
+        assert updated_a.games_vs_recent == 0
+
+        # B played vs A whose role is dynamic -> B's games_vs_dynamic += 4
+        assert updated_b.games_vs_dynamic == 4
+        assert updated_b.games_vs_frontier == 0
+        assert updated_b.games_vs_recent == 0
+
+    def test_games_vs_recent_counter(self, store, league_dir):
+        """record_result with recent_fixed role updates games_vs_recent."""
+        model = _make_dummy_model()
+        a = store.add_entry(model, "linear", {}, epoch=1, role=Role.DYNAMIC)
+        b = store.add_entry(model, "linear", {}, epoch=2, role=Role.RECENT_FIXED)
+
+        store.record_result(
+            epoch=1, entry_a_id=a.id, entry_b_id=b.id,
+            wins_a=1, wins_b=0, draws=0, match_type="calibration",
+            role_a="dynamic", role_b="recent_fixed",
+        )
+
+        updated_a = store.get_entry(a.id)
+        assert updated_a is not None
+        assert updated_a.games_vs_recent == 1
+
+
+# ---------- T5: retired_at field coverage ----------
+
+
+class TestRetiredAtField:
+    def test_retired_at_set_on_retire(self, store, league_dir):
+        """After retire_entry, retired_at should be non-None."""
+        model = _make_dummy_model()
+        entry = store.add_entry(model, "linear", {}, epoch=1, role=Role.DYNAMIC)
+        assert entry.retired_at is None
+
+        store.retire_entry(entry.id, "evicted")
+
+        # Must use list_all_entries since retired entries are excluded from list_entries
+        all_entries = store.list_all_entries()
+        retired = [e for e in all_entries if e.id == entry.id]
+        assert len(retired) == 1
+        assert retired[0].retired_at is not None
+        assert retired[0].status is EntryStatus.RETIRED

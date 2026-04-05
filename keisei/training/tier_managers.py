@@ -162,6 +162,15 @@ class FrontierManager:
             # without risk of exceeding the slot limit.
             eligible = sorted(frontier_entries, key=lambda e: e.created_epoch)
             target = eligible[0]
+            logger.warning(
+                "Frontier retirement: all %d entries under min_tenure_epochs=%d "
+                "at epoch %d — falling back to oldest (id=%d, epoch=%d)",
+                len(frontier_entries),
+                self._config.min_tenure_epochs,
+                epoch,
+                target.id,
+                target.created_epoch,
+            )
         else:
             # Retire lowest elo_frontier; tie-break by oldest created_epoch.
             # Must match the metric used by FrontierPromoter (elo_frontier)
@@ -268,7 +277,7 @@ class RecentFixedManager:
                 oldest.elo_rating >= floor_elo - self._config.promotion_margin_elo
             )
 
-        # §7.1 criterion 4: Elo must have settled (spread below threshold)
+        # Plan §7.1 criterion 4: "acceptable uncertainty / volatility"
         spread = self._store.elo_spread(oldest.id)
         stable_ok = spread <= self._config.max_elo_spread
 
@@ -401,7 +410,7 @@ class DynamicManager:
         eligible = [
             e
             for e in entries
-            if ((e.protection_remaining == 0
+            if ((e.protection_remaining <= 0
                  and e.games_played >= self._config.min_games_before_eviction)
                 or e.id in disabled)
             and e.id not in candidates
@@ -438,7 +447,7 @@ class DynamicManager:
         eligible = [
             e
             for e in entries
-            if e.protection_remaining == 0
+            if e.protection_remaining <= 0
             and e.games_played >= self._config.min_games_before_eviction
         ]
         if not eligible:
@@ -451,7 +460,7 @@ class DynamicManager:
         eligible = [
             e
             for e in entries
-            if e.protection_remaining == 0
+            if e.protection_remaining <= 0
             and e.games_played >= self._config.min_games_before_eviction
         ]
         if not eligible:

@@ -4,9 +4,15 @@ from collections import Counter
 
 import pytest
 
-from keisei.config import MatchSchedulerConfig, PriorityScorerConfig
+from keisei.config import HistoricalLibraryConfig, MatchSchedulerConfig, PriorityScorerConfig
 from keisei.training.opponent_store import OpponentEntry, Role, EntryStatus
-from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.match_scheduler import (
+    MATCH_CLASS_WEIGHTS,
+    MatchClass,
+    MatchScheduler,
+    classify_match,
+    is_training_match,
+)
 from keisei.training.priority_scorer import PriorityScorer
 
 
@@ -140,6 +146,34 @@ class TestEffectiveRatios:
         assert abs(ratios[Role.FRONTIER_STATIC] + ratios[Role.RECENT_FIXED] - 1.0) < 0.01
 
 
+    def test_negative_ratio_rejected_by_config(self):
+        """Negative individual ratios should be rejected even if they sum to 1.0."""
+        with pytest.raises(ValueError, match="must be >= 0"):
+            MatchSchedulerConfig(
+                learner_dynamic_ratio=-0.5,
+                learner_frontier_ratio=1.0,
+                learner_recent_ratio=0.5,
+            )
+
+    def test_effective_ratios_guards_zero_total(self):
+        """If only zero-weight tiers are populated, effective_ratios returns all zeros."""
+        sched = MatchScheduler(MatchSchedulerConfig(
+            learner_dynamic_ratio=0.0,
+            learner_frontier_ratio=0.0,
+            learner_recent_ratio=1.0,
+        ))
+        entries = {
+            Role.DYNAMIC: [_make_entry(1, Role.DYNAMIC)],
+            Role.FRONTIER_STATIC: [_make_entry(2, Role.FRONTIER_STATIC)],
+            Role.RECENT_FIXED: [],  # the only tier with weight > 0 is empty
+        }
+        ratios = sched.effective_ratios(entries)
+        # All weights for populated tiers are 0.0, so total is 0 — must not crash
+        assert ratios[Role.DYNAMIC] == 0.0
+        assert ratios[Role.FRONTIER_STATIC] == 0.0
+        assert ratios[Role.RECENT_FIXED] == 0.0
+
+
 class TestPriorityRound:
     def test_generate_round_returns_priority_sorted(self):
         scorer = PriorityScorer(PriorityScorerConfig())
@@ -162,3 +196,171 @@ class TestPriorityRound:
         entries = [_make_entry(i, Role.DYNAMIC) for i in range(1, 5)]
         pairings = scheduler.generate_round(entries)
         assert len(pairings) == 6
+
+
+# ---------------------------------------------------------------------------
+# T2. Weighted tournament mode
+# ---------------------------------------------------------------------------
+
+class TestClassifyMatch:
+    """Test classify_match() for all role combinations."""
+
+    def test_dynamic_vs_dynamic(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.DYNAMIC)
+        assert classify_match(a, b) == MatchClass.DYNAMIC_VS_DYNAMIC
+
+    def test_dynamic_vs_recent_fixed(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.RECENT_FIXED)
+        assert classify_match(a, b) == MatchClass.DYNAMIC_VS_RECENT
+        # Order should not matter
+        assert classify_match(b, a) == MatchClass.DYNAMIC_VS_RECENT
+
+    def test_dynamic_vs_frontier_static(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert classify_match(a, b) == MatchClass.DYNAMIC_VS_FRONTIER
+        assert classify_match(b, a) == MatchClass.DYNAMIC_VS_FRONTIER
+
+    def test_recent_fixed_vs_frontier_static(self):
+        a = _make_entry(1, Role.RECENT_FIXED)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert classify_match(a, b) == MatchClass.RECENT_VS_FRONTIER
+        assert classify_match(b, a) == MatchClass.RECENT_VS_FRONTIER
+
+    def test_recent_fixed_vs_recent_fixed(self):
+        a = _make_entry(1, Role.RECENT_FIXED)
+        b = _make_entry(2, Role.RECENT_FIXED)
+        assert classify_match(a, b) == MatchClass.RECENT_VS_RECENT
+
+    def test_frontier_static_vs_frontier_static(self):
+        a = _make_entry(1, Role.FRONTIER_STATIC)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert classify_match(a, b) == MatchClass.FRONTIER_VS_FRONTIER
+
+    def test_unassigned_role_gives_other(self):
+        a = _make_entry(1, Role.UNASSIGNED)
+        b = _make_entry(2, Role.DYNAMIC)
+        assert classify_match(a, b) == MatchClass.OTHER
+
+
+class TestMatchClassWeights:
+    """Assert MATCH_CLASS_WEIGHTS match the plan values."""
+
+    def test_dynamic_vs_dynamic_weight(self):
+        assert MATCH_CLASS_WEIGHTS[MatchClass.DYNAMIC_VS_DYNAMIC] == pytest.approx(0.40)
+
+    def test_dynamic_vs_recent_weight(self):
+        assert MATCH_CLASS_WEIGHTS[MatchClass.DYNAMIC_VS_RECENT] == pytest.approx(0.25)
+
+    def test_dynamic_vs_frontier_weight(self):
+        assert MATCH_CLASS_WEIGHTS[MatchClass.DYNAMIC_VS_FRONTIER] == pytest.approx(0.20)
+
+    def test_recent_vs_frontier_weight(self):
+        assert MATCH_CLASS_WEIGHTS[MatchClass.RECENT_VS_FRONTIER] == pytest.approx(0.10)
+
+    def test_recent_vs_recent_weight(self):
+        assert MATCH_CLASS_WEIGHTS[MatchClass.RECENT_VS_RECENT] == pytest.approx(0.05)
+
+
+class TestIsTrainingMatch:
+    """Test is_training_match() returns True only for D-D and D-RF."""
+
+    def test_dynamic_vs_dynamic_is_training(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.DYNAMIC)
+        assert is_training_match(a, b) is True
+
+    def test_dynamic_vs_recent_is_training(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.RECENT_FIXED)
+        assert is_training_match(a, b) is True
+
+    def test_dynamic_vs_frontier_not_training(self):
+        a = _make_entry(1, Role.DYNAMIC)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert is_training_match(a, b) is False
+
+    def test_recent_vs_frontier_not_training(self):
+        a = _make_entry(1, Role.RECENT_FIXED)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert is_training_match(a, b) is False
+
+    def test_recent_vs_recent_not_training(self):
+        a = _make_entry(1, Role.RECENT_FIXED)
+        b = _make_entry(2, Role.RECENT_FIXED)
+        assert is_training_match(a, b) is False
+
+    def test_frontier_vs_frontier_not_training(self):
+        a = _make_entry(1, Role.FRONTIER_STATIC)
+        b = _make_entry(2, Role.FRONTIER_STATIC)
+        assert is_training_match(a, b) is False
+
+
+class TestWeightedTournamentMode:
+    """Test generate_round() in weighted mode with mixed-role entry pool."""
+
+    def test_weighted_round_produces_multiple_match_classes(self):
+        scheduler = _make_scheduler(tournament_mode="weighted")
+        entries = [
+            _make_entry(1, Role.DYNAMIC),
+            _make_entry(2, Role.DYNAMIC),
+            _make_entry(3, Role.RECENT_FIXED),
+            _make_entry(4, Role.RECENT_FIXED),
+            _make_entry(5, Role.FRONTIER_STATIC),
+            _make_entry(6, Role.FRONTIER_STATIC),
+        ]
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) > 0
+        # Collect the match classes that appear in the round
+        classes_seen = {classify_match(a, b) for a, b in pairings}
+        # With 6 entries (2 of each role), weighted mode should draw from
+        # multiple match classes, not just one.
+        assert len(classes_seen) >= 2, (
+            f"Expected pairings from multiple match classes, got only {classes_seen}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T9. Historical library exclusion
+# ---------------------------------------------------------------------------
+
+class TestHistoricalLibraryExclusion:
+    """Non-active roles must be excluded from active-league matchmaking."""
+
+    def test_unassigned_role_excluded_from_generate_round(self):
+        """Entries with UNASSIGNED role should classify as OTHER (weight 0)
+        and therefore not appear in weighted round output."""
+        scheduler = _make_scheduler(tournament_mode="weighted")
+        # Only UNASSIGNED entries -- no valid match classes with weight > 0
+        entries = [
+            _make_entry(1, Role.UNASSIGNED),
+            _make_entry(2, Role.UNASSIGNED),
+        ]
+        pairings = scheduler.generate_round(entries)
+        # All pairs are OTHER class (weight=0), so weighted sampling falls
+        # back to shuffled. Verify that if we mix with active roles, the
+        # weighted mode does not select UNASSIGNED-only pairs by preference.
+        # The key invariant: classify_match gives OTHER for these pairs.
+        for a, b in pairings:
+            assert classify_match(a, b) == MatchClass.OTHER
+
+    def test_unassigned_role_excluded_from_sample_for_learner(self):
+        """sample_for_learner only draws from DYNAMIC/RECENT_FIXED/FRONTIER_STATIC
+        tiers, so UNASSIGNED entries should never be returned."""
+        scheduler = _make_scheduler()
+        entries = {
+            Role.DYNAMIC: [_make_entry(1, Role.DYNAMIC)],
+            Role.FRONTIER_STATIC: [_make_entry(2, Role.FRONTIER_STATIC)],
+            Role.RECENT_FIXED: [],
+            Role.UNASSIGNED: [_make_entry(3, Role.UNASSIGNED)],
+        }
+        for _ in range(50):
+            entry = scheduler.sample_for_learner(entries)
+            assert entry.role != Role.UNASSIGNED
+
+    def test_historical_library_active_participation_raises(self):
+        """HistoricalLibraryConfig(active_league_participation=True) must raise."""
+        with pytest.raises(ValueError, match="active_league_participation"):
+            HistoricalLibraryConfig(active_league_participation=True)

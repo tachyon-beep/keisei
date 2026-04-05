@@ -60,6 +60,8 @@ moves_per_minute = 30
 db_path = "data/keisei-league.db"
 
 [league]
+enabled = true
+mode = "mixed"
 snapshot_interval = 25      # snapshot model into pool every 25 epochs
 epochs_per_seat = 10        # play 10 epochs per sampled opponent
 elo_k_factor = 32.0

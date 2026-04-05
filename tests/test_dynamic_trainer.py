@@ -622,3 +622,34 @@ class TestUpdateEmptyBatchReturnsFalse:
             result = trainer.update(entry, "cpu")
 
         assert result is False
+
+
+class TestPostCheckpointFailureStillReturnsTrue:
+    """Post-checkpoint bookkeeping failures must not count as training failures."""
+
+    def test_save_optimizer_failure_returns_true(self, store_and_entry) -> None:
+        """If save_optimizer raises after weights are committed, update() still returns True."""
+        store, entry = store_and_entry
+        config = DynamicConfig(
+            update_every_matches=1,
+            checkpoint_flush_every=1,  # force optimizer save on every update
+            max_consecutive_errors=1,  # would disable on first real error
+            disable_on_error=True,
+        )
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
+        trainer.record_match(entry.id, _make_rollout(side=0), 0)
+
+        with patch(
+            "keisei.training.opponent_store.build_model",
+            return_value=TinyModel(),
+        ), patch.object(
+            store, "save_optimizer", side_effect=RuntimeError("DB write failed"),
+        ):
+            result = trainer.update(entry, "cpu")
+
+        # Should succeed — weights were saved, only bookkeeping failed
+        assert result is True
+        # Should NOT be disabled
+        assert entry.id not in trainer._disabled_entries
+        # Error count should be reset (successful training)
+        assert trainer._error_counts.get(entry.id, 0) == 0

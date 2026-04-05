@@ -142,6 +142,13 @@ class RoleEloTracker:
         if Role.DYNAMIC in roles and Role.RECENT_FIXED in roles:
             return "cross_dynamic_recent"
 
+        # NOTE: "historical" context is NOT inferred here — there is no
+        # Role.HISTORICAL enum value.  Historical gauntlet matches pass
+        # "historical" as an explicit match_context to update_from_result(),
+        # bypassing this method entirely.  This is by design: historical
+        # library entries reuse existing roles (they are tagged references,
+        # not a separate tier).
+
         # Fallback: treat as dynamic context (e.g. UNASSIGNED vs UNASSIGNED)
         logger.warning(
             "Unrecognised role combination %s vs %s — falling back to 'dynamic' context",

@@ -6,7 +6,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
+
 from typing import TYPE_CHECKING
 
 import torch
@@ -63,6 +63,9 @@ class DynamicTrainer:
         self._disabled_entries: set[int] = set()
         self._rollout_buffers: dict[int, deque[tuple[MatchRollout, int]]] = {}
         self._error_counts: dict[int, int] = {}
+        # Global inference-only fallback (§10.4)
+        self._globally_disabled: bool = False
+        self._global_error_timestamps: list[float] = []
 
     # ------------------------------------------------------------------
     # Record & query
@@ -79,16 +82,68 @@ class DynamicTrainer:
 
     def should_update(self, entry_id: int) -> bool:
         """Check if enough matches have accumulated for an update."""
+        if self._globally_disabled:
+            return False
         if entry_id in self._disabled_entries:
             return False
         return self._match_counts.get(entry_id, 0) >= self.config.update_every_matches
 
     def is_rate_limited(self) -> bool:
-        """Check if updates are rate-limited (too many in the last 60 seconds)."""
+        """Check if updates are rate-limited (too many in the last 60 seconds).
+
+        This also serves as the plan's §10.4 "hard cap checkpoint writes per
+        minute" — each update writes weights (and periodically optimizer), so
+        capping updates effectively caps checkpoint writes.
+        """
         now = time.monotonic()
         cutoff = now - 60.0
         self._update_timestamps = [t for t in self._update_timestamps if t >= cutoff]
         return len(self._update_timestamps) >= self.config.max_updates_per_minute
+
+    @property
+    def is_globally_disabled(self) -> bool:
+        """True if Dynamic training has been globally disabled due to widespread errors."""
+        return self._globally_disabled
+
+    def is_gpu_backpressured(self, device: str) -> bool:
+        """True if GPU memory usage exceeds the backpressure threshold (§10.4)."""
+        if not device.startswith("cuda") or not torch.cuda.is_available():
+            return False
+        dev = torch.device(device)
+        reserved = torch.cuda.memory_reserved(dev)
+        total = torch.cuda.get_device_properties(dev).total_memory
+        if total == 0:
+            return False
+        utilization = reserved / total
+        if utilization >= self.config.gpu_memory_backpressure:
+            logger.info(
+                "GPU backpressure: %.1f%% memory reserved (threshold %.0f%%)",
+                utilization * 100,
+                self.config.gpu_memory_backpressure * 100,
+            )
+            return True
+        return False
+
+    def _check_global_disable(self) -> None:
+        """Check if errors across all entries exceed the global threshold (§10.4).
+
+        When triggered, sets _globally_disabled = True, falling back to
+        inference-only mode for all Dynamic entries.
+        """
+        now = time.monotonic()
+        cutoff = now - self.config.global_error_window_seconds
+        self._global_error_timestamps = [
+            t for t in self._global_error_timestamps if t >= cutoff
+        ]
+        if len(self._global_error_timestamps) >= self.config.global_error_threshold:
+            self._globally_disabled = True
+            logger.error(
+                "DynamicTrainer globally disabled: %d errors in %.0fs window "
+                "(threshold %d). All Dynamic training stopped.",
+                len(self._global_error_timestamps),
+                self.config.global_error_window_seconds,
+                self.config.global_error_threshold,
+            )
 
     def get_update_stats(self, entry_id: int) -> tuple[int, str | None]:
         """Return (update_count, last_train_at) from the store entry."""
@@ -200,6 +255,7 @@ class DynamicTrainer:
             self._match_counts[entry.id] = 0
             self._rollout_buffers[entry.id] = deque(maxlen=self.config.max_buffer_depth)
             self._error_counts[entry.id] = self._error_counts.get(entry.id, 0) + 1
+            self._global_error_timestamps.append(time.monotonic())
             logger.warning(
                 "DynamicTrainer update failed for entry %d (error %d/%d)",
                 entry.id,
@@ -214,6 +270,7 @@ class DynamicTrainer:
                     entry.id,
                     self.config.max_consecutive_errors,
                 )
+            self._check_global_disable()
             return False
 
     def _update_inner(self, entry: OpponentEntry, device: str) -> bool:
@@ -305,35 +362,38 @@ class DynamicTrainer:
             torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
             optimizer.step()
 
-        # Save model weights atomically.
-        # with_suffix(suffix + ".tmp") works for any extension: .pt → .pt.tmp,
-        # .ckpt → .ckpt.tmp, etc.
-        ckpt_path = Path(entry.checkpoint_path)
-        tmp_path = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
-        torch.save(model.state_dict(), tmp_path)
-        tmp_path.rename(ckpt_path)
+        # Save model weights atomically via the store's transaction-safe method.
+        self.store.save_weights(entry.id, model.state_dict())
 
-        # Move optimizer state to CPU for storage
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.cpu()
+        # --- Post-checkpoint bookkeeping ---
+        # Weights are committed to disk. Failures below are bookkeeping errors,
+        # NOT training failures. They must not increment the error counter or
+        # disable the entry, because the model weights were already saved.
+        try:
+            # Move optimizer state to CPU for storage
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.cpu()
 
-        # Track matches since last checkpoint flush.  If any code below raises,
-        # the error handler in update() resets _match_counts[entry.id] = 0,
-        # preventing double-counting on the next update attempt.
-        match_count = self._match_counts.get(entry.id, 0)
-        self._total_matches[entry.id] = (
-            self._total_matches.get(entry.id, 0) + match_count
-        )
+            match_count = self._match_counts.get(entry.id, 0)
+            self._total_matches[entry.id] = (
+                self._total_matches.get(entry.id, 0) + match_count
+            )
 
-        # Checkpoint optimizer periodically.  Keep surplus so matches aren't
-        # lost (e.g. total=15, flush_every=10 → save and keep surplus 5).
-        if self._total_matches[entry.id] >= self.config.checkpoint_flush_every:
-            self.store.save_optimizer(entry.id, optimizer.state_dict())
-            self._total_matches[entry.id] %= self.config.checkpoint_flush_every
+            if self._total_matches[entry.id] >= self.config.checkpoint_flush_every:
+                self.store.save_optimizer(entry.id, optimizer.state_dict())
+                self._total_matches[entry.id] %= self.config.checkpoint_flush_every
 
-        self.store.increment_update_count(entry.id)
+            self.store.increment_update_count(entry.id)
+        except Exception:
+            logger.warning(
+                "Post-checkpoint bookkeeping failed for entry %d "
+                "(weights were saved successfully)",
+                entry.id,
+                exc_info=True,
+            )
+
         self._match_counts[entry.id] = 0
         self._rollout_buffers[entry.id] = deque(maxlen=self.config.max_buffer_depth)
         self._update_timestamps.append(time.monotonic())

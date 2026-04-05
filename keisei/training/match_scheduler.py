@@ -82,6 +82,19 @@ def is_training_match(a: OpponentEntry, b: OpponentEntry) -> bool:
     return classify_match(a, b) in TRAINING_CLASSES
 
 
+def build_match_class_weights(config: MatchSchedulerConfig) -> dict[MatchClass, float]:
+    """Build a match-class weights dict from config fields (§8.3)."""
+    return {
+        MatchClass.DYNAMIC_VS_DYNAMIC: config.dynamic_dynamic_weight,
+        MatchClass.DYNAMIC_VS_RECENT: config.dynamic_recent_weight,
+        MatchClass.DYNAMIC_VS_FRONTIER: config.dynamic_frontier_weight,
+        MatchClass.RECENT_VS_FRONTIER: config.recent_frontier_weight,
+        MatchClass.RECENT_VS_RECENT: config.recent_recent_weight,
+        MatchClass.FRONTIER_VS_FRONTIER: 0.0,
+        MatchClass.OTHER: 0.0,
+    }
+
+
 class MatchScheduler:
     def __init__(
         self,
@@ -90,6 +103,12 @@ class MatchScheduler:
     ) -> None:
         self.config = config
         self._priority_scorer = priority_scorer
+        self._match_class_weights = build_match_class_weights(config)
+
+    @property
+    def match_class_weights(self) -> dict[MatchClass, float]:
+        """Config-driven match-class weights (§8.3)."""
+        return self._match_class_weights
 
     @property
     def priority_scorer(self) -> PriorityScorer | None:
@@ -176,13 +195,14 @@ class MatchScheduler:
             round_size = len(entries)
 
         # Distribute round_size across match classes proportionally
-        present_classes = {mc for mc in buckets if MATCH_CLASS_WEIGHTS.get(mc, 0) > 0}
+        weights = self._match_class_weights
+        present_classes = {mc for mc in buckets if weights.get(mc, 0) > 0}
         if not present_classes:
             # No weighted classes available — fall back to shuffled full round
             random.shuffle(all_pairs)
             return all_pairs[:round_size]
 
-        total_weight = sum(MATCH_CLASS_WEIGHTS[mc] for mc in present_classes)
+        total_weight = sum(weights[mc] for mc in present_classes)
 
         result: list[tuple[OpponentEntry, OpponentEntry]] = []
         for mc in present_classes:
@@ -195,7 +215,7 @@ class MatchScheduler:
             else:
                 random.shuffle(pool)
             # Allocate proportional share of round_size
-            share = max(1, round(round_size * MATCH_CLASS_WEIGHTS[mc] / total_weight))
+            share = max(1, round(round_size * weights[mc] / total_weight))
             result.extend(pool[:share])
 
         # Final priority sort across all selected pairs
@@ -217,6 +237,11 @@ class MatchScheduler:
         if not non_empty:
             return {r: 0.0 for r in raw}
         total = sum(non_empty.values())
+        if total <= 0:
+            # All populated tiers have zero (or negative) weight — no valid
+            # sampling distribution. Return all zeros so sample_for_learner
+            # raises a clear error instead of dividing by zero here.
+            return {r: 0.0 for r in raw}
         result = {}
         for role in raw:
             if role in non_empty:

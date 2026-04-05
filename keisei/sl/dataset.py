@@ -184,9 +184,25 @@ class SLDataset(Dataset[dict[str, torch.Tensor]]):
         offset += 8
         score = np.frombuffer(mmap[offset : offset + 4], dtype=np.float32).copy()
 
+        policy_val = int(policy[0])
+        value_val = int(value[0])
+
+        if policy_val < 0 or policy_val >= 11259:
+            raise ValueError(
+                f"Invalid policy_target={policy_val} at index {idx} "
+                f"(shard={shard_path.name}, local={local_idx}): "
+                f"must be in [0, 11259)"
+            )
+        if value_val not in (0, 1, 2):
+            raise ValueError(
+                f"Invalid value_target={value_val} at index {idx} "
+                f"(shard={shard_path.name}, local={local_idx}): "
+                f"must be 0 (W), 1 (D), or 2 (L)"
+            )
+
         return {
             "observation": torch.from_numpy(obs),
-            "policy_target": torch.tensor(policy[0], dtype=torch.long),
-            "value_target": torch.tensor(value[0], dtype=torch.long),
+            "policy_target": torch.tensor(policy_val, dtype=torch.long),
+            "value_target": torch.tensor(value_val, dtype=torch.long),
             "score_target": torch.tensor(score[0], dtype=torch.float32),
         }

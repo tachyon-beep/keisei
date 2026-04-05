@@ -59,6 +59,8 @@ moves_per_minute = 30
 db_path = "data/keisei-500k-league.db"
 
 [league]
+enabled = true
+mode = "mixed"
 snapshot_interval = 10      # snapshot every 10 epochs — fills pool fast early on
 epochs_per_seat = 5         # rotate opponent every 5 epochs for diversity
 elo_k_factor = 32.0

@@ -193,6 +193,91 @@ class TestSchemaV5:
         with pytest.raises(RuntimeError, match="schema version 99"):
             init_db(db_path)
 
+    def test_historical_library_all_columns(self, tmp_path):
+        """historical_library has all expected columns."""
+        db_path = str(tmp_path / "v5.db")
+        init_db(db_path)
+        cols = _get_table_columns(db_path, "historical_library")
+        expected = ["slot_index", "target_epoch", "entry_id", "actual_epoch", "selected_at", "selection_mode"]
+        for col in expected:
+            assert col in cols, f"missing column {col}"
+
+    def test_league_results_elo_columns(self, tmp_path):
+        """league_results has Elo tracking and training update columns."""
+        db_path = str(tmp_path / "v5.db")
+        init_db(db_path)
+        cols = _get_table_columns(db_path, "league_results")
+        expected = [
+            "elo_before_a", "elo_after_a", "elo_before_b", "elo_after_b",
+            "training_updates_a", "training_updates_b", "recorded_at",
+        ]
+        for col in expected:
+            assert col in cols, f"missing column {col}"
+
+    def test_league_transitions_columns(self, tmp_path):
+        """league_transitions has all expected columns."""
+        db_path = str(tmp_path / "v5.db")
+        init_db(db_path)
+        cols = _get_table_columns(db_path, "league_transitions")
+        expected = ["id", "entry_id", "from_role", "to_role", "from_status", "to_status", "reason", "created_at"]
+        for col in expected:
+            assert col in cols, f"missing column {col}"
+
+    def test_role_enum_roundtrip(self, tmp_path):
+        """Inserting entries with each role value and reading them back."""
+        db_path = str(tmp_path / "v5.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        roles = ["frontier_static", "recent_fixed", "dynamic"]
+        for i, role in enumerate(roles, start=1):
+            conn.execute(
+                "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch, role) "
+                "VALUES (?, 'resnet', '{}', '/tmp/x.pt', 1, ?)",
+                (i, role),
+            )
+        conn.commit()
+        rows = conn.execute("SELECT id, role FROM league_entries ORDER BY id").fetchall()
+        conn.close()
+        assert len(rows) == len(roles)
+        for (row_id, row_role), expected_role in zip(rows, roles):
+            assert row_role == expected_role
+
+    def test_league_transitions_content_roundtrip(self, tmp_path):
+        """Insert transition records and read them back."""
+        db_path = str(tmp_path / "v5.db")
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'resnet', '{}', '/tmp/x.pt', 1)"
+        )
+        transitions = [
+            (1, "unassigned", "frontier_static", "active", "active", "promoted after burn-in"),
+            (1, "frontier_static", "dynamic", "active", "active", "rotation"),
+        ]
+        for entry_id, from_role, to_role, from_status, to_status, reason in transitions:
+            conn.execute(
+                "INSERT INTO league_transitions (entry_id, from_role, to_role, from_status, to_status, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (entry_id, from_role, to_role, from_status, to_status, reason),
+            )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT entry_id, from_role, to_role, from_status, to_status, reason, created_at "
+            "FROM league_transitions ORDER BY id"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 2
+        assert rows[0][1] == "unassigned"
+        assert rows[0][2] == "frontier_static"
+        assert rows[0][5] == "promoted after burn-in"
+        assert rows[1][1] == "frontier_static"
+        assert rows[1][2] == "dynamic"
+        assert rows[1][5] == "rotation"
+        # created_at should be populated by default
+        assert rows[0][6] is not None
+        assert rows[1][6] is not None
+
     def test_idempotent_init(self, tmp_path):
         """Running init_db twice should be a no-op."""
         db_path = str(tmp_path / "idempotent.db")

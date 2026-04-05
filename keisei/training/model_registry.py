@@ -69,6 +69,16 @@ def validate_model_params(architecture: str, params: dict[str, Any]) -> object:
                 f"se_resnet: channels ({validated.channels}) // se_reduction "
                 f"({validated.se_reduction}) must be >= 1"
             )
+    elif architecture == "resnet":
+        if validated.hidden_size <= 0:
+            raise ValueError(f"resnet: hidden_size must be > 0, got {validated.hidden_size}")
+        if validated.num_layers < 0:
+            raise ValueError(f"resnet: num_layers must be >= 0, got {validated.num_layers}")
+    elif architecture == "mlp":
+        if any(s <= 0 for s in validated.hidden_sizes):
+            raise ValueError(
+                f"mlp: all hidden_sizes must be > 0, got {validated.hidden_sizes}"
+            )
 
     return validated
 

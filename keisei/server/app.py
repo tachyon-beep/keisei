@@ -191,11 +191,15 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     state = await asyncio.to_thread(read_training_state, db_path)
 
     last_metrics_id = metrics[-1]["id"] if metrics else 0
-    # Track the latest game snapshot timestamp for change detection.
-    # Use the max updated_at from the initial fetch, or epoch zero if no games yet.
+    # Composite cursor for incremental game snapshot polling.
+    # Tracks (timestamp, game_id) to avoid missing rows with equal timestamps.
     last_game_ts = ""
+    last_game_id = 0
     if games:
         last_game_ts = max(g["updated_at"] for g in games)
+        last_game_id = max(
+            g["game_id"] for g in games if g["updated_at"] == last_game_ts
+        )
 
     league_data = await asyncio.to_thread(read_league_data, db_path)
     elo_history = await asyncio.to_thread(read_elo_history, db_path)
@@ -210,6 +214,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             "league_results": league_data["results"],
             "historical_library": league_data["historical_library"],
             "gauntlet_results": league_data["gauntlet_results"],
+            "transitions": league_data["transitions"],
             "elo_history": elo_history,
         }),
         timeout=WS_SEND_TIMEOUT_S,
@@ -217,8 +222,9 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
 
     last_league_entry_ids = frozenset(e["id"] for e in league_data["entries"])
     last_league_result_id = league_data["results"][0]["id"] if league_data["results"] else 0
+    last_league_transition_id = league_data["transitions"][0]["id"] if league_data["transitions"] else 0
     league_poll_elapsed = 0.0
-    total_episodes = sum(m.get("episodes_completed", 0) for m in metrics)
+    total_episodes = sum((m.get("episodes_completed") or 0) for m in metrics)
 
     # Poll loop
     while True:
@@ -229,16 +235,20 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         )
         if new_metrics:
             last_metrics_id = new_metrics[-1]["id"]
+            total_episodes += sum(
+                (m.get("episodes_completed") or 0) for m in new_metrics
+            )
             await asyncio.wait_for(
                 ws.send_json({"type": "metrics_update", "rows": new_metrics}),
                 timeout=WS_SEND_TIMEOUT_S,
             )
 
-        changed_games, new_game_ts = await asyncio.to_thread(
-            read_game_snapshots_since, db_path, last_game_ts
+        changed_games, new_game_ts, new_game_id = await asyncio.to_thread(
+            read_game_snapshots_since, db_path, last_game_ts, last_game_id
         )
         if changed_games:
             last_game_ts = new_game_ts
+            last_game_id = new_game_id
             await asyncio.wait_for(
                 ws.send_json({"type": "game_update", "snapshots": changed_games}),
                 timeout=WS_SEND_TIMEOUT_S,
@@ -252,11 +262,6 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             or new_state.get("heartbeat_at") != (state or {}).get("heartbeat_at")
         ):
             sys_stats = await asyncio.to_thread(_get_system_stats)
-            latest_metrics = await asyncio.to_thread(
-                read_metrics_since, db_path, max(0, last_metrics_id - 1), 1
-            )
-            episodes = latest_metrics[-1].get("episodes_completed", 0) if latest_metrics else 0
-            total_episodes += episodes
             state = new_state
             await asyncio.wait_for(
                 ws.send_json({
@@ -283,9 +288,15 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             new_elo_hist = await asyncio.to_thread(read_elo_history, db_path)
             new_entry_ids = frozenset(e["id"] for e in new_league["entries"])
             new_result_id = new_league["results"][0]["id"] if new_league["results"] else 0
-            if new_entry_ids != last_league_entry_ids or new_result_id != last_league_result_id:
+            new_transition_id = new_league["transitions"][0]["id"] if new_league["transitions"] else 0
+            if (
+                new_entry_ids != last_league_entry_ids
+                or new_result_id != last_league_result_id
+                or new_transition_id != last_league_transition_id
+            ):
                 last_league_entry_ids = new_entry_ids
                 last_league_result_id = new_result_id
+                last_league_transition_id = new_transition_id
                 await asyncio.wait_for(
                     ws.send_json({
                         "type": "league_update",
@@ -293,6 +304,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                         "results": new_league["results"],
                         "historical_library": new_league["historical_library"],
                         "gauntlet_results": new_league["gauntlet_results"],
+                        "transitions": new_league["transitions"],
                         "elo_history": new_elo_hist,
                     }),
                     timeout=WS_SEND_TIMEOUT_S,

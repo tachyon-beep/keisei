@@ -414,13 +414,16 @@ class ConcurrentMatchPool:
                 pairing_idx = slot_pairing_map[slot.index]
                 results[pairing_idx] = slot.to_result()
 
-                # Release models
+                # Release models and clear refs so Python can GC them even if
+                # the next _assign_pairing fails (no swap-in overwrites the refs).
                 try:
                     release_fn(slot.model_a, slot.model_b)
                 except Exception:
                     logger.exception(
                         "Failed to release models for slot %d", slot.index
                     )
+                slot.model_a = None
+                slot.model_b = None
 
                 slot.active = False
 
@@ -455,6 +458,8 @@ class ConcurrentMatchPool:
                 logger.exception(
                     "Failed to release models for slot %d", slot.index
                 )
+            slot.model_a = None
+            slot.model_b = None
 
         # Return results in original pairing order
         return [results[i] for i in sorted(results.keys())]
@@ -494,6 +499,8 @@ class ConcurrentMatchPool:
                 entry_b.display_name,
                 exc_info=True,
             )
+            slot.model_a = None
+            slot.model_b = None
             slot.active = False
             return
 

@@ -29,6 +29,14 @@ class Role(StrEnum):
     UNASSIGNED = "unassigned"
 
 
+# Map opponent role -> column name for per-role game counters (§13.1).
+_ROLE_TO_GAMES_COLUMN: dict[str, str] = {
+    "frontier_static": "games_vs_frontier",
+    "recent_fixed": "games_vs_recent",
+    "dynamic": "games_vs_dynamic",
+}
+
+
 class EntryStatus(StrEnum):
     ACTIVE = "active"
     RETIRED = "retired"
@@ -235,6 +243,9 @@ class OpponentStore:
         self._pinned: set[int] = set()
         self._lock = threading.RLock()
         self._transaction_depth: int = 0
+        # Rollback actions: ("delete", path) for new files,
+        # ("restore", path, backup_path) for overwritten files.
+        self._pending_fs_ops: list[tuple[str, ...]] = []
         self._conn = self._open_connection()
 
     def _open_connection(self) -> sqlite3.Connection:
@@ -285,12 +296,53 @@ class OpponentStore:
                 yield
                 if is_outermost:
                     self._conn.commit()
+                    self._finalize_fs_ops()
             except Exception:
                 if is_outermost:
                     self._conn.rollback()
+                    self._rollback_fs_ops()
                 raise
             finally:
                 self._transaction_depth -= 1
+
+    def _register_pending_file(self, path: Path) -> None:
+        """Register a NEW file for deletion if the outermost transaction rolls back."""
+        self._pending_fs_ops.append(("delete", str(path)))
+
+    def _register_overwrite(self, path: Path) -> None:
+        """Backup an existing file before overwriting so rollback can restore it.
+
+        If the file doesn't exist yet, falls back to delete-on-rollback.
+        """
+        if path.exists():
+            backup = Path(str(path) + ".rollback-bak")
+            shutil.copy2(str(path), str(backup))
+            self._pending_fs_ops.append(("restore", str(path), str(backup)))
+        else:
+            self._pending_fs_ops.append(("delete", str(path)))
+
+    def _finalize_fs_ops(self) -> None:
+        """On commit: remove any backup files, clear the ops list."""
+        for op in self._pending_fs_ops:
+            if op[0] == "restore":
+                backup = Path(op[2])
+                backup.unlink(missing_ok=True)
+        self._pending_fs_ops.clear()
+
+    def _rollback_fs_ops(self) -> None:
+        """On rollback: delete new files, restore overwritten files from backups."""
+        for op in self._pending_fs_ops:
+            try:
+                if op[0] == "delete":
+                    Path(op[1]).unlink(missing_ok=True)
+                elif op[0] == "restore":
+                    target, backup = Path(op[1]), Path(op[2])
+                    if backup.exists():
+                        shutil.copy2(str(backup), str(target))
+                        backup.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to roll back filesystem op: %s", op)
+        self._pending_fs_ops.clear()
 
     # ------------------------------------------------------------------
     # Entry CRUD
@@ -325,13 +377,15 @@ class OpponentStore:
             display_name = _generate_display_name(epoch, existing_names, entry_count)
             flavour_facts = _generate_flavour_facts(epoch)
 
+            training_enabled = 1 if role == Role.DYNAMIC else 0
             cursor = self._conn.execute(
                 """INSERT INTO league_entries
                    (display_name, flavour_facts, architecture, model_params,
-                    checkpoint_path, created_epoch, role, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    checkpoint_path, created_epoch, role, status, training_enabled)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (display_name, json.dumps(flavour_facts), architecture,
-                 json.dumps(model_params), "", epoch, role, EntryStatus.ACTIVE),
+                 json.dumps(model_params), "", epoch, role, EntryStatus.ACTIVE,
+                 training_enabled),
             )
             entry_id = cursor.lastrowid
             assert entry_id is not None
@@ -342,6 +396,7 @@ class OpponentStore:
             tmp_path = Path(str(ckpt_path) + ".tmp")
             torch.save(raw_model.state_dict(), tmp_path)
             tmp_path.rename(ckpt_path)
+            self._register_pending_file(ckpt_path)
 
             try:
                 self._conn.execute(
@@ -354,6 +409,7 @@ class OpponentStore:
                 ckpt_path.unlink(missing_ok=True)
                 raise
 
+            meta_path = entry_dir / "metadata.json"
             self._write_metadata(entry_dir, {
                 "entry_id": entry_id,
                 "display_name": display_name,
@@ -362,6 +418,7 @@ class OpponentStore:
                 "created_epoch": epoch,
                 "role": str(role),
             })
+            self._register_pending_file(meta_path)
 
             logger.info(
                 "Store entry: %s (%s) epoch %d -> entries/%06d/ (id=%d)",
@@ -383,16 +440,19 @@ class OpponentStore:
             entry_count = self._entry_count_unlocked()
             display_name = _generate_display_name(source.created_epoch, existing_names, entry_count)
             flavour_facts = _generate_flavour_facts(source.created_epoch + source_entry_id)
+            # Only Dynamic entries are trainable (§6.1, §6.2, §10).
+            training_enabled = 1 if new_role == Role.DYNAMIC else 0
             cursor = self._conn.execute(
                 """INSERT INTO league_entries
                    (display_name, flavour_facts, architecture, model_params,
                     checkpoint_path, created_epoch, role, status,
-                    parent_entry_id, lineage_group)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    parent_entry_id, lineage_group, training_enabled)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (display_name, json.dumps(flavour_facts), source.architecture,
                  json.dumps(source.model_params), "", source.created_epoch,
                  new_role, EntryStatus.ACTIVE, source_entry_id,
-                 source.lineage_group or f"lineage-{source_entry_id}"),
+                 source.lineage_group or f"lineage-{source_entry_id}",
+                 training_enabled),
             )
             entry_id = cursor.lastrowid
             assert entry_id is not None
@@ -400,6 +460,7 @@ class OpponentStore:
             entry_dir.mkdir(parents=True, exist_ok=True)
             dst_path = entry_dir / "weights.pt"
             shutil.copy2(str(src_path), str(dst_path))
+            self._register_pending_file(dst_path)
             try:
                 self._conn.execute(
                     "UPDATE league_entries SET checkpoint_path = ? WHERE id = ?",
@@ -410,6 +471,7 @@ class OpponentStore:
                 dst_path.unlink(missing_ok=True)
                 raise
 
+            meta_path = entry_dir / "metadata.json"
             self._write_metadata(entry_dir, {
                 "entry_id": entry_id,
                 "display_name": display_name,
@@ -420,6 +482,7 @@ class OpponentStore:
                 "parent_entry_id": source_entry_id,
                 "lineage_group": source.lineage_group or f"lineage-{source_entry_id}",
             })
+            self._register_pending_file(meta_path)
 
             entry = self._get_entry(entry_id)
             assert entry is not None
@@ -746,6 +809,19 @@ class OpponentStore:
                 "UPDATE league_entries SET games_played = games_played + ? WHERE id = ?",
                 (num_games, entry_b_id),
             )
+            # Update per-role game counters: A played against B's role, and vice versa.
+            col_for_b = _ROLE_TO_GAMES_COLUMN.get(role_b) if role_b else None
+            col_for_a = _ROLE_TO_GAMES_COLUMN.get(role_a) if role_a else None
+            if col_for_b:
+                self._conn.execute(
+                    f"UPDATE league_entries SET {col_for_b} = {col_for_b} + ? WHERE id = ?",
+                    (num_games, entry_a_id),
+                )
+            if col_for_a:
+                self._conn.execute(
+                    f"UPDATE league_entries SET {col_for_a} = {col_for_a} + ? WHERE id = ?",
+                    (num_games, entry_b_id),
+                )
             # Update last_match_at for both participants
             self._conn.execute(
                 "UPDATE league_entries SET last_match_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
@@ -827,6 +903,25 @@ class OpponentStore:
     # Optimizer persistence (Phase 3)
     # ------------------------------------------------------------------
 
+    def save_weights(self, entry_id: int, state_dict: dict[str, Any]) -> None:
+        """Save updated model weights for a Dynamic entry.
+
+        Per §14: overwrites weights.pt atomically via .tmp + rename.
+        Uses transaction rollback safety (backup before overwrite).
+        """
+        with self.transaction():
+            entry = self._get_entry(entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} not found")
+            ckpt_path = Path(entry.checkpoint_path)
+            self._register_overwrite(ckpt_path)
+            tmp_path = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
+            torch.save(state_dict, tmp_path)
+            tmp_path.rename(ckpt_path)
+            logger.info(
+                "Saved weights for entry %d -> %s", entry_id, ckpt_path,
+            )
+
     def save_optimizer(self, entry_id: int, optimizer_state_dict: dict[str, Any]) -> None:
         """Save an optimizer state dict as optimizer.pt in the entry directory.
 
@@ -840,6 +935,7 @@ class OpponentStore:
             entry_dir = self._entry_dir(entry_id)
             entry_dir.mkdir(parents=True, exist_ok=True)
             opt_path = entry_dir / "optimizer.pt"
+            self._register_overwrite(opt_path)
             tmp_path = Path(str(opt_path) + ".tmp")
             torch.save(optimizer_state_dict, tmp_path)
             tmp_path.rename(opt_path)
@@ -847,6 +943,22 @@ class OpponentStore:
                 "UPDATE league_entries SET optimizer_path = ? WHERE id = ?",
                 (str(opt_path), entry_id),
             )
+            # Refresh metadata.json so the sidecar is self-describing (§14).
+            refreshed = self._get_entry(entry_id)
+            if refreshed is not None:
+                self._write_metadata(entry_dir, {
+                    "entry_id": entry_id,
+                    "display_name": refreshed.display_name,
+                    "architecture": refreshed.architecture,
+                    "model_params": refreshed.model_params,
+                    "created_epoch": refreshed.created_epoch,
+                    "role": str(refreshed.role),
+                    "parent_entry_id": refreshed.parent_entry_id,
+                    "lineage_group": refreshed.lineage_group,
+                    "optimizer_path": str(opt_path),
+                    "update_count": refreshed.update_count,
+                    "last_train_at": refreshed.last_train_at,
+                })
             logger.info("Saved optimizer for entry %d -> entries/%06d/optimizer.pt", entry_id, entry_id)
 
     def load_optimizer(self, entry_id: int, device: str = "cpu") -> dict[str, Any] | None:

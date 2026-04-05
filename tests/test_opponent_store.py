@@ -211,6 +211,64 @@ class TestOpponentStoreTransaction:
         assert len(store.list_entries()) == 0
         store.close()
 
+    def test_rollback_cleans_up_checkpoint_files(self, store_db, league_dir):
+        """Outer transaction rollback must delete checkpoint files written by add_entry."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+                raise RuntimeError("abort")
+        # DB should be clean
+        assert len(store.list_entries()) == 0
+        # Filesystem should also be clean — no orphaned weights.pt
+        weight_files = list(Path(league_dir).rglob("weights.pt"))
+        assert weight_files == [], f"Orphaned files after rollback: {weight_files}"
+        store.close()
+
+    def test_rollback_cleans_up_cloned_files(self, store_db, league_dir):
+        """Outer transaction rollback must delete files written by clone_entry."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        source = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                store.clone_entry(source.id, Role.FRONTIER_STATIC, "test")
+                raise RuntimeError("abort")
+        # Only the original entry should exist
+        assert len(store.list_entries()) == 1
+        # Only the original entry's directory should have weight files
+        weight_files = list(Path(league_dir).rglob("weights.pt"))
+        assert len(weight_files) == 1, f"Expected 1 weights.pt, got {weight_files}"
+        store.close()
+
+    def test_rollback_preserves_prior_optimizer(self, store_db, league_dir):
+        """save_optimizer rollback must restore the prior optimizer.pt, not delete it."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        # Save an initial optimizer state
+        original_state = {"step": 1, "param_groups": []}
+        store.save_optimizer(entry.id, original_state)
+        opt_path = Path(league_dir) / "entries" / f"{entry.id:06d}" / "optimizer.pt"
+        assert opt_path.exists()
+
+        # Now attempt a save_optimizer inside an outer transaction that rolls back
+        new_state = {"step": 99, "param_groups": []}
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                store.save_optimizer(entry.id, new_state)
+                raise RuntimeError("abort")
+
+        # The prior optimizer.pt must be RESTORED, not deleted
+        assert opt_path.exists(), "Rollback deleted the prior optimizer.pt"
+        restored = torch.load(opt_path, weights_only=False)
+        assert restored["step"] == 1, (
+            f"Rollback did not restore prior state: got step={restored['step']}"
+        )
+        store.close()
+
 
 class TestRecordResultUpdates:
     def test_record_result_updates_last_match_at(self, store_db, league_dir):
@@ -255,3 +313,104 @@ class TestEloCalculation:
     def test_draw_against_equal(self):
         new_a, new_b = compute_elo_update(1000.0, 1000.0, result=0.5, k=32)
         assert abs(new_a - 1000.0) < 0.1
+
+
+class TestOptimizerSaveLoadRoundTrip:
+    """T5: Optimizer save/load round-trip with state verification."""
+
+    def test_save_load_round_trip_state_matches(self, store_db, league_dir):
+        """Create Dynamic entry, save optimizer, load it back, verify state matches."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        # Build a non-trivial optimizer state
+        opt_model = torch.nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(opt_model.parameters(), lr=0.001)
+        optimizer.zero_grad()
+        loss = opt_model(torch.randn(2, 10)).sum()
+        loss.backward()
+        optimizer.step()
+
+        state_dict = optimizer.state_dict()
+        store.save_optimizer(entry.id, state_dict)
+        loaded = store.load_optimizer(entry.id)
+
+        assert loaded is not None
+        # param_groups should match exactly
+        assert loaded["param_groups"] == state_dict["param_groups"]
+        # state keys should match
+        assert set(loaded["state"].keys()) == set(state_dict["state"].keys())
+        # Verify tensor values in state match
+        for k in state_dict["state"]:
+            for field in state_dict["state"][k]:
+                orig = state_dict["state"][k][field]
+                rest = loaded["state"][k][field]
+                if isinstance(orig, torch.Tensor):
+                    assert torch.equal(orig, rest), f"Mismatch in state[{k}][{field}]"
+                else:
+                    assert orig == rest, f"Mismatch in state[{k}][{field}]"
+        store.close()
+
+
+class TestDynamicToFrontierStaticClone:
+    """T5: Clone Dynamic -> Frontier Static with role/field verification."""
+
+    def test_clone_dynamic_to_frontier_static(self, store_db, league_dir):
+        """Clone a Dynamic entry to Frontier Static, verify properties."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        source = store.add_entry(model, "resnet", {"h": 16}, epoch=5, role=Role.DYNAMIC)
+
+        # Save optimizer on source so we can verify clone does NOT have one
+        opt_state = {"step": 1, "param_groups": []}
+        store.save_optimizer(source.id, opt_state)
+        source_updated = store.get_entry(source.id)
+        assert source_updated is not None
+        assert source_updated.optimizer_path is not None
+
+        clone = store.clone_entry(source.id, Role.FRONTIER_STATIC, "promotion")
+
+        assert clone.role is Role.FRONTIER_STATIC
+        assert clone.checkpoint_path != source.checkpoint_path
+        assert clone.parent_entry_id == source.id
+        assert clone.training_enabled is False
+        assert clone.optimizer_path is None
+        # Weights file should exist at the clone's path
+        assert Path(clone.checkpoint_path).exists()
+        store.close()
+
+
+class TestFilesystemLayout:
+    """T5: Verify directory structure for entries of each role."""
+
+    def test_directory_structure_per_role(self, store_db, league_dir):
+        """Create entries of each role, verify weights.pt/metadata.json layout."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+
+        fs_entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.FRONTIER_STATIC)
+        rf_entry = store.add_entry(model, "resnet", {}, epoch=2, role=Role.RECENT_FIXED)
+        dyn_entry = store.add_entry(model, "resnet", {}, epoch=3, role=Role.DYNAMIC)
+
+        for entry in [fs_entry, rf_entry, dyn_entry]:
+            entry_dir = Path(league_dir) / "entries" / f"{entry.id:06d}"
+            assert entry_dir.exists(), f"Missing entry dir for {entry.role}"
+            assert (entry_dir / "weights.pt").exists(), f"Missing weights.pt for {entry.role}"
+            assert (entry_dir / "metadata.json").exists(), f"Missing metadata.json for {entry.role}"
+
+        # Save optimizer only on Dynamic
+        opt_state = {"step": 1, "param_groups": []}
+        store.save_optimizer(dyn_entry.id, opt_state)
+
+        # optimizer.pt should exist only for Dynamic
+        dyn_dir = Path(league_dir) / "entries" / f"{dyn_entry.id:06d}"
+        assert (dyn_dir / "optimizer.pt").exists(), "Dynamic entry should have optimizer.pt"
+
+        fs_dir = Path(league_dir) / "entries" / f"{fs_entry.id:06d}"
+        assert not (fs_dir / "optimizer.pt").exists(), "Frontier Static should NOT have optimizer.pt"
+
+        rf_dir = Path(league_dir) / "entries" / f"{rf_entry.id:06d}"
+        assert not (rf_dir / "optimizer.pt").exists(), "Recent Fixed should NOT have optimizer.pt"
+
+        store.close()

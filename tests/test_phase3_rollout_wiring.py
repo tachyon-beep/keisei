@@ -297,6 +297,7 @@ class TestTournamentTrainingTrigger:
         trainer = MagicMock(spec=DynamicTrainer)
         trainer.should_update.return_value = True
         trainer.is_rate_limited.return_value = False
+        trainer.is_gpu_backpressured.return_value = False
         trainer.update.return_value = True
 
         t = self._make_tournament(dynamic_trainer=trainer)
@@ -368,6 +369,7 @@ class TestTournamentTrainingTrigger:
         trainer = MagicMock(spec=DynamicTrainer)
         trainer.should_update.return_value = True
         trainer.is_rate_limited.return_value = False
+        trainer.is_gpu_backpressured.return_value = False
         trainer.update.return_value = True
 
         t = self._make_tournament(dynamic_trainer=trainer)
@@ -392,6 +394,7 @@ class TestTournamentTrainingTrigger:
         trainer = MagicMock(spec=DynamicTrainer)
         trainer.should_update.return_value = True
         trainer.is_rate_limited.return_value = False
+        trainer.is_gpu_backpressured.return_value = False
         trainer.update.return_value = True
 
         t = self._make_tournament(dynamic_trainer=trainer)
@@ -409,6 +412,75 @@ class TestTournamentTrainingTrigger:
         # Only the Dynamic entry (entry_b, side=1) should get record_match
         trainer.record_match.assert_called_once_with(2, rollout, side=1)
         trainer.update.assert_called_once()
+
+    def test_match_type_classification_in_result_recording(self):
+        """D-vs-D records match_type='train'; D-vs-FS records match_type='calibration'."""
+        # --- D-vs-D: should record match_type="train" ---
+        trainer = MagicMock(spec=DynamicTrainer)
+        trainer.should_update.return_value = False
+        trainer.is_rate_limited.return_value = False
+        trainer.is_gpu_backpressured.return_value = False
+
+        t = self._make_tournament(dynamic_trainer=trainer)
+
+        entry_a = _make_entry(1, Role.DYNAMIC)
+        entry_b = _make_entry(2, Role.DYNAMIC)
+        rollout = _make_mock_rollout()
+
+        with patch.object(t, "_play_match", return_value=(2, 1, 0, rollout)):
+            t.store.get_entry.side_effect = lambda eid: (
+                entry_a if eid == 1 else entry_b
+            )
+            t._run_one_match(MagicMock(), entry_a, entry_b, epoch=10)
+
+        t.store.record_result.assert_called_once()
+        call_kwargs = t.store.record_result.call_args
+        assert call_kwargs.kwargs.get("match_type") or call_kwargs[1].get("match_type")
+        actual_type = call_kwargs.kwargs.get("match_type") or call_kwargs[1].get("match_type")
+        assert actual_type == "train", f"D-vs-D should record match_type='train', got '{actual_type}'"
+
+        # --- D-vs-FS: should record match_type="calibration" ---
+        t2 = self._make_tournament(dynamic_trainer=None)
+
+        entry_c = _make_entry(3, Role.DYNAMIC)
+        entry_d = _make_entry(4, Role.FRONTIER_STATIC)
+
+        with patch.object(t2, "_play_match", return_value=(1, 2, 0)):
+            t2.store.get_entry.side_effect = lambda eid: (
+                entry_c if eid == 3 else entry_d
+            )
+            t2._run_one_match(MagicMock(), entry_c, entry_d, epoch=10)
+
+        t2.store.record_result.assert_called_once()
+        call_kwargs2 = t2.store.record_result.call_args
+        actual_type2 = call_kwargs2.kwargs.get("match_type") or call_kwargs2[1].get("match_type")
+        assert actual_type2 == "calibration", (
+            f"D-vs-FS should record match_type='calibration', got '{actual_type2}'"
+        )
+
+    def test_gpu_backpressure_prevents_update(self):
+        """When is_gpu_backpressured() returns True, update is NOT called."""
+        trainer = MagicMock(spec=DynamicTrainer)
+        trainer.should_update.return_value = True
+        trainer.is_rate_limited.return_value = False
+        trainer.is_gpu_backpressured.return_value = True  # backpressured!
+        trainer.update.return_value = True
+
+        t = self._make_tournament(dynamic_trainer=trainer)
+        entry_a = _make_entry(1, Role.DYNAMIC)
+        entry_b = _make_entry(2, Role.DYNAMIC)
+        rollout = _make_mock_rollout()
+
+        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+            t.store.get_entry.side_effect = lambda eid: (
+                entry_a if eid == 1 else entry_b
+            )
+            t._run_one_match(MagicMock(), entry_a, entry_b, epoch=10)
+
+        # record_match should still be called for both Dynamic entries
+        assert trainer.record_match.call_count == 2
+        # But update must NOT be called due to GPU backpressure
+        trainer.update.assert_not_called()
 
     def test_tournament_no_training_when_trainer_is_none(self):
         """dynamic_trainer=None should not crash."""

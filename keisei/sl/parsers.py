@@ -231,11 +231,18 @@ class CSAParser(GameParser):
 
         # Split on '/' separator lines for multi-game archives
         blocks = text.split("\n/\n")
-        for block in blocks:
+        for block_i, block in enumerate(blocks):
             block = block.strip()
             if not block:
                 continue
-            record = self._parse_single_game(block)
+            try:
+                record = self._parse_single_game(block)
+            except Exception:
+                logger.exception(
+                    "Failed to parse CSA game block %d in %s — skipping",
+                    block_i, path.name,
+                )
+                continue
             if record is not None:
                 yield record
 
@@ -288,12 +295,18 @@ class CSAParser(GameParser):
                     # the win to last_mover (the opponent of the resigner).
                     result_line = line[1:]
                 else:
+                    body = line[1:]
+                    # CSA move must be at least 5 chars: 4 digits + piece name
+                    if len(body) < 5:
+                        logger.warning(
+                            "Skipping malformed CSA move (too short): %r", line,
+                        )
+                        return None
                     last_mover = line[0]
                     usi_move = self._csa_move_to_usi(line, board)
                     moves.append(ParsedMove(move_usi=usi_move))
 
                     # Update board state
-                    body = line[1:]
                     from_col, from_row = int(body[0]), int(body[1])
                     to_col, to_row = int(body[2]), int(body[3])
                     piece = body[4:]

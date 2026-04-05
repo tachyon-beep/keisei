@@ -16,6 +16,18 @@ class TransformerParams:
     nhead: int
     num_layers: int
 
+    def __post_init__(self) -> None:
+        if self.d_model <= 0:
+            raise ValueError(f"d_model must be > 0, got {self.d_model}")
+        if self.nhead <= 0:
+            raise ValueError(f"nhead must be > 0, got {self.nhead}")
+        if self.num_layers <= 0:
+            raise ValueError(f"num_layers must be > 0, got {self.num_layers}")
+        if self.d_model % self.nhead != 0:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by nhead ({self.nhead})"
+            )
+
 
 class TransformerModel(BaseModel):
     def __init__(self, params: TransformerParams) -> None:

@@ -16,8 +16,13 @@ class PriorityScorer:
     Maintains in-memory state for pair game counts and round-level repeat tracking.
     """
 
-    def __init__(self, config: PriorityScorerConfig) -> None:
+    def __init__(
+        self,
+        config: PriorityScorerConfig,
+        match_class_weights: dict | None = None,
+    ) -> None:
         self.config = config
+        self._match_class_weights = match_class_weights or MATCH_CLASS_WEIGHTS
         self._pair_games: Counter[tuple[int, int]] = Counter()
         self._round_history: deque[set[tuple[int, int]]] = deque(
             maxlen=config.repeat_window_rounds,
@@ -43,8 +48,10 @@ class PriorityScorer:
 
     def _under_sample_bonus(self, id_a: int, id_b: int) -> float:
         count = self._pair_games[self._pair_key(id_a, id_b)]
-        # count+1 ensures 0 games (never played) scores higher than 1 game:
-        # 0 → 1.0, 1 → 0.5, 2 → 0.33, etc.
+        # Intentional divergence from plan's 1/max(1,count): we use 1/(count+1)
+        # so that 0 games (never played) scores higher than 1 game played.
+        # Plan formula: 0→1.0, 1→1.0, 2→0.5  (can't distinguish 0 from 1)
+        # Our formula:  0→1.0, 1→0.5, 2→0.33  (properly prioritizes unplayed pairs)
         return 1.0 / (count + 1)
 
     def _uncertainty_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
@@ -82,7 +89,17 @@ class PriorityScorer:
 
     def _match_class_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
         """§8.3 match-class weight: D-vs-D highest, FS-vs-FS lowest."""
-        return MATCH_CLASS_WEIGHTS.get(classify_match(a, b), 0.0)
+        return self._match_class_weights.get(classify_match(a, b), 0.0)
+
+    def _frontier_exposure_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        """§12.2 Frontier exposure: boost D-vs-FS when a Dynamic has low frontier games."""
+        threshold = self.config.frontier_exposure_threshold
+        # Only applies to D-vs-FS pairings.
+        if a.role == Role.DYNAMIC and b.role == Role.FRONTIER_STATIC:
+            return 1.0 if a.games_vs_frontier < threshold else 0.0
+        if b.role == Role.DYNAMIC and a.role == Role.FRONTIER_STATIC:
+            return 1.0 if b.games_vs_frontier < threshold else 0.0
+        return 0.0
 
     def score(self, a: OpponentEntry, b: OpponentEntry) -> float:
         """Compute priority score for a pairing. Higher = more informative.
@@ -98,6 +115,7 @@ class PriorityScorer:
             + c.recent_fixed_bonus * self._has_recent_fixed(a, b)
             + c.diversity_weight * self._lineage_diversity(a, b)
             + c.match_class_weight * self._match_class_bonus(a, b)
+            + c.frontier_exposure_weight * self._frontier_exposure_bonus(a, b)
             + c.repeat_penalty * self._repeat_count(a.id, b.id)
             + c.lineage_penalty * self._lineage_closeness(a, b)
         )

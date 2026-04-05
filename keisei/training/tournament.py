@@ -305,61 +305,67 @@ class LeagueTournament:
             total = result.a_wins + result.b_wins + result.draws
             if total == 0:
                 continue
-            current_a = self.store.get_entry(result.entry_a.id)
-            current_b = self.store.get_entry(result.entry_b.id)
-            if current_a is None or current_b is None:
-                continue
-            result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
-            new_a_elo, new_b_elo = compute_elo_update(
-                current_a.elo_rating, current_b.elo_rating,
-                result=result_score, k=self.k_factor,
-            )
-            context = RoleEloTracker.determine_match_context(
-                current_a, current_b,
-            )
-            self.store.record_result(
-                epoch=epoch,
-                entry_a_id=result.entry_a.id,
-                entry_b_id=result.entry_b.id,
-                wins_a=result.a_wins,
-                wins_b=result.b_wins,
-                draws=result.draws,
-                match_type="calibration",
-                role_a=current_a.role,
-                role_b=current_b.role,
-                elo_before_a=current_a.elo_rating,
-                elo_after_a=new_a_elo,
-                elo_before_b=current_b.elo_rating,
-                elo_after_b=new_b_elo,
-                training_updates_a=current_a.update_count,
-                training_updates_b=current_b.update_count,
-            )
-            # result.entry_a.id == current_a.id by construction (current_a
-            # is fetched by result.entry_a.id on line 285).
-            self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
-            self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
-            if self.role_elo_tracker:
-                self.role_elo_tracker.update_from_result(
-                    current_a, current_b, result_score, context,
+            try:
+                current_a = self.store.get_entry(result.entry_a.id)
+                current_b = self.store.get_entry(result.entry_b.id)
+                if current_a is None or current_b is None:
+                    continue
+                result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
+                new_a_elo, new_b_elo = compute_elo_update(
+                    current_a.elo_rating, current_b.elo_rating,
+                    result=result_score, k=self.k_factor,
                 )
-            logger.info(
-                "  %s vs %s — %dW %dL %dD",
-                result.entry_a.display_name, result.entry_b.display_name,
-                result.a_wins, result.b_wins, result.draws,
-            )
-            if self.dynamic_trainer and result.rollout is not None:
-                for i, entry in enumerate([current_a, current_b]):
-                    if entry.role == Role.DYNAMIC:
-                        self.dynamic_trainer.record_match(
-                            entry.id, result.rollout, side=i,
-                        )
-                        if (
-                            self.dynamic_trainer.should_update(entry.id)
-                            and not self.dynamic_trainer.is_rate_limited()
-                        ):
-                            self.dynamic_trainer.update(
-                                entry, device=str(self.device),
+                context = RoleEloTracker.determine_match_context(
+                    current_a, current_b,
+                )
+                is_train = is_training_match(current_a, current_b)
+                self.store.record_result(
+                    epoch=epoch,
+                    entry_a_id=result.entry_a.id,
+                    entry_b_id=result.entry_b.id,
+                    wins_a=result.a_wins,
+                    wins_b=result.b_wins,
+                    draws=result.draws,
+                    match_type="train" if is_train else "calibration",
+                    role_a=current_a.role,
+                    role_b=current_b.role,
+                    elo_before_a=current_a.elo_rating,
+                    elo_after_a=new_a_elo,
+                    elo_before_b=current_b.elo_rating,
+                    elo_after_b=new_b_elo,
+                    training_updates_a=current_a.update_count,
+                    training_updates_b=current_b.update_count,
+                )
+                self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
+                self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
+                if self.role_elo_tracker:
+                    self.role_elo_tracker.update_from_result(
+                        current_a, current_b, result_score, context,
+                    )
+                logger.info(
+                    "  %s vs %s — %dW %dL %dD",
+                    result.entry_a.display_name, result.entry_b.display_name,
+                    result.a_wins, result.b_wins, result.draws,
+                )
+                if self.dynamic_trainer and result.rollout is not None:
+                    for i, entry in enumerate([current_a, current_b]):
+                        if entry.role == Role.DYNAMIC:
+                            self.dynamic_trainer.record_match(
+                                entry.id, result.rollout, side=i,
                             )
+                            if (
+                                self.dynamic_trainer.should_update(entry.id)
+                                and not self.dynamic_trainer.is_rate_limited()
+                                and not self.dynamic_trainer.is_gpu_backpressured(str(self.device))
+                            ):
+                                self.dynamic_trainer.update(
+                                    entry, device=str(self.device),
+                                )
+            except Exception:
+                logger.exception(
+                    "Failed to process result: %s vs %s",
+                    result.entry_a.display_name, result.entry_b.display_name,
+                )
 
         # Update priority scorer state after concurrent round
         if self.scheduler.priority_scorer is not None:
@@ -429,7 +435,7 @@ class LeagueTournament:
             self.store.record_result(
                 epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,
                 wins_a=wins_a, wins_b=wins_b, draws=draws,
-                match_type="calibration",
+                match_type="train" if is_trainable else "calibration",
                 role_a=current_a.role,
                 role_b=current_b.role,
                 elo_before_a=current_a.elo_rating,
@@ -460,6 +466,7 @@ class LeagueTournament:
                         if (
                             self.dynamic_trainer.should_update(entry.id)
                             and not self.dynamic_trainer.is_rate_limited()
+                            and not self.dynamic_trainer.is_gpu_backpressured(str(self.device))
                         ):
                             self.dynamic_trainer.update(
                                 entry, device=str(self.device),

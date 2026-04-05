@@ -191,6 +191,71 @@ class TestSLEpochsZero:
             mock_train.assert_not_called()
 
 
+class TestArchitectureMismatch:
+    """sl_to_rl must reject mismatched SL args vs rl_config_path model config."""
+
+    def test_architecture_mismatch_raises(
+        self, tmp_path: Path, sl_data_dir: Path, model_params, mock_vecenv,
+    ) -> None:
+        """If SL architecture differs from rl_config model architecture, raise immediately."""
+        from keisei.training.transition import sl_to_rl
+
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+
+        # RL config specifies "transformer" but SL args say "se_resnet"
+        rl_config_path = tmp_path / "rl.toml"
+        rl_config_path.write_text(
+            f"""\
+[training]
+algorithm = "katago_ppo"
+num_games = 1
+max_ply = 20
+checkpoint_interval = 10
+checkpoint_dir = "{checkpoint_dir}"
+
+[training.algorithm_params]
+learning_rate = 0.0002
+gamma = 0.99
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 0
+db_path = "{tmp_path / 'test.db'}"
+
+[model]
+display_name = "TestBot"
+architecture = "transformer"
+
+[model.params]
+d_model = 32
+nhead = 4
+num_layers = 2
+"""
+        )
+
+        with pytest.raises(ValueError, match="architecture.*mismatch"):
+            sl_to_rl(
+                sl_data_dir=sl_data_dir,
+                sl_epochs=1,
+                sl_batch_size=8,
+                checkpoint_dir=checkpoint_dir,
+                rl_config_path=rl_config_path,
+                architecture="se_resnet",
+                model_params=model_params,
+                vecenv=mock_vecenv,
+                db_path=str(tmp_path / "test.db"),
+            )
+
+        # No checkpoint should exist — we failed before SL training
+        assert list(checkpoint_dir.glob("*.pt")) == []
+
+
 class TestCheckpointDirCreation:
     """Test checkpoint_dir auto-creation and failure handling."""
 

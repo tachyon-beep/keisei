@@ -284,19 +284,33 @@ def read_game_snapshots(db_path: str) -> list[dict[str, Any]]:
 
 
 def read_game_snapshots_since(
-    db_path: str, since: str
-) -> tuple[list[dict[str, Any]], str]:
-    """Read game snapshots updated after `since` timestamp. Returns (rows, max_updated_at)."""
+    db_path: str, since_ts: str, since_game_id: int = 0
+) -> tuple[list[dict[str, Any]], str, int]:
+    """Read game snapshots updated after the composite cursor (since_ts, since_game_id).
+
+    Uses a composite cursor to avoid permanently missing rows when multiple
+    game_ids share the same updated_at timestamp.  The cursor is:
+      (updated_at > since_ts) OR (updated_at = since_ts AND game_id > since_game_id)
+
+    Returns (rows, max_updated_at, max_game_id_at_that_timestamp).
+    """
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT * FROM game_snapshots WHERE updated_at > ? ORDER BY game_id",
-            (since,),
+            "SELECT * FROM game_snapshots "
+            "WHERE updated_at > ? OR (updated_at = ? AND game_id > ?) "
+            "ORDER BY updated_at, game_id",
+            (since_ts, since_ts, since_game_id),
         ).fetchall()
-        max_ts = since
+        max_ts = since_ts
+        max_gid = since_game_id
         if rows:
             max_ts = max(dict(r)["updated_at"] for r in rows)
-        return [dict(row) for row in rows], max_ts
+            # Find the highest game_id at the max timestamp for the next cursor
+            max_gid = max(
+                dict(r)["game_id"] for r in rows if dict(r)["updated_at"] == max_ts
+            )
+        return [dict(row) for row in rows], max_ts, max_gid
     finally:
         conn.close()
 
@@ -374,8 +388,10 @@ def update_training_progress(
         conn.close()
 
 
-def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
-    """Read all league entries, results, historical library, and gauntlet results."""
+def read_league_data(
+    db_path: str, max_results: int = 500
+) -> dict[str, list[dict[str, Any]]]:
+    """Read league entries, recent results, historical library, and gauntlet results."""
     conn = _connect(db_path)
     try:
         entries = conn.execute(
@@ -391,7 +407,8 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "num_games, wins_a, wins_b, draws, "
             "elo_before_a, elo_after_a, elo_before_b, elo_after_b, "
             "training_updates_a, training_updates_b, recorded_at "
-            "FROM league_results ORDER BY id DESC"
+            "FROM league_results ORDER BY id DESC LIMIT ?",
+            (max_results,),
         ).fetchall()
         parsed_entries = []
         for r in entries:
@@ -425,11 +442,19 @@ def read_league_data(db_path: str) -> dict[str, list[dict[str, Any]]]:
             "ORDER BY g.epoch DESC, g.historical_slot"
         ).fetchall()]
 
+        # Recent transitions (last 200) for dashboard admission/eviction/promotion display
+        transitions = [dict(r) for r in conn.execute(
+            "SELECT id, entry_id, from_role, to_role, from_status, to_status, "
+            "reason, created_at "
+            "FROM league_transitions ORDER BY id DESC LIMIT 200"
+        ).fetchall()]
+
         return {
             "entries": parsed_entries,
             "results": [dict(r) for r in results],
             "historical_library": historical_slots,
             "gauntlet_results": gauntlet_results,
+            "transitions": transitions,
         }
     finally:
         conn.close()

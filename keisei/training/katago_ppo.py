@@ -521,12 +521,15 @@ class KataGoPPOAlgorithm:
         gae_dones_key = "terminated" if self.params.use_terminated_for_gae else "dones"
 
         # GAE computation — runs on CPU (buffer stores data on CPU).
-        next_values_cpu = next_values.detach().cpu()
+        # Force float32 for GAE inputs: under AMP, value estimates may be
+        # fp16/bf16, but the recursive temporal accumulation in GAE loses
+        # significant precision in reduced formats over T≈128 steps.
+        next_values_cpu = next_values.detach().float().cpu()
 
         if total_samples == T * N:
             # Vectorized path: batched GAE over (T, N) grid
-            rewards_2d = data["rewards"].reshape(T, N)
-            values_2d = data["values"].reshape(T, N)
+            rewards_2d = data["rewards"].reshape(T, N).float()
+            values_2d = data["values"].reshape(T, N).float()
             terminated_2d = data[gae_dones_key].reshape(T, N)
 
             if device.type == "cuda":
@@ -542,7 +545,7 @@ class KataGoPPOAlgorithm:
                 # Memory: ~3 MB for T=128, N=512 (negligible on 4060/H200).
                 advantages = compute_gae_gpu(
                     rewards_2d.to(device), values_2d.to(device),
-                    terminated_2d.to(device), next_values.detach(),
+                    terminated_2d.to(device), next_values.detach().float(),
                     gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).reshape(-1).cpu()
             else:
@@ -611,7 +614,8 @@ class KataGoPPOAlgorithm:
             # primary per-env path above is used in normal operation.
             bootstrap = next_values_cpu.mean()
             advantages = compute_gae(
-                data["rewards"], data["values"], data[gae_dones_key],
+                data["rewards"].float(), data["values"].float(),
+                data[gae_dones_key],
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 

@@ -59,6 +59,21 @@ def sl_to_rl(
     Returns:
         A configured ``KataGoTrainingLoop`` ready for ``loop.run()``.
     """
+    # --- Phase 0: Validate architecture consistency ---
+    # Load RL config early (when provided) to catch architecture mismatches
+    # before expensive SL training. Without this check, a mismatch is only
+    # detected during KataGoTrainingLoop.__init__ — after SL training and
+    # checkpoint writing have already completed.
+    if rl_config_path is not None:
+        rl_config_early = load_config(rl_config_path)
+        if rl_config_early.model.architecture != architecture:
+            raise ValueError(
+                f"SL→RL architecture mismatch: sl_to_rl(architecture={architecture!r}) "
+                f"but rl_config_path specifies model.architecture="
+                f"{rl_config_early.model.architecture!r}. "
+                f"These must match for checkpoint compatibility."
+            )
+
     # --- Phase 1: SL Training ---
     model = build_model(architecture, model_params or {})
     sl_config = SLConfig(

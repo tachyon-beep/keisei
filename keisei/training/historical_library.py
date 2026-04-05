@@ -21,6 +21,7 @@ class HistoricalSlot:
     entry_id: int | None
     actual_epoch: int | None
     selection_mode: str  # 'log_spaced' or 'fallback'
+    selected_at: str | None = None
     display_name: str | None = None
     checkpoint_path: str | None = None
 
@@ -95,10 +96,17 @@ class HistoricalLibrary:
             used_ids.add(best.id)
             slot_assignments[i] = (best, "fallback")
 
+        # Snapshot current slots so we can detect re-pointing (§13.4).
+        old_slots = {
+            s["slot_index"]: s["entry_id"]
+            for s in self.store.get_historical_slots()
+        }
+
         # Write all slots to DB
         for i, target in enumerate(targets):
             assignment = slot_assignments[i]
             if assignment is None:
+                new_entry_id = None
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
@@ -108,12 +116,27 @@ class HistoricalLibrary:
                 )
             else:
                 entry, mode = assignment
+                new_entry_id = entry.id
                 self.store.upsert_historical_slot(
                     slot_index=i,
                     target_epoch=target,
                     entry_id=entry.id,
                     actual_epoch=entry.created_epoch,
                     selection_mode=mode,
+                )
+            # Log transition when slot's entry_id changed (§13.4).
+            old_entry_id = old_slots.get(i)
+            if new_entry_id != old_entry_id and (
+                new_entry_id is not None or old_entry_id is not None
+            ):
+                log_id = new_entry_id if new_entry_id is not None else old_entry_id
+                self.store.log_transition(
+                    entry_id=log_id,
+                    from_role=None,
+                    to_role=None,
+                    from_status=None,
+                    to_status=None,
+                    reason=f"historical_slot_repointed slot={i} old={old_entry_id} new={new_entry_id}",
                 )
 
         filled = sum(1 for a in slot_assignments if a is not None)
@@ -133,6 +156,7 @@ class HistoricalLibrary:
                 entry_id=row["entry_id"],
                 actual_epoch=row["actual_epoch"],
                 selection_mode=row["selection_mode"],
+                selected_at=row.get("selected_at"),
                 display_name=row.get("display_name"),
                 checkpoint_path=row.get("checkpoint_path"),
             ))

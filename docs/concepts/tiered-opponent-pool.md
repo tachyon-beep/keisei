@@ -935,19 +935,23 @@ Implement:
 
 ## 17. Concrete TOML shape
 
+TOML section names match Python attribute names 1:1 — no aliases.
+Only the canonical names below are accepted.
+
 ```toml
 [league]
-enabled = true
-mode = "mixed"
+enabled = true                    # false = disable league without removing config
+mode = "mixed"                    # only "mixed" is currently supported
 opponent_device = "cuda:1"
 snapshot_interval = 10
 
+# Convenience: set slot counts without touching tier sub-configs
 [league.active]
 frontier_static_slots = 5
 recent_fixed_slots = 5
 dynamic_slots = 10
 
-[league.frontier_static]
+[league.frontier]
 review_interval_epochs = 250
 min_tenure_epochs = 100
 promotion_margin_elo = 50.0
@@ -955,7 +959,7 @@ min_games_for_promotion = 64
 replace_policy = "weakest_or_stalest_after_cooldown"
 span_selection = true
 
-[league.recent_fixed]
+[league.recent]
 min_games_for_review = 32
 min_unique_opponents = 6
 promotion_margin_elo = 25.0
@@ -963,28 +967,33 @@ soft_overflow = 1
 retire_if_below_dynamic_floor = true
 
 [league.dynamic]
-training_enabled = false          # enable in phase 3
+training_enabled = true           # set false to disable Dynamic training (saves VRAM)
 protection_matches = 24
 min_games_before_eviction = 40
 update_epochs_per_batch = 2
-learning_rate_scale = 0.25
+lr_scale = 0.25
 grad_clip = 1.0
 update_every_matches = 4
 max_updates_per_minute = 20
 checkpoint_flush_every = 8
+batch_reuse = 1
 
 [league.history]
-slots = 5
 enabled = true
+slots = 5
 selection = "log_spaced"
 refresh_interval_epochs = 100
 active_league_participation = false
-benchmark_gauntlet_interval_epochs = 100
 
-[league.matchmaking]
-parallel_matches = 4
-envs_per_match = 8
-total_envs = 32
+[league.gauntlet]
+enabled = true
+interval_epochs = 100
+games_per_matchup = 16
+
+[league.scheduler]
+learner_dynamic_ratio = 0.50
+learner_frontier_ratio = 0.30
+learner_recent_ratio = 0.20
 pairing_policy = "role_weighted_sparse_h2h"
 dynamic_dynamic_weight = 0.40
 dynamic_recent_weight = 0.25
@@ -992,17 +1001,27 @@ dynamic_frontier_weight = 0.20
 recent_frontier_weight = 0.10
 recent_recent_weight = 0.05
 
-[league.sampling]
-learner_dynamic_ratio = 0.50
-learner_frontier_ratio = 0.30
-learner_recent_ratio = 0.20
-
 [league.elo]
-frontier_benchmark_k = 16.0
-dynamic_league_k = 24.0
-recent_initial_k = 32.0
+frontier_k = 16.0
+dynamic_k = 24.0
+recent_k = 32.0
 historical_k = 12.0
 track_role_specific = true
+
+[league.priority]
+under_sample_weight = 1.0
+uncertainty_weight = 0.5
+recent_fixed_bonus = 0.3
+diversity_weight = 0.3
+match_class_weight = 1.0
+repeat_penalty = -0.5
+lineage_penalty = -0.3
+
+[league.concurrency]
+parallel_matches = 4
+envs_per_match = 8
+total_envs = 32
+max_resident_models = 10
 
 [league.storage]
 clone_on_promotion = true

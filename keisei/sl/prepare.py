@@ -69,6 +69,14 @@ def prepare_sl_data(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale shards/metadata from prior runs to prevent SLDataset from
+    # loading old data when the new run produces fewer shards.
+    for stale in output_path.glob("shard_*.bin"):
+        stale.unlink()
+    stale_meta = output_path / "shard_meta.json"
+    if stale_meta.exists():
+        stale_meta.unlink()
+
     parsers = _build_parser_registry()
     game_filter = GameFilter(min_ply=min_ply, min_rating=min_rating)
 

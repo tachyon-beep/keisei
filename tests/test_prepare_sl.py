@@ -263,6 +263,46 @@ class TestShardSizeBoundary:
         assert len(dataset) == 1
 
 
+class TestStaleShardsRemoved:
+    """Regression: re-running prepare_sl_data must not leave stale shards from prior runs."""
+
+    def test_fewer_shards_second_run_removes_stale(self, tmp_path):
+        """If run 1 produces 2 shards and run 2 produces 1, stale shard_001 must be gone."""
+        games_dir = tmp_path / "games"
+        games_dir.mkdir()
+        output_dir = tmp_path / "processed"
+
+        # Run 1: 4 positions with shard_size=2 → 2 shards
+        (games_dir / "game.sfen").write_text(
+            "result:win_black\nstartpos\n7g7f\n3c3d\n2g2f\n8c8d\n"
+        )
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+            shard_size=2,
+        )
+        assert len(list(output_dir.glob("shard_*.bin"))) == 2
+
+        # Run 2: 1 position → 1 shard
+        (games_dir / "game.sfen").write_text(
+            "result:win_black\nstartpos\n7g7f\n"
+        )
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+            shard_size=1000,
+        )
+        shard_files = list(output_dir.glob("shard_*.bin"))
+        assert len(shard_files) == 1, (
+            f"Stale shards from prior run remain: {[f.name for f in shard_files]}"
+        )
+
+        dataset = SLDataset(output_dir, allow_placeholder=True)
+        assert len(dataset) == 1
+
+
 class TestNonexistentSourcePath:
     """HIGH-1: prepare_sl_data with a non-existent source path."""
 

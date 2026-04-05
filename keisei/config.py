@@ -52,6 +52,8 @@ class FrontierStaticConfig:
     topk: int = 3
     streak_epochs: int = 50
     max_lineage_overlap: int = 2
+    replace_policy: str = "weakest_or_stalest_after_cooldown"
+    span_selection: bool = True
 
     def __post_init__(self) -> None:
         if self.slots < 1:
@@ -70,6 +72,11 @@ class FrontierStaticConfig:
             raise ValueError(
                 f"min_tenure_epochs must be >= 0, got {self.min_tenure_epochs}"
             )
+        if self.replace_policy != "weakest_or_stalest_after_cooldown":
+            raise ValueError(
+                f"Only 'weakest_or_stalest_after_cooldown' replace_policy is supported, "
+                f"got {self.replace_policy!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -78,8 +85,9 @@ class RecentFixedConfig:
     min_games_for_review: int = 32
     min_unique_opponents: int = 6
     promotion_margin_elo: float = 25.0
-    max_elo_spread: float = 200.0  # §7.1 criterion 4: volatility ceiling
+    max_elo_spread: float = 200.0  # Plan §7.1 criterion 4: "acceptable uncertainty / volatility"
     soft_overflow: int = 1
+    retire_if_below_dynamic_floor: bool = True
 
     def __post_init__(self) -> None:
         if self.slots < 1:
@@ -105,8 +113,20 @@ class DynamicConfig:
     disable_on_error: bool = True
     max_buffer_depth: int = 8
     max_consecutive_errors: int = 3
+    batch_reuse: int = 1
+    global_error_threshold: int = 5
+    global_error_window_seconds: float = 300.0
+    gpu_memory_backpressure: float = 0.9
 
     def __post_init__(self) -> None:
+        if self.protection_matches < 0:
+            raise ValueError(
+                f"protection_matches must be >= 0, got {self.protection_matches}"
+            )
+        if self.min_games_before_eviction < 0:
+            raise ValueError(
+                f"min_games_before_eviction must be >= 0, got {self.min_games_before_eviction}"
+            )
         if self.update_epochs_per_batch < 1:
             raise ValueError(
                 f"update_epochs_per_batch must be >= 1, got {self.update_epochs_per_batch}"
@@ -127,6 +147,41 @@ class DynamicConfig:
             raise ValueError(
                 f"max_updates_per_minute must be >= 1, got {self.max_updates_per_minute}"
             )
+        if self.checkpoint_flush_every < 1:
+            raise ValueError(
+                f"checkpoint_flush_every must be >= 1, got {self.checkpoint_flush_every}"
+            )
+        if self.max_buffer_depth < 1:
+            raise ValueError(
+                f"max_buffer_depth must be >= 1, got {self.max_buffer_depth}"
+            )
+        if self.max_consecutive_errors < 1:
+            raise ValueError(
+                f"max_consecutive_errors must be >= 1, got {self.max_consecutive_errors}"
+            )
+        if self.batch_reuse < 1:
+            raise ValueError(
+                f"batch_reuse must be >= 1, got {self.batch_reuse}"
+            )
+        if self.batch_reuse > 1:
+            warnings.warn(
+                f"batch_reuse={self.batch_reuse} is configured but not yet "
+                "implemented — the value will be ignored. Only "
+                "update_epochs_per_batch controls training iterations.",
+                stacklevel=2,
+            )
+        if self.global_error_threshold < 1:
+            raise ValueError(
+                f"global_error_threshold must be >= 1, got {self.global_error_threshold}"
+            )
+        if self.global_error_window_seconds <= 0:
+            raise ValueError(
+                f"global_error_window_seconds must be > 0, got {self.global_error_window_seconds}"
+            )
+        if not (0 < self.gpu_memory_backpressure <= 1.0):
+            raise ValueError(
+                f"gpu_memory_backpressure must be in (0, 1.0], got {self.gpu_memory_backpressure}"
+            )
 
 
 @dataclass(frozen=True)
@@ -137,8 +192,19 @@ class MatchSchedulerConfig:
     tournament_games_per_pair: int = 3  # best-of-3 round-robin
     tournament_mode: str = "full"  # "full", "weighted", or "random"
     weighted_round_size: int = 0  # 0 = auto (N entries → N pairings per round)
+    pairing_policy: str = "role_weighted_sparse_h2h"
+    # Match-class weights for weighted tournament mode (§8.3).
+    dynamic_dynamic_weight: float = 0.40
+    dynamic_recent_weight: float = 0.25
+    dynamic_frontier_weight: float = 0.20
+    recent_frontier_weight: float = 0.10
+    recent_recent_weight: float = 0.05
 
     def __post_init__(self) -> None:
+        for name in ("learner_dynamic_ratio", "learner_frontier_ratio", "learner_recent_ratio"):
+            val = getattr(self, name)
+            if val < 0:
+                raise ValueError(f"{name} must be >= 0, got {val}")
         learner_sum = (
             self.learner_dynamic_ratio
             + self.learner_frontier_ratio
@@ -147,6 +213,17 @@ class MatchSchedulerConfig:
         if abs(learner_sum - 1.0) > 1e-6:
             raise ValueError(
                 f"learner mix ratio sum must be 1.0, got {learner_sum}"
+            )
+        match_weight_sum = (
+            self.dynamic_dynamic_weight
+            + self.dynamic_recent_weight
+            + self.dynamic_frontier_weight
+            + self.recent_frontier_weight
+            + self.recent_recent_weight
+        )
+        if abs(match_weight_sum - 1.0) > 1e-6:
+            raise ValueError(
+                f"match-class weight sum must be 1.0, got {match_weight_sum}"
             )
         if self.tournament_games_per_pair < 1:
             raise ValueError(
@@ -161,13 +238,21 @@ class MatchSchedulerConfig:
             raise ValueError(
                 f"weighted_round_size must be >= 0, got {self.weighted_round_size}"
             )
+        if self.pairing_policy != "role_weighted_sparse_h2h":
+            raise ValueError(
+                f"Only 'role_weighted_sparse_h2h' pairing_policy is supported, "
+                f"got {self.pairing_policy!r}"
+            )
 
 
 @dataclass(frozen=True)
 class HistoricalLibraryConfig:
+    enabled: bool = True
     slots: int = 5
     refresh_interval_epochs: int = 100
     min_epoch_for_selection: int = 10
+    selection: str = "log_spaced"
+    active_league_participation: bool = False
 
     def __post_init__(self) -> None:
         if self.slots < 1:
@@ -175,6 +260,15 @@ class HistoricalLibraryConfig:
         if self.refresh_interval_epochs < 1:
             raise ValueError(
                 f"refresh_interval_epochs must be >= 1, got {self.refresh_interval_epochs}"
+            )
+        if self.selection != "log_spaced":
+            raise ValueError(
+                f"Only 'log_spaced' selection is supported, got {self.selection!r}"
+            )
+        if self.active_league_participation:
+            raise ValueError(
+                "active_league_participation must be false — historical library "
+                "entries do not participate in active-league matchmaking"
             )
 
 
@@ -201,12 +295,18 @@ class RoleEloConfig:
     dynamic_k: float = 24.0
     recent_k: float = 32.0
     historical_k: float = 12.0
+    track_role_specific: bool = True
 
     def __post_init__(self) -> None:
         for name in ("frontier_k", "dynamic_k", "recent_k", "historical_k"):
             val = getattr(self, name)
             if val <= 0:
                 raise ValueError(f"{name} must be > 0, got {val}")
+        if not self.track_role_specific:
+            raise ValueError(
+                "track_role_specific must be true — role-specific Elo tracking "
+                "is required for the tiered league to function correctly"
+            )
 
 
 @dataclass(frozen=True)
@@ -216,6 +316,8 @@ class PriorityScorerConfig:
     recent_fixed_bonus: float = 0.3
     diversity_weight: float = 0.3
     match_class_weight: float = 1.0
+    frontier_exposure_weight: float = 0.4
+    frontier_exposure_threshold: int = 10
     repeat_penalty: float = -0.5
     lineage_penalty: float = -0.3
     repeat_window_rounds: int = 5
@@ -227,6 +329,7 @@ class PriorityScorerConfig:
             "recent_fixed_bonus",
             "diversity_weight",
             "match_class_weight",
+            "frontier_exposure_weight",
             "repeat_penalty",
             "lineage_penalty",
         ):
@@ -264,6 +367,15 @@ class ConcurrencyConfig:
                 f"max_resident_models ({self.max_resident_models}) must be >= 2 "
                 f"(at least one model pair)"
             )
+        min_for_full = self.parallel_matches * 2
+        if self.max_resident_models < min_for_full:
+            warnings.warn(
+                f"max_resident_models ({self.max_resident_models}) < "
+                f"parallel_matches * 2 ({min_for_full}): effective parallelism "
+                f"will be capped to {self.max_resident_models // 2} slots "
+                f"instead of {self.parallel_matches}",
+                stacklevel=2,
+            )
 
     @property
     def effective_parallel(self) -> int:
@@ -272,7 +384,29 @@ class ConcurrencyConfig:
 
 
 @dataclass(frozen=True)
+class StorageConfig:
+    """Controls checkpoint storage semantics for league entries."""
+
+    clone_on_promotion: bool = True
+    persist_optimizer_for_dynamic: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.clone_on_promotion:
+            raise ValueError(
+                "clone_on_promotion must be true — promotion by cloning "
+                "is required to preserve lineage semantics"
+            )
+        if not self.persist_optimizer_for_dynamic:
+            raise ValueError(
+                "persist_optimizer_for_dynamic must be true — Dynamic entries "
+                "require persistent optimizer state for training continuity"
+            )
+
+
+@dataclass(frozen=True)
 class LeagueConfig:
+    enabled: bool = True
+    mode: str = "mixed"
     snapshot_interval: int = 10
     epochs_per_seat: int = 50
     initial_elo: float = 1000.0
@@ -295,15 +429,20 @@ class LeagueConfig:
     scheduler: MatchSchedulerConfig = MatchSchedulerConfig()
     history: HistoricalLibraryConfig = HistoricalLibraryConfig()
     gauntlet: GauntletConfig = GauntletConfig()
-    role_elo: RoleEloConfig = RoleEloConfig()
+    elo: RoleEloConfig = RoleEloConfig()
     priority: PriorityScorerConfig = PriorityScorerConfig()
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    storage: StorageConfig = StorageConfig()
 
     def __post_init__(self) -> None:
         # These validate LeagueConfig's OWN scalar fields — none overlap with
         # sub-config validation.  In particular, tournament_games_per_match
         # (total games in a tournament match) is distinct from
         # MatchSchedulerConfig.tournament_games_per_pair (round-robin pair count).
+        if self.mode != "mixed":
+            raise ValueError(
+                f"Only 'mixed' league mode is supported, got {self.mode!r}"
+            )
         if self.epochs_per_seat < 1:
             raise ValueError(
                 f"league.epochs_per_seat must be >= 1, got {self.epochs_per_seat}"
@@ -435,19 +574,35 @@ def load_config(path: Path) -> AppConfig:
     league_config = None
     if "league" in raw:
         lg = dict(raw["league"])
-        # Accept both short names (code convention) and spec §17 names.
-        # Short names take priority if both are present.
-        frontier_raw = lg.pop("frontier", None) or lg.pop("frontier_static", {})
-        recent_raw = lg.pop("recent", None) or lg.pop("recent_fixed", {})
+
+        # --- Reject old TOML section names ---
+        _removed_sections = {
+            "frontier_static": "frontier",
+            "recent_fixed": "recent",
+            "sampling": "scheduler",
+            "role_elo": "elo",
+            "matchmaking": "concurrency] and [league.priority",
+        }
+        for old_name, new_name in _removed_sections.items():
+            if old_name in lg:
+                raise ValueError(
+                    f"[league.{old_name}] is not a valid config section. "
+                    f"Use [league.{new_name}] instead."
+                )
+
+        # --- Extract sub-config sections (1:1 mapping to LeagueConfig attributes) ---
+        frontier_raw = lg.pop("frontier", {})
+        recent_raw = lg.pop("recent", {})
         dynamic_raw = lg.pop("dynamic", {})
-        # §17 aliases: [league.sampling] → scheduler, [league.matchmaking] → concurrency
-        scheduler_raw = lg.pop("scheduler", None) or lg.pop("sampling", {})
+        scheduler_raw = lg.pop("scheduler", {})
         history_raw = lg.pop("history", {})
         gauntlet_raw = lg.pop("gauntlet", {})
-        role_elo_raw = lg.pop("role_elo", None) or lg.pop("elo", {})
-        priority_raw = lg.pop("priority", None) or lg.pop("matchmaking", {})
+        elo_raw = lg.pop("elo", {})
+        priority_raw = lg.pop("priority", {})
         concurrency_raw = lg.pop("concurrency", {})
-        # §17 [league.active] slot counts merge into sub-configs
+        storage_raw = lg.pop("storage", {})
+
+        # [league.active] is convenience sugar — slot counts merge into sub-configs
         active_raw = lg.pop("active", {})
         if active_raw:
             if "frontier_static_slots" in active_raw:
@@ -456,8 +611,8 @@ def load_config(path: Path) -> AppConfig:
                 recent_raw.setdefault("slots", active_raw["recent_fixed_slots"])
             if "dynamic_slots" in active_raw:
                 dynamic_raw.setdefault("slots", active_raw["dynamic_slots"])
-        # §17 [league.storage] flags are implicit in current implementation
-        lg.pop("storage", None)
+
+        # --- Legacy keys from pre-tiered-pool era ---
         _legacy_league_keys = {"max_pool_size", "historical_ratio", "current_best_ratio"}
         found_legacy = _legacy_league_keys & set(lg.keys())
         if found_legacy:
@@ -469,11 +624,11 @@ def load_config(path: Path) -> AppConfig:
             )
         for key in _legacy_league_keys:
             lg.pop(key, None)
+
+        # --- Validate remaining keys against LeagueConfig scalar fields ---
         _sub_config_names = {
-            "frontier", "frontier_static", "recent", "recent_fixed",
-            "dynamic", "scheduler", "sampling", "history",
-            "gauntlet", "role_elo", "elo", "priority", "matchmaking",
-            "concurrency", "active", "storage",
+            "frontier", "recent", "dynamic", "scheduler", "history",
+            "gauntlet", "elo", "priority", "concurrency", "storage", "active",
         }
         valid_league_keys = {
             f.name for f in fields(LeagueConfig)
@@ -492,10 +647,15 @@ def load_config(path: Path) -> AppConfig:
             scheduler=MatchSchedulerConfig(**scheduler_raw),
             history=HistoricalLibraryConfig(**history_raw),
             gauntlet=GauntletConfig(**gauntlet_raw),
-            role_elo=RoleEloConfig(**role_elo_raw),
+            elo=RoleEloConfig(**elo_raw),
             priority=PriorityScorerConfig(**priority_raw),
             concurrency=ConcurrencyConfig(**concurrency_raw),
+            storage=StorageConfig(**storage_raw),
         )
+        # If league is explicitly disabled, treat as absent — all existing
+        # `if config.league is not None` checks continue to work.
+        if not league_config.enabled:
+            league_config = None
 
     demo_config = None
     if "demonstrator" in raw:

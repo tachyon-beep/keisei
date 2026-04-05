@@ -200,6 +200,33 @@ class TestCSAParserHardening:
         assert len(games) == 2
 
 
+class TestCSAMalformedMoveIsolation:
+    """Malformed move in one game must not abort parsing of subsequent games."""
+
+    def test_corrupted_middle_game_skipped(self, tmp_path):
+        """A 3-game file with a malformed move in game 2 should yield games 1 and 3."""
+        good_game = (
+            "V2.2\n+\n+7776FU\n-3334FU\n%TORYO\n"
+        )
+        bad_game = (
+            "V2.2\n+\n+12\n%TORYO\n"  # truncated move: body "12" < 5 chars
+        )
+        good_game_2 = (
+            "V2.2\n+\n+2726FU\n-8384FU\n%TORYO\n"
+        )
+        content = good_game + "/\n" + bad_game + "/\n" + good_game_2
+        csa_file = tmp_path / "mixed.csa"
+        csa_file.write_text(content)
+
+        parser = CSAParser()
+        games = list(parser.parse(csa_file))
+        assert len(games) == 2, (
+            f"Expected 2 valid games (bad middle skipped), got {len(games)}"
+        )
+        assert games[0].moves[0].move_usi == "7g7f"
+        assert games[1].moves[0].move_usi == "2g2f"
+
+
 class TestCRLFLineEndings:
     """Regression: CRLF line endings must not break game splitting.
 
@@ -609,6 +636,46 @@ class TestSLTrainerCheckpointRoundTrip:
             assert torch.allclose(param, fresh_param, atol=1e-7), (
                 f"Weight mismatch for parameter '{name}'"
             )
+
+
+class TestSLDatasetTargetValidation:
+    """Bounds validation: corrupted policy/value targets raise at data boundary."""
+
+    def test_invalid_policy_target_raises(self, tmp_path):
+        """policy_target outside [0, 11259) should raise ValueError."""
+        obs = np.zeros((1, 50 * 81), dtype=np.float32)
+        policy = np.array([99999], dtype=np.int64)  # out of bounds
+        value = np.array([0], dtype=np.int64)
+        score = np.array([0.0], dtype=np.float32)
+        write_shard(tmp_path / "shard_000.bin", obs, policy, value, score)
+
+        dataset = SLDataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid policy_target=99999"):
+            dataset[0]
+
+    def test_negative_policy_target_raises(self, tmp_path):
+        """Negative policy_target should raise ValueError."""
+        obs = np.zeros((1, 50 * 81), dtype=np.float32)
+        policy = np.array([-1], dtype=np.int64)
+        value = np.array([1], dtype=np.int64)
+        score = np.array([0.0], dtype=np.float32)
+        write_shard(tmp_path / "shard_000.bin", obs, policy, value, score)
+
+        dataset = SLDataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid policy_target=-1"):
+            dataset[0]
+
+    def test_invalid_value_target_raises(self, tmp_path):
+        """value_target outside {0,1,2} should raise ValueError."""
+        obs = np.zeros((1, 50 * 81), dtype=np.float32)
+        policy = np.array([0], dtype=np.int64)
+        value = np.array([5], dtype=np.int64)  # not W/D/L
+        score = np.array([0.0], dtype=np.float32)
+        write_shard(tmp_path / "shard_000.bin", obs, policy, value, score)
+
+        dataset = SLDataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid value_target=5"):
+            dataset[0]
 
 
 class TestSLDatasetPartialShard:

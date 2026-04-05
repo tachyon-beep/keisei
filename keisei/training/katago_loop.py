@@ -52,7 +52,7 @@ from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role, c
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tiered_pool import TieredPool
 from keisei.training.concurrent_matches import ConcurrentMatchPool
-from keisei.training.match_scheduler import MatchScheduler
+from keisei.training.match_scheduler import MatchScheduler, build_match_class_weights
 from keisei.training.priority_scorer import PriorityScorer
 from keisei.training.model_registry import build_model
 from keisei.training.tournament import LeagueTournament
@@ -305,6 +305,13 @@ def split_merge_step(
             l_output = learner_model(l_obs)
 
         l_flat = l_output.policy_logits.reshape(l_obs.shape[0], -1)
+        l_legal_counts = l_masks.sum(dim=-1)
+        if (l_legal_counts == 0).any():
+            zero_envs = learner_indices[(l_legal_counts == 0).cpu()].tolist()
+            raise RuntimeError(
+                f"Learner envs {zero_envs} have zero legal actions — "
+                f"all-False legal mask would produce NaN"
+            )
         l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
         l_probs = F.softmax(l_masked, dim=-1)
         l_dist = torch.distributions.Categorical(l_probs)
@@ -354,6 +361,13 @@ def split_merge_step(
             o_output = model(o_obs)
 
         o_flat = o_output.policy_logits.reshape(o_obs.shape[0], -1)
+        o_legal_counts = o_masks.sum(dim=-1)
+        if (o_legal_counts == 0).any():
+            zero_envs = indices[(o_legal_counts == 0).cpu().numpy()].tolist()
+            raise RuntimeError(
+                f"Opponent envs {zero_envs} have zero legal actions — "
+                f"all-False legal mask would produce NaN"
+            )
         o_masked = o_flat.masked_fill(~o_masks, float("-inf"))
         o_probs = F.softmax(o_masked, dim=-1)
         o_dist = torch.distributions.Categorical(o_probs)
@@ -579,8 +593,15 @@ class KataGoTrainingLoop:
             league_dir = str(Path(config.training.checkpoint_dir) / "league")
             self.store = OpponentStore(self.db_path, league_dir)
             self.tiered_pool = TieredPool(self.store, config.league, learner_lr=self.ppo.params.learning_rate)
-            priority_scorer = PriorityScorer(config.league.priority)
-            self.scheduler = MatchScheduler(config.league.scheduler, priority_scorer=priority_scorer)
+            scheduler_config = config.league.scheduler
+            # Build config-driven weights dict for both scheduler and scorer.
+            match_weights = build_match_class_weights(scheduler_config)
+            priority_scorer = PriorityScorer(
+                config.league.priority, match_class_weights=match_weights,
+            )
+            self.scheduler = MatchScheduler(
+                scheduler_config, priority_scorer=priority_scorer,
+            )
             # Bootstrap snapshot so pool is never empty
             bootstrap_entry = self.tiered_pool.snapshot_learner(
                 self._base_model, config.model.architecture,
@@ -735,6 +756,25 @@ class KataGoTrainingLoop:
                 self.dist_ctx.rank,
             )
 
+    def _entries_excluding_learner(
+        self, entries_by_role: dict[Role, list[OpponentEntry]],
+    ) -> dict[Role, list[OpponentEntry]]:
+        """Filter out the learner's own entry to prevent self-play.
+
+        Falls back to the unfiltered pool when filtering would leave every
+        bucket empty (e.g. fresh bootstrap where the learner snapshot is the
+        only active entry).  Self-play is preferable to crashing.
+        """
+        if self._learner_entry_id is None:
+            return entries_by_role
+        filtered = {
+            role: [e for e in entries if e.id != self._learner_entry_id]
+            for role, entries in entries_by_role.items()
+        }
+        if any(filtered.values()):
+            return filtered
+        return entries_by_role
+
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
         # Store total planned epochs in DB so the dashboard can show progress
         if self.dist_ctx.is_main:
@@ -755,6 +795,14 @@ class KataGoTrainingLoop:
         if self._tournament is not None:
             self._tournament.start()
 
+        try:
+            self._run_training_body(num_epochs, steps_per_epoch)
+        finally:
+            if self._tournament is not None:
+                self._tournament.stop()
+
+    def _run_training_body(self, num_epochs: int, steps_per_epoch: int) -> None:
+        """Inner training loop — extracted so run() can wrap it in try/finally."""
         reset_result = self.vecenv.reset()
         obs = torch.from_numpy(np.asarray(reset_result.observations)).to(self.device)
         legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(
@@ -770,7 +818,9 @@ class KataGoTrainingLoop:
             if self.scheduler is not None:
                 # tiered_pool is co-initialized with scheduler in __init__
                 assert self.tiered_pool is not None
-                self._current_opponent_entry = self.scheduler.sample_for_learner(self.tiered_pool.entries_by_role())
+                self._current_opponent_entry = self.scheduler.sample_for_learner(
+                    self._entries_excluding_learner(self.tiered_pool.entries_by_role())
+                )
                 opp_device_cfg = (
                     self.config.league.opponent_device
                     if self.config.league and self.config.league.opponent_device
@@ -815,6 +865,13 @@ class KataGoTrainingLoop:
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
 
+                    # NOTE: Models are loaded once per epoch and NOT refreshed
+                    # mid-epoch. Dynamic entries may train on the tournament thread
+                    # between loads, making these snapshots ~1 epoch stale. This is
+                    # intentional: mid-epoch reloads would require cross-thread
+                    # synchronization, risk inference inconsistency within a rollout,
+                    # and add CUDA sync overhead. The ~1 epoch lag is acceptable
+                    # since Dynamic updates are small (§10.2: lr_scale=0.25, 2 epochs).
                     self._opponent_models = self.store.load_all_opponents(device=opp_device)
 
                     # Filter cached entries to only those whose models loaded.
@@ -844,8 +901,14 @@ class KataGoTrainingLoop:
                         role: [] for role in (Role.FRONTIER_STATIC, Role.RECENT_FIXED, Role.DYNAMIC)
                     }
                     for e in self._cached_entries:
-                        if e.role in self._loaded_by_role:
+                        if e.role in self._loaded_by_role and e.id != self._learner_entry_id:
                             self._loaded_by_role[e.role].append(e)
+                    # Fallback: if filtering removed all entries (fresh bootstrap),
+                    # include the learner to avoid crashing — self-play is better.
+                    if not any(self._loaded_by_role.values()):
+                        for e in self._cached_entries:
+                            if e.role in self._loaded_by_role:
+                                self._loaded_by_role[e.role].append(e)
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
                     for env_i in range(self.num_envs):
                         entry = self.scheduler.sample_for_learner(self._loaded_by_role)
@@ -1075,6 +1138,10 @@ class KataGoTrainingLoop:
                         if li.numel() > 0:
                             _scratch_log_probs[li] = sm_result.learner_log_probs
                             _scratch_values[li] = sm_result.learner_values
+
+                        # Update spectator-facing value estimates so snapshots
+                        # reflect current policy predictions (not stale zeros).
+                        self.latest_values = _scratch_values.tolist()
 
                         material = torch.from_numpy(
                             np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
@@ -1572,10 +1639,6 @@ class KataGoTrainingLoop:
                 # Barrier after save — all ranks proceed together
                 if self.dist_ctx.is_distributed:
                     dist.barrier()
-
-        # Stop background tournament when training ends
-        if self._tournament is not None:
-            self._tournament.stop()
 
     def _rotate_seat(self, epoch: int) -> None:
         """Save current learner weights and reset optimizer for the next seat."""

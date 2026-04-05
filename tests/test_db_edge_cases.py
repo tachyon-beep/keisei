@@ -137,7 +137,7 @@ class TestReadGameSnapshotsSince:
         _set_updated_at(path, 1, "2026-01-02T00:00:00Z")
         _set_updated_at(path, 2, "2026-01-03T00:00:00Z")
 
-        rows, max_ts = read_game_snapshots_since(path, "2026-01-01T00:00:00Z")
+        rows, max_ts, max_gid = read_game_snapshots_since(path, "2026-01-01T00:00:00Z")
 
         game_ids = [r["game_id"] for r in rows]
         assert game_ids == [1, 2]
@@ -149,7 +149,7 @@ class TestReadGameSnapshotsSince:
         _set_updated_at(path, 0, "2026-01-02T00:00:00Z")
         _set_updated_at(path, 1, "2026-01-03T00:00:00Z")
 
-        _, max_ts = read_game_snapshots_since(path, "2026-01-01T00:00:00Z")
+        _, max_ts, _ = read_game_snapshots_since(path, "2026-01-01T00:00:00Z")
 
         assert max_ts == "2026-01-03T00:00:00Z"
 
@@ -159,25 +159,44 @@ class TestReadGameSnapshotsSince:
         write_game_snapshots(path, [_make_snapshot(0)])
         _set_updated_at(path, 0, "2026-01-01T00:00:00Z")
 
-        rows, max_ts = read_game_snapshots_since(path, "2026-12-31T00:00:00Z")
+        rows, max_ts, _ = read_game_snapshots_since(path, "2026-12-31T00:00:00Z")
 
         assert rows == []
         assert max_ts == "2026-12-31T00:00:00Z"  # Falls back to the since value
 
-    def test_exact_timestamp_excluded(self, db: Path) -> None:
-        """Boundary: a snapshot with updated_at == since should NOT be included (strict >)."""
+    def test_exact_timestamp_excluded_when_same_game_id(self, db: Path) -> None:
+        """A snapshot with (updated_at, game_id) == cursor should NOT be included."""
         path = str(db)
         write_game_snapshots(path, [_make_snapshot(0)])
         _set_updated_at(path, 0, "2026-01-01T12:00:00Z")
 
-        rows, max_ts = read_game_snapshots_since(path, "2026-01-01T12:00:00Z")
+        rows, max_ts, _ = read_game_snapshots_since(
+            path, "2026-01-01T12:00:00Z", since_game_id=0
+        )
 
         assert rows == []
         assert max_ts == "2026-01-01T12:00:00Z"
 
+    def test_same_timestamp_different_game_ids_not_missed(self, db: Path) -> None:
+        """Two snapshots with the same timestamp must both be retrievable
+        across incremental reads — the composite cursor (ts, game_id) must
+        not skip the second one."""
+        path = str(db)
+        write_game_snapshots(path, [_make_snapshot(0), _make_snapshot(1)])
+        _set_updated_at(path, 0, "2026-01-01T12:00:00.000Z")
+        _set_updated_at(path, 1, "2026-01-01T12:00:00.000Z")
+
+        # First read: both should appear
+        rows, ts, gid = read_game_snapshots_since(path, "2026-01-01T00:00:00Z")
+        assert [r["game_id"] for r in rows] == [0, 1]
+
+        # Second read with cursor from first: no new rows
+        rows2, _, _ = read_game_snapshots_since(path, ts, since_game_id=gid)
+        assert rows2 == []
+
     def test_empty_table(self, db: Path) -> None:
         """No snapshots at all — returns empty list and the since value."""
-        rows, max_ts = read_game_snapshots_since(str(db), "2026-01-01T00:00:00Z")
+        rows, max_ts, _ = read_game_snapshots_since(str(db), "2026-01-01T00:00:00Z")
         assert rows == []
         assert max_ts == "2026-01-01T00:00:00Z"
 
