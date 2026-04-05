@@ -146,22 +146,22 @@ class ConcurrencyConfig:
 
 **Execution model:**
 
-This is NOT Python threading parallelism (GIL prevents true parallel PyTorch). Instead, it's **batched inference across multiple pairings on the same CUDA stream**:
+This is NOT Python threading parallelism (GIL prevents true parallel PyTorch). Instead, it's an **interleaved game loop with resident models and batched environment stepping**:
 
 1. Load up to `parallel_matches` pairs of models (up to `max_resident_models` total).
 2. Create a single large VecEnv with `total_envs` environments.
 3. Partition the envs: envs 0-7 belong to pair 0, envs 8-15 to pair 1, etc.
 4. Each step:
-   a. For each partition, run the appropriate model's forward pass on that partition's observations.
-   b. Step the VecEnv with all actions at once.
+   a. For each partition, run the appropriate model's forward pass on that partition's observations. This is `parallel_matches` separate small forward passes (one per model pair), NOT one big batched forward pass — different partitions use different models, so they cannot be batched into a single kernel.
+   b. Step the VecEnv with all actions at once (this IS truly batched — one call for `total_envs` environments).
    c. Check for completed games per partition.
 5. When a partition's games are all done, record the results and load the next pairing into that partition's model slot.
 
-This is effectively a **batched round-robin** where the GPU processes all partitions in one big forward pass, rather than 4 separate small forward passes. The batch size is `total_envs` regardless of how many partitions are active.
+The throughput gain comes from three sources: (1) **models stay resident** — no load/unload between matches, avoiding repeated disk I/O and `torch.load` overhead; (2) **VecEnv stepping is batched** — one Rust call advances all `total_envs` environments; (3) **game loops are interleaved** — all active partitions advance each iteration, so slow I/O in one partition doesn't block others from progressing. The inference itself is `parallel_matches` small forward passes per step, each at batch size `envs_per_match`.
 
-**Why this works on one GPU:** Each model is ~120 MB. With `max_resident_models=10`, that's 1.2 GB. The VecEnv observations for `total_envs=32` are tiny (~2 MB). Activations for a forward pass at batch 32 are ~50 MB. Total additional VRAM for concurrency: ~1.3 GB. With 9 GB free this is comfortable.
+**Why this works on one GPU:** Each model is ~120 MB. With `max_resident_models=10`, that's 1.2 GB. The VecEnv observations for `total_envs=32` are tiny (~2 MB). Activations for a forward pass at batch `envs_per_match=8` are ~12 MB per partition. Total additional VRAM for concurrency: ~1.3 GB. With 9 GB free this is comfortable.
 
-**Why not threads:** PyTorch CUDA operations from multiple Python threads serialize on the GIL anyway. The batched approach is simpler, more predictable, and actually faster because it maximizes GPU occupancy per kernel launch.
+**Why not threads:** PyTorch CUDA operations from multiple Python threads serialize on the GIL anyway. The interleaved approach is simpler, more predictable, and avoids stream synchronization complexity. Each forward pass is smaller (batch 8 vs batch 64) but there are more of them; the net effect is similar GPU utilization with much simpler code.
 
 **Dynamic training interaction:** When a trainable match completes in a partition, the training step still runs sequentially (Phase 3's DynamicTrainer). The other partitions pause during the training step because they share the CUDA stream. This is acceptable — training steps are short (~100ms) relative to match duration (~seconds).
 

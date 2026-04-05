@@ -2,182 +2,105 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Run multiple tournament pairings concurrently via batched partitioned VecEnv on a single GPU, add priority scoring so informative matchups are played first, switch eviction/promotion to role-specific Elo, and add lineage-aware scheduling penalties.
+**Goal:** Add concurrent match execution, priority-based scheduling, and role-specific Elo for eviction/promotion to the league tournament system.
 
-**Architecture:** PriorityScorer (6-component scoring formula with bulk pair game counts) + ConcurrentMatchPool (true partitioned concurrent inference on a single VecEnv with auto-reset) + modifications to MatchScheduler (priority ordering), DynamicManager (elo_dynamic eviction with calibration gate), FrontierPromoter (elo_frontier promotion with empty-frontier seeding), RecentFixedManager (weakest_dynamic_elo callback), and LeagueTournament (concurrent execution). No new DB tables or columns. No Python threading for parallelism — the concurrency model is one `vecenv.step()` call per ply advancing all partitions simultaneously on a single CUDA stream.
+**Architecture:** PriorityScorer (scoring formula for matchup informativeness) + ConcurrentMatchPool (interleaved game loop with partitioned VecEnv) + MatchScheduler/TierManager/FrontierPromoter modifications (priority ordering, elo_dynamic eviction, elo_frontier promotion).
 
-**Tech Stack:** Python 3.13, SQLite (WAL mode), PyTorch, frozen dataclasses, StrEnum, threading.RLock (existing store only), uv for deps, `uv run pytest` for all tests.
+**Tech Stack:** Python 3.13, PyTorch, SQLite (WAL), frozen dataclasses, threading, `uv run pytest` for all tests.
 
 **Spec:** `docs/superpowers/specs/2026-04-05-tiered-opponent-pool-phase4-design.md`
-
-**Prerequisites:** Phases 1-3 must be complete:
-- Phase 1: OpponentStore (RLock, `_in_transaction` commit discipline), TieredPool, FrontierManager, RecentFixedManager, DynamicManager, MatchScheduler with `generate_round`, round-robin tournament, schema v4.
-- Phase 2: HistoricalLibrary, HistoricalGauntlet, RoleEloTracker, schema v5 with `elo_frontier`, `elo_dynamic`, `elo_recent`, `elo_historical` columns on `league_entries`.
-- Phase 3: DynamicTrainer (PPO updates for Dynamic entries), FrontierPromoter (promotion evaluation), optimizer persistence, match data collection, schema v6 with `optimizer_path`, `update_count`, `last_train_at`.
 
 ---
 
 ## Critical Implementation Notes
 
-These notes capture design decisions and lessons from Phase 1/2/3 reviews. Read before implementing.
+### Existing Patterns (Read Before Implementing)
 
-### NO Schema Changes
+1. **Config structure:** All configs are frozen dataclasses with `__post_init__` validation. New configs nest inside `LeagueConfig`. TOML loading in `load_config()` pops nested sections and passes to constructors. See `keisei/config.py`.
 
-Phase 4 has ZERO new DB tables or columns. All data structures are in-memory or use existing columns. Do not add any `ALTER TABLE` or `CREATE TABLE` statements. The only DB interaction is reading existing columns (`elo_dynamic`, `elo_frontier`, `lineage_group`, `parent_entry_id`, `games_played`) and querying `league_results` for pair game counts.
+2. **OpponentEntry fields:** `elo_dynamic`, `elo_frontier`, `lineage_group`, `parent_entry_id` already exist (Phase 2-3). No schema changes needed for Phase 4.
 
-### Concurrency Model: True Partitioned Concurrent Inference
+3. **Test entry creation:** Each test file has its own `_make_entry()` helper. Include all required fields. Use `OpponentEntry(id=..., display_name=..., architecture="resnet", model_params={}, checkpoint_path="/tmp/test.pt", elo_rating=..., created_epoch=0, games_played=0, created_at="2026-01-01", flavour_facts=[], role=..., status=EntryStatus.ACTIVE)`.
 
-The `ConcurrentMatchPool` does NOT use Python threads, asyncio, or `torch.cuda.Stream` for parallelism. It uses a **single large VecEnv partitioned into disjoint env ranges**, with one `vecenv.step()` call per ply advancing all partitions simultaneously. VecEnv auto-resets individual environments on game completion — completed games in one partition do not affect other partitions. Each step:
-1. Gather observations from all partitions.
-2. For each active partition, run that partition's model forward pass on `obs[env_start:env_end]`.
-3. Merge all actions into one action tensor.
-4. Call `vecenv.step(actions)` ONCE for all environments.
-5. Check `terminated`/`truncated` per partition to tally completed games.
-6. When a partition completes its required games, mark it done. If more pairings remain, swap in new models for that partition slot (env slots auto-reset to startpos).
+4. **TinyModel:** Import from `tests._helpers` for tests needing a model. Returns `SimpleNamespace(policy_logits=..., value_logits=...)` matching KataGo output contract. `policy_logits` shape is `(batch, 1, 11259)` — must be reshaped to `(batch, 11259)` before masking.
 
-This is simpler, more predictable, and more GPU-efficient than threading. The GIL is irrelevant because there is only one Python thread doing inference. The VecEnv is created locally in `_run_loop` and passed to `run_round()` as a parameter — there is no `self._vecenv`.
+5. **VecEnv API:** `reset()` → `SimpleNamespace(observations, legal_masks)`. `step(actions)` → `SimpleNamespace(observations, legal_masks, current_players, rewards, terminated, truncated)`. Observations shape `(num_envs, 50, 9, 9)`, legal_masks `(num_envs, 11259)`. Auto-resets terminated envs.
 
-### Locking and Commit Discipline (Inherited from Phase 1)
+6. **Model forward in matches:** `play_batch` in `keisei/training/match_utils.py` splits envs by `current_players`, runs separate forward passes per model with legal mask filtering and categorical sampling. The ConcurrentMatchPool replicates this pattern per partition.
 
-OpponentStore uses `threading.RLock()`. All mutating methods check `if not self._in_transaction: self._conn.commit()`. Phase 4 adds TWO new store methods: `get_pair_game_count` (read-only, per-pair) and `get_all_pair_game_counts` (read-only, bulk). Both are read-only, so the commit discipline applies only to the lock acquisition pattern (use `with self._lock`).
+7. **Always use `uv run`** for pytest/python.
 
-### No Monkey-Patching
-
-Pass callables as constructor parameters. PriorityScorer receives a `pair_game_count_fn` callable (backed by `store.get_all_pair_game_counts` for bulk access) rather than holding a store reference. Cross-manager communication uses callbacks: `RecentFixedManager.set_weakest_dynamic_elo_fn()` receives a callable rather than holding a DynamicManager reference.
-
-### No Direct Store Internals Access
-
-ConcurrentMatchPool and PriorityScorer must NOT access `store._conn` or `store._lock`. If new queries are needed, add public methods to OpponentStore. Phase 4 adds `get_pair_game_count(entry_a_id, entry_b_id)` for per-pair lookups and `get_all_pair_game_counts()` for bulk access (one GROUP BY query instead of N per-pair queries).
-
-### Role.RETIRED Does Not Exist
-
-RETIRED is an `EntryStatus`, not a `Role`. To retire an entry, call `store.retire_entry(entry_id, reason)`.
-
-### OpponentEntry Defaults (Inherited from Phase 1)
-
-All fields on OpponentEntry have defaults. Phase 4 adds NO new fields to OpponentEntry.
-
-### Test Assertions Must Be Behavioral
-
-Every test asserts specific values — not just "doesn't crash". Priority scores are verified numerically. Partition assignments are verified by index ranges. Eviction tests verify which specific entry is evicted based on `elo_dynamic` vs `elo_rating`.
-
-### Every Task Has Test Steps
-
-No implementation-only tasks. Even one-line changes to eviction sort keys get dedicated failing tests.
-
-### weights_only=True for torch.load
-
-All `torch.load` calls use `weights_only=True` unless there is a documented reason. Phase 4 does not add new torch.load calls, but ConcurrentMatchPool delegates to `store.load_opponent` which already handles this.
-
-### Empty List Guards
-
-`min()` and `max()` on empty lists crash. Always guard with `if not eligible: return None`. This applies to `evict_weakest`, `weakest_dynamic_elo`, and the FrontierPromoter's frontier Elo floor calculation.
-
-### Buffer Size Caps
-
-PriorityScorer's in-memory `_round_history` uses a `collections.deque(maxlen=repeat_window_rounds)` sliding window. Old entries are evicted automatically by the deque when the window slides. The deque never grows beyond `repeat_window_rounds` entries, each containing at most `N*(N-1)/2` pair keys (bounded by pool size and window).
-
-### model.train() After load_opponent
-
-`store.load_opponent()` returns models in `eval()` mode. If a ConcurrentMatchPool partition completes and triggers DynamicTrainer, the trainer must call `model.train()` explicitly. ConcurrentMatchPool itself only does inference and never calls `model.train()`.
-
-### Perspective Capture BEFORE vecenv.step()
-
-When ConcurrentMatchPool collects rollout data for trainable matches, `current_players` must be captured BEFORE `vecenv.step()`, not after.
-
-### Clone + Retire Atomicity
-
-Any code path that clones an entry and retires another must wrap both operations in `store.transaction()`. Phase 4 does not add new clone+retire paths, but the FrontierPromoter (Phase 3) already does this correctly.
-
-### VRAM Budget
-
-Each model is ~120 MB. With `max_resident_models=10`, that's ~1.2 GB. VecEnv observations for `total_envs=32` are ~2 MB. Forward pass activations at batch 32 are ~50 MB. Total Phase 4 VRAM overhead: ~1.3 GB. With 9 GB free on cuda:1, this is comfortable. The config validation ensures `max_resident_models` does not exceed a safe limit.
-
----
-
-## File Map
+### File Layout
 
 | File | Action | Responsibility |
 |---|---|---|
-| `keisei/training/priority_scorer.py` | Create | `PriorityScorer` — 6-component priority scoring for matchups |
-| `keisei/training/concurrent_matches.py` | Create | `ConcurrentMatchPool` — batched inference across partitioned VecEnv |
-| `keisei/training/match_scheduler.py` | Modify | `generate_round` returns priority-ordered pairings (highest first) |
-| `keisei/training/tier_managers.py` | Modify | `DynamicManager.evict_weakest` uses `elo_dynamic`; add `weakest_dynamic_elo()` |
+| `keisei/config.py` | Modify | Add `PriorityScorerConfig`, `ConcurrencyConfig`, wire into `LeagueConfig` |
+| `keisei/training/priority_scorer.py` | Create | `PriorityScorer` — matchup priority scoring |
+| `keisei/training/match_scheduler.py` | Modify | Accept `PriorityScorer`, return priority-sorted pairings |
+| `keisei/training/tier_managers.py` | Modify | `DynamicManager.evict_weakest` uses `elo_dynamic` |
 | `keisei/training/frontier_promoter.py` | Modify | `FrontierPromoter.should_promote` uses `elo_frontier` |
-| `keisei/training/tournament.py` | Modify | Use `ConcurrentMatchPool` instead of sequential pairing loop |
-| `keisei/training/opponent_store.py` | Modify | Add `get_pair_game_count(a_id, b_id)` public method |
-| `keisei/config.py` | Modify | Add `PriorityScorerConfig`, `ConcurrencyConfig` to `LeagueConfig` |
+| `keisei/training/concurrent_matches.py` | Create | `ConcurrentMatchPool`, `MatchResult`, `_MatchSlot` |
+| `keisei/training/tournament.py` | Modify | Use `ConcurrentMatchPool` in `_run_loop` |
 | `tests/test_priority_scorer.py` | Create | Unit tests for PriorityScorer |
 | `tests/test_concurrent_matches.py` | Create | Unit tests for ConcurrentMatchPool |
-| `tests/test_phase4_scheduler.py` | Create | Tests for priority-ordered generate_round |
-| `tests/test_phase4_eviction.py` | Create | Tests for elo_dynamic eviction and elo_frontier promotion |
-| `tests/test_phase4_integration.py` | Create | Integration tests for concurrent round execution |
 
 ---
 
-## Tasks
-
-### Task 1: Config Dataclasses — PriorityScorerConfig and ConcurrencyConfig
-
-**Goal:** Add two new frozen dataclasses and wire them into LeagueConfig with validation.
+## Task 1: Config Additions
 
 **Files:**
 - Modify: `keisei/config.py`
-- Test: `tests/test_config.py`
+- Test: `tests/test_league_config.py`
 
-**TDD Steps:**
+- [ ] **Step 1: Write failing test for PriorityScorerConfig defaults**
 
-- [ ] **Write failing tests** (`tests/test_config.py::TestPhase4Configs`):
+Add to `tests/test_league_config.py`:
 
 ```python
-from keisei.config import (
-    PriorityScorerConfig,
-    ConcurrencyConfig,
-    LeagueConfig,
-)
+from keisei.config import PriorityScorerConfig, ConcurrencyConfig
 
 
-class TestPhase4Configs:
-    def test_priority_scorer_defaults(self):
-        cfg = PriorityScorerConfig()
-        assert cfg.under_sample_weight == 1.0
-        assert cfg.uncertainty_weight == 0.5
-        assert cfg.recent_fixed_bonus == 0.3
-        assert cfg.diversity_weight == 0.3
-        assert cfg.repeat_penalty == -0.5
-        assert cfg.lineage_penalty == -0.3
-        assert cfg.repeat_window_rounds == 5
+def test_priority_scorer_config_defaults():
+    c = PriorityScorerConfig()
+    assert c.under_sample_weight == 1.0
+    assert c.uncertainty_weight == 0.5
+    assert c.recent_fixed_bonus == 0.3
+    assert c.diversity_weight == 0.3
+    assert c.repeat_penalty == -0.5
+    assert c.lineage_penalty == -0.3
+    assert c.repeat_window_rounds == 5
 
-    def test_concurrency_defaults(self):
-        cfg = ConcurrencyConfig()
-        assert cfg.parallel_matches == 4
-        assert cfg.envs_per_match == 8
-        assert cfg.total_envs == 32
-        assert cfg.max_resident_models == 10
 
-    def test_concurrency_validation_env_overflow(self):
-        """parallel_matches * envs_per_match must <= total_envs."""
-        with pytest.raises(ValueError, match="total_envs"):
-            ConcurrencyConfig(parallel_matches=5, envs_per_match=8, total_envs=32)
+def test_concurrency_config_defaults():
+    c = ConcurrencyConfig()
+    assert c.parallel_matches == 4
+    assert c.envs_per_match == 8
+    assert c.total_envs == 32
+    assert c.max_resident_models == 10
 
-    def test_concurrency_validation_model_budget(self):
-        """max_resident_models must >= parallel_matches * 2."""
-        with pytest.raises(ValueError, match="max_resident_models"):
-            ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=32, max_resident_models=7)
 
-    def test_priority_scorer_nan_weight_rejected(self):
-        """All weights must be finite."""
-        with pytest.raises(ValueError, match="finite"):
-            PriorityScorerConfig(under_sample_weight=float("inf"))
+def test_concurrency_config_validation_env_budget():
+    import pytest
+    with pytest.raises(ValueError, match="total_envs"):
+        ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=16)
 
-    def test_league_config_has_priority_and_concurrency(self):
-        cfg = LeagueConfig()
-        assert isinstance(cfg.priority, PriorityScorerConfig)
-        assert isinstance(cfg.concurrency, ConcurrencyConfig)
+
+def test_concurrency_config_validation_model_budget():
+    import pytest
+    with pytest.raises(ValueError, match="max_resident_models"):
+        ConcurrencyConfig(parallel_matches=4, max_resident_models=4)
 ```
 
-- [ ] **Verify tests fail** — `uv run pytest tests/test_config.py::TestPhase4Configs -x`
-- [ ] **Implement** in `keisei/config.py`:
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_league_config.py::test_priority_scorer_config_defaults -v`
+Expected: FAIL with `ImportError: cannot import name 'PriorityScorerConfig'`
+
+- [ ] **Step 3: Implement PriorityScorerConfig and ConcurrencyConfig**
+
+Add `import math` at the top of `keisei/config.py` if not already present.
+
+Add to `keisei/config.py` after `RoleEloConfig` (after line 130):
 
 ```python
 @dataclass(frozen=True)
@@ -197,9 +120,11 @@ class PriorityScorerConfig:
         ):
             val = getattr(self, field_name)
             if not isinstance(val, (int, float)) or not math.isfinite(val):
-                raise ValueError(
-                    f"PriorityScorerConfig.{field_name} must be finite, got {val}"
-                )
+                raise ValueError(f"{field_name} must be finite, got {val}")
+        if self.repeat_window_rounds < 1:
+            raise ValueError(
+                f"repeat_window_rounds must be >= 1, got {self.repeat_window_rounds}"
+            )
 
 
 @dataclass(frozen=True)
@@ -210,324 +135,411 @@ class ConcurrencyConfig:
     max_resident_models: int = 10
 
     def __post_init__(self) -> None:
-        if self.parallel_matches * self.envs_per_match > self.total_envs:
+        needed_envs = self.parallel_matches * self.envs_per_match
+        if needed_envs > self.total_envs:
             raise ValueError(
-                f"parallel_matches * envs_per_match ({self.parallel_matches * self.envs_per_match}) "
+                f"parallel_matches * envs_per_match ({needed_envs}) "
                 f"exceeds total_envs ({self.total_envs})"
             )
-        if self.max_resident_models < self.parallel_matches * 2:
+        min_models = self.parallel_matches * 2
+        if self.max_resident_models < min_models:
             raise ValueError(
                 f"max_resident_models ({self.max_resident_models}) must be >= "
-                f"parallel_matches * 2 ({self.parallel_matches * 2})"
+                f"parallel_matches * 2 ({min_models})"
             )
 ```
 
-Add `import math` at top of config.py if not already present. Add to `LeagueConfig`:
+Add to `LeagueConfig` fields (after `role_elo`):
 
 ```python
     priority: PriorityScorerConfig = PriorityScorerConfig()
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
 ```
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_config.py::TestPhase4Configs -x`
-- [ ] **Commit:** `feat(config): add PriorityScorerConfig and ConcurrencyConfig for Phase 4`
+- [ ] **Step 4: Update TOML loading in load_config()**
+
+In `load_config()`, after the line `role_elo_raw = lg.pop("role_elo", {})`, add:
+
+```python
+        priority_raw = lg.pop("priority", {})
+        concurrency_raw = lg.pop("concurrency", {})
+```
+
+And update the `LeagueConfig(...)` constructor call to include:
+
+```python
+            priority=PriorityScorerConfig(**priority_raw),
+            concurrency=ConcurrencyConfig(**concurrency_raw),
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `uv run pytest tests/test_league_config.py -v`
+Expected: all PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add keisei/config.py tests/test_league_config.py
+git commit -m "feat(config): add PriorityScorerConfig and ConcurrencyConfig for Phase 4"
+```
 
 ---
 
-### Task 2: OpponentStore — get_pair_game_count
-
-**Goal:** Add a public read-only method to OpponentStore that returns the number of recorded games between two entries, queried from `league_results`.
-
-**Files:**
-- Modify: `keisei/training/opponent_store.py`
-- Test: `tests/test_phase4_eviction.py`
-
-**TDD Steps:**
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_get_pair_game_count_zero_for_unknown_pair`):
-  - Create a store with a temp DB.
-  - Add two entries via `store.add_entry(...)`.
-  - Call `store.get_pair_game_count(entry_a.id, entry_b.id)`.
-  - Assert result is `0`.
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_get_pair_game_count_counts_both_directions`):
-  - Create a store, add two entries (id 1, id 2).
-  - Call `store.record_result(epoch=1, learner_id=1, opponent_id=2, wins=3, losses=0, draws=0, elo_delta_a=10.0, elo_delta_b=-10.0)`.
-  - Call `store.record_result(epoch=2, learner_id=2, opponent_id=1, wins=1, losses=1, draws=1, elo_delta_a=5.0, elo_delta_b=-5.0)`.
-  - Assert `store.get_pair_game_count(1, 2) == 2` (counts both directions).
-  - Assert `store.get_pair_game_count(2, 1) == 2` (symmetric).
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_eviction.py -k "pair_game_count" -x`
-- [ ] **Implement** in `keisei/training/opponent_store.py`:
-
-```python
-def get_pair_game_count(self, entry_a_id: int, entry_b_id: int) -> int:
-    """Return total number of recorded results between two entries (both directions)."""
-    with self._lock:
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM league_results "
-            "WHERE (learner_id = ? AND opponent_id = ?) "
-            "OR (learner_id = ? AND opponent_id = ?)",
-            (entry_a_id, entry_b_id, entry_b_id, entry_a_id),
-        ).fetchone()
-        return row[0] if row else 0
-```
-
-This is a read-only method — no commit needed. The `with self._lock` is for thread safety since the tournament thread and main thread may both access the store.
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_get_all_pair_game_counts_bulk`):
-  - Create a store, add three entries (id 1, 2, 3).
-  - Record results: (1,2) x2, (2,3) x1.
-  - Call `store.get_all_pair_game_counts()`.
-  - Assert returns `{(1,2): 2, (2,3): 1}`.
-  - Assert pair (1,3) is not in the dict (no games played).
-  - This replaces the per-pair query pattern (190 queries for 20 entries) with a single GROUP BY query.
-
-- [ ] **Implement** in `keisei/training/opponent_store.py`:
-
-```python
-def get_all_pair_game_counts(self) -> dict[tuple[int, int], int]:
-    """Get game counts for all pairs in one query.
-
-    Returns dict mapping (min_id, max_id) -> game_count.
-    Replaces N per-pair get_pair_game_count calls with a single GROUP BY query.
-    """
-    with self._lock:
-        rows = self._conn.execute(
-            """SELECT learner_id, opponent_id, COUNT(*) as cnt
-               FROM league_results
-               GROUP BY learner_id, opponent_id"""
-        ).fetchall()
-        counts: dict[tuple[int, int], int] = {}
-        for row in rows:
-            a, b = min(row[0], row[1]), max(row[0], row[1])
-            counts[(a, b)] = counts.get((a, b), 0) + row[2]
-        return counts
-```
-
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_eviction.py -k "pair_game_count" -x`
-- [ ] **Commit:** `feat(store): add get_pair_game_count and get_all_pair_game_counts for Phase 4 priority scoring`
-
----
-
-### Task 3: PriorityScorer — Core Scoring Logic
-
-**Goal:** Implement the 6-component priority scoring function and sliding-window repeat tracking.
+## Task 2: PriorityScorer
 
 **Files:**
 - Create: `keisei/training/priority_scorer.py`
 - Create: `tests/test_priority_scorer.py`
 
-**TDD Steps:**
+- [ ] **Step 1: Write failing tests for PriorityScorer**
 
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_under_sample_bonus`):
-  - Create two `OpponentEntry` stubs with `id=1, id=2`.
-  - Create a `PriorityScorer` with `pair_game_counts={}` (no games played).
-  - Call `scorer.score(entry_a, entry_b)`.
-  - Assert the score includes the under-sample component: `under_sample_weight * 1.0 / max(1, 0) == 1.0`.
-  - Create scorer with `pair_game_counts={(1,2): 5}` and assert the under-sample bonus drops to `1.0 / 5 == 0.2`.
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_uncertainty_bonus_close_elo`):
-  - Entry A: `elo_rating=1050`, Entry B: `elo_rating=1000`.
-  - Assert `uncertainty_bonus` is `1.0` (within 100 Elo).
-  - Entry A: `elo_rating=1200`, Entry B: `elo_rating=1000`.
-  - Assert `uncertainty_bonus` is `0.0` (gap > 100).
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_recent_fixed_bonus`):
-  - Entry A: `role=Role.RECENT_FIXED`, Entry B: `role=Role.DYNAMIC`.
-  - Assert `has_recent_fixed` component contributes `recent_fixed_bonus * 1.0`.
-  - Both entries `role=Role.DYNAMIC`: component contributes `0.0`.
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_lineage_diversity`):
-  - Entry A: `lineage_group="gen-1"`, Entry B: `lineage_group="gen-2"`.
-  - Assert diversity bonus is `1.0` (different lineage).
-  - Both `lineage_group="gen-1"`: diversity bonus is `0.0`.
-  - Entry A: `lineage_group=None`: diversity bonus is `1.0` (None treated as diverse).
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_repeat_penalty`):
-  - Create scorer. Call `scorer.record_round_pairings([(1, 2), (3, 4)])` to record one round.
-  - Score pair (1, 2): assert repeat penalty component is `repeat_penalty * 1`.
-  - Score pair (3, 5): assert repeat penalty is `0` (pair not seen).
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_repeat_window_sliding`):
-  - Create scorer with `repeat_window_rounds=2`.
-  - Record round 1: pairs (1,2). Record round 2: pairs (1,2). Record round 3: pairs (3,4).
-  - Now window covers rounds 2-3 only. Pair (1,2) should have repeat count 1 (round 1 evicted).
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_lineage_closeness_parent_child`):
-  - Entry A: `id=1, parent_entry_id=None`. Entry B: `id=2, parent_entry_id=1`.
-  - Assert lineage_closeness is `1.0` (direct parent/child).
-  - Entry A: `id=1, lineage_group="gen-1"`. Entry B: `id=3, lineage_group="gen-1", parent_entry_id=None`.
-  - Assert lineage_closeness is `0.5` (same lineage group, not parent/child).
-  - Entries with different lineage groups and no parent relationship: `0.0`.
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_all_six_components_active`):
-  - Create scorer with non-zero weights for all 6 components.
-  - Create entries that activate all components: under-sampled pair, close Elo, one RECENT_FIXED, different lineage groups, recorded repeat, parent-child relationship.
-  - Call `scorer.score(entry_a, entry_b)`.
-  - Assert the returned score equals the sum of all 6 weighted components (verify each numerically).
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_all_weights_zero_produces_zero`):
-  - Create scorer with all weights set to `0.0`.
-  - Score any pair. Assert score is `0.0`.
-
-- [ ] **Write failing test** (`tests/test_priority_scorer.py::test_score_round_returns_sorted`):
-  - Create 3 entries (A, B, C). Set `pair_game_counts` so (A,B) has 0 games, (A,C) has 10, (B,C) has 5.
-  - Call `scorer.score_round(pairings)`.
-  - Assert returned list is sorted highest-priority first: (A,B) first (most under-sampled).
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_priority_scorer.py -x`
-
-- [ ] **Implement** `keisei/training/priority_scorer.py`:
+Create `tests/test_priority_scorer.py`:
 
 ```python
-"""PriorityScorer -- 6-component matchup priority for league scheduling."""
+"""Tests for PriorityScorer — matchup informativeness ranking."""
 
 from __future__ import annotations
 
-import logging
+import pytest
+
+from keisei.config import PriorityScorerConfig
+from keisei.training.opponent_store import EntryStatus, OpponentEntry, Role
+from keisei.training.priority_scorer import PriorityScorer
+
+
+def _make_entry(
+    id: int,
+    role: Role = Role.DYNAMIC,
+    elo: float = 1000.0,
+    lineage: str | None = None,
+    parent_id: int | None = None,
+) -> OpponentEntry:
+    return OpponentEntry(
+        id=id,
+        display_name=f"e{id}",
+        architecture="resnet",
+        model_params={},
+        checkpoint_path=f"/tmp/{id}.pt",
+        elo_rating=elo,
+        created_epoch=0,
+        games_played=10,
+        created_at="2026-01-01",
+        flavour_facts=[],
+        role=role,
+        status=EntryStatus.ACTIVE,
+        lineage_group=lineage,
+        parent_entry_id=parent_id,
+    )
+
+
+class TestScore:
+    def test_under_sampled_pair_scores_higher(self):
+        """Pairs with fewer past games get higher priority."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a, b, c = _make_entry(1), _make_entry(2), _make_entry(3)
+        scorer.record_result(a.id, b.id)
+        scorer.record_result(a.id, b.id)
+        scorer.record_result(a.id, b.id)
+        score_ab = scorer.score(a, b)
+        score_ac = scorer.score(a, c)
+        assert score_ac > score_ab
+
+    def test_uncertainty_bonus_for_close_elo(self):
+        """Pairs within 100 Elo get uncertainty bonus."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, elo=1000.0)
+        b_close = _make_entry(2, elo=1050.0)
+        b_far = _make_entry(3, elo=1200.0)
+        score_close = scorer.score(a, b_close)
+        score_far = scorer.score(a, b_far)
+        assert score_close > score_far
+
+    def test_recent_fixed_bonus(self):
+        """Pairings involving RECENT_FIXED entries get a bonus."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, role=Role.DYNAMIC)
+        b_rf = _make_entry(2, role=Role.RECENT_FIXED)
+        b_dyn = _make_entry(3, role=Role.DYNAMIC)
+        score_rf = scorer.score(a, b_rf)
+        score_dyn = scorer.score(a, b_dyn)
+        assert score_rf > score_dyn
+
+    def test_repeat_penalty(self):
+        """Pairs that played recently get penalized."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a, b = _make_entry(1), _make_entry(2)
+        score_before = scorer.score(a, b)
+        scorer.record_round_result(a.id, b.id)
+        scorer.record_round_result(a.id, b.id)
+        score_after = scorer.score(a, b)
+        assert score_after < score_before
+
+    def test_lineage_penalty_parent_child(self):
+        """Direct parent/child pairings are penalized."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        parent = _make_entry(1, lineage="lin-1")
+        child = _make_entry(2, lineage="lin-1", parent_id=1)
+        unrelated = _make_entry(3, lineage="lin-2")
+        score_related = scorer.score(parent, child)
+        score_unrelated = scorer.score(parent, unrelated)
+        assert score_unrelated > score_related
+
+    def test_lineage_penalty_same_group(self):
+        """Same lineage group (siblings) gets partial penalty."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, lineage="lin-1")
+        sibling = _make_entry(2, lineage="lin-1")
+        unrelated = _make_entry(3, lineage="lin-2")
+        score_sibling = scorer.score(a, sibling)
+        score_unrelated = scorer.score(a, unrelated)
+        assert score_unrelated > score_sibling
+
+    def test_diversity_bonus_cross_lineage(self):
+        """Cross-lineage pairings get a diversity bonus."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, lineage="lin-1")
+        same = _make_entry(2, lineage="lin-1")
+        diff = _make_entry(3, lineage="lin-2")
+        score_same = scorer.score(a, same)
+        score_diff = scorer.score(a, diff)
+        assert score_diff > score_same
+
+    def test_all_weights_zero_produces_zero(self):
+        """With all weights zeroed, every pair scores 0."""
+        cfg = PriorityScorerConfig(
+            under_sample_weight=0.0,
+            uncertainty_weight=0.0,
+            recent_fixed_bonus=0.0,
+            diversity_weight=0.0,
+            repeat_penalty=0.0,
+            lineage_penalty=0.0,
+        )
+        scorer = PriorityScorer(cfg)
+        a, b = _make_entry(1), _make_entry(2)
+        assert scorer.score(a, b) == 0.0
+
+    def test_repeat_window_slides(self):
+        """Repeat counts outside the window are forgotten."""
+        cfg = PriorityScorerConfig(repeat_window_rounds=2)
+        scorer = PriorityScorer(cfg)
+        a, b = _make_entry(1), _make_entry(2)
+        scorer.record_round_result(a.id, b.id)
+        scorer.advance_round()
+        scorer.record_round_result(a.id, b.id)
+        scorer.advance_round()
+        # Two rounds recorded, now advance past window
+        scorer.advance_round()
+        # First round fell off; only 1 repeat in window
+        one_repeat_score = scorer.score(a, b)
+        # Fresh scorer with 0 repeats
+        fresh_score = PriorityScorer(cfg).score(a, b)
+        assert fresh_score > one_repeat_score  # 0 repeats > 1 repeat
+
+
+class TestScoreRound:
+    def test_returns_sorted_by_priority_descending(self):
+        """score_round returns pairings ordered highest-priority first."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        a = _make_entry(1, elo=1000.0)
+        b = _make_entry(2, elo=1050.0)  # close Elo → uncertainty bonus
+        c = _make_entry(3, elo=1500.0)  # far Elo → no uncertainty bonus
+        pairings = [(a, b), (a, c), (b, c)]
+        sorted_pairings = scorer.score_round(pairings)
+        scores = [scorer.score(p[0], p[1]) for p in sorted_pairings]
+        assert scores == sorted(scores, reverse=True)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/test_priority_scorer.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'keisei.training.priority_scorer'`
+
+- [ ] **Step 3: Implement PriorityScorer**
+
+Create `keisei/training/priority_scorer.py`:
+
+```python
+"""PriorityScorer — ranks matchups by informativeness for scheduling."""
+
+from __future__ import annotations
+
 from collections import Counter, deque
-from collections.abc import Callable
-from dataclasses import dataclass, field
 
 from keisei.config import PriorityScorerConfig
 from keisei.training.opponent_store import OpponentEntry, Role
 
-logger = logging.getLogger(__name__)
-
 
 class PriorityScorer:
-    """Computes priority scores for candidate tournament pairings."""
+    """Computes priority scores for candidate pairings.
 
-    def __init__(
-        self,
-        config: PriorityScorerConfig,
-        pair_game_counts: dict[tuple[int, int], int] | None = None,
-    ) -> None:
+    Higher scores = more informative matchups that should be played first.
+    Maintains in-memory state for pair game counts and round-level repeat tracking.
+    """
+
+    def __init__(self, config: PriorityScorerConfig) -> None:
         self.config = config
-        self._pair_game_counts: dict[tuple[int, int], int] = pair_game_counts or {}
-        # Sliding window: deque of sets of (min_id, max_id) tuples per round
+        self._pair_games: Counter[tuple[int, int]] = Counter()
         self._round_history: deque[set[tuple[int, int]]] = deque(
             maxlen=config.repeat_window_rounds,
         )
+        self._current_round_pairs: set[tuple[int, int]] = set()
 
-    def score(self, entry_a: OpponentEntry, entry_b: OpponentEntry) -> float:
-        """Compute priority score for a single pairing."""
+    def _pair_key(self, id_a: int, id_b: int) -> tuple[int, int]:
+        """Canonical (smaller, larger) key for a pair."""
+        return (min(id_a, id_b), max(id_a, id_b))
+
+    def record_result(self, id_a: int, id_b: int) -> None:
+        """Record that a game was played between these entries."""
+        self._pair_games[self._pair_key(id_a, id_b)] += 1
+
+    def record_round_result(self, id_a: int, id_b: int) -> None:
+        """Record that this pair was matched in the current round."""
+        self._current_round_pairs.add(self._pair_key(id_a, id_b))
+
+    def advance_round(self) -> None:
+        """Advance the sliding window: push current round, drop oldest if full."""
+        self._round_history.append(self._current_round_pairs)
+        self._current_round_pairs = set()
+
+    def _under_sample_bonus(self, id_a: int, id_b: int) -> float:
+        count = self._pair_games[self._pair_key(id_a, id_b)]
+        return 1.0 / max(1, count)
+
+    def _uncertainty_bonus(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        return 1.0 if abs(a.elo_rating - b.elo_rating) < 100 else 0.0
+
+    def _has_recent_fixed(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        return 1.0 if a.role == Role.RECENT_FIXED or b.role == Role.RECENT_FIXED else 0.0
+
+    def _lineage_diversity(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        if a.lineage_group is None or b.lineage_group is None:
+            return 1.0
+        return 0.0 if a.lineage_group == b.lineage_group else 1.0
+
+    def _repeat_count(self, id_a: int, id_b: int) -> float:
+        key = self._pair_key(id_a, id_b)
+        return sum(1 for round_pairs in self._round_history if key in round_pairs)
+
+    def _lineage_closeness(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        if a.parent_entry_id == b.id or b.parent_entry_id == a.id:
+            return 1.0
+        if (
+            a.lineage_group is not None
+            and b.lineage_group is not None
+            and a.lineage_group == b.lineage_group
+        ):
+            return 0.5
+        return 0.0
+
+    def score(self, a: OpponentEntry, b: OpponentEntry) -> float:
+        """Compute priority score for a pairing. Higher = more informative."""
         c = self.config
-
-        pair_key_games = (min(entry_a.id, entry_b.id), max(entry_a.id, entry_b.id))
-        pair_games = self._pair_game_counts.get(pair_key_games, 0)
-        under_sample = 1.0 / max(1, pair_games)
-
-        elo_gap = abs(entry_a.elo_rating - entry_b.elo_rating)
-        uncertainty = 1.0 if elo_gap < 100 else 0.0
-
-        recent_fixed = 1.0 if (
-            entry_a.role == Role.RECENT_FIXED or entry_b.role == Role.RECENT_FIXED
-        ) else 0.0
-
-        a_lin = entry_a.lineage_group
-        b_lin = entry_b.lineage_group
-        diversity = 1.0 if (a_lin is None or b_lin is None or a_lin != b_lin) else 0.0
-
-        pair_key = (min(entry_a.id, entry_b.id), max(entry_a.id, entry_b.id))
-        repeat_count = sum(1 for rnd in self._round_history if pair_key in rnd)
-
-        # Lineage closeness
-        if (entry_a.parent_entry_id == entry_b.id
-                or entry_b.parent_entry_id == entry_a.id):
-            closeness = 1.0
-        elif (a_lin is not None and b_lin is not None and a_lin == b_lin):
-            closeness = 0.5
-        else:
-            closeness = 0.0
-
         return (
-            c.under_sample_weight * under_sample
-            + c.uncertainty_weight * uncertainty
-            + c.recent_fixed_bonus * recent_fixed
-            + c.diversity_weight * diversity
-            + c.repeat_penalty * repeat_count
-            + c.lineage_penalty * closeness
+            c.under_sample_weight * self._under_sample_bonus(a.id, b.id)
+            + c.uncertainty_weight * self._uncertainty_bonus(a, b)
+            + c.recent_fixed_bonus * self._has_recent_fixed(a, b)
+            + c.diversity_weight * self._lineage_diversity(a, b)
+            + c.repeat_penalty * self._repeat_count(a.id, b.id)
+            + c.lineage_penalty * self._lineage_closeness(a, b)
         )
 
-    def refresh_pair_game_counts(
-        self,
-        counts: dict[tuple[int, int], int],
-    ) -> None:
-        """Replace cached pair game counts with a fresh bulk snapshot.
-
-        Called once per round with the result of store.get_all_pair_game_counts().
-        """
-        self._pair_game_counts = counts
-
     def score_round(
-        self,
-        pairings: list[tuple[OpponentEntry, OpponentEntry]],
+        self, pairings: list[tuple[OpponentEntry, OpponentEntry]],
     ) -> list[tuple[OpponentEntry, OpponentEntry]]:
-        """Score all pairings and return sorted by priority descending."""
+        """Score all pairings and return sorted by priority (highest first)."""
         scored = [(self.score(a, b), a, b) for a, b in pairings]
-        scored.sort(key=lambda t: t[0], reverse=True)
+        scored.sort(key=lambda x: x[0], reverse=True)
         return [(a, b) for _, a, b in scored]
-
-    def record_round_pairings(
-        self,
-        pair_ids: list[tuple[int, int]],
-    ) -> None:
-        """Record which pairs were played this round for repeat tracking.
-
-        Only completed pairings are recorded in the repeat window. Interrupted
-        rounds produce partial records. This means deprioritized pairs that
-        didn't play in an interrupted round get no repeat penalty and naturally
-        rise in priority next round — which is the correct behavior.
-        """
-        round_set: set[tuple[int, int]] = set()
-        for a_id, b_id in pair_ids:
-            round_set.add((min(a_id, b_id), max(a_id, b_id)))
-        self._round_history.append(round_set)
-        # deque(maxlen=N) automatically evicts oldest rounds beyond the sliding window
 ```
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_priority_scorer.py -x`
-- [ ] **Commit:** `feat(league): add PriorityScorer with 6-component matchup priority formula`
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/test_priority_scorer.py -v`
+Expected: all PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/training/priority_scorer.py tests/test_priority_scorer.py
+git commit -m "feat: add PriorityScorer for matchup informativeness ranking"
+```
 
 ---
 
-### Task 4: MatchScheduler — Priority-Ordered generate_round
-
-**Goal:** Modify `generate_round` to use PriorityScorer instead of `random.shuffle`, returning pairings sorted by priority descending.
+## Task 3: MatchScheduler Priority Integration
 
 **Files:**
 - Modify: `keisei/training/match_scheduler.py`
-- Create: `tests/test_phase4_scheduler.py`
+- Modify: `tests/test_match_scheduler.py`
 
-**TDD Steps:**
+- [ ] **Step 1: Write failing test for priority-ordered generate_round**
 
-- [ ] **Write failing test** (`tests/test_phase4_scheduler.py::test_generate_round_returns_priority_order`):
-  - Create a `PriorityScorer` with `pair_game_counts={(1,2): 0, (1,3): 10, (2,3): 10}` (or omit (1,2) since missing keys default to 0).
-  - Create a `MatchScheduler` with the scorer.
-  - Create 3 `OpponentEntry` stubs (ids 1, 2, 3) all with `elo_rating=1000`.
-  - Call `scheduler.generate_round(entries)`.
-  - Assert the first pairing is (1, 2) — highest priority because fewest games.
-
-- [ ] **Write failing test** (`tests/test_phase4_scheduler.py::test_generate_round_without_scorer_falls_back`):
-  - Create `MatchScheduler` with `priority_scorer=None`.
-  - Call `generate_round`. Assert it returns all N*(N-1)/2 pairings (order unspecified).
-
-- [ ] **Write failing test** (`tests/test_phase4_scheduler.py::test_generate_round_empty_entries`):
-  - Call `scheduler.generate_round([])`. Assert returns empty list.
-
-- [ ] **Write failing test** (`tests/test_phase4_scheduler.py::test_generate_round_single_entry`):
-  - Call `scheduler.generate_round([entry])`. Assert returns empty list (no pairs possible).
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_scheduler.py -x`
-
-- [ ] **Implement** — Modify `keisei/training/match_scheduler.py`:
-
-Change constructor to accept an optional `PriorityScorer`:
+The existing `_make_scheduler` in `tests/test_match_scheduler.py` (around line 10) needs to be updated. Also add new tests. First, update the helper:
 
 ```python
+def _make_scheduler(priority_scorer=None, **overrides):
+    defaults = dict(
+        learner_dynamic_ratio=0.50,
+        learner_frontier_ratio=0.30,
+        learner_recent_ratio=0.20,
+    )
+    defaults.update(overrides)
+    config = MatchSchedulerConfig(**defaults)
+    return MatchScheduler(config, priority_scorer=priority_scorer)
+```
+
+Then add a new test class:
+
+```python
+from keisei.config import PriorityScorerConfig
 from keisei.training.priority_scorer import PriorityScorer
+
+
+class TestPriorityRound:
+    def test_generate_round_returns_priority_sorted(self):
+        """With a scorer, generate_round returns pairings sorted by priority."""
+        scorer = PriorityScorer(PriorityScorerConfig())
+        scheduler = _make_scheduler(priority_scorer=scorer)
+        e1 = _make_entry(1, Role.DYNAMIC, elo=1000.0)
+        e2 = _make_entry(2, Role.DYNAMIC, elo=1050.0)  # close to e1
+        e3 = _make_entry(3, Role.DYNAMIC, elo=1500.0)  # far from both
+        entries = [e1, e2, e3]
+        pairings = scheduler.generate_round(entries)
+        scores = [scorer.score(a, b) for a, b in pairings]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_generate_round_without_scorer_still_works(self):
+        """Without a scorer, generate_round returns all pairings (unordered)."""
+        scheduler = _make_scheduler()
+        entries = [_make_entry(i, Role.DYNAMIC) for i in range(1, 5)]
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) == 6  # 4 choose 2
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_match_scheduler.py::TestPriorityRound -v`
+Expected: FAIL with `TypeError` (MatchScheduler doesn't accept priority_scorer)
+
+- [ ] **Step 3: Implement MatchScheduler changes**
+
+Replace the full contents of `keisei/training/match_scheduler.py`:
+
+```python
+"""MatchScheduler -- role-weighted opponent selection for the tiered pool."""
+
+from __future__ import annotations
+
+import random
+from typing import TYPE_CHECKING
+
+from keisei.config import MatchSchedulerConfig
+from keisei.training.opponent_store import OpponentEntry, Role
+
+if TYPE_CHECKING:
+    from keisei.training.priority_scorer import PriorityScorer
+
 
 class MatchScheduler:
     def __init__(
@@ -536,992 +548,1134 @@ class MatchScheduler:
         priority_scorer: PriorityScorer | None = None,
     ) -> None:
         self.config = config
-        self.priority_scorer = priority_scorer
+        self._priority_scorer = priority_scorer
+
+    def sample_for_learner(
+        self, entries_by_role: dict[Role, list[OpponentEntry]],
+    ) -> OpponentEntry:
+        ratios = self.effective_ratios(entries_by_role)
+        non_empty = {r: w for r, w in ratios.items() if w > 0}
+        if not non_empty:
+            raise ValueError("No entries available in any tier")
+        roles = list(non_empty.keys())
+        weights = [non_empty[r] for r in roles]
+        chosen_role = random.choices(roles, weights=weights, k=1)[0]
+        return random.choice(entries_by_role[chosen_role])
+
+    def generate_round(
+        self, entries: list[OpponentEntry],
+    ) -> list[tuple[OpponentEntry, OpponentEntry]]:
+        """Generate all N*(N-1)/2 pairings for a full round-robin round.
+
+        If a PriorityScorer is configured, returns pairings sorted by priority
+        (highest first). Otherwise, returns shuffled pairings.
+        """
+        pairings: list[tuple[OpponentEntry, OpponentEntry]] = []
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                pairings.append((entries[i], entries[j]))
+        if self._priority_scorer is not None:
+            return self._priority_scorer.score_round(pairings)
+        random.shuffle(pairings)
+        return pairings
+
+    def effective_ratios(
+        self, entries_by_role: dict[Role, list[OpponentEntry]],
+    ) -> dict[Role, float]:
+        raw = {
+            Role.DYNAMIC: self.config.learner_dynamic_ratio,
+            Role.FRONTIER_STATIC: self.config.learner_frontier_ratio,
+            Role.RECENT_FIXED: self.config.learner_recent_ratio,
+        }
+        non_empty = {r: w for r, w in raw.items() if entries_by_role.get(r)}
+        if not non_empty:
+            return {r: 0.0 for r in raw}
+        total = sum(non_empty.values())
+        result = {}
+        for role in raw:
+            if role in non_empty:
+                result[role] = non_empty[role] / total
+            else:
+                result[role] = 0.0
+        return result
 ```
 
-Change `generate_round`:
+- [ ] **Step 4: Run full match_scheduler tests**
 
-```python
-def generate_round(
-    self, entries: list[OpponentEntry],
-) -> list[tuple[OpponentEntry, OpponentEntry]]:
-    """Generate all N*(N-1)/2 pairings, sorted by priority if scorer is available."""
-    pairings: list[tuple[OpponentEntry, OpponentEntry]] = []
-    for i in range(len(entries)):
-        for j in range(i + 1, len(entries)):
-            pairings.append((entries[i], entries[j]))
-    if self.priority_scorer is not None:
-        return self.priority_scorer.score_round(pairings)
-    random.shuffle(pairings)
-    return pairings
+Run: `uv run pytest tests/test_match_scheduler.py -v`
+Expected: all PASS (existing tests + new priority tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/training/match_scheduler.py tests/test_match_scheduler.py
+git commit -m "feat(scheduler): integrate PriorityScorer for priority-ordered rounds"
 ```
-
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_scheduler.py -x`
-- [ ] **Run existing scheduler tests** — `uv run pytest tests/test_match_scheduler.py -x` — ensure no regressions (existing tests use no scorer, so fallback path runs).
-- [ ] **Commit:** `feat(scheduler): priority-ordered generate_round via PriorityScorer`
 
 ---
 
-### Task 5: DynamicManager — evict_weakest Uses elo_dynamic
-
-**Goal:** Change `DynamicManager.evict_weakest()` to sort by `elo_dynamic` instead of `elo_rating`. Add a `weakest_dynamic_elo()` method.
+## Task 4: DynamicManager Uses elo_dynamic for Eviction
 
 **Files:**
 - Modify: `keisei/training/tier_managers.py`
-- Test: `tests/test_phase4_eviction.py`
+- Modify: `tests/test_tier_managers.py`
 
-**TDD Steps:**
+- [ ] **Step 1: Write failing test**
 
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_evict_weakest_uses_elo_dynamic`):
-  - Create a store with two Dynamic entries:
-    - Entry A: `elo_rating=1200, elo_dynamic=900` (high composite, low dynamic).
-    - Entry B: `elo_rating=1000, elo_dynamic=1100` (low composite, high dynamic).
-  - Both have `protection_remaining=0` and `games_played >= min_games_before_eviction`.
-  - Call `dynamic_manager.evict_weakest()`.
-  - Assert the evicted entry is Entry A (lower `elo_dynamic`), NOT Entry B.
-  - Before Phase 4, the old code would evict Entry B (lower `elo_rating`).
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_weakest_dynamic_elo_returns_elo_dynamic`):
-  - Create a store with two Dynamic entries:
-    - Entry A: `elo_dynamic=900`.
-    - Entry B: `elo_dynamic=1100`.
-  - Both eligible (unprotected, enough games).
-  - Call `dynamic_manager.weakest_dynamic_elo()`.
-  - Assert returns `900.0`.
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_weakest_dynamic_elo_empty_returns_none`):
-  - Create a store with no Dynamic entries.
-  - Call `dynamic_manager.weakest_dynamic_elo()`.
-  - Assert returns `None`.
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_eviction.py -k "evict" -x`
-
-- [ ] **Implement** in `keisei/training/tier_managers.py`:
-
-Change `evict_weakest()`:
+Add to `tests/test_tier_managers.py`. Note: look at the existing test file to find where DynamicManager tests live. Add this new class after the existing Dynamic tests:
 
 ```python
-def evict_weakest(self) -> OpponentEntry | None:
-    """Evict the lowest elo_dynamic eligible entry."""
-    entries = self._store.list_by_role(Role.DYNAMIC)
-    eligible = [
-        e
-        for e in entries
-        if e.protection_remaining == 0
-        and e.games_played >= self._config.min_games_before_eviction
-    ]
-    if not eligible:
-        logger.info("Dynamic evict_weakest: no eligible entries")
-        return None
+class TestDynamicEloDynamic:
+    """DynamicManager.evict_weakest uses elo_dynamic, not elo_rating."""
 
-    MIN_CALIBRATION_GAMES = 10
-    weakest = min(
-        eligible,
-        key=lambda e: e.elo_dynamic if e.games_played >= MIN_CALIBRATION_GAMES else e.elo_rating,
-    )
-    self._store.retire_entry(weakest.id, "evicted: weakest elo_dynamic in dynamic tier")
-    logger.info(
-        "Dynamic evict_weakest: retired id=%d (elo_dynamic=%.1f, elo_rating=%.1f)",
-        weakest.id,
-        weakest.elo_dynamic,
-        weakest.elo_rating,
-    )
-    return weakest
+    def test_evict_weakest_uses_elo_dynamic(self, store):
+        config = DynamicConfig(slots=10, min_games_before_eviction=0, protection_matches=0)
+        mgr = DynamicManager(store, config)
+        e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
+        e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
+        # e1: HIGH elo_rating (1500) but LOW elo_dynamic (800)
+        # e2: LOW elo_rating (1000) but HIGH elo_dynamic (1200)
+        with store.transaction():
+            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
+            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+        evicted = mgr.evict_weakest()
+        assert evicted is not None
+        assert evicted.id == e1.id  # evicted despite higher elo_rating
+
+    def test_weakest_dynamic_elo_returns_elo_dynamic(self, store):
+        config = DynamicConfig(slots=10, min_games_before_eviction=0, protection_matches=0)
+        mgr = DynamicManager(store, config)
+        e1 = _add_entry(store, epoch=1, role=Role.DYNAMIC, elo=1500.0)
+        e2 = _add_entry(store, epoch=2, role=Role.DYNAMIC, elo=1000.0)
+        with store.transaction():
+            store.update_role_elo(e1.id, "elo_dynamic", 800.0)
+            store.update_role_elo(e2.id, "elo_dynamic", 1200.0)
+        assert mgr.weakest_dynamic_elo() == 800.0
 ```
 
-Add `weakest_dynamic_elo()`:
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_tier_managers.py::TestDynamicEloDynamic -v`
+Expected: FAIL — `evicted.id == e2.id` (wrong entry) or `AttributeError` for `weakest_dynamic_elo`
+
+- [ ] **Step 3: Modify DynamicManager**
+
+In `keisei/training/tier_managers.py`:
+
+Change line 345 in `evict_weakest()`:
+```python
+# Before:
+        weakest = min(eligible, key=lambda e: e.elo_rating)
+# After:
+        weakest = min(eligible, key=lambda e: e.elo_dynamic)
+```
+
+Change the log message at line 348-350:
+```python
+# Before:
+        logger.info(
+            "Dynamic evict_weakest: retired id=%d (elo=%.1f)",
+            weakest.id,
+            weakest.elo_rating,
+        )
+# After:
+        logger.info(
+            "Dynamic evict_weakest: retired id=%d (elo_dynamic=%.1f)",
+            weakest.id,
+            weakest.elo_dynamic,
+        )
+```
+
+Add `weakest_dynamic_elo()` method after `weakest_elo()` (after line 373):
 
 ```python
-def weakest_dynamic_elo(self) -> float | None:
-    """Return elo_dynamic of the weakest eligible entry, or None if all protected.
-
-    Entries with fewer than MIN_CALIBRATION_GAMES are ignored when computing
-    the floor — their elo_dynamic is under-calibrated and should not drive
-    eviction or promotion decisions.
-    """
-    MIN_CALIBRATION_GAMES = 10
-    entries = self._store.list_by_role(Role.DYNAMIC)
-    eligible = [
-        e
-        for e in entries
-        if e.protection_remaining == 0
-        and e.games_played >= self._config.min_games_before_eviction
-    ]
-    if not eligible:
-        return None
-    calibrated = [e for e in eligible if e.games_played >= MIN_CALIBRATION_GAMES]
-    if not calibrated:
-        return None
-    return min(e.elo_dynamic for e in calibrated)
+    def weakest_dynamic_elo(self) -> float | None:
+        """Return the elo_dynamic of the weakest eligible entry, or None."""
+        entries = self._store.list_by_role(Role.DYNAMIC)
+        eligible = [
+            e
+            for e in entries
+            if e.protection_remaining == 0
+            and e.games_played >= self._config.min_games_before_eviction
+        ]
+        if not eligible:
+            return None
+        return min(e.elo_dynamic for e in eligible)
 ```
 
-Also update the existing `weakest_elo()` method's docstring to clarify it still uses composite `elo_rating` (for backward compatibility with callers that need it).
+- [ ] **Step 4: Run tests to verify they pass**
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_eviction.py -k "evict" -x`
-- [ ] **Run existing tier manager tests** — `uv run pytest tests/test_tier_managers.py -x` — ensure no regressions.
-- [ ] **Commit:** `feat(league): DynamicManager eviction uses elo_dynamic instead of composite`
+Run: `uv run pytest tests/test_tier_managers.py -v`
+Expected: all PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/training/tier_managers.py tests/test_tier_managers.py
+git commit -m "feat(dynamic): evict_weakest uses elo_dynamic instead of composite Elo"
+```
 
 ---
 
-### Task 6: FrontierPromoter — should_promote Uses elo_frontier
-
-**Goal:** Change `FrontierPromoter.should_promote` criterion 4 to compare `elo_frontier` instead of `elo_rating`.
+## Task 5: FrontierPromoter Uses elo_frontier for Promotion
 
 **Files:**
 - Modify: `keisei/training/frontier_promoter.py`
-- Test: `tests/test_phase4_eviction.py`
+- Modify: `tests/test_frontier_promoter.py`
 
-**PREREQUISITE:** Phase 3 must be complete. `keisei/training/frontier_promoter.py` must exist before this task can execute. If Phase 3 is still in progress, skip Task 6 and return to it after Phase 3 lands.
+- [ ] **Step 1: Write failing test**
 
-**Note:** `FrontierPromoter` is a Phase 3 file that does not yet exist in the codebase. This task modifies the spec-defined interface — write against the Phase 3 spec's `should_promote` signature.
-
-**TDD Steps:**
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_should_promote_uses_elo_frontier`):
-  - Create a candidate entry with `elo_frontier=1300, elo_rating=1000, games_played=20` (above MIN_CALIBRATION_GAMES).
-  - Create two frontier entries with `elo_frontier=1200, elo_rating=1400`.
-  - The weakest frontier `elo_frontier` is 1200. With `promotion_margin_elo=50`, the candidate needs `elo_frontier >= 1250`.
-  - Candidate's `elo_frontier=1300 >= 1250` — should pass criterion 4.
-  - **Preconditions for criteria 1-3 satisfaction:** Set `games_played >= min_games_for_promotion` (criterion 1), `elo_rating >= promotion threshold` or equivalent (criterion 2), `win_streak >= min_streak` or set streak field (criterion 3), and `lineage_group` populated (criterion context).
-  - Assert `should_promote` returns True for the Elo criterion.
-  - If the old code used `elo_rating`, candidate's `1000 < 1450` would fail.
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_should_promote_empty_frontier_promotes`):
-  - Create a candidate entry but no frontier entries.
-  - Assert `should_promote` returns True for the Elo criterion (no incumbents means always promote to seed the tier).
-  - This tests the empty list guard: `min(f.elo_frontier for f in frontier_entries)` would crash on empty list without the guard, and the guard must set `elo_qualified = True` (not False).
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_eviction.py -k "should_promote" -x`
-
-- [ ] **Implement** in `keisei/training/frontier_promoter.py`:
-
-Change the Elo comparison in `should_promote` from:
+Add to `tests/test_frontier_promoter.py`. Check existing imports — you may need to add `OpponentEntry` to the import list if not present:
 
 ```python
-weakest_frontier_elo = min(f.elo_rating for f in frontier_entries)
-elo_qualified = candidate.elo_rating >= weakest_frontier_elo + self.config.promotion_margin_elo
+class TestEloFrontierPromotion:
+    """should_promote uses elo_frontier, not elo_rating."""
+
+    def test_promotes_on_high_elo_frontier_despite_low_elo_rating(self):
+        config = _make_frontier_config(
+            promotion_margin_elo=10.0,
+            min_games_for_promotion=0,
+            streak_epochs=0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        # Frontier entries with LOW elo_frontier (900)
+        frontier = [
+            OpponentEntry(**{**_make_entry(1, elo=1500.0, role=Role.FRONTIER_STATIC).__dict__, "elo_frontier": 900.0}),
+            OpponentEntry(**{**_make_entry(2, elo=1500.0, role=Role.FRONTIER_STATIC).__dict__, "elo_frontier": 900.0}),
+        ]
+        # Candidate: LOW elo_rating (800) but HIGH elo_frontier (950)
+        candidate = OpponentEntry(**{**_make_entry(10, elo=800.0, games=100).__dict__, "elo_frontier": 950.0})
+        promoter._topk_streaks[candidate.id] = 0
+        result = promoter.should_promote(candidate, frontier, epoch=100)
+        assert result is True  # 950 >= 900 + 10
+
+    def test_rejects_low_elo_frontier_despite_high_elo_rating(self):
+        config = _make_frontier_config(
+            promotion_margin_elo=10.0,
+            min_games_for_promotion=0,
+            streak_epochs=0,
+            max_lineage_overlap=10,
+        )
+        promoter = FrontierPromoter(config)
+        frontier = [
+            OpponentEntry(**{**_make_entry(1, elo=500.0, role=Role.FRONTIER_STATIC).__dict__, "elo_frontier": 1000.0}),
+        ]
+        # HIGH elo_rating (2000) but LOW elo_frontier (900)
+        candidate = OpponentEntry(**{**_make_entry(10, elo=2000.0, games=100).__dict__, "elo_frontier": 900.0})
+        promoter._topk_streaks[candidate.id] = 0
+        result = promoter.should_promote(candidate, frontier, epoch=100)
+        assert result is False  # 900 < 1000 + 10
 ```
 
-To:
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_frontier_promoter.py::TestEloFrontierPromotion -v`
+Expected: FAIL — first test fails because `should_promote` uses `elo_rating`
+
+- [ ] **Step 3: Modify FrontierPromoter.should_promote**
+
+In `keisei/training/frontier_promoter.py`, change lines 94-95:
 
 ```python
-MIN_CALIBRATION_GAMES = 10
-
-if not frontier_entries:
-    elo_qualified = True  # No incumbents — always promote to seed the tier
-else:
-    weakest_frontier_elo = min(f.elo_frontier for f in frontier_entries)
-    # Fall back to composite elo_rating if candidate has too few games for calibrated elo_frontier
-    candidate_elo = candidate.elo_frontier if candidate.games_played >= MIN_CALIBRATION_GAMES else candidate.elo_rating
-    elo_qualified = candidate_elo >= weakest_frontier_elo + self.config.promotion_margin_elo
+        # Before:
+        weakest_frontier_elo = min(e.elo_rating for e in frontier_entries)
+        if candidate.elo_rating < weakest_frontier_elo + self.config.promotion_margin_elo:
+        # After:
+        weakest_frontier_elo = min(e.elo_frontier for e in frontier_entries)
+        if candidate.elo_frontier < weakest_frontier_elo + self.config.promotion_margin_elo:
 ```
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_eviction.py -k "should_promote" -x`
-- [ ] **Run existing frontier promoter tests** — `uv run pytest tests/test_frontier_promoter.py -x` — ensure no regressions.
-- [ ] **Commit:** `feat(league): FrontierPromoter uses elo_frontier for promotion criterion`
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/test_frontier_promoter.py -v`
+Expected: all PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/training/frontier_promoter.py tests/test_frontier_promoter.py
+git commit -m "feat(promoter): should_promote uses elo_frontier instead of composite Elo"
+```
 
 ---
 
-### Task 7: ConcurrentMatchPool — True Partitioned Concurrent Inference
-
-**Goal:** Implement `ConcurrentMatchPool` with true concurrent inference: one VecEnv with `total_envs` environments, partitioned into disjoint ranges, one `vecenv.step()` call per ply advancing all partitions simultaneously. VecEnv auto-resets individual environments on game completion, so completed games in one partition do not affect other partitions.
-
-**Key insight:** shogi-gym's VecEnv auto-resets individual environments on game completion. Global `reset()` is called once at round start. After that, all partitions advance together via a single `step()` call. When a partition completes its required games, its env slots keep auto-resetting but results are ignored.
+## Task 6: ConcurrentMatchPool
 
 **Files:**
 - Create: `keisei/training/concurrent_matches.py`
 - Create: `tests/test_concurrent_matches.py`
 
-**TDD Steps:**
+### Sub-task 6a: Data Structures
 
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_partition_assignment`):
-  - Create `ConcurrentMatchPool(config=ConcurrencyConfig(parallel_matches=4, envs_per_match=8, total_envs=32))`.
-  - Assert `pool.partition_range(0) == (0, 8)`.
-  - Assert `pool.partition_range(1) == (8, 16)`.
-  - Assert `pool.partition_range(2) == (16, 24)`.
-  - Assert `pool.partition_range(3) == (24, 32)`.
-  - Ranges do not overlap.
+- [ ] **Step 1: Write failing test for MatchResult**
 
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_partition_range_bounds_check`):
-  - Create pool with `parallel_matches=4`.
-  - Assert `pool.partition_range(4)` raises `ValueError` (idx >= parallel_matches).
-  - Assert `pool.partition_range(-1)` raises `ValueError`.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_run_round_completes_all_pairings`):
-  - Create a pool with `parallel_matches=2, envs_per_match=4, total_envs=8`.
-  - Create 3 mock pairings.
-  - Provide a mock VecEnv that returns obs, terminated, truncated arrays of the right shapes.
-  - Provide a `load_fn` that returns a dummy `torch.nn.Module`.
-  - Call `pool.run_round(vecenv, pairings, load_fn=load_fn, release_fn=lambda *a: None, device="cpu")`.
-  - Assert results has 3 entries (all pairings completed).
-  - Assert each result contains (entry_a, entry_b, wins_a, wins_b, draws, rollout).
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_run_round_respects_stop_event`):
-  - Create a pool with `parallel_matches=2`.
-  - Create 10 pairings.
-  - Set `stop_event` before calling `run_round`.
-  - Assert results has fewer than 10 entries (early termination).
-  - Assert early exit is logged.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_run_round_empty_pairings`):
-  - Call `pool.run_round(vecenv, [], ...)`. Assert returns empty list.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_max_resident_models_respected`):
-  - Track model load/release calls.
-  - Create pool with `parallel_matches=2, max_resident_models=4`.
-  - Run 5 pairings. Assert at no point are more than 4 models loaded simultaneously (verify via load/release call counting).
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_results_returned_in_pairing_order`):
-  - Create 4 pairings with known entries.
-  - Mock VecEnv to return different terminated patterns per env range.
-  - Assert results are returned in the same order as the input pairings list.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_model_load_failure_skips_partition`):
-  - Create pool with `parallel_matches=2`.
-  - Create 2 pairings. `load_fn` raises `RuntimeError` for the second pairing's model.
-  - Assert results has 1 entry (first pairing succeeded).
-  - Assert a warning was logged for the failed partition.
-  - Assert the round did NOT abort entirely.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_model_eval_mode_at_inference`):
-  - Create pool. Provide a mock model that tracks `.eval()` calls.
-  - Run a round. Assert `model.eval()` was called at the start of each partition's forward pass.
-
-- [ ] **Write failing test** (`tests/test_concurrent_matches.py::test_partition_slot_reuse`):
-  - Create pool with `parallel_matches=2`, 4 pairings.
-  - First wave: partitions 0 and 1 run pairings 0 and 1.
-  - When partition 0 finishes first, it swaps in pairing 2's models and resets its completion counter.
-  - Assert all 4 pairings complete, and partition slot reuse occurred.
-
-- [ ] **Write failing test (integration)** (`tests/test_concurrent_matches.py::test_cpu_smoke_real_vecenv`):
-  - Create a real (tiny) VecEnv with `total_envs=4` and a real tiny model (e.g., 1-block SE-ResNet).
-  - Create pool with `parallel_matches=2, envs_per_match=2, total_envs=4`.
-  - Run a real round with 1 pairing on CPU.
-  - Assert results contain valid game counts (wins + losses + draws > 0).
-  - This tests partition slicing, action merging, and auto-reset interaction end-to-end.
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_concurrent_matches.py -x`
-
-- [ ] **Implement** `keisei/training/concurrent_matches.py`:
+Create `tests/test_concurrent_matches.py`:
 
 ```python
-"""ConcurrentMatchPool -- true partitioned concurrent inference on a single VecEnv.
+"""Tests for ConcurrentMatchPool — interleaved match execution."""
 
-Runs multiple pairings concurrently on a single partitioned VecEnv.
-Each partition owns a disjoint range of environments. One vecenv.step()
-call advances all partitions simultaneously. Auto-reset handles
-completed games per-env without affecting other partitions.
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+import torch
+
+from keisei.config import ConcurrencyConfig
+from keisei.training.concurrent_matches import ConcurrentMatchPool, MatchResult
+from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role
+
+
+def _make_entry(
+    id: int,
+    role: Role = Role.DYNAMIC,
+    elo: float = 1000.0,
+) -> OpponentEntry:
+    return OpponentEntry(
+        id=id,
+        display_name=f"e{id}",
+        architecture="resnet",
+        model_params={},
+        checkpoint_path=f"/tmp/{id}.pt",
+        elo_rating=elo,
+        created_epoch=0,
+        games_played=10,
+        created_at="2026-01-01",
+        flavour_facts=[],
+        role=role,
+        status=EntryStatus.ACTIVE,
+    )
+
+
+class TestMatchResult:
+    def test_fields(self):
+        a, b = _make_entry(1), _make_entry(2)
+        r = MatchResult(entry_a=a, entry_b=b, a_wins=3, b_wins=1, draws=0, rollout=None)
+        assert r.a_wins == 3
+        assert r.b_wins == 1
+        assert r.rollout is None
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_concurrent_matches.py::TestMatchResult -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Create concurrent_matches.py with data structures**
+
+Create `keisei/training/concurrent_matches.py`:
+
+```python
+"""ConcurrentMatchPool — interleaved match execution on a single GPU.
+
+Manages parallel match execution by partitioning a VecEnv across multiple
+concurrent pairings. Models stay resident to avoid load/unload overhead.
+The VecEnv step is batched (one call for all environments), while inference
+runs per-partition with each partition's own model pair.
 """
 
 from __future__ import annotations
 
+import collections
 import logging
-import threading
-import torch
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+import numpy as np
+import torch
+import torch.nn.functional as F
 
 from keisei.config import ConcurrencyConfig
-from keisei.training.opponent_store import OpponentEntry
+from keisei.training.match_utils import release_models
+from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
+
+if TYPE_CHECKING:
+    from keisei.training.dynamic_trainer import MatchRollout
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MatchResult:
-    """Result of a single pairing's match."""
+    """Result of a single completed match."""
+
     entry_a: OpponentEntry
     entry_b: OpponentEntry
-    wins_a: int
-    wins_b: int
+    a_wins: int
+    b_wins: int
     draws: int
-    rollout: Any  # MatchRollout | None
+    rollout: MatchRollout | None
 
 
 @dataclass
-class _PartitionState:
-    """Mutable state for one active partition."""
-    slot_idx: int             # Which partition slot (0..parallel_matches-1)
-    pairing_idx: int          # Index into the original pairings list
-    entry_a: OpponentEntry
-    entry_b: OpponentEntry
-    model_a: Any              # torch.nn.Module
-    model_b: Any              # torch.nn.Module
+class _MatchSlot:
+    """Internal state for one concurrent match partition."""
+
+    index: int
     env_start: int
     env_end: int
-    games_target: int
-    games_completed: int = 0
-    wins_a: int = 0
-    wins_b: int = 0
+    entry_a: OpponentEntry | None = None
+    entry_b: OpponentEntry | None = None
+    model_a: torch.nn.Module | None = None
+    model_b: torch.nn.Module | None = None
+    a_wins: int = 0
+    b_wins: int = 0
     draws: int = 0
-    done: bool = False
+    games_target: int = 0
+    active: bool = False
+    collect_rollout: bool = False
+    _obs: list[torch.Tensor] = field(default_factory=list)
+    _actions: list[torch.Tensor] = field(default_factory=list)
+    _rewards: list[torch.Tensor] = field(default_factory=list)
+    _dones: list[torch.Tensor] = field(default_factory=list)
+    _masks: list[torch.Tensor] = field(default_factory=list)
+    _perspective: list[torch.Tensor] = field(default_factory=list)
+
+    @property
+    def games_completed(self) -> int:
+        return self.a_wins + self.b_wins + self.draws
+
+    def reset_for_pairing(
+        self,
+        entry_a: OpponentEntry,
+        entry_b: OpponentEntry,
+        model_a: torch.nn.Module,
+        model_b: torch.nn.Module,
+        games_target: int,
+        collect_rollout: bool = False,
+    ) -> None:
+        """Reset slot state for a new pairing."""
+        self.entry_a = entry_a
+        self.entry_b = entry_b
+        self.model_a = model_a
+        self.model_b = model_b
+        self.a_wins = 0
+        self.b_wins = 0
+        self.draws = 0
+        self.games_target = games_target
+        self.active = True
+        self.collect_rollout = collect_rollout
+        self._obs.clear()
+        self._actions.clear()
+        self._rewards.clear()
+        self._dones.clear()
+        self._masks.clear()
+        self._perspective.clear()
+
+    def to_result(self) -> MatchResult:
+        """Package slot state into a MatchResult."""
+        rollout = None
+        if self.collect_rollout and self._obs:
+            from keisei.training.dynamic_trainer import MatchRollout
+
+            rollout = MatchRollout(
+                observations=torch.stack(self._obs),
+                actions=torch.stack(self._actions),
+                rewards=torch.stack(self._rewards),
+                dones=torch.stack(self._dones),
+                legal_masks=torch.stack(self._masks),
+                perspective=torch.stack(self._perspective),
+            )
+        assert self.entry_a is not None and self.entry_b is not None
+        return MatchResult(
+            entry_a=self.entry_a,
+            entry_b=self.entry_b,
+            a_wins=self.a_wins,
+            b_wins=self.b_wins,
+            draws=self.draws,
+            rollout=rollout,
+        )
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/test_concurrent_matches.py::TestMatchResult -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add keisei/training/concurrent_matches.py tests/test_concurrent_matches.py
+git commit -m "feat: add MatchResult and _MatchSlot data structures for ConcurrentMatchPool"
+```
+
+### Sub-task 6b: ConcurrentMatchPool.run_round
+
+- [ ] **Step 6: Write MockVecEnv and failing tests for run_round**
+
+Add to `tests/test_concurrent_matches.py`:
+
+```python
+from tests._helpers import TinyModel
 
 
+class MockVecEnv:
+    """Deterministic VecEnv mock for testing ConcurrentMatchPool.
+
+    Terminates each env after ``terminate_after`` steps with reward +1.0 (A wins).
+    After termination, auto-resets (ply counter resets to 0).
+    """
+
+    def __init__(self, num_envs: int, terminate_after: int = 3) -> None:
+        self.num_envs = num_envs
+        self.terminate_after = terminate_after
+        self._ply = np.zeros(num_envs, dtype=int)
+
+    def reset(self) -> SimpleNamespace:
+        self._ply = np.zeros(self.num_envs, dtype=int)
+        return SimpleNamespace(
+            observations=np.random.randn(self.num_envs, 50, 9, 9).astype(np.float32),
+            legal_masks=np.ones((self.num_envs, 11259), dtype=bool),
+        )
+
+    def step(self, actions: np.ndarray) -> SimpleNamespace:
+        self._ply += 1
+        terminated = self._ply >= self.terminate_after
+        rewards = np.where(terminated, 1.0, 0.0).astype(np.float32)
+        self._ply[terminated] = 0  # auto-reset
+        return SimpleNamespace(
+            observations=np.random.randn(self.num_envs, 50, 9, 9).astype(np.float32),
+            legal_masks=np.ones((self.num_envs, 11259), dtype=bool),
+            current_players=np.zeros(self.num_envs, dtype=np.uint8),
+            rewards=rewards,
+            terminated=terminated,
+            truncated=np.zeros(self.num_envs, dtype=bool),
+        )
+
+
+def _make_mock_store(entries: list[OpponentEntry]) -> MagicMock:
+    """Create a mock OpponentStore that returns TinyModel for any load."""
+    store = MagicMock(spec=OpponentStore)
+    store.load_opponent = MagicMock(side_effect=lambda entry, device="cpu": TinyModel())
+    return store
+
+
+class TestRunRound:
+    def test_processes_all_pairings(self):
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4,
+        )
+        pool = ConcurrentMatchPool(config)
+        entries = [_make_entry(i) for i in range(1, 5)]
+        pairings = [(entries[0], entries[1]), (entries[2], entries[3])]
+        vecenv = MockVecEnv(num_envs=4, terminate_after=3)
+        store = _make_mock_store(entries)
+        results = pool.run_round(
+            pairings, vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=4,
+        )
+        assert len(results) == 2
+        for r in results:
+            assert isinstance(r, MatchResult)
+            assert r.a_wins + r.b_wins + r.draws >= 4
+
+    def test_more_pairings_than_parallel_slots(self):
+        config = ConcurrencyConfig(
+            parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2,
+        )
+        pool = ConcurrentMatchPool(config)
+        entries = [_make_entry(i) for i in range(1, 7)]
+        pairings = [
+            (entries[0], entries[1]),
+            (entries[2], entries[3]),
+            (entries[4], entries[5]),
+        ]
+        vecenv = MockVecEnv(num_envs=2, terminate_after=2)
+        store = _make_mock_store(entries)
+        results = pool.run_round(
+            pairings, vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=2,
+        )
+        assert len(results) == 3
+        assert results[0].entry_a.id == 1
+        assert results[1].entry_a.id == 3
+        assert results[2].entry_a.id == 5
+
+    def test_empty_pairings(self):
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4,
+        )
+        pool = ConcurrentMatchPool(config)
+        vecenv = MockVecEnv(num_envs=4)
+        store = _make_mock_store([])
+        results = pool.run_round(
+            [], vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=4,
+        )
+        assert results == []
+
+    def test_stop_event_interrupts(self):
+        import threading
+
+        config = ConcurrencyConfig(
+            parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2,
+        )
+        pool = ConcurrentMatchPool(config)
+        entries = [_make_entry(i) for i in range(1, 5)]
+        pairings = [(entries[0], entries[1]), (entries[2], entries[3])]
+        vecenv = MockVecEnv(num_envs=2, terminate_after=100)
+        store = _make_mock_store(entries)
+        stop = threading.Event()
+        stop.set()  # immediate stop
+        results = pool.run_round(
+            pairings, vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=1000, stop_event=stop,
+        )
+        assert isinstance(results, list)
+
+    def test_rollout_collection_for_trainable(self):
+        config = ConcurrencyConfig(
+            parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2,
+        )
+        pool = ConcurrentMatchPool(config)
+        a = _make_entry(1, role=Role.DYNAMIC)
+        b = _make_entry(2, role=Role.DYNAMIC)
+        pairings = [(a, b)]
+        vecenv = MockVecEnv(num_envs=2, terminate_after=3)
+        store = _make_mock_store([a, b])
+        results = pool.run_round(
+            pairings, vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=2,
+            trainable_fn=lambda ea, eb: True,
+        )
+        assert len(results) == 1
+        assert results[0].rollout is not None
+        assert results[0].rollout.observations.ndim == 4
+
+    def test_no_rollout_when_trainable_fn_false(self):
+        config = ConcurrencyConfig(
+            parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2,
+        )
+        pool = ConcurrentMatchPool(config)
+        a, b = _make_entry(1), _make_entry(2)
+        pairings = [(a, b)]
+        vecenv = MockVecEnv(num_envs=2, terminate_after=2)
+        store = _make_mock_store([a, b])
+        results = pool.run_round(
+            pairings, vecenv, store=store, device=torch.device("cpu"),
+            games_per_match=2,
+            trainable_fn=lambda ea, eb: False,
+        )
+        assert len(results) == 1
+        assert results[0].rollout is None
+```
+
+- [ ] **Step 7: Run tests to verify they fail**
+
+Run: `uv run pytest tests/test_concurrent_matches.py::TestRunRound -v`
+Expected: FAIL with `ImportError` (ConcurrentMatchPool not defined)
+
+- [ ] **Step 8: Implement ConcurrentMatchPool.run_round**
+
+Add to `keisei/training/concurrent_matches.py`:
+
+```python
 class ConcurrentMatchPool:
-    """Runs multiple pairings concurrently on a single partitioned VecEnv.
+    """Manages parallel match execution on a single GPU.
 
-    Each partition owns a disjoint range of environments. One vecenv.step()
-    call advances all partitions simultaneously. Auto-reset handles
-    completed games per-env without affecting other partitions.
-
-    Architecture:
-    1. Create one VecEnv with total_envs environments at round start. Call vecenv.reset() once.
-    2. Assign env ranges to partitions: partition 0 = envs [0, envs_per_match),
-       partition 1 = [envs_per_match, 2*envs_per_match), etc.
-    3. Load model pairs for all active partitions.
-    4. Per-step loop (runs until all partitions have completed their games):
-       a. For each active partition, run forward pass on obs[env_start:env_end].
-       b. Merge all actions into one action tensor.
-       c. Call vecenv.step(actions) ONCE for all environments.
-       d. For each partition, check terminated/truncated per-env.
-       e. When a partition completes its required games, mark it done.
-    5. When a partition completes and more pairings remain, swap in new models
-       for that slot and reset its completion counter (env slots auto-reset).
-    6. When all pairings are done, return results.
+    Partitions a VecEnv across concurrent pairings. Each partition runs its
+    own model pair. The VecEnv step is batched (one call for all envs),
+    while inference runs per-partition.
     """
 
     def __init__(self, config: ConcurrencyConfig) -> None:
         self.config = config
 
-    def partition_range(self, partition_idx: int) -> tuple[int, int]:
-        """Return (env_start, env_end) for a partition index."""
-        if partition_idx < 0 or partition_idx >= self.config.parallel_matches:
-            raise ValueError(
-                f"partition_idx {partition_idx} out of range "
-                f"[0, {self.config.parallel_matches})"
-            )
-        start = partition_idx * self.config.envs_per_match
-        end = start + self.config.envs_per_match
-        return (start, end)
-
     def run_round(
         self,
-        vecenv: Any,
         pairings: list[tuple[OpponentEntry, OpponentEntry]],
+        vecenv: Any,
         *,
-        load_fn: Callable[[OpponentEntry], Any],
-        release_fn: Callable[[Any, Any], None],
-        device: str | torch.device = "cpu",
-        games_per_match: int = 64,
-        max_ply: int = 512,
-        stop_event: threading.Event | None = None,
+        store: OpponentStore,
+        device: torch.device,
+        games_per_match: int,
+        stop_event: Any | None = None,
+        trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
     ) -> list[MatchResult]:
-        """Execute pairings with true concurrent partitioned inference.
+        """Execute pairings with up to parallel_matches concurrent.
 
         Args:
-            vecenv: A VecEnv instance with total_envs environments. reset() is
-                    called once at the start. Individual envs auto-reset on
-                    game completion.
-            pairings: Priority-ordered list of (entry_a, entry_b).
-            load_fn: Callable(entry) -> model. Loads a model for inference.
-            release_fn: Callable(model_a, model_b) -> None. Releases models.
+            pairings: Ordered list of (entry_a, entry_b). High-priority first.
+            vecenv: VecEnv instance with total_envs environments.
+            store: OpponentStore for loading models.
             device: Torch device for inference.
-            games_per_match: Number of games each pairing must complete.
-            max_ply: Maximum ply per game (safety bound).
-            stop_event: If set, abort early and return partial results.
+            games_per_match: Number of games per pairing.
+            stop_event: Optional threading.Event for early termination.
+            trainable_fn: Called per pairing to decide rollout collection.
 
         Returns:
-            List of MatchResult in the same order as input pairings.
+            List of MatchResult in completion order.
         """
         if not pairings:
             return []
 
-        if stop_event is not None and stop_event.is_set():
-            logger.warning("run_round: stop_event already set, returning empty results")
-            return []
+        results: list[MatchResult] = []
+        remaining = collections.deque(pairings)
+        cfg = self.config
 
-        # Results indexed by pairing position for ordered return
-        results: dict[int, MatchResult] = {}
-        next_pairing_idx = 0
-        total_pairings = len(pairings)
-        parallel = min(self.config.parallel_matches, total_pairings)
-
-        # Reset VecEnv once at round start
-        obs = vecenv.reset()
-
-        # Initialize active partitions
-        active: dict[int, _PartitionState] = {}  # slot_idx -> state
-        for slot_idx in range(parallel):
-            if next_pairing_idx >= total_pairings:
-                break
-            state = self._init_partition(
-                slot_idx, next_pairing_idx, pairings[next_pairing_idx],
-                load_fn, games_per_match,
+        slots = [
+            _MatchSlot(
+                index=i,
+                env_start=i * cfg.envs_per_match,
+                env_end=(i + 1) * cfg.envs_per_match,
             )
-            if state is not None:
-                active[slot_idx] = state
-            next_pairing_idx += 1
+            for i in range(cfg.parallel_matches)
+        ]
 
-        # Per-step loop: advance all partitions simultaneously
-        ply_count = 0
-        while active:
-            if stop_event is not None and stop_event.is_set():
-                logger.warning("run_round: stop_event fired, returning partial results")
-                break
-
-            if ply_count >= max_ply:
-                logger.warning("run_round: max_ply %d reached, ending round", max_ply)
-                break
-            ply_count += 1
-
-            # Build action tensor for ALL envs
-            actions = torch.zeros(self.config.total_envs, dtype=torch.long, device=device)
-
-            for slot_idx, state in active.items():
-                # model.eval() for inference safety
-                state.model_a.eval()
-                state.model_b.eval()
-
-                partition_obs = obs[state.env_start:state.env_end]
-
-                # Determine which player is to move per env and get actions
-                # (Implementation detail: use current_players from VecEnv to
-                # select model_a or model_b per env, then run forward pass)
-                with torch.no_grad():
-                    # Simplified: alternate models based on current player
-                    # Real implementation uses vecenv.current_players()
-                    partition_actions = self._get_partition_actions(
-                        state, partition_obs, device,
-                    )
-                actions[state.env_start:state.env_end] = partition_actions
-
-            # Step ALL environments at once
-            obs, rewards, terminated, truncated, infos = vecenv.step(actions)
-
-            # Check completions per partition
-            completed_slots: list[int] = []
-            for slot_idx, state in active.items():
-                partition_term = terminated[state.env_start:state.env_end]
-                partition_trunc = truncated[state.env_start:state.env_end]
-                partition_done = partition_term | partition_trunc
-
-                # Count newly completed games in this partition
-                new_completions = int(partition_done.sum().item())
-                if new_completions > 0:
-                    # Tally wins/losses/draws from rewards
-                    partition_rewards = rewards[state.env_start:state.env_end]
-                    for env_i in range(state.env_end - state.env_start):
-                        if partition_done[env_i]:
-                            r = partition_rewards[env_i].item()
-                            if r > 0:
-                                state.wins_a += 1
-                            elif r < 0:
-                                state.wins_b += 1
-                            else:
-                                state.draws += 1
-                            state.games_completed += 1
-
-                if state.games_completed >= state.games_target:
-                    state.done = True
-                    completed_slots.append(slot_idx)
-
-            # Process completed partitions
-            for slot_idx in completed_slots:
-                state = active.pop(slot_idx)
-                results[state.pairing_idx] = MatchResult(
-                    entry_a=state.entry_a,
-                    entry_b=state.entry_b,
-                    wins_a=state.wins_a,
-                    wins_b=state.wins_b,
-                    draws=state.draws,
-                    rollout=None,
+        for slot in slots:
+            if remaining:
+                self._assign_pairing(
+                    slot, remaining.popleft(), store, device,
+                    games_per_match, trainable_fn,
                 )
-                # Release models
-                try:
-                    release_fn(state.model_a, state.model_b)
-                except Exception:
-                    logger.exception("Failed to release models for slot %d", slot_idx)
 
-                # Swap in next pairing if available (slot reuse)
-                if next_pairing_idx < total_pairings:
-                    new_state = self._init_partition(
-                        slot_idx, next_pairing_idx, pairings[next_pairing_idx],
-                        load_fn, games_per_match,
+        reset = vecenv.reset()
+        obs = torch.from_numpy(np.asarray(reset.observations)).to(device)
+        legal_masks = torch.from_numpy(np.asarray(reset.legal_masks)).to(device)
+        current_players = np.zeros(cfg.total_envs, dtype=np.uint8)
+
+        max_steps = games_per_match * 512 * 3
+
+        for _ in range(max_steps):
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not any(s.active for s in slots):
+                break
+
+            actions = torch.zeros(cfg.total_envs, dtype=torch.long, device=device)
+
+            for slot in slots:
+                if not slot.active:
+                    for idx in range(slot.env_start, slot.env_end):
+                        legal = legal_masks[idx].nonzero(as_tuple=True)[0]
+                        actions[idx] = legal[0] if legal.numel() > 0 else 0
+                    continue
+
+                s, e = slot.env_start, slot.env_end
+                slot_players = current_players[s:e]
+
+                if slot.collect_rollout:
+                    slot._obs.append(obs[s:e].cpu())
+                    slot._masks.append(legal_masks[s:e].cpu())
+                    slot._perspective.append(
+                        torch.from_numpy(slot_players.copy()),
                     )
-                    if new_state is not None:
-                        active[slot_idx] = new_state
-                    next_pairing_idx += 1
 
-        # Release any remaining active models (early termination)
-        for slot_idx, state in active.items():
-            try:
-                release_fn(state.model_a, state.model_b)
-            except Exception:
-                logger.exception("Failed to release models for slot %d", slot_idx)
+                a_local = np.where(slot_players == 0)[0]
+                if len(a_local) > 0:
+                    a_global = torch.tensor(
+                        a_local + s, dtype=torch.long, device=device,
+                    )
+                    with torch.no_grad():
+                        a_out = slot.model_a(obs[a_global])
+                        a_logits = a_out.policy_logits.reshape(len(a_local), -1)
+                        a_masked = a_logits.masked_fill(
+                            ~legal_masks[a_global], float("-inf"),
+                        )
+                        a_probs = F.softmax(a_masked, dim=-1)
+                        actions[a_global] = torch.distributions.Categorical(
+                            a_probs,
+                        ).sample()
 
-        # Return results in original pairing order
-        return [results[i] for i in sorted(results.keys())]
+                b_local = np.where(slot_players == 1)[0]
+                if len(b_local) > 0:
+                    b_global = torch.tensor(
+                        b_local + s, dtype=torch.long, device=device,
+                    )
+                    with torch.no_grad():
+                        b_out = slot.model_b(obs[b_global])
+                        b_logits = b_out.policy_logits.reshape(len(b_local), -1)
+                        b_masked = b_logits.masked_fill(
+                            ~legal_masks[b_global], float("-inf"),
+                        )
+                        b_probs = F.softmax(b_masked, dim=-1)
+                        actions[b_global] = torch.distributions.Categorical(
+                            b_probs,
+                        ).sample()
 
-    def _init_partition(
-        self,
-        slot_idx: int,
-        pairing_idx: int,
-        pairing: tuple[OpponentEntry, OpponentEntry],
-        load_fn: Callable[[OpponentEntry], Any],
-        games_target: int,
-    ) -> _PartitionState | None:
-        """Initialize a partition with loaded models. Returns None on load failure."""
-        entry_a, entry_b = pairing
-        env_start, env_end = self.partition_range(slot_idx)
-        try:
-            model_a = load_fn(entry_a)
-            model_b = load_fn(entry_b)
-        except Exception:
-            logger.warning(
-                "Failed to load models for pairing %d (%s vs %s), skipping partition",
-                pairing_idx, entry_a.display_name, entry_b.display_name,
-                exc_info=True,
+                if slot.collect_rollout:
+                    slot._actions.append(actions[s:e].cpu())
+
+            step_result = vecenv.step(actions.cpu().numpy())
+            obs = torch.from_numpy(np.asarray(step_result.observations)).to(device)
+            legal_masks = torch.from_numpy(
+                np.asarray(step_result.legal_masks),
+            ).to(device)
+            current_players = np.asarray(
+                step_result.current_players, dtype=np.uint8,
             )
-            return None
-        return _PartitionState(
-            slot_idx=slot_idx,
-            pairing_idx=pairing_idx,
-            entry_a=entry_a,
-            entry_b=entry_b,
-            model_a=model_a,
-            model_b=model_b,
-            env_start=env_start,
-            env_end=env_end,
-            games_target=games_target,
-        )
+            rewards = np.asarray(step_result.rewards)
+            terminated = np.asarray(step_result.terminated)
+            truncated = np.asarray(step_result.truncated)
+            done = terminated | truncated
 
-    def _get_partition_actions(
+            for slot in slots:
+                if not slot.active:
+                    continue
+                s, e = slot.env_start, slot.env_end
+                slot_rewards = rewards[s:e]
+                slot_done = done[s:e]
+
+                if slot.collect_rollout:
+                    slot._rewards.append(
+                        torch.from_numpy(slot_rewards.copy().astype(np.float32)),
+                    )
+                    slot._dones.append(
+                        torch.from_numpy(slot_done.copy().astype(np.float32)),
+                    )
+
+                slot.a_wins += int(((slot_rewards > 0) & slot_done).sum())
+                slot.b_wins += int(((slot_rewards < 0) & slot_done).sum())
+                slot.draws += int(((slot_rewards == 0) & slot_done).sum())
+
+                if slot.games_completed >= slot.games_target:
+                    results.append(slot.to_result())
+                    release_models(
+                        slot.model_a, slot.model_b,
+                        device_type=device.type,
+                    )
+                    slot.model_a = None
+                    slot.model_b = None
+                    if remaining:
+                        self._assign_pairing(
+                            slot, remaining.popleft(), store, device,
+                            games_per_match, trainable_fn,
+                        )
+                    else:
+                        slot.active = False
+
+        for slot in slots:
+            if slot.active:
+                results.append(slot.to_result())
+                if slot.model_a is not None:
+                    release_models(
+                        slot.model_a, slot.model_b,
+                        device_type=device.type,
+                    )
+
+        return results
+
+    def _assign_pairing(
         self,
-        state: _PartitionState,
-        partition_obs: torch.Tensor,
-        device: str | torch.device,
-    ) -> torch.Tensor:
-        """Run forward pass for a partition and return action tensor.
-
-        Uses the appropriate model (model_a or model_b) based on the
-        current player for each env in the partition.
-        """
-        # Forward pass on partition observations
-        # The real implementation selects model_a or model_b per-env
-        # based on current_players from VecEnv. For now, a simplified
-        # version that alternates based on ply parity.
-        logits = state.model_a(partition_obs)
-        actions = logits.argmax(dim=-1)
-        return actions
+        slot: _MatchSlot,
+        pairing: tuple[OpponentEntry, OpponentEntry],
+        store: OpponentStore,
+        device: torch.device,
+        games_per_match: int,
+        trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None,
+    ) -> None:
+        """Load models and configure a slot for a new pairing."""
+        entry_a, entry_b = pairing
+        model_a = store.load_opponent(entry_a, device=str(device))
+        model_b = store.load_opponent(entry_b, device=str(device))
+        collect = trainable_fn(entry_a, entry_b) if trainable_fn else False
+        slot.reset_for_pairing(
+            entry_a, entry_b, model_a, model_b,
+            games_target=games_per_match,
+            collect_rollout=collect,
+        )
 ```
 
-**Do NOT use `play_match` or `play_batch`** — the `_step_all_partitions` loop (the `while active:` loop in `run_round`) manages the partitioned loop directly. `play_match`/`play_batch` are for the sequential path and don't understand partitions.
+- [ ] **Step 9: Run tests to verify they pass**
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_concurrent_matches.py -x`
-- [ ] **Commit:** `feat(league): add ConcurrentMatchPool with true partitioned concurrent inference`
+Run: `uv run pytest tests/test_concurrent_matches.py -v`
+Expected: all PASS
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add keisei/training/concurrent_matches.py tests/test_concurrent_matches.py
+git commit -m "feat: add ConcurrentMatchPool with partitioned VecEnv game loop"
+```
 
 ---
 
-### Task 8: LeagueTournament — Wire ConcurrentMatchPool
-
-**Goal:** Replace the sequential `for entry_a, entry_b in pairings` loop in `LeagueTournament._run_loop` with `ConcurrentMatchPool.run_round`, and wire PriorityScorer repeat-tracking after each round.
+## Task 7: Tournament Integration
 
 **Files:**
 - Modify: `keisei/training/tournament.py`
-- Create: `tests/test_phase4_integration.py`
+- Modify: `tests/test_tournament.py`
 
-**TDD Steps:**
+- [ ] **Step 1: Write failing test for concurrent tournament**
 
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tournament_uses_concurrent_pool`):
-  - Create a `LeagueTournament` with a mock `ConcurrentMatchPool`.
-  - Patch `pool.run_round` to record its call args and return fake `MatchResult` objects.
-  - Call `tournament._run_one_round(entries)` (extract the inner round logic for testability).
-  - Assert `pool.run_round` was called with the pairings from `scheduler.generate_round`.
-  - Assert results are processed (Elo updates, `record_result` calls).
-
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tournament_records_repeat_tracking`):
-  - Create a tournament with a real `PriorityScorer`.
-  - Run one round via `_run_one_round`.
-  - Assert `priority_scorer._round_history` has one entry with the correct pair IDs.
-
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tournament_processes_results_with_elo_update`):
-  - Create a tournament with a mock pool that returns one `MatchResult(wins_a=3, wins_b=0, draws=0)`.
-  - After round, assert `store.record_result` was called.
-  - Assert `store.update_elo` was called for both entries.
-
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tournament_handles_empty_round`):
-  - Scheduler returns empty pairings list.
-  - Assert `pool.run_round` is called with empty list.
-  - Assert no Elo updates or record_result calls.
-
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_entry_retired_mid_round`):
-  - Create entries, start round processing.
-  - Retire one entry via store between match completion and result processing.
-  - Process result for the retired entry.
-  - Assert no crash, no Elo update for the retired entry, and a warning is logged.
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_integration.py -x`
-
-- [ ] **Implement** — Modify `keisei/training/tournament.py`:
-
-Add `ConcurrentMatchPool` and `PriorityScorer` to constructor:
+Add to `tests/test_tournament.py`. First check existing imports and add what's needed:
 
 ```python
-from keisei.training.concurrent_matches import ConcurrentMatchPool, MatchResult
-from keisei.training.priority_scorer import PriorityScorer
+from keisei.training.concurrent_matches import ConcurrentMatchPool
+from keisei.config import ConcurrencyConfig
+```
 
-class LeagueTournament:
-    def __init__(
-        self,
-        store: OpponentStore,
-        scheduler: MatchScheduler,
-        *,
-        device: str = "cuda:1",
-        num_envs: int = 64,
-        max_ply: int = 512,
-        games_per_match: int = 64,
-        k_factor: float = 16.0,
-        pause_seconds: float = 5.0,
-        min_pool_size: int = 3,
-        learner_entry_id: int | None = None,
-        historical_library: HistoricalLibrary | None = None,
-        gauntlet: HistoricalGauntlet | None = None,
+Then add test class:
+
+```python
+class TestConcurrentTournament:
+    def test_tournament_accepts_concurrent_pool(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        scheduler = _make_scheduler()
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4,
+        )
+        pool = ConcurrentMatchPool(config)
+        t = _make_tournament(store, scheduler, concurrent_pool=pool)
+        assert t.concurrent_pool is pool
+
+    def test_tournament_without_pool_still_works(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+        t = _make_tournament(store)
+        assert t.concurrent_pool is None
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_tournament.py::TestConcurrentTournament -v`
+Expected: FAIL with `TypeError` (unexpected keyword argument `concurrent_pool`)
+
+- [ ] **Step 3: Add concurrent_pool parameter to LeagueTournament.__init__**
+
+In `keisei/training/tournament.py`:
+
+Add import at top:
+```python
+from keisei.training.concurrent_matches import ConcurrentMatchPool
+```
+
+Add parameter to `__init__` after `dynamic_trainer`:
+```python
         concurrent_pool: ConcurrentMatchPool | None = None,
-        priority_scorer: PriorityScorer | None = None,
-    ) -> None:
-        # ... existing init ...
+```
+
+Add in body:
+```python
         self.concurrent_pool = concurrent_pool
-        self.priority_scorer = priority_scorer
 ```
 
-Replace the sequential loop in `_run_loop` with concurrent execution when `concurrent_pool` is available. The VecEnv is created inside `_run_loop` (as it is today) and passed to `ConcurrentMatchPool.run_round()` as a parameter — **NOT stored as `self._vecenv`**:
+- [ ] **Step 4: Add _run_concurrent_round method**
+
+Add this method to `LeagueTournament`:
 
 ```python
-# Inside _run_loop, create VecEnv locally:
-if self.concurrent_pool is not None:
-    vecenv = create_vecenv(
-        total_envs=self.concurrent_pool.config.total_envs,
-        max_ply=self.max_ply,
-    )
-else:
-    vecenv = create_vecenv(num_envs=self.num_envs, max_ply=self.max_ply)
-
-# ... then replace the sequential for-loop:
-if self.concurrent_pool is not None:
-    # Refresh bulk pair game counts once per round (H1: single GROUP BY query)
-    if self.priority_scorer is not None:
-        self.priority_scorer.refresh_pair_game_counts(
-            self.store.get_all_pair_game_counts()
+    def _run_concurrent_round(
+        self,
+        vecenv: object,
+        pairings: list[tuple[OpponentEntry, OpponentEntry]],
+        epoch: int,
+    ) -> None:
+        """Run a round using the ConcurrentMatchPool."""
+        assert self.concurrent_pool is not None
+        results = self.concurrent_pool.run_round(
+            pairings,
+            vecenv,
+            store=self.store,
+            device=self.device,
+            games_per_match=self.games_per_match,
+            stop_event=self._stop_event,
+            trainable_fn=self._is_trainable_match if self.dynamic_trainer else None,
         )
-    results = self.concurrent_pool.run_round(
-        vecenv,
-        pairings,
-        load_fn=lambda entry: self.store.load_opponent(entry, device=str(self.device)),
-        release_fn=lambda ma, mb: release_models(ma, mb, device_type=self.device.type),
-        device=self.device,
-        games_per_match=self.games_per_match,
-        max_ply=self.max_ply,
-        stop_event=self._stop_event,
-    )
-    for result in results:
-        if self._stop_event.is_set():
-            break
-        self._process_match_result(epoch, result)
-    # Record repeat tracking
-    if self.priority_scorer is not None:
-        pair_ids = [(r.entry_a.id, r.entry_b.id) for r in results]
-        self.priority_scorer.record_round_pairings(pair_ids)
-else:
-    # Existing sequential path (backward compatible)
-    for entry_a, entry_b in pairings:
-        if self._stop_event.is_set():
-            break
-        # ... existing sequential match code ...
-```
-
-Add helper method:
-
-```python
-def _process_match_result(self, epoch: int, result: MatchResult) -> None:
-    """Process a completed match: update Elo, record result."""
-    total = result.wins_a + result.wins_b + result.draws
-    if total == 0:
-        logger.warning(
-            "Skipping result with 0 games: %s vs %s",
-            result.entry_a.display_name, result.entry_b.display_name,
-        )
-        return
-    current_a = self.store.get_entry(result.entry_a.id)
-    current_b = self.store.get_entry(result.entry_b.id)
-    if current_a is None or current_b is None:
-        logger.warning(
-            "Entry retired mid-round: a=%s (exists=%s) b=%s (exists=%s)",
-            result.entry_a.id, current_a is not None,
-            result.entry_b.id, current_b is not None,
-        )
-        return  # entry retired mid-round — no Elo update
-    result_score = (result.wins_a + 0.5 * result.draws) / total
-    new_a_elo, new_b_elo = compute_elo_update(
-        current_a.elo_rating, current_b.elo_rating,
-        result=result_score, k=self.k_factor,
-    )
-    self.store.record_result(
-        epoch=epoch, learner_id=result.entry_a.id, opponent_id=result.entry_b.id,
-        wins=result.wins_a, losses=result.wins_b, draws=result.draws,
-        elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
-        elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
-    )
-    self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
-    self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
-    logger.info(
-        "  %s vs %s — %dW %dL %dD",
-        result.entry_a.display_name, result.entry_b.display_name,
-        result.wins_a, result.wins_b, result.draws,
-    )
-```
-
-**Note:** There is no `self._vecenv` — the VecEnv is created locally in `_run_loop` and passed as a parameter. This avoids lifecycle issues and makes testing easier.
-
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_integration.py -x`
-- [ ] **Run existing tournament tests** — `uv run pytest tests/test_tournament.py -x` — ensure sequential path still works.
-- [ ] **Commit:** `feat(tournament): wire ConcurrentMatchPool for batched concurrent matches`
-
----
-
-### Task 9: RecentFixedManager — Optional elo_dynamic Threshold
-
-**Goal:** Optionally switch the Recent Fixed promotion threshold to compare against Dynamic tier's `elo_dynamic` floor instead of composite `elo_rating`.
-
-**Design note:** When a Recent Fixed entry is cloned into Dynamic, its `elo_dynamic` starts at the default (1000.0). This is intentional — the entry must earn its Dynamic Elo through actual matches. The `weakest_dynamic_elo()` method ignores entries with fewer than `MIN_CALIBRATION_GAMES` games when computing the floor, preventing under-calibrated entries from dragging down the eviction threshold.
-
-**Files:**
-- Modify: `keisei/training/tier_managers.py`
-- Test: `tests/test_phase4_eviction.py`
-
-**TDD Steps:**
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_recent_fixed_promotion_uses_dynamic_elo_floor`):
-  - Create a store with:
-    - One Recent Fixed entry: `elo_rating=1100, elo_dynamic=900`.
-    - One Dynamic entry (eligible): `elo_rating=1200, elo_dynamic=800`.
-  - The Dynamic tier's `weakest_dynamic_elo()` returns `800`.
-  - The RF entry's `elo_rating=1100 > 800` (would pass old threshold).
-  - But for the new code path, the comparison should use the Dynamic tier's `elo_dynamic` floor.
-  - Verify the RF manager's promotion check calls `dynamic_manager.weakest_dynamic_elo()`.
-
-- [ ] **Write failing test** (`tests/test_phase4_eviction.py::test_recent_fixed_promotion_fallback_when_no_dynamic_eligible`):
-  - Create store with one RF entry but no eligible Dynamic entries.
-  - `weakest_dynamic_elo()` returns `None`.
-  - Assert promotion check falls back to `weakest_elo()` (composite) or skips the check.
-
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_eviction.py -k "recent_fixed_promotion" -x`
-
-- [ ] **Implement** in `keisei/training/tier_managers.py`:
-
-Add a callback setter to `RecentFixedManager` instead of holding a direct `DynamicManager` reference:
-
-```python
-class RecentFixedManager:
-    def __init__(self, ...) -> None:
-        # ... existing init ...
-        self._weakest_dynamic_elo_fn: Callable[[], float | None] | None = None
-
-    def set_weakest_dynamic_elo_fn(self, fn: Callable[[], float | None]) -> None:
-        """Set callback to get Dynamic tier's weakest elo_dynamic.
-
-        Called from TieredPool.__init__ after both managers are created:
-            self.recent_manager.set_weakest_dynamic_elo_fn(
-                self.dynamic_manager.weakest_dynamic_elo
+        for result in results:
+            total = result.a_wins + result.b_wins + result.draws
+            if total == 0:
+                continue
+            current_a = self.store.get_entry(result.entry_a.id)
+            current_b = self.store.get_entry(result.entry_b.id)
+            if current_a is None or current_b is None:
+                continue
+            result_score = (result.a_wins + 0.5 * result.draws) / total
+            new_a_elo, new_b_elo = compute_elo_update(
+                current_a.elo_rating, current_b.elo_rating,
+                result=result_score, k=self.k_factor,
             )
-        """
-        self._weakest_dynamic_elo_fn = fn
+            self.store.record_result(
+                epoch=epoch,
+                learner_id=result.entry_a.id,
+                opponent_id=result.entry_b.id,
+                wins=result.a_wins,
+                losses=result.b_wins,
+                draws=result.draws,
+                elo_delta_a=round(new_a_elo - current_a.elo_rating, 1),
+                elo_delta_b=round(new_b_elo - current_b.elo_rating, 1),
+            )
+            self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
+            self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
+            logger.info(
+                "  %s vs %s — %dW %dL %dD",
+                result.entry_a.display_name, result.entry_b.display_name,
+                result.a_wins, result.b_wins, result.draws,
+            )
+            if self.dynamic_trainer and result.rollout is not None:
+                for i, entry in enumerate([result.entry_a, result.entry_b]):
+                    if entry.role == Role.DYNAMIC:
+                        self.dynamic_trainer.record_match(
+                            entry.id, result.rollout, side=i,
+                        )
+                        if (
+                            self.dynamic_trainer.should_update(entry.id)
+                            and not self.dynamic_trainer.is_rate_limited()
+                        ):
+                            self.dynamic_trainer.update(
+                                entry, device=str(self.device),
+                            )
 ```
 
-Then modify the method that checks whether an RF entry is ready for Dynamic promotion. Change the floor Elo lookup from:
+- [ ] **Step 5: Modify _run_loop to dispatch to concurrent or sequential path**
+
+In `_run_loop`, replace the sequential match loop (the `for entry_a, entry_b in pairings:` block, approximately lines 171-183) with:
 
 ```python
-floor_elo = self._dynamic_manager.weakest_elo()
+                if self.concurrent_pool is not None:
+                    self._run_concurrent_round(vecenv, pairings, epoch)
+                else:
+                    for entry_a, entry_b in pairings:
+                        if self._stop_event.is_set():
+                            break
+                        try:
+                            self._run_one_match(vecenv, entry_a, entry_b, epoch=epoch)
+                        except Exception:
+                            logger.exception(
+                                "Match failed: %s vs %s",
+                                entry_a.display_name, entry_b.display_name,
+                            )
+                            continue
+
+                        self._stop_event.wait(self.pause_seconds)
 ```
 
-To:
+Also update VecEnv creation to use `total_envs` when concurrent pool is active. Change the VecEnv construction (around line 142):
 
 ```python
-floor_elo = None
-if self._weakest_dynamic_elo_fn is not None:
-    floor_elo = self._weakest_dynamic_elo_fn()
-if floor_elo is None:
-    floor_elo = self._dynamic_manager.weakest_elo()
+        num_envs = (
+            self.concurrent_pool.config.total_envs
+            if self.concurrent_pool is not None
+            else self.num_envs
+        )
+        vecenv = VecEnv(
+            num_envs=num_envs,
+            max_ply=self.max_ply,
+            observation_mode="katago",
+            action_mode="spatial",
+        )
 ```
 
-This uses the callback when available and gracefully falls back when `weakest_dynamic_elo()` returns None (no eligible entries) or when the callback hasn't been set.
+- [ ] **Step 6: Run tournament tests**
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_eviction.py -k "recent_fixed_promotion" -x`
-- [ ] **Run existing tier manager tests** — `uv run pytest tests/test_tier_managers.py -x`
-- [ ] **Commit:** `feat(league): RecentFixed promotion uses elo_dynamic floor when available`
+Run: `uv run pytest tests/test_tournament.py -v`
+Expected: all PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add keisei/training/tournament.py tests/test_tournament.py
+git commit -m "feat(tournament): integrate ConcurrentMatchPool for parallel match execution"
+```
 
 ---
 
-### Task 10: Integration Wiring — katago_loop.py and TieredPool
-
-**Goal:** Wire PriorityScorer, ConcurrentMatchPool, and updated configs into the existing initialization path so the full system uses Phase 4 components.
+## Task 8: Wire PriorityScorer and ConcurrentMatchPool into Training Pipeline
 
 **Files:**
-- Modify: `keisei/training/katago_loop.py`
-- Modify: `keisei/training/tiered_pool.py`
-- Test: `tests/test_phase4_integration.py`
+- Modify: `keisei/training/tiered_pool.py` and/or `keisei/training/katago_loop.py`
 
-**TDD Steps:**
+This task requires reading the actual wiring code to find where `MatchScheduler` and `LeagueTournament` are constructed. The implementer must:
 
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tiered_pool_creates_priority_scorer`):
-  - Create `TieredPool` with a `LeagueConfig` that has `priority` and `concurrency` sub-configs.
-  - Assert `pool.priority_scorer` is a `PriorityScorer` instance.
-  - Assert `pool.concurrent_pool` is a `ConcurrentMatchPool` instance.
+- [ ] **Step 1: Find MatchScheduler and LeagueTournament construction sites**
 
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tiered_pool_passes_scorer_to_scheduler`):
-  - Create `TieredPool` with Phase 4 config.
-  - Assert `pool.scheduler.priority_scorer` is the same instance as `pool.priority_scorer`.
+Read `keisei/training/tiered_pool.py` and `keisei/training/katago_loop.py` to find where these are instantiated. Search for `MatchScheduler(` and `LeagueTournament(`.
 
-- [ ] **Write failing test** (`tests/test_phase4_integration.py::test_tiered_pool_passes_pool_to_tournament`):
-  - Create `TieredPool` with Phase 4 config.
-  - Create tournament via the pool's factory method or verify the pool passes `concurrent_pool` to `LeagueTournament` constructor.
+- [ ] **Step 2: Wire PriorityScorer into MatchScheduler**
 
-- [ ] **Verify tests fail** — `uv run pytest tests/test_phase4_integration.py -k "tiered_pool" -x`
-
-- [ ] **Implement:**
-
-In `keisei/training/tiered_pool.py`, during initialization:
+At the MatchScheduler construction site, create a PriorityScorer and pass it:
 
 ```python
 from keisei.training.priority_scorer import PriorityScorer
+
+priority_scorer = PriorityScorer(league_config.priority)
+scheduler = MatchScheduler(league_config.scheduler, priority_scorer=priority_scorer)
+```
+
+- [ ] **Step 3: Wire ConcurrentMatchPool into LeagueTournament**
+
+At the LeagueTournament construction site, create a ConcurrentMatchPool and pass it:
+
+```python
 from keisei.training.concurrent_matches import ConcurrentMatchPool
 
-# In __init__ or factory method:
-self.priority_scorer = PriorityScorer(
-    config=league_config.priority,
-    # Bulk counts refreshed per-round in tournament._run_loop via refresh_pair_game_counts()
-)
-self.concurrent_pool = ConcurrentMatchPool(config=league_config.concurrency)
-
-# Pass scorer to scheduler
-self.scheduler = MatchScheduler(
-    config=league_config.scheduler,
-    priority_scorer=self.priority_scorer,
-)
-
-# Wire cross-manager callbacks (B5: callback pattern, not direct references)
-self.recent_manager.set_weakest_dynamic_elo_fn(self.dynamic_manager.weakest_dynamic_elo)
+concurrent_pool = ConcurrentMatchPool(league_config.concurrency)
 ```
 
-In `keisei/training/katago_loop.py`, when constructing the tournament, pass the new components:
+Pass `concurrent_pool=concurrent_pool` to the `LeagueTournament(...)` constructor.
 
+- [ ] **Step 4: Add scorer state updates to tournament**
+
+In `keisei/training/tournament.py`, update scorer state after matches.
+
+In `_run_concurrent_round`, after the results loop:
 ```python
-tournament = LeagueTournament(
-    store=...,
-    scheduler=...,
-    # ... existing params ...
-    concurrent_pool=tiered_pool.concurrent_pool,
-    priority_scorer=tiered_pool.priority_scorer,
-)
+        if self.scheduler._priority_scorer is not None:
+            for result in results:
+                total = result.a_wins + result.b_wins + result.draws
+                for _ in range(total):
+                    self.scheduler._priority_scorer.record_result(
+                        result.entry_a.id, result.entry_b.id,
+                    )
+                self.scheduler._priority_scorer.record_round_result(
+                    result.entry_a.id, result.entry_b.id,
+                )
+            self.scheduler._priority_scorer.advance_round()
 ```
 
-- [ ] **Verify tests pass** — `uv run pytest tests/test_phase4_integration.py -k "tiered_pool" -x`
-- [ ] **Run full test suite** — `uv run pytest tests/ -x --timeout=60` — ensure no regressions.
-- [ ] **Commit:** `feat(league): wire Phase 4 components into TieredPool and katago_loop`
+In the sequential path (`_run_loop`), after each match completes successfully:
+```python
+                    if self.scheduler._priority_scorer is not None:
+                        self.scheduler._priority_scorer.record_round_result(
+                            entry_a.id, entry_b.id,
+                        )
+```
+
+And after the sequential `for` loop completes:
+```python
+                if self.scheduler._priority_scorer is not None:
+                    self.scheduler._priority_scorer.advance_round()
+```
+
+- [ ] **Step 5: Run full test suite**
+
+Run: `uv run pytest tests/ -v --timeout=120`
+Expected: all PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add keisei/training/tiered_pool.py keisei/training/katago_loop.py keisei/training/tournament.py
+git commit -m "feat: wire PriorityScorer and ConcurrentMatchPool into training pipeline"
+```
 
 ---
 
-## Self-Review Checklist
+## Task 9: Final Validation
 
-### Spec Coverage
+- [ ] **Step 1: Run full test suite**
 
-| Spec Section | Task(s) | Status |
-|---|---|---|
-| PriorityScorer (6-component formula) | Task 3 | Covered |
-| PriorityScorer config (weights, window) | Task 1 | Covered |
-| ConcurrencyConfig (parallel_matches, envs_per_match, etc.) | Task 1 | Covered |
-| ConcurrencyConfig validation (env overflow, model budget) | Task 1 | Covered |
-| PriorityScorerConfig validation (finite weights) | Task 1 | Covered |
-| under_sample_bonus (pair game count query) | Tasks 2, 3 | Covered |
-| uncertainty_bonus (100-point Elo range) | Task 3 | Covered |
-| has_recent_fixed bonus | Task 3 | Covered |
-| lineage_diversity bonus | Task 3 | Covered |
-| repeat_penalty with sliding window | Task 3 | Covered |
-| lineage_closeness (parent/child, same group) | Task 3 | Covered |
-| score_round returns sorted descending | Task 3 | Covered |
-| MatchScheduler priority ordering | Task 4 | Covered |
-| MatchScheduler backward compat (no scorer) | Task 4 | Covered |
-| ConcurrentMatchPool partitioned VecEnv | Task 7 | Covered |
-| ConcurrentMatchPool.partition_range | Task 7 | Covered |
-| ConcurrentMatchPool.run_round | Task 7 | Covered |
-| ConcurrentMatchPool stop_event early termination | Task 7 | Covered |
-| ConcurrentMatchPool max_resident_models | Task 7 | Covered |
-| ConcurrentMatchPool results in pairing order | Task 7 | Covered |
-| DynamicManager evict_weakest uses elo_dynamic | Task 5 | Covered |
-| DynamicManager weakest_dynamic_elo() | Task 5 | Covered |
-| FrontierPromoter uses elo_frontier | Task 6 | Covered |
-| FrontierPromoter empty frontier guard | Task 6 | Covered |
-| RecentFixedManager uses weakest_dynamic_elo | Task 9 | Covered |
-| Tournament wiring (concurrent pool) | Task 8 | Covered |
-| Tournament repeat tracking after round | Task 8 | Covered |
-| Tournament _process_match_result | Task 8 | Covered |
-| TieredPool/katago_loop integration | Task 10 | Covered |
-| OpponentStore.get_pair_game_count | Task 2 | Covered |
-| OpponentStore.get_all_pair_game_counts (bulk) | Task 2 | Covered |
-| Bulk query replaces per-pair N-query pattern | Tasks 2, 3, 8 | Covered |
-| VecEnv auto-reset per-env (true concurrent) | Task 7 | Covered |
-| Partition slot reuse on completion | Task 7 | Covered |
-| Per-partition model load failure handling | Task 7 | Covered |
-| Calibration gate for role-specific Elo | Tasks 5, 6 | Covered |
-| Empty frontier promotes (seeds tier) | Task 6 | Covered |
-| Phase 3 prerequisite gate on Task 6 | Task 6 | Covered |
-| VecEnv passed as parameter, not self._vecenv | Tasks 7, 8 | Covered |
-| Callback pattern for weakest_dynamic_elo | Tasks 9, 10 | Covered |
-| CPU-only smoke test with real VecEnv | Task 7 | Covered |
-| Entry-retired-mid-round test | Task 8 | Covered |
-| Initial elo_dynamic for promoted entries | Task 9 | Documented |
-| Partial round repeat tracking behavior | Task 3 | Documented |
-| No schema changes | All tasks | Verified — no ALTER TABLE or CREATE TABLE |
-| True concurrent inference, NOT sequential batching | Tasks 7, 8 | Verified — single step() advances all partitions |
-| Dynamic training interaction (sequential) | Task 8 | Covered — rollout=None for now, trainer called separately |
-| Monitoring metrics (throughput, priority dist) | Implicit via logging in Tasks 7, 8 | Covered |
+Run: `uv run pytest tests/ -v --timeout=120`
+Expected: all PASS
 
-### Placeholder Check
+- [ ] **Step 2: Verify imports are clean**
 
-No TBD, TODO, or "fill in later" placeholders remain. All tasks have concrete implementation details with exact code snippets.
+Run: `uv run python -c "from keisei.training.priority_scorer import PriorityScorer; from keisei.training.concurrent_matches import ConcurrentMatchPool, MatchResult; print('OK')"`
+Expected: `OK`
 
-### Type/Method Name Consistency
+- [ ] **Step 3: Final commit if any cleanup needed**
 
-- `PriorityScorer` — used consistently in Tasks 1, 3, 4, 8, 10.
-- `PriorityScorerConfig` — used in Tasks 1, 3, 10. Fields match spec exactly.
-- `ConcurrencyConfig` — used in Tasks 1, 7, 10. Fields match spec exactly.
-- `ConcurrentMatchPool` — used in Tasks 7, 8, 10.
-- `MatchResult` dataclass — defined in Task 7, consumed in Task 8.
-- `pair_game_counts: dict[tuple[int, int], int]` — passed to PriorityScorer constructor, refreshed per-round via `refresh_pair_game_counts()` with data from `store.get_all_pair_game_counts()`.
-- `refresh_pair_game_counts(counts)` — defined in Task 3, called in Task 8 once per round.
-- `get_all_pair_game_counts() -> dict[tuple[int, int], int]` — defined in Task 2, called in Task 8.
-- `get_pair_game_count(a_id, b_id) -> int` — defined in Task 2, available for per-pair lookups.
-- `record_round_pairings(pair_ids: list[tuple[int, int]])` — defined in Task 3, called in Task 8.
-- `score_round(pairings) -> list[tuple[OpponentEntry, OpponentEntry]]` — defined in Task 3, called in Task 4.
-- `partition_range(idx) -> tuple[int, int]` — defined and tested in Task 7. Raises `ValueError` for out-of-range idx.
-- `weakest_dynamic_elo() -> float | None` — defined in Task 5, consumed in Task 9 via callback.
-- `set_weakest_dynamic_elo_fn(fn)` — defined in Task 9, called in Task 10 during TieredPool init.
-- `_init_partition(slot_idx, pairing_idx, pairing, load_fn, games_target) -> _PartitionState | None` — defined in Task 7, handles model load failure per-partition.
-- `elo_dynamic` — used in Tasks 5, 9. Exists on `OpponentEntry` since Phase 2.
-- `elo_frontier` — used in Task 6. Exists on `OpponentEntry` since Phase 2.
-- `generate_round(entries)` — modified in Task 4, signature unchanged (backward compatible).
-- `_process_match_result` — defined in Task 8, private to `LeagueTournament`. Logs warnings for total==0 and retired-entry paths.
-
-### Lessons Applied
-
-1. **Locking:** New store methods `get_pair_game_count` and `get_all_pair_game_counts` use `with self._lock` (Task 2). Read-only, no commit needed.
-2. **No monkey-patching:** PriorityScorer receives bulk counts dict, refreshed per-round. RecentFixedManager uses callback pattern for `weakest_dynamic_elo` (Tasks 3, 9).
-3. **Schema migration:** NO schema changes in Phase 4. Explicitly called out in Critical Implementation Notes.
-4. **Role.RETIRED does not exist:** Not referenced anywhere in this plan.
-5. **OpponentEntry defaults:** No new fields added to OpponentEntry.
-6. **Behavioral assertions:** Every test asserts specific values — priority scores, partition ranges, evicted entry IDs, sorted ordering (all tasks).
-7. **Every task has test steps:** All 10 tasks include TDD steps with failing test first.
-8. **No direct store internals access:** PriorityScorer and ConcurrentMatchPool use only public store methods (Tasks 2, 3, 7).
-9. **Explicit learner_entry_id:** Not modified; existing pattern preserved.
-10. **model.train() after load_opponent:** Documented in Critical Notes; ConcurrentMatchPool calls `model.eval()` at inference start (Task 7).
-11. **weights_only=True:** No new torch.load calls; documented in Critical Notes.
-12. **Perspective capture BEFORE vecenv.step():** Documented in Critical Notes; applies if rollout collection is added.
-13. **Clone + retire atomicity:** No new clone+retire paths in Phase 4.
-14. **Bulk queries:** `get_all_pair_game_counts()` replaces per-pair query pattern (H1). One GROUP BY instead of N queries.
-15. **Calibration gate:** Role-specific Elo falls back to `elo_rating` when `games_played < MIN_CALIBRATION_GAMES` (H4).
-16. **VecEnv lifecycle:** VecEnv created locally in `_run_loop`, passed as parameter to `run_round()`. No `self._vecenv` (B4).
-17. **Per-partition failure isolation:** Model load failures skip that partition with a warning, don't abort the entire round (H7).
-18. **deque(maxlen=N):** Sliding window uses `collections.deque` for O(1) eviction, not `list + pop(0)` (H8).
-19. **Empty list guards:** `weakest_dynamic_elo` guards empty list and under-calibrated entries (Task 5). FrontierPromoter empty frontier promotes to seed tier (Task 6). `evict_weakest` guards empty eligible list (Task 5).
-20. **Buffer size caps:** `_round_history` deque capped at `repeat_window_rounds` (Task 3). Each round set bounded by pool size squared.
-21. **No `uv run grep`:** Not used anywhere in this plan.
+```bash
+git add -A
+git commit -m "chore: Phase 4 final validation and cleanup"
+```

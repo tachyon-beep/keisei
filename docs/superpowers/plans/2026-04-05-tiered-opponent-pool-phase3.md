@@ -126,7 +126,8 @@ buffers.
 | `keisei/training/opponent_store.py` | Modify | Add `optimizer_path`/`update_count`/`last_train_at` to OpponentEntry, add `save_optimizer`, `load_optimizer`, `increment_update_count` methods |
 | `keisei/training/tier_managers.py` | Modify | Remove `training_enabled=False` guard from DynamicManager, add `get_trainable()` method; activate FrontierManager.review() |
 | `keisei/training/tiered_pool.py` | Modify | Wire DynamicTrainer and FrontierPromoter into TieredPool |
-| `keisei/training/tournament.py` | Modify | Collect match rollout data, call DynamicTrainer after trainable matches |
+| `keisei/training/match_utils.py` | Modify | Add `collect_rollout` flag to `play_batch()` and `play_match()` for rollout collection |
+| `keisei/training/tournament.py` | Modify | Thread `collect_rollout` through `_play_match`, call DynamicTrainer after trainable matches |
 | `keisei/training/katago_ppo.py` | Modify | Extract `ppo_clip_loss()` and `wdl_cross_entropy_loss()` as module-level functions for reuse by DynamicTrainer |
 | `keisei/training/katago_loop.py` | Modify | Pass `learner_lr` to TieredPool constructor |
 | `keisei/config.py` | Modify | Extend `DynamicConfig` with training params, `FrontierStaticConfig` with promotion params |
@@ -864,26 +865,26 @@ buffers.
 
 ---
 
-### Task 12: Tournament Changes — Match Data Collection
+### Task 12: Match Utils Changes — Match Data Collection
 
-**Goal:** Extend `_play_batch` to optionally collect match rollout data and return it alongside results.
+**Goal:** Extend `match_utils.play_batch()` and `match_utils.play_match()` to optionally collect match rollout data, and update `tournament._play_match()` to thread the flag through.
 
-**Important:** These changes to `_play_batch` and `_play_match` must be made together in the SAME step — `_play_batch`'s return type changes from 3-tuple to 4-tuple, and `_play_match` must be updated to unpack the new return value in the same commit.
+**Important:** The actual match-playing functions live in `keisei/training/match_utils.py`, NOT on the tournament class. `play_batch()` and `play_match()` are module-level functions there. `tournament._play_match()` is a thin wrapper that loads models and delegates to `match_utils.play_match()`. All three layers must be updated together.
 
 **Note on return type:** When `collect_rollout=False` (default for non-trainable matches), return the original 3-tuple `(a_wins, b_wins, draws)`. When `True`, return 4-tuple `(a_wins, b_wins, draws, rollout)`. Use `collect_rollout=False` as the default to minimize overhead for calibration matches.
 
-**Files:** `keisei/training/tournament.py`, `tests/test_phase3_integration.py`
+**Files:** `keisei/training/match_utils.py`, `keisei/training/tournament.py`, `tests/test_phase3_integration.py`
 
 **TDD Steps:**
 
 - [ ] **Write failing test** (`tests/test_phase3_integration.py::test_play_batch_collects_rollout_when_requested`):
   - Create a mock VecEnv that returns known observations, legal_masks, rewards, etc.
-  - Call `_play_batch(vecenv, model_a, model_b, collect_rollout=True)`.
+  - Call `match_utils.play_batch(vecenv, model_a, model_b, ..., collect_rollout=True)`.
   - Assert the returned MatchRollout is not None.
   - Assert `rollout.observations.shape[0] > 0` (at least some steps collected).
   - Assert all tensors are on CPU.
 - [ ] **Write failing test** (`tests/test_phase3_integration.py::test_play_batch_no_rollout_by_default`):
-  - Call `_play_batch(vecenv, model_a, model_b)` (no collect_rollout arg).
+  - Call `match_utils.play_batch(vecenv, model_a, model_b, ...)` (no collect_rollout arg).
   - Assert the result is a 3-tuple (backward compatible).
 - [ ] **Write failing test** (`tests/test_phase3_integration.py::test_play_batch_rollout_has_correct_perspective`):
   - With known mock data where player A moves at steps 0, 2, 4 and player B at steps 1, 3, 5.
@@ -894,12 +895,12 @@ buffers.
   - Assert rollout.perspective[0] reflects who moved at step 0 (before step was called), NOT who moves next.
 - [ ] **Verify tests fail** — `uv run pytest tests/test_phase3_integration.py -k "play_batch" -x`
 - [ ] **Implement:**
-  - Modify `_play_batch` signature to accept `collect_rollout: bool = False`.
+  - Modify `match_utils.play_batch()` signature to accept `collect_rollout: bool = False`.
   - When `collect_rollout=True`, return type is `tuple[int, int, int, MatchRollout]`.
   - When `collect_rollout=False`, return type is `tuple[int, int, int]`.
   - When `collect_rollout=True`, accumulate per-step tensors (on CPU) during the play loop:
     ```python
-    for _ply in range(self.max_ply):
+    for _ply in range(max_ply):
         # Capture who is moving THIS step (before step)
         step_perspective.append(torch.from_numpy(current_players.copy()))
         
@@ -918,9 +919,10 @@ buffers.
     ```
   - After the loop, stack into a MatchRollout and return it as fourth element.
   - When `collect_rollout=False`, return 3-tuple `(a_wins, b_wins, draws)`.
-  - Update `_play_match` to pass through `collect_rollout` and aggregate rollouts from batches. Both functions updated in the same commit.
+  - Modify `match_utils.play_match()` to accept `collect_rollout: bool = False`, thread it to each `play_batch()` call, and concatenate rollouts from all batches when True.
+  - Modify `tournament._play_match()` to accept `collect_rollout: bool = False` and pass it through to `match_utils.play_match()`.
 - [ ] **Verify tests pass** — `uv run pytest tests/test_phase3_integration.py -k "play_batch" -x`
-- [ ] **Commit:** `feat(tournament): collect match rollout data for Dynamic training`
+- [ ] **Commit:** `feat(match_utils): collect match rollout data for Dynamic training`
 
 ---
 
@@ -1088,7 +1090,7 @@ buffers.
 | FrontierManager replacement policy (retire weakest/stalest) | Task 10 | Covered |
 | TieredPool wiring + GPU collision warning | Task 11 | Covered |
 | katago_loop.py passes learner_lr to TieredPool | Task 11 | Covered |
-| Tournament _play_batch rollout collection (perspective before step) | Task 12 | Covered |
+| match_utils.play_batch rollout collection (perspective before step) | Task 12 | Covered |
 | Tournament training trigger after trainable matches (with side param) | Task 13 | Covered |
 | Match class rules (D-vs-D, D-vs-RF trainable; D-vs-FS not) | Task 13 | Covered |
 | read_league_data extension | Task 14 | Covered |

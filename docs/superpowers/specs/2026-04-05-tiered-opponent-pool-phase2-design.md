@@ -167,9 +167,11 @@ When fewer than 5 distinct milestones exist (e.g., training is young):
 
 **Refresh is idempotent:** Running refresh twice at the same epoch produces the same result. The `selected_at` timestamp updates but the slot assignments don't change unless the checkpoint archive has grown.
 
+**Milestone lifetime invariant:** Entries referenced by `historical_library.entry_id` must remain in `league_entries` with their `checkpoint_path` intact indefinitely. Future cleanup or maintenance code must not delete rows or remove checkpoint files for entries currently filling a historical slot. This is enforced by convention (documented here) rather than by schema — callers of `retire_entry()` and any future `purge_old_checkpoints()` must check `historical_library.entry_id` before deleting. If a stronger guarantee is needed later, a `HISTORICAL_MILESTONE` status can be added to `EntryStatus`.
+
 ### HistoricalGauntlet
 
-A periodic benchmark runner that pits the learner (and optionally dynamic top-N) against all Historical Library entries. Runs as a background thread, similar to `LeagueTournament`.
+A periodic benchmark runner that pits the learner against all Historical Library entries. Runs synchronously on the tournament thread after each round-robin round.
 
 **Config:**
 
@@ -179,14 +181,13 @@ class GauntletConfig:
     enabled: bool = True
     interval_epochs: int = 100  # run gauntlet every N epochs
     games_per_matchup: int = 16  # games per (entry, historical_slot) pair
-    include_dynamic_topn: int = 0  # also benchmark top-N dynamic entries (0 = learner only)
 ```
 
 **Interface:**
 
 | Method | Description |
 |---|---|
-| `run_gauntlet(epoch, learner_entry, historical_slots)` | Play learner vs each historical slot, record results |
+| `run_gauntlet(epoch, learner_entry, historical_slots)` | Play learner vs each non-empty historical slot, record results |
 | `is_due(epoch)` | True if epoch aligns with gauntlet interval |
 
 **Gauntlet flow:**
@@ -198,9 +199,17 @@ class GauntletConfig:
 5. Record results to `gauntlet_results` table.
 6. Update `elo_historical` on the learner entry via `RoleEloTracker`.
 
-**Threading:** The gauntlet can run on the tournament thread (since the tournament pauses between rounds anyway) or on its own thread. The simplest approach is to run it synchronously at the end of the tournament round when `is_due(epoch)` triggers — this avoids a third background thread and uses the same GPU. The tournament's `_stop_event` is checked between gauntlet matchups for graceful shutdown.
+**Threading:** The gauntlet runs synchronously at the end of the tournament round when `is_due(epoch)` triggers. This avoids a third background thread and uses the same GPU. The tournament's `_stop_event` is checked between gauntlet matchups *and* between game batches within a matchup for graceful shutdown. If all 5 slots are empty (very early training), `run_gauntlet` logs a warning and returns immediately.
 
 **Model loading:** Historical models are loaded via `OpponentStore.load_opponent(entry, device)`, same as tournament models. They are loaded on demand and released after the gauntlet completes — they do not persist in memory between gauntlets.
+
+**Error handling:** Each slot's matchup is wrapped in `try/except Exception`. If a historical checkpoint file is missing or corrupt, the slot is skipped with `logger.warning(...)` — matching the `load_all_opponents` pattern in `OpponentStore`. A single failed slot does not abort the remaining matchups.
+
+**Logging:** The gauntlet emits structured log lines at key lifecycle points:
+- `logger.info("Gauntlet started: epoch=%d, filled_slots=%d/5", ...)` at start
+- `logger.info("Gauntlet slot %d: wins=%d losses=%d draws=%d", ...)` per slot
+- `logger.info("Gauntlet complete: epoch=%d, slots_played=%d, total_games=%d", ...)` at end
+- `logger.warning("Gauntlet skipped: all historical slots empty at epoch %d", ...)` if no slots filled
 
 ### RoleEloTracker
 
@@ -234,9 +243,13 @@ class RoleEloConfig:
     historical_k: float = 12.0  # historical score should be very stable
 ```
 
+**Atomicity:** `update_from_result` updates two entries (both participants). Both writes must occur inside a single `store.transaction()` call to prevent partial updates. This mirrors the existing paired Elo update pattern in the tournament.
+
 **Integration with existing Elo:** The existing `elo_rating` column continues to be updated by `OpponentStore.update_elo()` in the training loop and tournament. `RoleEloTracker` updates the *additional* columns (`elo_frontier`, `elo_dynamic`, `elo_recent`, `elo_historical`) based on match context. Both systems run in parallel — the composite `elo_rating` remains the operational number for eviction/promotion in Phase 2.
 
-The `record_result` method on OpponentStore is extended to accept an optional `match_context: str` parameter. When provided, `RoleEloTracker.update_from_result` is called to update the appropriate role-specific Elo column.
+The `record_result` method on OpponentStore is extended to accept an optional keyword-only parameter `match_context: str | None = None`. When provided, `RoleEloTracker.update_from_result` is called to update the appropriate role-specific Elo column. Existing callers that do not pass `match_context` are unaffected — no role Elo update occurs for those calls.
+
+**Column safety:** Role Elo column names are passed between `RoleEloTracker` and `OpponentStore` via an `EloColumn(StrEnum)` enum (defined in `opponent_store.py` alongside the existing `Role(StrEnum)`) with values `FRONTIER = "elo_frontier"`, `DYNAMIC = "elo_dynamic"`, `RECENT = "elo_recent"`, `HISTORICAL = "elo_historical"`. Raw column-name strings must not cross component boundaries.
 
 ---
 
@@ -256,7 +269,6 @@ class GauntletConfig:
     enabled: bool = True
     interval_epochs: int = 100
     games_per_matchup: int = 16
-    include_dynamic_topn: int = 0
 
 @dataclass(frozen=True)
 class RoleEloConfig:
@@ -297,21 +309,31 @@ The round-robin tournament already produces all active-league pairings. The gaun
 
 No changes to `MatchScheduler.generate_round()` or `sample_for_learner()`.
 
-### Tournament Runner (LeagueTournament)
+### Tournament Runner (LeagueTournament) — `tournament.py`
+
+**Constructor changes:** `LeagueTournament.__init__` gains three new optional keyword-only parameters:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `learner_entry_id` | `int \| None` | `None` | Entry ID of the learner (needed for gauntlet). Currently lives on `KataGoTrainingLoop`; passed through at construction time. |
+| `historical_library` | `HistoricalLibrary \| None` | `None` | The milestone library instance |
+| `gauntlet` | `HistoricalGauntlet \| None` | `None` | The gauntlet runner instance |
 
 After each round-robin round completes, check if a gauntlet is due:
 
 ```python
 # After round-robin matches complete
-if self.gauntlet and self.gauntlet.is_due(epoch):
+if self.gauntlet and self.learner_entry_id and self.gauntlet.is_due(epoch):
     self.historical_library.refresh(epoch)
     slots = self.historical_library.get_slots()
-    learner_entry = self.store._get_entry(self._learner_entry_id)
+    learner_entry = self.store._get_entry(self.learner_entry_id)
     if learner_entry and slots:
         self.gauntlet.run_gauntlet(epoch, learner_entry, slots)
 ```
 
 The gauntlet uses the same VecEnv and device as the tournament — no additional GPU resources needed.
+
+**Stop timeout:** When gauntlet is enabled, the `stop()` timeout should be increased to accommodate a full gauntlet run (80 games). Alternatively, `_stop_event` is checked between game batches within each matchup so the gauntlet can be interrupted mid-run, keeping the existing 30-second timeout viable.
 
 ### KataGoTrainingLoop
 
@@ -322,19 +344,40 @@ The gauntlet uses the same VecEnv and device as the tournament — no additional
 
 ### OpponentStore
 
-| New method | Description |
+**New enum:**
+
+```python
+class EloColumn(StrEnum):
+    FRONTIER = "elo_frontier"
+    DYNAMIC = "elo_dynamic"
+    RECENT = "elo_recent"
+    HISTORICAL = "elo_historical"
+```
+
+**New methods:**
+
+| Method | Description |
 |---|---|
-| `update_role_elo(entry_id, role_column, new_elo)` | Update a specific role Elo column (`elo_frontier`, `elo_dynamic`, `elo_recent`, `elo_historical`) |
+| `update_role_elo(entry_id, column: EloColumn, new_elo)` | Update a specific role Elo column. Validates `column` is an `EloColumn` member. |
 | `upsert_historical_slot(slot_index, target_epoch, entry_id, actual_epoch, selection_mode)` | Insert or update a historical library slot |
 | `get_historical_slots()` | Read all 5 slots from `historical_library` table, joined with `league_entries` for entry data |
 | `record_gauntlet_result(...)` | Insert into `gauntlet_results` |
+
+**`OpponentEntry.from_db_row` update:** The four new Elo columns must be guarded with `if "elo_frontier" in keys` checks, matching the existing pattern for Phase 1 columns (`role`, `status`, etc.). Default to `1000.0` when absent. This ensures backward compatibility with un-migrated DBs and test helpers that insert rows without all columns.
+
+**`record_result` signature change:** The new `match_context` parameter must be keyword-only with a default of `None`:
+
+```python
+def record_result(self, epoch, learner_id, opponent_id, wins, losses, draws,
+                  elo_delta_a, elo_delta_b, *, match_context: str | None = None):
+```
 
 ### Dashboard / read_league_data
 
 `read_league_data` in `db.py` is extended to include:
 - The four role-specific Elo columns in the entries query
 - A new `historical_library` key with the 5 slots and their assigned checkpoints
-- A new `gauntlet_results` key with recent gauntlet outcomes
+- A new `gauntlet_results` key with the most recent 50 gauntlet runs (250 rows max = 50 runs × 5 slots), ordered by epoch descending. Over long training runs (250k epochs → 12,500+ result rows), returning all results would degrade dashboard performance.
 
 ---
 
@@ -349,11 +392,45 @@ The gauntlet uses the same VecEnv and device as the tournament — no additional
 
 ## Testing Strategy
 
+All tests run via `uv run pytest`. Test files follow the existing `tests/test_*.py` pattern.
+
 ### Unit Tests
 
-- **HistoricalLibrary:** log-spaced target computation at various epochs (10, 1000, 100000), snapping to nearest checkpoint, early-training fallback when < 5 checkpoints exist, refresh idempotency, slot with no nearby checkpoint returns NULL entry.
-- **HistoricalGauntlet:** run_gauntlet records results to DB, gauntlet skips empty slots, is_due returns correct epoch alignment.
-- **RoleEloTracker:** Frontier match updates `elo_frontier` on both entries, Dynamic-vs-Dynamic updates `elo_dynamic`, cross-tier match updates correct columns, K-factors are role-specific, composite `elo_rating` is NOT modified by role tracker.
+**`tests/test_historical_library.py`:**
+- Log-spaced target computation at various epochs (2, 10, 1000, 100000) — verify distinct targets at each.
+- Snapping to nearest checkpoint with mock entries at known epochs.
+- Early-training fallback when < 5 checkpoints exist, `selection_mode = 'fallback'`.
+- Refresh idempotency — same epoch produces same assignments.
+- Slot with no nearby checkpoint returns `entry_id = None`.
+- `is_due_for_refresh` boundary: returns False at epoch 99, True at epoch 100.
+
+**`tests/test_historical_gauntlet.py`:**
+- `run_gauntlet` records results to DB for each non-empty slot.
+- Gauntlet skips empty slots (NULL `entry_id`) without error.
+- `is_due` returns correct epoch alignment (False at 99, True at 100, True at 200).
+- All slots empty → warning logged, no gauntlet results recorded.
+- Model load failure on one slot → that slot skipped, remaining slots still play.
+- `_stop_event` set mid-gauntlet → exits early without crash.
+
+**`tests/test_role_elo.py`:**
+- Frontier match updates `elo_frontier` on both entries.
+- Dynamic-vs-Dynamic updates `elo_dynamic` on both.
+- Cross-tier (Dynamic vs Recent Fixed) updates `elo_dynamic` on Dynamic, `elo_recent` on Recent Fixed.
+- K-factors are role-specific (verify delta magnitude differs by context).
+- Composite `elo_rating` is NOT modified by role tracker.
+- Both entry updates are atomic — if second write fails, first is rolled back.
+
+**`tests/test_opponent_store.py` (extend):**
+- `OpponentEntry.from_db_row` with missing Elo columns → defaults to 1000.0.
+- `update_role_elo` rejects invalid column names (non-`EloColumn` values).
+- `record_result` with `match_context=None` does not trigger role Elo update.
+
+### Schema Migration Tests
+
+**`tests/test_db.py` (extend):**
+- v4 → v5 migration adds all four Elo columns to `league_entries` with default 1000.0.
+- v4 → v5 migration creates `historical_library` and `gauntlet_results` tables.
+- Idempotent migration: running v5 migration on an already-v5 DB is a no-op.
 
 ### Integration Tests
 
@@ -383,4 +460,4 @@ The gauntlet uses the same VecEnv and device as the tournament — no additional
 ## Remaining Phases
 
 - **Phase 3 — Dynamic Training:** Enable optimizer state persistence for Dynamic entries, small PPO updates from league matches, update caps and checkpoint flush, protection windows with fault fallback, Frontier Static review activation (Dynamic → Frontier promotion).
-- **Phase 4 — League Concurrency & Refinement:** Multiple simultaneous pairings on the league GPU, advanced scheduler priority scoring (uncertainty bonus, lineage penalty, diversity bonus), switch eviction/promotion to use role-specific Elo instead of composite.
+- **Phase 4 — League Concurrency & Refinement:** Multiple simultaneous pairings on the league GPU, advanced scheduler priority scoring (uncertainty bonus, lineage penalty, diversity bonus), switch eviction/promotion to use role-specific Elo instead of composite. **Prerequisite:** Role Elo columns for entries that predate Phase 2 deployment start at 1000.0 with no match history. Phase 4 must include a calibration warm-up period or data-quality gate before trusting role-specific Elo for eviction/promotion decisions. Benchmarking top-N dynamic entries in the gauntlet (`include_dynamic_topn`) is also deferred to Phase 4.
