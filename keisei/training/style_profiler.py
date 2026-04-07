@@ -16,7 +16,6 @@ from typing import Any
 
 from keisei.db import (
     read_all_game_features,
-    read_style_profiles,
     write_style_profile,
 )
 

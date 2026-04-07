@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
-    from keisei.training.game_feature_tracker import GameFeatureRow, GameFeatureTracker
+    from keisei.training.game_feature_tracker import GameFeatureTracker
 
 
 def _combine_rollouts(rollouts: list[MatchRollout]) -> MatchRollout:

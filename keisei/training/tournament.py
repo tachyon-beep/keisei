@@ -26,13 +26,13 @@ from keisei.training.dynamic_trainer import DynamicTrainer
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
 from keisei.training.game_feature_tracker import GameFeatureTracker
-from keisei.training.style_profiler import StyleProfiler
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler, is_training_match
 from keisei.training.match_utils import play_match, release_models
 from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
+from keisei.training.style_profiler import StyleProfiler
 
 logger = logging.getLogger(__name__)
 
