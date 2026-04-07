@@ -502,8 +502,9 @@ def run_compile_diagnostics(scale: str, device: torch.device) -> None:
 
     # Explain what dynamo can/can't compile
     explanation = torch._dynamo.explain(model)(obs)
-    print(f"\nGraph breaks: {explanation.break_count}")
-    print(f"Ops in graph: {explanation.ops_per_graph}")
+    print(f"\nGraph breaks: {explanation.graph_break_count}")
+    print(f"Graph count: {explanation.graph_count}")
+    print(f"Ops per graph: {explanation.ops_per_graph}")
     if explanation.break_reasons:
         print("\nBreak reasons:")
         for reason in explanation.break_reasons:
@@ -530,7 +531,7 @@ def run_compile_diagnostics(scale: str, device: torch.device) -> None:
     with torch.no_grad():
         compiled_static(obs)
     explanation_static = torch._dynamo.explain(model)(obs)
-    print(f"  Graph breaks (static): {explanation_static.break_count}")
+    print(f"  Graph breaks (static): {explanation_static.graph_break_count}")
 
     # AMP interaction check
     print(f"\n--- AMP + compile interaction ---")
@@ -539,7 +540,7 @@ def run_compile_diagnostics(scale: str, device: torch.device) -> None:
     model_amp.configure_amp(enabled=True, dtype=torch.bfloat16, device_type="cuda")
     model_amp.eval()
     explanation_amp = torch._dynamo.explain(model_amp)(obs)
-    print(f"  Graph breaks (AMP): {explanation_amp.break_count}")
+    print(f"  Graph breaks (AMP): {explanation_amp.graph_break_count}")
     if explanation_amp.break_reasons:
         for reason in explanation_amp.break_reasons:
             print(f"    - {reason}")
