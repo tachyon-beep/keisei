@@ -58,6 +58,13 @@
   /* Focus ring */
   --focus-ring: var(--accent-ink);
 
+  /* Chart series (canvas can't use var() — resolved by chartHelpers.js) */
+  --chart-gold: #c8962e;
+  --chart-ink: #7eb8d4;
+  --chart-cream: #e8e0d4;
+  --chart-teal: #4db8a8;
+  --chart-moss: #6b9e6b;
+
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans JP', 'Hiragino Sans', sans-serif;
   color: var(--text-primary);
   background-color: var(--bg-primary);
@@ -121,6 +128,13 @@
 
   /* Focus ring */
   --focus-ring: var(--accent-ink);
+
+  /* Chart series — deeper for light bg contrast */
+  --chart-gold: #8c6400;
+  --chart-ink: #1a5c80;
+  --chart-cream: #1a150e;
+  --chart-teal: #1a6e60;
+  --chart-moss: #3a6e3a;
 }
 
 * {

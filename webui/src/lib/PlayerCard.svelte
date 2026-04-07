@@ -168,7 +168,7 @@
 
   .tier-badge {
     display: inline-block;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.3px;
     padding: 2px 8px;
@@ -202,7 +202,7 @@
   }
 
   .trait-badge {
-    font-size: 11px;
+    font-size: 12px;
     padding: 1px 6px;
     border-radius: 3px;
     color: var(--text-secondary);
@@ -220,7 +220,7 @@
   }
 
   .profile-status {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-muted);
     opacity: 0.6;
     margin-top: 2px;

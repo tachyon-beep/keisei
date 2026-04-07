@@ -92,11 +92,16 @@
     background: none;
     border: 1px solid var(--border);
     border-radius: 3px;
-    padding: 1px 6px;
-    font-size: 11px;
+    padding: 4px 10px;
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-muted);
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .notation-toggle:hover {

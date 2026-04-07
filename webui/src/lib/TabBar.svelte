@@ -52,7 +52,8 @@
   }
 
   button {
-    padding: 4px 12px;
+    padding: 8px 16px;
+    min-height: 44px;
     font-size: 13px;
     font-weight: 600;
     border-radius: 4px;
@@ -81,7 +82,12 @@
   .theme-toggle {
     margin-left: 8px;
     font-size: 14px;
-    padding: 4px 8px;
+    padding: 8px 12px;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   @media (prefers-reduced-motion: reduce) {

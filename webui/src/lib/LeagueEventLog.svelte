@@ -80,7 +80,7 @@
   .event-time {
     color: var(--text-muted);
     font-family: monospace;
-    font-size: 11px;
+    font-size: 12px;
     flex-shrink: 0;
     min-width: 60px;
   }
@@ -98,7 +98,7 @@
   .demotion .event-icon { color: var(--text-muted); }
 
   .role-icon {
-    font-size: 11px;
+    font-size: 12px;
     flex-shrink: 0;
   }
 
@@ -125,7 +125,7 @@
   .transition-summary {
     display: flex;
     gap: 10px;
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 6px;
     margin-bottom: 4px;
     border-bottom: 1px solid var(--border-subtle);

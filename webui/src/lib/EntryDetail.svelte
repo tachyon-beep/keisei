@@ -155,11 +155,11 @@
   .detail-sections { display: flex; gap: 16px; flex-wrap: wrap; }
   .detail-section { flex: 1; min-width: 200px; }
   .section-label {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 6px;
   }
   .epoch-tag {
-    font-weight: 400; color: var(--text-muted); font-size: 10px;
+    font-weight: 400; color: var(--text-muted); font-size: 12px;
     margin-left: 6px; text-transform: none; letter-spacing: 0;
   }
   .match-list { display: flex; flex-direction: column; gap: 2px; }
@@ -169,28 +169,28 @@
   }
   .match-row:hover { background: var(--bg-card); }
   .opp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
-  .role-icon { font-size: 10px; margin-right: 3px; }
-  .wld { font-family: monospace; font-size: 11px; color: var(--text-secondary); flex-shrink: 0; }
-  .elo-delta { font-family: monospace; font-size: 11px; font-weight: 600; flex-shrink: 0; min-width: 36px; text-align: right; }
+  .role-icon { font-size: 12px; margin-right: 3px; }
+  .wld { font-family: monospace; font-size: 12px; color: var(--text-secondary); flex-shrink: 0; }
+  .elo-delta { font-family: monospace; font-size: 12px; font-weight: 600; flex-shrink: 0; min-width: 36px; text-align: right; }
   .elo-delta.positive { color: var(--accent-teal); }
   .elo-delta.negative { color: var(--danger); }
-  .win-pct { font-family: monospace; font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
-  .game-count { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .win-pct { font-family: monospace; font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+  .game-count { font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
   .role-stats { min-width: 100%; }
   .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
   .stat-row.games { margin-top: 4px; }
   .mini-stat { font-family: monospace; font-size: 12px; color: var(--text-primary); }
-  .mini-label { font-size: 10px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
+  .mini-label { font-size: 12px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
   .style-section { min-width: 200px; }
   .style-primary { font-size: 13px; font-weight: 600; color: var(--accent-teal); margin-bottom: 4px; }
   .style-traits { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
   .style-trait {
-    font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    font-size: 12px; padding: 1px 6px; border-radius: 3px;
     color: var(--text-secondary); background: rgba(128, 128, 128, 0.12);
   }
   .commentary-list { display: flex; flex-direction: column; gap: 2px; }
   .commentary-item {
-    font-size: 11px; font-style: italic; color: var(--text-muted); padding: 1px 0;
+    font-size: 12px; font-style: italic; color: var(--text-muted); padding: 1px 0;
   }
   .commentary-item.high-conf { color: var(--text-secondary); }
   .empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px; }

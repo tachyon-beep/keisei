@@ -154,7 +154,7 @@
   }
 
   .epoch-separator {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -200,19 +200,19 @@
   }
 
   .role-icon {
-    font-size: 10px;
+    font-size: 12px;
     margin-right: 3px;
   }
 
   .vs {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     flex-shrink: 0;
   }
 
   .match-score {
     font-family: monospace;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     flex-shrink: 0;
     padding: 2px 6px;
@@ -225,7 +225,7 @@
   .match-score.tied { color: var(--accent-gold); background: rgba(200, 150, 46, 0.1); }
 
   .match-detail {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
     display: flex;
     gap: 4px;

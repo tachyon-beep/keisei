@@ -79,7 +79,7 @@
   }
 
   .value-label {
-    font-size: 11px;
+    font-size: 12px;
     font-family: monospace;
     color: var(--text-secondary);
     white-space: nowrap;

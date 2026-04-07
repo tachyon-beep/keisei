@@ -23,6 +23,10 @@
   let activeBottomTab = 'recent'
   let entryDetailHeading
 
+  function closeDetail() { focusedEntryId.set(null) }
+  function handleDetailKeydown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeDetail() }
+  }
   function setBottomTab(tab) { activeBottomTab = tab }
   function handleTabKeydown(e) {
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
@@ -47,7 +51,7 @@
   }
 </script>
 
-<main class="league-view" aria-label="League standings">
+<main id="league-main" class="league-view" aria-label="League standings">
   <div class="stats-banner" role="region" aria-label="League metrics">
       <div class="stat-card highlight">
         <span class="stat-value">{learner ? Math.round(learner.elo_frontier) : '—'}</span>
@@ -77,7 +81,8 @@
         <LeagueTable {learnerName} />
       </div>
       {#if $focusedEntryId != null}
-        <div class="entry-detail-wrapper">
+        <div class="entry-detail-wrapper" role="region" aria-label="Entry detail" on:keydown={handleDetailKeydown}>
+          <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
           <EntryDetail entryId={$focusedEntryId} bind:headingEl={entryDetailHeading} />
         </div>
       {/if}
@@ -217,7 +222,7 @@
     flex: 0 1 auto;
     min-height: 0;
     overflow: hidden;
-    max-height: 65%;
+    max-height: 70%;
   }
 
   .chart-card {
@@ -279,6 +284,37 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-secondary);
+    position: relative;
+  }
+
+  .detail-close-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 1;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .detail-close-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+    background: var(--bg-card);
+  }
+
+  .detail-close-btn:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   .tabbed-panel {
@@ -301,7 +337,8 @@
 
   .tab-bar button {
     flex: 1;
-    padding: 8px 12px;
+    padding: 10px 12px;
+    min-height: 44px;
     background: none;
     border: none;
     border-bottom: 2px solid transparent;

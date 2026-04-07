@@ -1,5 +1,6 @@
 <script>
   import { metrics } from '../stores/metrics.js'
+  import { theme } from '../stores/theme.js'
   import MetricsChart from './MetricsChart.svelte'
   import { extractColumns } from './metricsColumns.js'
 
@@ -7,21 +8,38 @@
 
   let expandedIndex = 0
 
-  const charts = [
+  // Resolve chart colors from CSS variables so they adapt to the active theme
+  function chartColor(varName) {
+    return getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
+  }
+
+  // Re-read colors whenever the theme store changes
+  let chartColors = {}
+  $: if ($theme || $metrics) {
+    chartColors = {
+      gold: chartColor('--chart-gold'),
+      ink: chartColor('--chart-ink'),
+      cream: chartColor('--chart-cream'),
+      teal: chartColor('--chart-teal'),
+      moss: chartColor('--chart-moss'),
+    }
+  }
+
+  $: charts = [
     { title: 'Policy & Value Loss', xKey: 'steps', xLabel: 'Step', series: (c) => [
-      { label: 'Policy', data: c.policyLoss, color: '#c8962e' },
-      { label: 'Value', data: c.valueLoss, color: '#7eb8d4' },
+      { label: 'Policy', data: c.policyLoss, color: chartColors.gold || '#c8962e' },
+      { label: 'Value', data: c.valueLoss, color: chartColors.ink || '#7eb8d4' },
     ], annotation: 'Both should fall together — divergence may indicate overfitting' },
     { title: 'Win Rate', xKey: 'epochs', xLabel: 'Epoch', series: (c) => [
-      { label: '☗ Black', data: c.blackWinRate, color: '#e8e0d4' },
-      { label: '☖ White', data: c.whiteWinRate, color: '#7eb8d4' },
-      { label: 'Draw', data: c.drawRate, color: '#c8962e' },
+      { label: '☗ Black', data: c.blackWinRate, color: chartColors.cream || '#e8e0d4' },
+      { label: '☖ White', data: c.whiteWinRate, color: chartColors.ink || '#7eb8d4' },
+      { label: 'Draw', data: c.drawRate, color: chartColors.gold || '#c8962e' },
     ], annotation: 'Black has first-move advantage in shogi' },
     { title: 'Avg Episode Length', xKey: 'epochs', xLabel: 'Epoch', series: (c) => [
-      { label: 'Episode Length', data: c.avgEpLen, color: '#4db8a8' },
+      { label: 'Episode Length', data: c.avgEpLen, color: chartColors.teal || '#4db8a8' },
     ], annotation: 'Longer games = more strategic play' },
     { title: 'Policy Entropy', xKey: 'steps', xLabel: 'Step', series: (c) => [
-      { label: 'Entropy', data: c.entropy, color: '#6b9e6b' },
+      { label: 'Entropy', data: c.entropy, color: chartColors.moss || '#6b9e6b' },
     ], annotation: 'Falling entropy = agent becoming more decisive' },
   ]
 
@@ -173,8 +191,8 @@
     border-radius: 4px;
     color: var(--text-secondary);
     cursor: pointer;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 44px;
+    min-height: 44px;
     padding: 4px 8px;
     font-size: 13px;
     display: flex;

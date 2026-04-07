@@ -156,7 +156,7 @@
 </script>
 
 <div class="app">
-  <a href="#game-panel" class="skip-nav">Skip to game</a>
+  <a href={$activeTab === 'training' ? '#game-panel' : '#league-main'} class="skip-nav">Skip to content</a>
   <StatusIndicator />
 
   {#if $activeTab === 'training'}
@@ -316,7 +316,7 @@
   .vs-separator {
     text-align: center;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 2px;
   }

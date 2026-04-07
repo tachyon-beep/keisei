@@ -145,6 +145,7 @@
             <th class="num" aria-sort={ariaSortValue('created_epoch')}>
               <button class="sort-btn" title="Sort by creation epoch" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button>
             </th>
+            <th class="expand-col" aria-sort="none"></th>
           </tr>
         </thead>
         <tbody>
@@ -152,7 +153,7 @@
             {#each ROLE_ORDER as role}
               {#if $leagueByRole.has(role)}
                 <tr class="group-header">
-                  <th colspan="10" scope="colgroup">
+                  <th colspan="11" scope="colgroup">
                     <span aria-hidden="true">{ROLE_LABELS[role]?.split(' ')[0]}</span>
                     {ROLE_LABELS[role]?.split(' ').slice(1).join(' ') || role} · {$leagueByRole.get(role).length}/{ROLE_CAPACITY[role] || '?'}
                   </th>
@@ -184,6 +185,7 @@
                     <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
                     <td class="style-cell" title={getStyleTooltip(entry.id)}>{getStyle(entry.id) || ''}</td>
                     <td class="num">{entry.created_epoch}</td>
+                    <td class="expand-chevron" aria-hidden="true">{$focusedEntryId === entry.id ? '▾' : '▸'}</td>
                   </tr>
                 {/each}
                 {#each Array(Math.max(0, (ROLE_CAPACITY[role] || 0) - ($leagueByRole.get(role)?.length || 0))) as _, i}
@@ -198,6 +200,7 @@
                     <td class="num placeholder-text"></td>
                     <td class="num placeholder-text"></td>
                     <td class="num placeholder-text"></td>
+                    <td class="placeholder-text"></td>
                   </tr>
                 {/each}
               {/if}
@@ -241,6 +244,7 @@
                 <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
                 <td class="style-cell" title={getStyleTooltip(entry.id)}>{getStyle(entry.id) || ''}</td>
                 <td class="num">{entry.created_epoch}</td>
+                <td class="expand-chevron" aria-hidden="true">{$focusedEntryId === entry.id ? '▾' : '▸'}</td>
               </tr>
             {/each}
             {#each placeholders as slot}
@@ -255,6 +259,7 @@
                 <td class="num placeholder-text"></td>
                 <td class="num placeholder-text"></td>
                 <td class="num placeholder-text"></td>
+                <td class="placeholder-text"></td>
               </tr>
             {/each}
           {/if}
@@ -334,7 +339,7 @@
   }
 
   .learner-badge {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.5px;
     color: var(--accent-teal);
@@ -352,7 +357,7 @@
 
   .role-badge {
     display: inline-block;
-    font-size: 11px;
+    font-size: 12px;
     width: 18px;
     text-align: center;
     margin-right: 4px;
@@ -380,7 +385,7 @@
   .slot-count {
     font-weight: 400;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     margin-left: 6px;
   }
 
@@ -390,14 +395,14 @@
   .placeholder-row:hover { background: transparent; }
   .placeholder-text {
     color: var(--text-muted);
-    opacity: 0.35;
+    opacity: 0.5;
     font-size: 12px;
     user-select: none;
   }
 
   .style-col { font-size: 12px; min-width: 80px; }
   .style-cell {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--accent-teal);
     white-space: nowrap;
     overflow: hidden;
@@ -414,8 +419,9 @@
     margin-bottom: 8px;
   }
   .view-toggle button {
-    padding: 4px 10px;
-    font-size: 11px;
+    padding: 6px 14px;
+    min-height: 36px;
+    font-size: 12px;
     font-weight: 600;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -445,10 +451,19 @@
   }
 
   .protection-badge {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-muted);
     margin-left: 4px;
     vertical-align: middle;
+  }
+
+  .expand-col { width: 24px; }
+  .expand-chevron {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    width: 24px;
+    padding: 6px 4px;
   }
 
   @media (prefers-reduced-motion: reduce) {

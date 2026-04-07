@@ -66,12 +66,12 @@
       <span class="text">{indicator.text}</span>
     </div>
     {#if alive}
-      <div class="stats" aria-live="polite">
+      <div class="stats">
         {#if phase === 'update'}
-          <span class="phase-badge update">&#9650; PPO UPDATE</span>
+          <span class="phase-badge update" aria-live="polite">&#9650; PPO UPDATE</span>
           <span class="sep">|</span>
         {:else if phase === 'rollout'}
-          <span class="phase-badge rollout">&#9654; ROLLOUT</span>
+          <span class="phase-badge rollout" aria-live="polite">&#9654; ROLLOUT</span>
           <span class="sep">|</span>
         {/if}
         <span class="stat">Epoch {epoch.toLocaleString()}{#if totalEpochs} / {totalEpochs.toLocaleString()}{/if}</span>
@@ -80,20 +80,20 @@
         <span class="sep">|</span>
         <span class="stat">Games {($trainingState?.episodes || 0).toLocaleString()}</span>
         {#if wallTime}
-          <span class="sep">|</span>
-          <span class="stat" title="Wall clock: real time since training started">Wall {wallTime}</span>
+          <span class="sep hide-mobile">|</span>
+          <span class="stat hide-mobile" title="Wall clock: real time since training started">Wall {wallTime}</span>
         {/if}
         {#if trainTime}
-          <span class="sep">|</span>
-          <span class="stat" title="Train clock: active training time (freezes when stopped)">Train {trainTime}</span>
+          <span class="sep hide-mobile">|</span>
+          <span class="stat hide-mobile" title="Train clock: active training time (freezes when stopped)">Train {trainTime}</span>
         {/if}
         {#if stats.cpu_percent != null}
-          <span class="sep">|</span>
-          <span class="stat">CPU {stats.cpu_percent}%</span>
+          <span class="sep hide-narrow">|</span>
+          <span class="stat hide-narrow">CPU {stats.cpu_percent}%</span>
         {/if}
         {#each gpus as gpu, i}
-          <span class="sep">|</span>
-          <span class="stat">GPU{i} {gpu.util_percent}% ({gpu.mem_used_mb}MB)</span>
+          <span class="sep hide-narrow">|</span>
+          <span class="stat hide-narrow">GPU{i} {gpu.util_percent}% ({gpu.mem_used_mb}MB)</span>
         {/each}
       </div>
     {/if}
@@ -102,7 +102,11 @@
     <TabBar />
   </div>
 </header>
-{#if $connectionState === 'reconnecting'}
+{#if $connectionState === 'connecting'}
+  <div class="connecting-banner" role="status">
+    Connecting to training server&hellip;
+  </div>
+{:else if $connectionState === 'reconnecting'}
   <div class="reconnect-banner" role="alert">
     Disconnected from server — reconnecting&hellip;
   </div>
@@ -164,7 +168,7 @@
   }
 
   .phase-badge {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.5px;
     padding: 1px 6px;
@@ -191,6 +195,16 @@
     cursor: help;
   }
 
+  .connecting-banner {
+    background: rgba(77, 184, 168, 0.1);
+    border-bottom: 1px solid var(--accent-teal);
+    color: var(--accent-teal);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    padding: 6px 16px;
+  }
+
   .reconnect-banner {
     background: rgba(224, 80, 80, 0.15);
     border-bottom: 1px solid var(--danger);
@@ -199,5 +213,22 @@
     font-weight: 600;
     text-align: center;
     padding: 6px 16px;
+  }
+
+  .stats {
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 768px) {
+    .hide-mobile { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    .hide-narrow { display: none; }
+    header.status-bar {
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-start;
+    }
   }
 </style>

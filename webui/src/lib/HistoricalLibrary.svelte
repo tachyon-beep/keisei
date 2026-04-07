@@ -85,19 +85,19 @@
 <style>
   .historical-library { padding: 10px 14px; display: flex; flex-direction: column; gap: 12px; }
   .section-label {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 6px;
     display: flex; align-items: center; gap: 8px;
   }
-  .staleness { font-weight: 400; font-size: 10px; color: var(--accent-gold); text-transform: none; letter-spacing: 0; }
+  .staleness { font-weight: 400; font-size: 12px; color: var(--accent-gold); text-transform: none; letter-spacing: 0; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  thead { color: var(--text-muted); font-size: 11px; }
+  thead { color: var(--text-muted); font-size: 12px; }
   th, td { text-align: left; padding: 3px 8px; }
   th.num, td.num { text-align: right; }
-  .mode { font-size: 11px; color: var(--text-muted); }
+  .mode { font-size: 12px; color: var(--text-muted); }
   .gauntlet-epoch { margin-bottom: 6px; }
   .epoch-header {
-    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-muted); display: block; margin-bottom: 2px;
   }
   .gauntlet-row {
@@ -105,9 +105,9 @@
     padding: 2px 4px; border-radius: 3px;
   }
   .gauntlet-row:hover { background: var(--bg-card); }
-  .slot-tag { font-size: 10px; color: var(--text-muted); min-width: 48px; }
-  .wld { font-family: monospace; font-size: 11px; color: var(--text-secondary); }
-  .elo-delta { font-family: monospace; font-size: 11px; font-weight: 600; }
+  .slot-tag { font-size: 12px; color: var(--text-muted); min-width: 48px; }
+  .wld { font-family: monospace; font-size: 12px; color: var(--text-secondary); }
+  .elo-delta { font-family: monospace; font-size: 12px; font-weight: 600; }
   .elo-delta.positive { color: var(--accent-teal); }
   .elo-delta.negative { color: var(--danger); }
   .empty { color: var(--text-muted); font-size: 12px; text-align: center; padding: 12px; }

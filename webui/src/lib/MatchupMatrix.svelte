@@ -125,6 +125,29 @@
 
 <div class="matrix-card">
   <h2 class="section-header">Head-to-Head</h2>
+
+  <!-- Mobile list view -->
+  <div class="h2h-list-view">
+    {#if participants.filter(p => !p.isPlaceholder).length === 0}
+      <p class="empty">No matchup data yet.</p>
+    {:else}
+      {#each participants.filter(p => !p.isPlaceholder) as row}
+        {#each participants.filter(p => !p.isPlaceholder && p.id !== row.id) as col}
+          {@const cell = cellData(row.id, col.id)}
+          {#if cell && cell.total > 0}
+            <div class="h2h-item">
+              <span class="h2h-names">{row.shortLabel} vs {col.shortLabel}</span>
+              <span class="h2h-record">{cell.w}W {cell.l}L {cell.d}D</span>
+              <span class="h2h-rate" style="color: {cell.winRate >= 0.5 ? 'var(--accent-teal)' : 'var(--danger)'}">{formatRate(cell.winRate)}</span>
+            </div>
+          {/if}
+        {/each}
+      {/each}
+    {/if}
+  </div>
+
+  <!-- Desktop matrix view -->
+  <div class="matrix-desktop">
   <div class="matrix-legend" aria-label="Color legend">
     <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.35)"></span>
     <span class="legend-label">0%</span>
@@ -174,6 +197,7 @@
         </tbody>
       </table>
     </div>
+  </div>
 </div>
 
 <style>
@@ -259,7 +283,7 @@
 
   .no-data {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .rate-cell {
@@ -298,6 +322,58 @@
     padding: 24px;
   }
 
+  /* Mobile list view: shown below 768px, hidden on desktop */
+  .h2h-list-view {
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .h2h-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    font-size: 12px;
+    border-radius: 3px;
+  }
+
+  .h2h-item:hover { background: var(--bg-card); }
+
+  .h2h-names {
+    flex: 1;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .h2h-record {
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  .h2h-rate {
+    font-family: monospace;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+    min-width: 36px;
+    text-align: right;
+  }
+
+  .matrix-desktop { display: contents; }
+
+  @media (max-width: 768px) {
+    .h2h-list-view { display: flex; }
+    .matrix-desktop { display: none; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .rate-cell { transition: none; }
   }
@@ -318,7 +394,7 @@
   }
 
   .legend-label {
-    font-size: 10px;
+    font-size: 12px;
     color: var(--text-muted);
     font-family: monospace;
   }
