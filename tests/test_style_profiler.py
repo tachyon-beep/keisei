@@ -1,11 +1,8 @@
 """Tests for StyleProfiler aggregation, classification, and commentary."""
 
-import json
 import tempfile
 
-import pytest
-
-from keisei.db import init_db, write_game_features, read_style_profiles
+from keisei.db import init_db, read_style_profiles, write_game_features
 from keisei.training.style_profiler import (
     StyleProfiler,
     _assign_labels,
@@ -13,8 +10,6 @@ from keisei.training.style_profiler import (
     _generate_commentary,
     _percentile_rank,
     _safe_mean,
-    THRESHOLD_INSUFFICIENT,
-    THRESHOLD_PROVISIONAL,
 )
 
 

@@ -1,7 +1,6 @@
 """Tests for GameFeatureTracker inline feature extraction."""
 
 import numpy as np
-import pytest
 
 from keisei.training.game_feature_tracker import (
     EARLY_DROP_PLY_THRESHOLD,

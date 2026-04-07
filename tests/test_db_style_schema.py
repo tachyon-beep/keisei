@@ -1,6 +1,5 @@
 """Tests for game_features and style_profiles DB tables."""
 
-import json
 import tempfile
 
 import pytest
