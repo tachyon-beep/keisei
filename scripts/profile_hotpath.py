@@ -94,8 +94,8 @@ class TimingResult:
         if not self.times_ms:
             return 0.0
         sorted_t = sorted(self.times_ms)
-        idx = int(len(sorted_t) * 0.95)
-        return sorted_t[min(idx, len(sorted_t) - 1)]
+        idx = max(0, int(len(sorted_t) * 0.95) - 1)
+        return sorted_t[idx]
 
     def __str__(self) -> str:
         return (
@@ -397,11 +397,27 @@ def profile_ppo_update(
         next_values = torch.randn(N, device=device)
         ppo.update(buf, next_values)
 
-    r = time_cuda_op(run_update, device, warmup=2, repeats=5)
-    r.name = f"ppo_update T={T} N={N} {label}"
+    # Warmup iterations (discard internal timings)
+    for _ in range(2):
+        run_update()
+    ppo.flush_timings()  # discard warmup timings
+
+    # Measured iterations
+    torch.cuda.synchronize(device)
+    times = []
+    for _ in range(5):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        run_update()
+        end.record()
+        torch.cuda.synchronize(device)
+        times.append(start.elapsed_time(end))
+
+    r = TimingResult(name=f"ppo_update T={T} N={N} {label}", times_ms=times)
     results.append(r)
 
-    # Flush and report internal timings
+    # Internal timings — only from measured iterations
     ppo.flush_timings()
     for key, vals in ppo.timings.items():
         if vals:
@@ -642,12 +658,20 @@ def print_recommendations(all_results: dict[str, list[TimingResult]]) -> None:
 
     # GAE analysis
     gae_results = all_results.get("gae", [])
+    gpu_gae = None
+    cpu_gae = None
     for r in gae_results:
         if "GPU" in r.name and "N=64" in r.name:
-            gpu_gae = r.median_ms  # noqa: F841
+            gpu_gae = r.median_ms
         if "CPU" in r.name and "N=64" in r.name:
-            cpu_gae = r.median_ms  # noqa: F841
-    # (Analysis printed inline)
+            cpu_gae = r.median_ms
+    if gpu_gae and cpu_gae:
+        speedup = cpu_gae / gpu_gae if gpu_gae > 0 else 0
+        print(f"\n  GAE GPU vs CPU (N=64): {cpu_gae:.2f}ms -> {gpu_gae:.2f}ms ({speedup:.1f}x)")
+        if speedup < 1.2:
+            print("    -> GPU GAE provides minimal benefit at this scale.")
+        else:
+            print("    -> GPU GAE worthwhile. Already enabled when device=cuda.")
 
     # Per-block analysis
     blocks = all_results.get("per_block", [])
@@ -697,6 +721,8 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device)
+    if not torch.cuda.is_available() or device.type != "cuda":
+        sys.exit("Error: profile_hotpath.py requires a CUDA device. Pass --device cuda:N.")
     scale = args.scale
 
     print(f"Device: {torch.cuda.get_device_name(device)}")
