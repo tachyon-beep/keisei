@@ -748,6 +748,7 @@ class KataGoTrainingLoop:
                     "started_at": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%dT%H:%M:%SZ"
                     ),
+                    "learner_entry_id": self._learner_entry_id,
                 },
             )
         else:
@@ -1553,6 +1554,14 @@ class KataGoTrainingLoop:
         # Thread-safe: the property setter acquires _learner_lock.
         if self._tournament is not None:
             self._tournament.learner_entry_id = new_entry.id
+
+        try:
+            update_training_progress(
+                self.db_path, epoch + 1, self.global_step,
+                learner_entry_id=new_entry.id,
+            )
+        except Exception:
+            logger.exception("Failed to write learner_entry_id after seat rotation")
 
         # Reset optimizer (fresh Adam — old momentum fights new gradient signal)
         self.ppo.optimizer = torch.optim.Adam(
