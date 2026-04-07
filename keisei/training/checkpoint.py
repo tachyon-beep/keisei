@@ -76,7 +76,13 @@ def save_checkpoint(
         data["scheduler_state_dict"] = scheduler.state_dict()
     if grad_scaler is not None:
         data["grad_scaler_state_dict"] = grad_scaler.state_dict()
-    torch.save(data, path)
+    tmp_path = path.with_suffix(".pt.tmp")
+    try:
+        torch.save(data, tmp_path)
+        tmp_path.rename(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def load_checkpoint(

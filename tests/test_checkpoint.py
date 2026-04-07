@@ -85,6 +85,43 @@ def test_load_corrupted_checkpoint_raises(tmp_path: Path, model: ResNetModel) ->
         load_checkpoint(path, model, optimizer)
 
 
+def test_save_checkpoint_atomic_no_corrupt_on_failure(
+    tmp_path: Path, model: ResNetModel
+) -> None:
+    """If torch.save crashes mid-write, no corrupt file should remain at the target path.
+
+    An existing valid checkpoint at the same path must survive the failed overwrite.
+    """
+    from unittest.mock import patch
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    path = tmp_path / "checkpoint.pt"
+
+    # Save a valid checkpoint first
+    save_checkpoint(path, model, optimizer, epoch=1, step=100)
+    original_bytes = path.read_bytes()
+
+    real_save = torch.save
+
+    def partial_write_then_crash(data: object, f: object, *args: object, **kwargs: object) -> None:
+        """Simulate a crash: write garbage to the target, then raise."""
+        target = Path(str(f))
+        target.write_bytes(b"CORRUPT PARTIAL DATA")
+        raise OSError("disk full")
+
+    with patch("keisei.training.checkpoint.torch.save", side_effect=partial_write_then_crash):
+        with pytest.raises(OSError, match="disk full"):
+            save_checkpoint(path, model, optimizer, epoch=2, step=200)
+
+    # The original valid checkpoint must still be intact
+    assert path.exists(), "valid checkpoint was destroyed by failed overwrite"
+    assert path.read_bytes() == original_bytes, "checkpoint was corrupted by failed overwrite"
+
+    # No temp file should be left behind
+    tmp_files = list(tmp_path.glob("*.tmp"))
+    assert tmp_files == [], f"temp file left behind: {tmp_files}"
+
+
 # ---------------------------------------------------------------------------
 # T4 — SE-ResNet checkpoint round-trip (production architecture)
 # ---------------------------------------------------------------------------
