@@ -307,7 +307,6 @@ dependencies = [
     { name = "numpy" },
     { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -342,7 +341,6 @@ requires-dist = [
     { name = "types-psutil", marker = "extra == 'dev'" },
     { name = "types-tqdm", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"] },
-    { name = "websockets" },
 ]
 provides-extras = ["dev", "sl"]
 
