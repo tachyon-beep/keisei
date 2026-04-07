@@ -472,7 +472,7 @@ class KataGoPPOAlgorithm:
             masked_logits = flat_logits.masked_fill(~legal_masks, float("-inf"))
 
             probs = F.softmax(masked_logits, dim=-1)
-            dist = torch.distributions.Categorical(probs)
+            dist = torch.distributions.Categorical(probs, validate_args=False)
             actions = dist.sample()
             log_probs = dist.log_prob(actions)
 

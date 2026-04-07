@@ -314,7 +314,7 @@ def split_merge_step(
             )
         l_masked = l_flat.masked_fill(~l_masks, float("-inf"))
         l_probs = F.softmax(l_masked, dim=-1)
-        l_dist = torch.distributions.Categorical(l_probs)
+        l_dist = torch.distributions.Categorical(l_probs, validate_args=False)
         l_actions = l_dist.sample()
         learner_log_probs = l_dist.log_prob(l_actions)
 
@@ -370,7 +370,7 @@ def split_merge_step(
             )
         o_masked = o_flat.masked_fill(~o_masks, float("-inf"))
         o_probs = F.softmax(o_masked, dim=-1)
-        o_dist = torch.distributions.Categorical(o_probs)
+        o_dist = torch.distributions.Categorical(o_probs, validate_args=False)
         o_actions = o_dist.sample()
 
         if cross_device:
@@ -983,8 +983,8 @@ class KataGoTrainingLoop:
             win_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             loss_acc = torch.zeros(1, dtype=torch.long, device=self.device)
             draw_acc = torch.zeros(1, dtype=torch.long, device=self.device)
-            terminated_count = 0
-            truncated_count = 0
+            terminated_count_t = torch.zeros(1, dtype=torch.long, device=self.device)
+            truncated_count_t = torch.zeros(1, dtype=torch.long, device=self.device)
             # Per-color win counters (black=0, white=1)
             black_wins = torch.zeros(1, dtype=torch.long, device=self.device)
             white_wins = torch.zeros(1, dtype=torch.long, device=self.device)
@@ -1073,8 +1073,8 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminated_count += int(terminated.bool().sum().item())
-                    truncated_count += int((truncated.bool() & ~terminated.bool()).sum().item())
+                    terminated_count_t += terminated.bool().sum()
+                    truncated_count_t += (truncated.bool() & ~terminated.bool()).sum()
 
                     # Convert rewards to learner perspective
                     learner_rewards = to_learner_perspective(rewards, pre_players, learner_side)
@@ -1264,8 +1264,8 @@ class KataGoTrainingLoop:
                     truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(self.device)
                     dones = terminated | truncated
 
-                    terminated_count += int(terminated.bool().sum().item())
-                    truncated_count += int((truncated.bool() & ~terminated.bool()).sum().item())
+                    terminated_count_t += terminated.bool().sum()
+                    truncated_count_t += (truncated.bool() & ~terminated.bool()).sum()
 
                     terminal_mask = terminated.bool()
                     if terminal_mask.any():
@@ -1355,6 +1355,9 @@ class KataGoTrainingLoop:
                     next_values, current_players, learner_side,
                 )
 
+            # Materialize GPU counters to CPU once (single sync point)
+            terminated_count = int(terminated_count_t.item())
+            truncated_count = int(truncated_count_t.item())
             logger.info(
                 "Epoch %d: %d terminated, %d truncated (bootstrapped)",
                 epoch_i, terminated_count, truncated_count,

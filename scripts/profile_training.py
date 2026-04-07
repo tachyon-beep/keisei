@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from keisei.config import load_config  # noqa: E402
 from keisei.training.katago_loop import (  # noqa: E402
     KataGoTrainingLoop,
+    _compute_value_cats,
     get_distributed_context,
     seed_all_ranks,
     setup_distributed,
@@ -47,6 +48,75 @@ logger = logging.getLogger("profile")
 
 
 # ---------------------------------------------------------------------------
+# Shared rollout logic
+# ---------------------------------------------------------------------------
+
+def run_one_epoch_rollout(
+    loop: KataGoTrainingLoop,
+    obs: torch.Tensor,
+    legal_masks: torch.Tensor,
+    steps: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run one epoch of rollout, returning (obs, legal_masks) at end."""
+    device = loop.device
+    loop.buffer.clear()
+
+    for step_i in range(steps):
+        loop.global_step += 1
+
+        # Simple self-play path (no league/opponent) — mirrors the
+        # else branch in _run_training_body when _current_opponent is None.
+        actions, log_probs, values = loop.ppo.select_actions(
+            obs, legal_masks, value_adapter=loop.value_adapter,
+        )
+
+        action_list = actions.tolist()
+        step_result = loop.vecenv.step(action_list)
+
+        new_obs = torch.from_numpy(np.asarray(step_result.observations)).to(device)
+        new_legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
+        rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(device)
+        terminated = torch.from_numpy(np.asarray(step_result.terminated)).to(device)
+        truncated = torch.from_numpy(np.asarray(step_result.truncated)).to(device)
+        dones = terminated | truncated
+
+        terminal_mask = terminated.bool()
+        value_cats = _compute_value_cats(rewards, terminal_mask, device)
+
+        material = torch.from_numpy(
+            np.asarray(step_result.step_metadata.material_balance, dtype=np.float32),
+        ).to(device)
+        score_targets = material / loop.score_norm
+
+        loop.buffer.add(
+            obs, actions, log_probs, values, rewards, dones,
+            terminated, legal_masks, value_cats, score_targets,
+        )
+
+        obs = new_obs
+        legal_masks = new_legal_masks
+
+    return obs, legal_masks
+
+
+def run_ppo_update(loop: KataGoTrainingLoop, obs: torch.Tensor) -> dict[str, float]:
+    """Bootstrap + PPO update, returns losses dict."""
+    loop.ppo.forward_model.eval()
+    with torch.no_grad():
+        output = loop.ppo.forward_model(obs)
+        next_values = loop.value_adapter.scalar_value_blended(
+            output.value_logits, output.score_lead,
+        )
+    loop.ppo.forward_model.train()
+
+    losses = loop.ppo.update(
+        loop.buffer, next_values,
+        value_adapter=loop.value_adapter,
+    )
+    return losses
+
+
+# ---------------------------------------------------------------------------
 # Phase 1: Baseline timing (no profiler overhead)
 # ---------------------------------------------------------------------------
 
@@ -57,28 +127,28 @@ def run_baseline(loop: KataGoTrainingLoop, steps: int, num_warmup: int = 1) -> d
     """
     device = loop.device
 
-    # We'll monkey-patch timing around the key phases by running
-    # full epochs and reading the existing CUDA event timers +
-    # wall-clock for env stepping.
     phase_times: dict[str, list[float]] = {
         "epoch_total": [],
         "rollout_total": [],
-        "bootstrap_and_gae": [],
         "ppo_update": [],
         "bookkeeping": [],
     }
 
-    total_epochs = num_warmup + 3  # 3 measured epochs
-    logger.info("=== Phase 1: Baseline (%d warmup + 3 measured epochs, %d steps each) ===",
+    total_epochs = num_warmup + 2  # 2 measured epochs
+    logger.info("=== Phase 1: Baseline (%d warmup + 2 measured epochs, %d steps each) ===",
                 num_warmup, steps)
 
     # Reset environment
     reset_result = loop.vecenv.reset()
     obs = torch.from_numpy(np.asarray(reset_result.observations)).to(device)
     legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(device)
-    current_players = np.zeros(loop.num_envs, dtype=np.uint8)
 
     for epoch_i in range(total_epochs):
+        # Re-reset env each epoch to avoid degenerate game states
+        reset_result = loop.vecenv.reset()
+        obs = torch.from_numpy(np.asarray(reset_result.observations)).to(device)
+        legal_masks = torch.from_numpy(np.asarray(reset_result.legal_masks)).to(device)
+
         if device.type == "cuda":
             torch.cuda.synchronize()
 
@@ -86,71 +156,15 @@ def run_baseline(loop: KataGoTrainingLoop, steps: int, num_warmup: int = 1) -> d
 
         # --- Rollout ---
         t_rollout_start = time.perf_counter()
-        loop.buffer.clear()
-
-        for step_i in range(steps):
-            loop.global_step += 1
-
-            # Simple self-play path (no league/opponent)
-            with torch.no_grad():
-                loop.model.eval()
-                output = loop.model(obs)
-                loop.model.train()
-
-            policy_logits = output.policy_logits.reshape(obs.shape[0], -1)
-            policy_logits = policy_logits[:, :legal_masks.shape[1]]
-            policy_logits = torch.where(legal_masks, policy_logits, torch.tensor(float("-inf")))
-            probs = torch.softmax(policy_logits, dim=-1)
-            actions = torch.multinomial(probs, 1).squeeze(-1)
-            log_probs = torch.log(probs.gather(1, actions.unsqueeze(1)).squeeze(1) + 1e-8)
-
-            values = loop.value_adapter.scalar_value_blended(
-                output.value_logits, output.score_lead,
-            )
-
-            action_list = actions.tolist()
-            step_result = loop.vecenv.step(action_list)
-
-            new_obs = torch.from_numpy(np.asarray(step_result.observations)).to(device)
-            new_legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
-            rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(device)
-            dones = torch.from_numpy(np.asarray(step_result.terminated)).to(device)
-
-            loop.buffer.add(
-                obs=obs,
-                actions=actions,
-                log_probs=log_probs,
-                values=values,
-                rewards=rewards,
-                dones=dones,
-                terminated=dones,
-                legal_masks=legal_masks,
-                value_categories=output.value_logits.detach(),
-                score_targets=output.score_lead.detach(),
-            )
-
-            obs = new_obs
-            legal_masks = new_legal_masks
+        obs, legal_masks = run_one_epoch_rollout(loop, obs, legal_masks, steps)
 
         if device.type == "cuda":
             torch.cuda.synchronize()
         t_rollout_end = time.perf_counter()
 
-        # --- Bootstrap + GAE + PPO Update ---
+        # --- Bootstrap + PPO Update ---
         t_update_start = time.perf_counter()
-
-        loop.ppo.forward_model.eval()
-        with torch.no_grad():
-            output = loop.ppo.forward_model(obs)
-            next_values = loop.value_adapter.scalar_value_blended(
-                output.value_logits, output.score_lead,
-            )
-        loop.ppo.forward_model.train()
-
-        losses = loop.ppo.update(
-            loop.buffer, next_values,
-            value_adapter=loop.value_adapter,
-        )
+        losses = run_ppo_update(loop, obs)
         loop.ppo.flush_timings()
 
         if device.type == "cuda":
@@ -225,65 +239,8 @@ def run_profiler(
         on_trace_ready=lambda p: p.export_chrome_trace(str(trace_path)),
     ) as prof:
         for epoch_pass in range(2):
-            loop.buffer.clear()
-
-            for step_i in range(steps):
-                loop.global_step += 1
-
-                with torch.no_grad():
-                    loop.model.eval()
-                    output = loop.model(obs)
-                    loop.model.train()
-
-                policy_logits = output.policy_logits.reshape(obs.shape[0], -1)
-                policy_logits = policy_logits[:, :legal_masks.shape[1]]
-                policy_logits = torch.where(legal_masks, policy_logits, torch.tensor(float("-inf")))
-                probs = torch.softmax(policy_logits, dim=-1)
-                actions = torch.multinomial(probs, 1).squeeze(-1)
-                log_probs = torch.log(probs.gather(1, actions.unsqueeze(1)).squeeze(1) + 1e-8)
-
-                values = loop.value_adapter.scalar_value_blended(
-                    output.value_logits, output.score_lead,
-                )
-
-                action_list = actions.tolist()
-                step_result = loop.vecenv.step(action_list)
-
-                new_obs = torch.from_numpy(np.asarray(step_result.observations)).to(device)
-                new_legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(device)
-                rewards = torch.from_numpy(np.asarray(step_result.rewards)).to(device)
-                dones = torch.from_numpy(np.asarray(step_result.terminated)).to(device)
-
-                loop.buffer.add(
-                    obs=obs,
-                    actions=actions,
-                    log_probs=log_probs,
-                    values=values,
-                    rewards=rewards,
-                    dones=dones,
-                    terminated=dones,
-                    legal_masks=legal_masks,
-                    value_categories=output.value_logits.detach(),
-                    score_targets=output.score_lead.detach(),
-                )
-
-                obs = new_obs
-                legal_masks = new_legal_masks
-
-            # Bootstrap + PPO update
-            loop.ppo.forward_model.eval()
-            with torch.no_grad():
-                output = loop.ppo.forward_model(obs)
-                next_values = loop.value_adapter.scalar_value_blended(
-                    output.value_logits, output.score_lead,
-                )
-            loop.ppo.forward_model.train()
-
-            losses = loop.ppo.update(
-                loop.buffer, next_values,
-                value_adapter=loop.value_adapter,
-            )
-
+            obs, legal_masks = run_one_epoch_rollout(loop, obs, legal_masks, steps)
+            losses = run_ppo_update(loop, obs)
             prof.step()
 
     logger.info("Chrome trace saved to: %s", trace_path)

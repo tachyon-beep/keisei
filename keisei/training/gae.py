@@ -96,9 +96,10 @@ def compute_gae_padded(
     # For envs shorter than T_max, override their last valid step with next_values[i]
     # lengths[i]-1 is the index of the last valid timestep for env i
     last_step_idx = (lengths - 1).clamp(min=0)  # (N,) indices, shape guard
+    # Batch-convert to CPU once instead of N .item() calls (avoids N GPU syncs)
+    last_step_np = last_step_idx.cpu().numpy().astype(int)
     for i in range(N):
-        t_last = int(last_step_idx[i].item())
-        next_vals[t_last, i] = next_values[i]
+        next_vals[last_step_np[i], i] = next_values[i]
 
     for t in reversed(range(T_max)):
         not_done = 1.0 - terminated[t].float()
