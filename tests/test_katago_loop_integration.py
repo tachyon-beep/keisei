@@ -14,6 +14,8 @@ from keisei.training.katago_loop import KataGoTrainingLoop
 
 from tests.test_katago_loop import _make_config, _make_mock_katago_vecenv
 
+import copy
+
 pytestmark = pytest.mark.integration
 
 
@@ -1008,3 +1010,113 @@ class TestFairnessInteractions:
         # (A should go down since learner won, B should go up since learner lost)
         # The results dict should have different contents for each opponent
         assert loop._opponent_results[opp_a_id] != loop._opponent_results.get(opp_b_id, None) or opp_a_id == opp_b_id
+
+
+# ---------------------------------------------------------------------------
+# Critical gap: AMP path through training loop
+# ---------------------------------------------------------------------------
+
+
+class TestAMPTrainingPath:
+    """Exercise the AMP code path in KataGoTrainingLoop.
+
+    All existing integration tests run with use_amp=False (the default).
+    This gap means GradScaler.scale(), unscale_(), step(), update(), and
+    the autocast context manager in _run_training_body are never exercised
+    end-to-end.
+
+    On CPU, autocast uses bfloat16 and GradScaler is effectively a passthrough,
+    but the code path — including branching on scaler.is_enabled() and the
+    autocast context wrapping the forward pass — is fully exercised.
+    """
+
+    @pytest.fixture
+    def amp_config(self, tmp_path):
+        """AppConfig with use_amp=True."""
+        return AppConfig(
+            training=TrainingConfig(
+                num_games=2,
+                max_ply=50,
+                algorithm="katago_ppo",
+                checkpoint_interval=5,
+                checkpoint_dir=str(tmp_path / "checkpoints"),
+                use_amp=True,
+                algorithm_params={
+                    "learning_rate": 2e-4,
+                    "gamma": 0.99,
+                    "lambda_policy": 1.0,
+                    "lambda_value": 1.5,
+                    "lambda_score": 0.02,
+                    "lambda_entropy": 0.01,
+                    "score_normalization": 76.0,
+                    "grad_clip": 1.0,
+                },
+            ),
+            display=DisplayConfig(
+                moves_per_minute=0,
+                db_path=str(tmp_path / "test.db"),
+            ),
+            model=ModelConfig(
+                display_name="Test-AMP",
+                architecture="se_resnet",
+                params={
+                    "num_blocks": 2,
+                    "channels": 32,
+                    "se_reduction": 8,
+                    "global_pool_channels": 16,
+                    "policy_channels": 8,
+                    "value_fc_size": 32,
+                    "score_fc_size": 16,
+                    "obs_channels": 50,
+                },
+            ),
+        )
+
+    def test_amp_training_completes(self, amp_config):
+        """Training loop completes with use_amp=True — exercises GradScaler path."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(amp_config, vecenv=mock_env)
+
+        # Verify AMP is actually enabled
+        assert loop.ppo.params.use_amp is True
+        assert loop.ppo.scaler.is_enabled()
+
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+    def test_amp_with_terminal_episodes(self, amp_config):
+        """AMP + terminal episodes exercises autocast around value categorization."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2, terminate_at_step=2)
+        loop = KataGoTrainingLoop(amp_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+        assert loop.global_step == 4
+
+    def test_amp_checkpoint_includes_scaler_state(self, amp_config, tmp_path):
+        """Checkpoint saved during AMP training should include grad_scaler state."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        # Set checkpoint_interval=1 so we get a checkpoint after the first epoch
+        amp_config = dataclasses.replace(
+            amp_config,
+            training=dataclasses.replace(amp_config.training, checkpoint_interval=1),
+        )
+        loop = KataGoTrainingLoop(amp_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+
+        # Find the checkpoint file
+        ckpt_dir = Path(amp_config.training.checkpoint_dir)
+        ckpts = list(ckpt_dir.glob("*.pt"))
+        assert len(ckpts) >= 1, f"Expected checkpoint in {ckpt_dir}"
+
+        # Load and verify scaler state is present
+        data = torch.load(ckpts[0], map_location="cpu", weights_only=True)
+        assert "grad_scaler_state_dict" in data
+
+    def test_amp_gradients_remain_finite(self, amp_config):
+        """After AMP training step, all model parameters should have finite values."""
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(amp_config, vecenv=mock_env)
+        loop.run(num_epochs=1, steps_per_epoch=4)
+
+        base_model = loop.model.module if hasattr(loop.model, "module") else loop.model
+        for name, param in base_model.named_parameters():
+            assert torch.isfinite(param).all(), f"Non-finite values in {name}"
