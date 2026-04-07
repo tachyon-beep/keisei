@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from keisei.config import ConcurrencyConfig
-from keisei.training.concurrent_matches import ConcurrentMatchPool, MatchResult, _MatchSlot
+from keisei.training.concurrent_matches import ConcurrentMatchPool, MatchResult, RoundStats, _MatchSlot
 from keisei.training.opponent_store import OpponentEntry, Role
 from tests._helpers import TinyModel
 
@@ -159,6 +159,211 @@ class TestMatchSlot:
         assert result.a_wins == 3
         assert result.b_wins == 1
         assert result.rollout is None
+
+    def test_to_result_with_rollout(self) -> None:
+        """collect_rollout=True produces a MatchRollout with stacked tensors."""
+        entry_a = _make_entry(1)
+        entry_b = _make_entry(2)
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+        slot.reset_for_pairing(
+            entry_a=entry_a,
+            entry_b=entry_b,
+            model_a=TinyModel(),
+            model_b=TinyModel(),
+            games_target=4,
+            collect_rollout=True,
+        )
+        # Simulate 3 plies of rollout data
+        num_envs = 2
+        for _ in range(3):
+            slot._obs.append(torch.randn(num_envs, 50, 9, 9))
+            slot._actions.append(torch.randint(0, 11259, (num_envs,)))
+            slot._rewards.append(torch.zeros(num_envs))
+            slot._dones.append(torch.zeros(num_envs))
+            slot._masks.append(torch.ones(num_envs, 11259, dtype=torch.bool))
+            slot._perspective.append(torch.zeros(num_envs, dtype=torch.long))
+
+        result = slot.to_result()
+        assert result.rollout is not None
+        assert result.rollout.observations.shape == (3, num_envs, 50, 9, 9)
+        assert result.rollout.actions.shape == (3, num_envs)
+        assert result.rollout.rewards.shape == (3, num_envs)
+        assert result.rollout.dones.shape == (3, num_envs)
+        assert result.rollout.legal_masks.shape == (3, num_envs, 11259)
+
+    def test_reset_clears_rollout_buffers(self) -> None:
+        """reset_for_pairing must clear rollout buffers from a previous pairing."""
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+        slot.reset_for_pairing(
+            entry_a=_make_entry(1), entry_b=_make_entry(2),
+            model_a=TinyModel(), model_b=TinyModel(),
+            games_target=4, collect_rollout=True,
+        )
+        slot._obs.append(torch.randn(2, 50, 9, 9))
+        assert len(slot._obs) == 1
+
+        # Second reset should clear everything
+        slot.reset_for_pairing(
+            entry_a=_make_entry(3), entry_b=_make_entry(4),
+            model_a=TinyModel(), model_b=TinyModel(),
+            games_target=4, collect_rollout=False,
+        )
+        assert len(slot._obs) == 0
+        assert len(slot._actions) == 0
+        assert slot.ply_count == 0
+        assert slot.a_wins == 0
+
+    def test_idle_to_active_to_finalized_lifecycle(self) -> None:
+        """Slot lifecycle: idle (no entry) -> active (reset) -> finalized (to_result)."""
+        slot = _MatchSlot(index=0, env_start=0, env_end=4)
+        # Idle
+        assert not slot.active
+        assert slot.entry_a is None
+        assert slot.model_a is None
+
+        # Activate
+        model_a = TinyModel()
+        model_b = TinyModel()
+        slot.reset_for_pairing(
+            entry_a=_make_entry(1), entry_b=_make_entry(2),
+            model_a=model_a, model_b=model_b,
+            games_target=2,
+        )
+        assert slot.active
+        assert slot.model_a is model_a
+
+        # Simulate completion
+        slot.a_wins = 2
+        assert slot.games_completed >= slot.games_target
+        result = slot.to_result()
+        assert result.a_wins == 2
+
+        # Deactivate (as run_round does after pop)
+        slot.model_a = None
+        slot.model_b = None
+        slot.active = False
+        assert not slot.active
+        assert slot.model_a is None
+
+
+# ---------------------------------------------------------------------------
+# TestAssignPairing — isolation tests for _assign_pairing
+# ---------------------------------------------------------------------------
+
+
+class TestAssignPairing:
+    """Test ConcurrentMatchPool._assign_pairing in isolation."""
+
+    def test_successful_assignment(self) -> None:
+        """Happy path: both models load, slot becomes active."""
+        pool = _make_pool()
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+        stats = RoundStats()
+        entry_a = _make_entry(1)
+        entry_b = _make_entry(2)
+
+        pool._assign_pairing(
+            slot, 0, (entry_a, entry_b),
+            load_fn=lambda e: TinyModel(),
+            games_target=4,
+            stats=stats,
+        )
+        assert slot.active
+        assert slot.entry_a is entry_a
+        assert slot.entry_b is entry_b
+        assert slot.model_a is not None
+        assert slot.model_b is not None
+        assert stats.model_load_count == 2
+        assert stats.model_load_time_s > 0
+
+    def test_model_a_failure_leaves_slot_inactive(self) -> None:
+        """If model_a fails to load, slot stays inactive, no models leaked."""
+        pool = _make_pool()
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+
+        def always_fail(entry: OpponentEntry) -> TinyModel:
+            raise RuntimeError("load failed")
+
+        pool._assign_pairing(
+            slot, 0, (_make_entry(1), _make_entry(2)),
+            load_fn=always_fail,
+            games_target=4,
+        )
+        assert not slot.active
+        assert slot.model_a is None
+        assert slot.model_b is None
+
+    def test_model_b_failure_cleans_up_model_a(self) -> None:
+        """If model_b fails, model_a must be moved to CPU and slot stays inactive."""
+        pool = _make_pool()
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+
+        call_count = 0
+
+        def fail_on_second(entry: OpponentEntry) -> TinyModel:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("model_b load failed")
+            return TinyModel()
+
+        pool._assign_pairing(
+            slot, 0, (_make_entry(1), _make_entry(2)),
+            load_fn=fail_on_second,
+            games_target=4,
+        )
+        assert not slot.active
+        assert slot.model_a is None
+        assert slot.model_b is None
+
+    def test_trainable_fn_controls_rollout(self) -> None:
+        """trainable_fn=True -> collect_rollout=True, False -> False."""
+        pool = _make_pool()
+
+        slot_yes = _MatchSlot(index=0, env_start=0, env_end=2)
+        pool._assign_pairing(
+            slot_yes, 0, (_make_entry(1), _make_entry(2)),
+            load_fn=lambda e: TinyModel(),
+            games_target=4,
+            trainable_fn=lambda a, b: True,
+        )
+        assert slot_yes.collect_rollout is True
+
+        slot_no = _MatchSlot(index=1, env_start=2, env_end=4)
+        pool._assign_pairing(
+            slot_no, 1, (_make_entry(3), _make_entry(4)),
+            load_fn=lambda e: TinyModel(),
+            games_target=4,
+            trainable_fn=lambda a, b: False,
+        )
+        assert slot_no.collect_rollout is False
+
+    def test_models_set_to_eval_mode(self) -> None:
+        """_assign_pairing must call .eval() on both models."""
+        pool = _make_pool()
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+
+        pool._assign_pairing(
+            slot, 0, (_make_entry(1), _make_entry(2)),
+            load_fn=lambda e: TinyModel(),
+            games_target=4,
+        )
+        assert not slot.model_a.training
+        assert not slot.model_b.training
+
+    def test_stats_not_updated_on_failure(self) -> None:
+        """Load failure should not increment model_load_count."""
+        pool = _make_pool()
+        slot = _MatchSlot(index=0, env_start=0, env_end=2)
+        stats = RoundStats()
+
+        pool._assign_pairing(
+            slot, 0, (_make_entry(1), _make_entry(2)),
+            load_fn=lambda e: (_ for _ in ()).throw(RuntimeError("fail")),
+            games_target=4,
+            stats=stats,
+        )
+        assert stats.model_load_count == 0
 
 
 # ---------------------------------------------------------------------------

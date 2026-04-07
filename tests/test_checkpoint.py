@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -258,6 +259,93 @@ def test_skip_optimizer_still_loads_model_weights(tmp_path: Path, model: ResNetM
 # ---------------------------------------------------------------------------
 # End-to-end SL→RL checkpoint transition
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Critical gap: numpy RNG state round-trip through checkpoint
+# ---------------------------------------------------------------------------
+
+
+class TestNumpyRngSerialization:
+    """_numpy_rng_to_safe / _safe_to_numpy_rng must round-trip perfectly.
+
+    Broken serialization silently drops RNG state on resume, destroying
+    training reproducibility without raising any error.
+    """
+
+    def test_rng_state_round_trip_through_helpers(self) -> None:
+        """Direct helper round-trip: set_state(safe_to_numpy(numpy_to_safe(get_state())))."""
+        from keisei.training.checkpoint import _numpy_rng_to_safe, _safe_to_numpy_rng
+
+        np.random.seed(12345)
+        original_state = np.random.get_state()
+
+        safe = _numpy_rng_to_safe(original_state)
+        restored_state = _safe_to_numpy_rng(safe)
+
+        # Tuple structure: (name, keys, pos, has_gauss, cached_gaussian)
+        assert restored_state[0] == original_state[0]  # 'MT19937'
+        assert np.array_equal(restored_state[1], original_state[1])  # 624-element key array
+        assert restored_state[2] == original_state[2]  # position
+        assert restored_state[3] == original_state[3]  # has_gauss
+        assert restored_state[4] == original_state[4]  # cached_gaussian
+
+    def test_rng_produces_same_sequence_after_round_trip(self) -> None:
+        """After round-trip, the RNG must produce the identical random sequence."""
+        from keisei.training.checkpoint import _numpy_rng_to_safe, _safe_to_numpy_rng
+
+        np.random.seed(42)
+        # Advance RNG to a non-trivial state
+        np.random.rand(1000)
+        state = np.random.get_state()
+        expected = np.random.rand(50)
+
+        # Round-trip and restore
+        safe = _numpy_rng_to_safe(state)
+        np.random.set_state(_safe_to_numpy_rng(safe))
+        actual = np.random.rand(50)
+
+        assert np.array_equal(expected, actual)
+
+    def test_rng_survives_full_checkpoint_save_load(self, tmp_path: Path, model: ResNetModel) -> None:
+        """Full checkpoint save→load preserves numpy RNG state end-to-end."""
+        import numpy as np
+        import random as stdlib_random
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+        # Set all RNGs to known state
+        np.random.seed(99)
+        np.random.rand(500)  # advance past initial state
+        pre_save_state = np.random.get_state()
+        expected_sequence = np.random.rand(20)
+
+        # Restore to pre-save state, then save checkpoint
+        np.random.set_state(pre_save_state)
+        path = tmp_path / "rng_checkpoint.pt"
+        save_checkpoint(path, model, optimizer, epoch=7, step=700)
+
+        # Clobber RNG state
+        np.random.seed(0)
+
+        # Load checkpoint — should restore numpy RNG
+        load_checkpoint(path, model, optimizer)
+
+        actual_sequence = np.random.rand(20)
+        assert np.array_equal(expected_sequence, actual_sequence)
+
+    def test_safe_dict_keys_are_torch_safe_types(self) -> None:
+        """The safe dict must only contain types allowed by weights_only=True."""
+        from keisei.training.checkpoint import _numpy_rng_to_safe
+
+        np.random.seed(1)
+        safe = _numpy_rng_to_safe(np.random.get_state())
+
+        assert isinstance(safe["name"], str)
+        assert isinstance(safe["keys"], torch.Tensor)
+        assert isinstance(safe["pos"], int)
+        assert isinstance(safe["has_gauss"], int)
+        assert isinstance(safe["cached_gaussian"], float)
 
 
 class TestSLtoRLCheckpointTransition:

@@ -12,11 +12,13 @@ from keisei.db import (
     read_game_snapshots,
     read_league_data,
     read_metrics_since,
+    read_tournament_stats,
     read_training_state,
     update_heartbeat,
     update_training_progress,
     write_game_snapshots,
     write_metrics,
+    write_tournament_stats,
     write_training_state,
 )
 
@@ -322,6 +324,100 @@ class TestSchemaV4:
         conn.close()
         assert "idx_league_results_entry_a" in indexes
         assert "idx_league_results_entry_b" in indexes
+
+
+# ---------------------------------------------------------------------------
+# Critical gap: tournament stats write / read round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestTournamentStats:
+    """write_tournament_stats / read_tournament_stats were never directly tested.
+
+    These feed the dashboard's tournament monitoring panel.  A schema mismatch
+    or getattr bug here silently delivers wrong data — or crashes the server
+    poll loop.
+    """
+
+    def test_read_returns_none_when_empty(self, db: Path) -> None:
+        """Before any writes, read_tournament_stats should return None."""
+        result = read_tournament_stats(str(db))
+        assert result is None
+
+    def test_write_and_read_round_trip(self, db: Path) -> None:
+        """Write a RoundStats-like object, read it back, verify all fields."""
+        from keisei.training.concurrent_matches import RoundStats
+
+        stats = RoundStats(
+            round_duration_s=12.5,
+            pairings_requested=4,
+            pairings_completed=3,
+            total_games=192,
+            total_plies=48000,
+            active_slots=4,
+            model_load_time_s=2.1,
+            model_load_count=8,
+        )
+        write_tournament_stats(str(db), stats)
+        row = read_tournament_stats(str(db))
+
+        assert row is not None
+        assert row["round_duration_s"] == pytest.approx(12.5)
+        assert row["pairings_requested"] == 4
+        assert row["pairings_completed"] == 3
+        assert row["total_games"] == 192
+        assert row["total_plies"] == 48000
+        assert row["active_slots"] == 4
+        assert row["model_load_time_s"] == pytest.approx(2.1)
+        assert row["model_load_count"] == 8
+        # games_per_min is computed: 192 / 12.5 * 60 = 921.6
+        assert row["games_per_min"] == pytest.approx(921.6)
+        assert "updated_at" in row
+
+    def test_upsert_overwrites_on_second_write(self, db: Path) -> None:
+        """Second write should update the single row, not insert a duplicate."""
+        from keisei.training.concurrent_matches import RoundStats
+
+        stats1 = RoundStats(total_games=100, round_duration_s=10.0)
+        write_tournament_stats(str(db), stats1)
+
+        stats2 = RoundStats(total_games=200, round_duration_s=8.0)
+        write_tournament_stats(str(db), stats2)
+
+        row = read_tournament_stats(str(db))
+        assert row is not None
+        assert row["total_games"] == 200
+        assert row["games_per_min"] == pytest.approx(200 / 8.0 * 60)
+
+    def test_games_per_min_zero_duration(self, db: Path) -> None:
+        """Zero-duration round should yield games_per_min=0, not division error."""
+        from keisei.training.concurrent_matches import RoundStats
+
+        stats = RoundStats(total_games=50, round_duration_s=0.0)
+        write_tournament_stats(str(db), stats)
+
+        row = read_tournament_stats(str(db))
+        assert row is not None
+        assert row["games_per_min"] == pytest.approx(0.0)
+
+    def test_accepts_plain_object_with_attrs(self, db: Path) -> None:
+        """write_tournament_stats uses getattr — any object with matching attrs works."""
+        from types import SimpleNamespace
+
+        stats = SimpleNamespace(
+            round_duration_s=5.0,
+            pairings_requested=2,
+            pairings_completed=2,
+            total_games=64,
+            total_plies=12000,
+            active_slots=2,
+            model_load_time_s=1.0,
+            model_load_count=4,
+        )
+        write_tournament_stats(str(db), stats)
+        row = read_tournament_stats(str(db))
+        assert row is not None
+        assert row["total_games"] == 64
 
 
 class TestForeignKeyEnforcement:
