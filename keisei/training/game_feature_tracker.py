@@ -6,7 +6,7 @@ play_batch() calls.  When a game ends, produces a feature row ready for
 DB insertion.
 
 All move classification is derived from the spatial action encoding
-(9×9×139) without needing to replay games through SpectatorEnv.
+(9x9x139) without needing to replay games through SpectatorEnv.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ DROP_MOVE_TYPE_MAX = 138
 NO_CAPTURE = 255
 
 # Rook starting squares (file-major: square = row * 9 + col).
-# Black rook: rank 9 (row 8), file 2 (col 7) → 8*9+7 = 79
-# White rook: rank 1 (row 0), file 8 (col 1) → 0*9+1 = 1
+# Black rook: rank 9 (row 8), file 2 (col 7) -> 8*9+7 = 79
+# White rook: rank 1 (row 0), file 8 (col 1) -> 0*9+1 = 1
 # Note: spatial encoding uses destination square for drops but source
 # square for board moves.  The source square index from the action is
 # perspective-relative (rotated for white), so we check against the
@@ -65,37 +65,23 @@ def classify_action(action_id: int) -> tuple[bool, bool, int]:
 
 
 @dataclass
-class GameFeatureAccumulator:
-    """Tracks features for one game in one env slot."""
+class _SideStats:
+    """Per-side (per-player) feature counters within a game."""
 
-    # Opening
-    actions: list[int] = field(default_factory=list)
-    # Tempo and aggression
     first_capture_ply: int | None = None
-    first_check_ply: int | None = None
     first_drop_ply: int | None = None
-    num_checks: int = 0
     num_captures: int = 0
-    # Drop and promotion
     num_drops: int = 0
     num_promotions: int = 0
     num_early_drops: int = 0
-    # Positional proxies
     rook_moved_ply: int | None = None
     rook_moves_in_20: int = 0
     king_displacement_20: int = 0
     king_moves_in_30: int = 0
-    num_repetitions: int = 0
-    # Tracking state
-    _ply: int = 0
 
     def reset(self) -> None:
-        """Reset for a new game (after VecEnv auto-reset)."""
-        self.actions.clear()
         self.first_capture_ply = None
-        self.first_check_ply = None
         self.first_drop_ply = None
-        self.num_checks = 0
         self.num_captures = 0
         self.num_drops = 0
         self.num_promotions = 0
@@ -104,6 +90,32 @@ class GameFeatureAccumulator:
         self.rook_moves_in_20 = 0
         self.king_displacement_20 = 0
         self.king_moves_in_30 = 0
+
+
+@dataclass
+class GameFeatureAccumulator:
+    """Tracks features for one game in one env slot.
+
+    Per-side stats (captures, drops, promotions, rook/king movement) are
+    tracked separately for each player via ``sides[0]`` (A/black) and
+    ``sides[1]`` (B/white).  Game-global stats (opening actions,
+    repetitions) remain shared.
+    """
+
+    # Opening (game-global, interleaved A/B actions)
+    actions: list[int] = field(default_factory=list)
+    # Per-side counters (index 0 = A/black, 1 = B/white)
+    sides: list[_SideStats] = field(default_factory=lambda: [_SideStats(), _SideStats()])
+    # Game-global
+    num_repetitions: int = 0
+    # Tracking state
+    _ply: int = 0
+
+    def reset(self) -> None:
+        """Reset for a new game (after VecEnv auto-reset)."""
+        self.actions.clear()
+        self.sides[0].reset()
+        self.sides[1].reset()
         self.num_repetitions = 0
         self._ply = 0
 
@@ -124,9 +136,7 @@ class GameFeatureRow:
     rook_moved_ply: int | None
     king_displacement_20: int
     first_capture_ply: int | None
-    first_check_ply: int | None
     first_drop_ply: int | None
-    num_checks: int
     num_captures: int
     num_drops: int
     num_promotions: int
@@ -151,9 +161,7 @@ class GameFeatureRow:
             "rook_moved_ply": self.rook_moved_ply,
             "king_displacement_20": self.king_displacement_20,
             "first_capture_ply": self.first_capture_ply,
-            "first_check_ply": self.first_check_ply,
             "first_drop_ply": self.first_drop_ply,
-            "num_checks": self.num_checks,
             "num_captures": self.num_captures,
             "num_drops": self.num_drops,
             "num_promotions": self.num_promotions,
@@ -224,6 +232,7 @@ class GameFeatureTracker:
             ply = int(ply_count[i])
             acc._ply = ply
             mover = int(pre_step_players[i])
+            side = acc.sides[mover]
 
             is_drop, is_promotion, source_sq = classify_action(action)
 
@@ -231,39 +240,39 @@ class GameFeatureTracker:
             if len(acc.actions) < OPENING_SEQ_6_LEN * 2:
                 acc.actions.append(action)
 
-            # Captures
+            # Captures (attributed to the mover)
             cap = int(captured_piece[i])
             if cap != NO_CAPTURE:
-                acc.num_captures += 1
-                if acc.first_capture_ply is None:
-                    acc.first_capture_ply = ply
+                side.num_captures += 1
+                if side.first_capture_ply is None:
+                    side.first_capture_ply = ply
 
-            # Drops
+            # Drops (attributed to the mover)
             if is_drop:
-                acc.num_drops += 1
-                if acc.first_drop_ply is None:
-                    acc.first_drop_ply = ply
+                side.num_drops += 1
+                if side.first_drop_ply is None:
+                    side.first_drop_ply = ply
                 if ply <= EARLY_DROP_PLY_THRESHOLD:
-                    acc.num_early_drops += 1
+                    side.num_early_drops += 1
 
-            # Promotions
+            # Promotions (attributed to the mover)
             if is_promotion:
-                acc.num_promotions += 1
+                side.num_promotions += 1
 
             # Rook movement (perspective-relative: source_sq is from mover's
             # perspective, so BLACK_ROOK_SQUARE works for both sides)
             if not is_drop and source_sq == BLACK_ROOK_SQUARE:
-                if acc.rook_moved_ply is None:
-                    acc.rook_moved_ply = ply
+                if side.rook_moved_ply is None:
+                    side.rook_moved_ply = ply
                 if ply <= ROOK_MOBILITY_PLY:
-                    acc.rook_moves_in_20 += 1
+                    side.rook_moves_in_20 += 1
 
-            # King movement
+            # King movement (attributed to the mover)
             if not is_drop and source_sq == BLACK_KING_SQUARE:
                 if ply <= 20:
-                    acc.king_displacement_20 += 1
+                    side.king_displacement_20 += 1
                 if ply <= KING_MOVEMENT_PLY:
-                    acc.king_moves_in_30 += 1
+                    side.king_moves_in_30 += 1
 
             # Repetition detection (termination_reason == 2)
             tr = int(termination_reason[i])
@@ -316,6 +325,7 @@ class GameFeatureTracker:
 
             checkpoint_id = self.entry_a_id if side_idx == 0 else self.entry_b_id
             opponent_id = self.entry_b_id if side_idx == 0 else self.entry_a_id
+            side = acc.sides[side_idx]
 
             row = GameFeatureRow(
                 checkpoint_id=checkpoint_id,
@@ -327,18 +337,16 @@ class GameFeatureTracker:
                 first_action=side_actions[0] if side_actions else None,
                 opening_seq_3=_opening_seq(side_actions, OPENING_SEQ_3_LEN),
                 opening_seq_6=_opening_seq(side_actions, OPENING_SEQ_6_LEN),
-                rook_moved_ply=acc.rook_moved_ply,
-                king_displacement_20=acc.king_displacement_20,
-                first_capture_ply=acc.first_capture_ply,
-                first_check_ply=acc.first_check_ply,
-                first_drop_ply=acc.first_drop_ply,
-                num_checks=acc.num_checks,
-                num_captures=acc.num_captures,
-                num_drops=acc.num_drops,
-                num_promotions=acc.num_promotions,
-                num_early_drops=acc.num_early_drops,
-                rook_moves_in_20=acc.rook_moves_in_20,
-                king_moves_in_30=acc.king_moves_in_30,
+                rook_moved_ply=side.rook_moved_ply,
+                king_displacement_20=side.king_displacement_20,
+                first_capture_ply=side.first_capture_ply,
+                first_drop_ply=side.first_drop_ply,
+                num_captures=side.num_captures,
+                num_drops=side.num_drops,
+                num_promotions=side.num_promotions,
+                num_early_drops=side.num_early_drops,
+                rook_moves_in_20=side.rook_moves_in_20,
+                king_moves_in_30=side.king_moves_in_30,
                 num_repetitions=acc.num_repetitions,
                 termination_reason=termination_reason,
             )

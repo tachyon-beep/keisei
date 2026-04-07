@@ -54,19 +54,22 @@ class TestClassifyAction:
 class TestGameFeatureAccumulator:
     def test_initial_state(self):
         acc = GameFeatureAccumulator()
-        assert acc.num_drops == 0
-        assert acc.num_captures == 0
-        assert acc.num_promotions == 0
-        assert acc.first_capture_ply is None
+        assert acc.sides[0].num_drops == 0
+        assert acc.sides[0].num_captures == 0
+        assert acc.sides[0].num_promotions == 0
+        assert acc.sides[0].first_capture_ply is None
+        assert acc.sides[1].num_drops == 0
 
     def test_reset(self):
         acc = GameFeatureAccumulator()
-        acc.num_drops = 5
-        acc.first_capture_ply = 10
+        acc.sides[0].num_drops = 5
+        acc.sides[0].first_capture_ply = 10
+        acc.sides[1].num_captures = 3
         acc.actions.append(42)
         acc.reset()
-        assert acc.num_drops == 0
-        assert acc.first_capture_ply is None
+        assert acc.sides[0].num_drops == 0
+        assert acc.sides[0].first_capture_ply is None
+        assert acc.sides[1].num_captures == 0
         assert len(acc.actions) == 0
 
 
@@ -111,41 +114,55 @@ class TestGameFeatureTracker:
         self._step(tracker, [0, 0])
         assert len(tracker.completed_rows) == 0
 
-    def test_capture_tracking(self):
+    def test_capture_tracking_per_side(self):
+        """Captures are attributed to the mover, not shared."""
         tracker = self._make_tracker(num_envs=1)
-        # Step with a capture
+        # Player A (mover=0) captures on ply 5
         self._step(tracker, [0], captured=np.array([3], dtype=np.uint8),
+                   pre_step_players=np.array([0], dtype=np.uint8),
                    ply_count=np.array([5], dtype=np.uint16))
-        assert tracker.accumulators[0].num_captures == 1
-        assert tracker.accumulators[0].first_capture_ply == 5
+        assert tracker.accumulators[0].sides[0].num_captures == 1
+        assert tracker.accumulators[0].sides[0].first_capture_ply == 5
+        # Player B (mover=1) should have no captures
+        assert tracker.accumulators[0].sides[1].num_captures == 0
+        assert tracker.accumulators[0].sides[1].first_capture_ply is None
 
-    def test_drop_tracking(self):
+    def test_drop_tracking_per_side(self):
+        """Drops are attributed to the mover."""
         tracker = self._make_tracker(num_envs=1)
-        # Drop action: square 40, move_type 132
         drop_action = 40 * SPATIAL_MOVE_TYPES + 132
+        # Player B (mover=1) drops on ply 3
         self._step(tracker, [drop_action],
+                   pre_step_players=np.array([1], dtype=np.uint8),
                    ply_count=np.array([3], dtype=np.uint16))
-        assert tracker.accumulators[0].num_drops == 1
-        assert tracker.accumulators[0].first_drop_ply == 3
+        assert tracker.accumulators[0].sides[1].num_drops == 1
+        assert tracker.accumulators[0].sides[1].first_drop_ply == 3
+        # Player A should have no drops
+        assert tracker.accumulators[0].sides[0].num_drops == 0
 
     def test_early_drop_counting(self):
         tracker = self._make_tracker(num_envs=1)
         drop_action = 40 * SPATIAL_MOVE_TYPES + 133
         # Early drop (within threshold)
         self._step(tracker, [drop_action],
+                   pre_step_players=np.array([0], dtype=np.uint8),
                    ply_count=np.array([10], dtype=np.uint16))
-        assert tracker.accumulators[0].num_early_drops == 1
+        assert tracker.accumulators[0].sides[0].num_early_drops == 1
         # Late drop (past threshold)
         self._step(tracker, [drop_action],
+                   pre_step_players=np.array([0], dtype=np.uint8),
                    ply_count=np.array([EARLY_DROP_PLY_THRESHOLD + 5], dtype=np.uint16))
-        assert tracker.accumulators[0].num_early_drops == 1  # not incremented
-        assert tracker.accumulators[0].num_drops == 2
+        assert tracker.accumulators[0].sides[0].num_early_drops == 1  # not incremented
+        assert tracker.accumulators[0].sides[0].num_drops == 2
 
-    def test_promotion_tracking(self):
+    def test_promotion_tracking_per_side(self):
+        """Promotions are attributed to the mover."""
         tracker = self._make_tracker(num_envs=1)
         promo_action = 10 * SPATIAL_MOVE_TYPES + 64
-        self._step(tracker, [promo_action])
-        assert tracker.accumulators[0].num_promotions == 1
+        self._step(tracker, [promo_action],
+                   pre_step_players=np.array([1], dtype=np.uint8))
+        assert tracker.accumulators[0].sides[1].num_promotions == 1
+        assert tracker.accumulators[0].sides[0].num_promotions == 0
 
     def test_game_completion_produces_two_rows(self):
         tracker = self._make_tracker(num_envs=1)
@@ -169,6 +186,23 @@ class TestGameFeatureTracker:
         assert black_row.checkpoint_id == 1  # entry_a = black
         assert white_row.checkpoint_id == 2  # entry_b = white
 
+    def test_opponent_wins_reward_negative(self):
+        """When reward < 0, the non-last-mover wins."""
+        tracker = self._make_tracker(num_envs=1)
+        # last_mover=0 (A/black), reward=-1 means A lost, B won
+        self._step(
+            tracker, [0],
+            pre_step_players=np.array([0], dtype=np.uint8),
+            terminated=np.array([True]),
+            rewards=np.array([-1.0], dtype=np.float32),
+            ply_count=np.array([20], dtype=np.uint16),
+        )
+        assert len(tracker.completed_rows) == 2
+        black_row = next(r for r in tracker.completed_rows if r.side == "black")
+        white_row = next(r for r in tracker.completed_rows if r.side == "white")
+        assert black_row.result == "loss"
+        assert white_row.result == "win"
+
     def test_draw_result(self):
         tracker = self._make_tracker(num_envs=1)
         self._step(
@@ -179,6 +213,40 @@ class TestGameFeatureTracker:
         )
         assert len(tracker.completed_rows) == 2
         assert all(r.result == "draw" for r in tracker.completed_rows)
+
+    def test_per_side_stats_in_emitted_rows(self):
+        """Each side's row should have only that side's stats."""
+        tracker = self._make_tracker(num_envs=1)
+        drop_action = 40 * SPATIAL_MOVE_TYPES + 132
+        regular_action = 0  # regular move
+
+        # Player A (mover=0) makes a capture
+        self._step(tracker, [regular_action],
+                   captured=np.array([3], dtype=np.uint8),
+                   pre_step_players=np.array([0], dtype=np.uint8),
+                   ply_count=np.array([1], dtype=np.uint16))
+        # Player B (mover=1) makes a drop
+        self._step(tracker, [drop_action],
+                   pre_step_players=np.array([1], dtype=np.uint8),
+                   ply_count=np.array([2], dtype=np.uint16))
+        # End game
+        self._step(
+            tracker, [regular_action],
+            pre_step_players=np.array([0], dtype=np.uint8),
+            terminated=np.array([True]),
+            rewards=np.array([1.0], dtype=np.float32),
+            ply_count=np.array([3], dtype=np.uint16),
+        )
+
+        black_row = next(r for r in tracker.completed_rows if r.side == "black")
+        white_row = next(r for r in tracker.completed_rows if r.side == "white")
+
+        # Black (A) had 1 capture, 0 drops
+        assert black_row.num_captures == 1
+        assert black_row.num_drops == 0
+        # White (B) had 0 captures, 1 drop
+        assert white_row.num_captures == 0
+        assert white_row.num_drops == 1
 
     def test_opening_sequence_tracking(self):
         tracker = self._make_tracker(num_envs=1)
@@ -198,7 +266,7 @@ class TestGameFeatureTracker:
             ply_count=np.array([7], dtype=np.uint16),
         )
         black_row = next(r for r in tracker.completed_rows if r.side == "black")
-        # Black moves on plies 1, 3, 5 → actions 1, 3, 5
+        # Black moves on plies 1, 3, 5 -> actions 1, 3, 5
         assert black_row.first_action == 1
         assert black_row.opening_seq_3 == "1,3,5"
 
@@ -218,13 +286,17 @@ class TestGameFeatureTracker:
         assert "total_plies" in d
         assert "num_drops" in d
         assert "num_promotions" in d
+        # Removed fields should not be present
+        assert "first_check_ply" not in d
+        assert "num_checks" not in d
 
     def test_accumulator_resets_after_game_end(self):
         tracker = self._make_tracker(num_envs=1)
-        # Capture on first game
+        # Capture on first game (player A)
         self._step(
             tracker, [0],
             captured=np.array([1], dtype=np.uint8),
+            pre_step_players=np.array([0], dtype=np.uint8),
             ply_count=np.array([5], dtype=np.uint16),
         )
         # End first game
@@ -234,9 +306,10 @@ class TestGameFeatureTracker:
             rewards=np.array([1.0], dtype=np.float32),
             ply_count=np.array([10], dtype=np.uint16),
         )
-        # Accumulator should be reset
-        assert tracker.accumulators[0].num_captures == 0
-        assert tracker.accumulators[0].first_capture_ply is None
+        # Both sides' accumulators should be reset
+        assert tracker.accumulators[0].sides[0].num_captures == 0
+        assert tracker.accumulators[0].sides[0].first_capture_ply is None
+        assert tracker.accumulators[0].sides[1].num_captures == 0
 
     def test_repetition_tracking(self):
         tracker = self._make_tracker(num_envs=1)

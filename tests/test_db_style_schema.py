@@ -1,5 +1,6 @@
 """Tests for game_features and style_profiles DB tables."""
 
+import sqlite3
 import tempfile
 
 import pytest
@@ -19,7 +20,6 @@ def db_path():
     f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     init_db(f.name)
     # Insert league entries for FK constraints
-    import sqlite3
     conn = sqlite3.connect(f.name)
     conn.execute(
         "INSERT INTO league_entries "
@@ -53,9 +53,7 @@ class TestGameFeatures:
             "rook_moved_ply": 15,
             "king_displacement_20": 2,
             "first_capture_ply": 20,
-            "first_check_ply": None,
             "first_drop_ply": 30,
-            "num_checks": 0,
             "num_captures": 5,
             "num_drops": 3,
             "num_promotions": 2,
@@ -73,6 +71,9 @@ class TestGameFeatures:
         assert rows[0]["total_plies"] == 80
         assert rows[0]["num_drops"] == 3
         assert rows[0]["first_capture_ply"] == 20
+        # Placeholder columns default to NULL/0
+        assert rows[0]["first_check_ply"] is None
+        assert rows[0]["num_checks"] == 0
 
     def test_write_empty_list(self, db_path):
         write_game_features(db_path, [])
@@ -95,12 +96,38 @@ class TestGameFeatures:
                 "rook_moves_in_20": 0,
                 "king_moves_in_30": 0,
                 "num_repetitions": 0,
-                "num_checks": 0,
                 "king_displacement_20": 0,
                 "termination_reason": 0,
             }])
         rows = read_all_game_features(db_path)
         assert len(rows) == 2
+
+    def test_read_all_with_min_epoch(self, db_path):
+        """min_epoch parameter filters rows by epoch."""
+        write_game_features(db_path, [{
+            "checkpoint_id": 1, "opponent_id": 2, "epoch": 3,
+            "side": "black", "result": "win", "total_plies": 80,
+            "num_drops": 0, "num_promotions": 0, "num_captures": 0,
+            "num_early_drops": 0, "rook_moves_in_20": 0,
+            "king_moves_in_30": 0, "num_repetitions": 0,
+            "king_displacement_20": 0, "termination_reason": 0,
+        }])
+        write_game_features(db_path, [{
+            "checkpoint_id": 1, "opponent_id": 2, "epoch": 10,
+            "side": "black", "result": "loss", "total_plies": 60,
+            "num_drops": 0, "num_promotions": 0, "num_captures": 0,
+            "num_early_drops": 0, "rook_moves_in_20": 0,
+            "king_moves_in_30": 0, "num_repetitions": 0,
+            "king_displacement_20": 0, "termination_reason": 0,
+        }])
+        # No filter: both rows
+        assert len(read_all_game_features(db_path)) == 2
+        # min_epoch=5: only epoch 10
+        rows = read_all_game_features(db_path, min_epoch=5)
+        assert len(rows) == 1
+        assert rows[0]["epoch"] == 10
+        # min_epoch=3: both (inclusive)
+        assert len(read_all_game_features(db_path, min_epoch=3)) == 2
 
     def test_null_optional_fields(self, db_path):
         features = [{
@@ -117,7 +144,6 @@ class TestGameFeatures:
             "rook_moves_in_20": 0,
             "king_moves_in_30": 0,
             "num_repetitions": 0,
-            "num_checks": 0,
             "king_displacement_20": 0,
             "termination_reason": 0,
             # These are optional (NULL)
@@ -126,13 +152,21 @@ class TestGameFeatures:
             "opening_seq_6": None,
             "rook_moved_ply": None,
             "first_capture_ply": None,
-            "first_check_ply": None,
             "first_drop_ply": None,
         }]
         write_game_features(db_path, features)
         rows = read_game_features_for_checkpoint(db_path, 1)
         assert rows[0]["first_action"] is None
         assert rows[0]["first_capture_ply"] is None
+
+    def test_opponent_id_index_exists(self, db_path):
+        """The opponent_id index should be created by init_db."""
+        conn = sqlite3.connect(db_path)
+        indexes = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()]
+        conn.close()
+        assert "idx_game_features_opponent" in indexes
 
 
 class TestStyleProfiles:
@@ -193,7 +227,6 @@ class TestStyleProfiles:
 class TestSchemaVersion:
     def test_init_creates_tables(self, db_path):
         """Ensure both new tables exist after init_db."""
-        import sqlite3
         conn = sqlite3.connect(db_path)
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -203,8 +236,59 @@ class TestSchemaVersion:
         assert "style_profiles" in tables
 
     def test_version_is_2(self, db_path):
-        import sqlite3
         conn = sqlite3.connect(db_path)
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
         assert version == 2
+
+    def test_v1_to_v2_migration(self):
+        """A v1 database gets new tables and version bump on re-init."""
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        # Create a v1 database manually (core tables only, no game_features/style_profiles)
+        conn = sqlite3.connect(f.name)
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (1);
+            CREATE TABLE league_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                flavour_facts TEXT NOT NULL DEFAULT '[]',
+                architecture TEXT NOT NULL,
+                model_params TEXT NOT NULL DEFAULT '{}',
+                checkpoint_path TEXT NOT NULL,
+                elo_rating REAL NOT NULL DEFAULT 1000,
+                created_epoch INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Run init_db which should migrate v1 -> v2
+        init_db(f.name)
+
+        conn = sqlite3.connect(f.name)
+        conn.row_factory = sqlite3.Row
+        # Version should be bumped
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == 2
+        # New tables should exist
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        assert "game_features" in tables
+        assert "style_profiles" in tables
+        conn.close()
+
+    def test_future_version_raises(self):
+        """A database with version > SCHEMA_VERSION raises RuntimeError."""
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        conn = sqlite3.connect(f.name)
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (999);
+        """)
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(RuntimeError, match="newer than expected"):
+            init_db(f.name)

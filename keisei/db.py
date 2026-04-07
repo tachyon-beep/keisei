@@ -221,9 +221,9 @@ def init_db(db_path: str) -> None:
                 king_displacement_20 INTEGER NOT NULL DEFAULT 0,
                 -- §8.2 Tempo and aggression
                 first_capture_ply   INTEGER,
-                first_check_ply     INTEGER,
+                first_check_ply     INTEGER,  -- placeholder: populated when Rust engine exposes check state
                 first_drop_ply      INTEGER,
-                num_checks          INTEGER NOT NULL DEFAULT 0,
+                num_checks          INTEGER NOT NULL DEFAULT 0,  -- placeholder: see first_check_ply
                 num_captures        INTEGER NOT NULL DEFAULT 0,
                 -- §8.3 Drop and promotion behaviour
                 num_drops           INTEGER NOT NULL DEFAULT 0,
@@ -238,6 +238,7 @@ def init_db(db_path: str) -> None:
                 created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_game_features_checkpoint ON game_features(checkpoint_id);
+            CREATE INDEX IF NOT EXISTS idx_game_features_opponent ON game_features(opponent_id);
             CREATE INDEX IF NOT EXISTS idx_game_features_epoch ON game_features(epoch);
             CREATE TABLE IF NOT EXISTS style_profiles (
                 checkpoint_id       INTEGER PRIMARY KEY REFERENCES league_entries(id),
@@ -619,19 +620,19 @@ def write_game_features(db_path: str, features: list[dict[str, Any]]) -> None:
                    (checkpoint_id, opponent_id, epoch, side, result, total_plies,
                     first_action, opening_seq_3, opening_seq_6,
                     rook_moved_ply, king_displacement_20,
-                    first_capture_ply, first_check_ply, first_drop_ply,
-                    num_checks, num_captures,
+                    first_capture_ply, first_drop_ply,
+                    num_captures,
                     num_drops, num_promotions, num_early_drops,
                     rook_moves_in_20, king_moves_in_30, num_repetitions,
                     termination_reason)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     f["checkpoint_id"], f["opponent_id"], f["epoch"],
                     f["side"], f["result"], f["total_plies"],
                     f.get("first_action"), f.get("opening_seq_3"), f.get("opening_seq_6"),
                     f.get("rook_moved_ply"), f.get("king_displacement_20", 0),
-                    f.get("first_capture_ply"), f.get("first_check_ply"), f.get("first_drop_ply"),
-                    f.get("num_checks", 0), f.get("num_captures", 0),
+                    f.get("first_capture_ply"), f.get("first_drop_ply"),
+                    f.get("num_captures", 0),
                     f.get("num_drops", 0), f.get("num_promotions", 0),
                     f.get("num_early_drops", 0),
                     f.get("rook_moves_in_20", 0), f.get("king_moves_in_30", 0),
@@ -659,11 +660,23 @@ def read_game_features_for_checkpoint(
         conn.close()
 
 
-def read_all_game_features(db_path: str) -> list[dict[str, Any]]:
-    """Read all game feature rows (for league-wide aggregation)."""
+def read_all_game_features(
+    db_path: str, *, min_epoch: int | None = None
+) -> list[dict[str, Any]]:
+    """Read game feature rows for league-wide aggregation.
+
+    Args:
+        min_epoch: If set, only return rows with epoch >= this value.
+    """
     conn = _connect(db_path)
     try:
-        rows = conn.execute("SELECT * FROM game_features ORDER BY id").fetchall()
+        if min_epoch is not None:
+            rows = conn.execute(
+                "SELECT * FROM game_features WHERE epoch >= ? ORDER BY id",
+                (min_epoch,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM game_features ORDER BY id").fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

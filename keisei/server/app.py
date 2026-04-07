@@ -30,6 +30,19 @@ from keisei.db import (
 
 logger = logging.getLogger(__name__)
 
+
+def _style_fingerprint(profiles: list[dict[str, Any]]) -> tuple[tuple[int, str, str], ...]:
+    """Lightweight fingerprint for style profiles to detect changes.
+
+    Returns a tuple of (checkpoint_id, status, primary_style) per profile,
+    which changes whenever profiles are recomputed.
+    """
+    return tuple(
+        (p.get("checkpoint_id", 0), p.get("profile_status", ""), p.get("primary_style") or "")
+        for p in profiles
+    )
+
+
 MAX_METRICS_IN_INIT = 500
 POLL_INTERVAL_S = 0.2
 ALLOWED_HOSTS = frozenset({"keisei.foundryside.dev", "192.168.1.240", "127.0.0.1", "localhost"})
@@ -229,6 +242,10 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     last_league_entry_ids = frozenset(e["id"] for e in league_data["entries"])
     last_league_result_id = league_data["results"][0]["id"] if league_data["results"] else 0
     last_league_transition_id = league_data["transitions"][0]["id"] if league_data["transitions"] else 0
+    # Track style profile state to avoid re-sending unchanged data.
+    # Style profiles only change every ~5 tournament rounds, so a simple
+    # fingerprint avoids redundant reads and sends on every poll tick.
+    last_style_fingerprint = _style_fingerprint(style_profiles)
     league_poll_elapsed = 0.0
     total_episodes = sum((m.get("episodes_completed") or 0) for m in metrics)
 
@@ -294,30 +311,43 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             new_league = await asyncio.to_thread(read_league_data, db_path)
             new_elo_hist = await asyncio.to_thread(read_elo_history, db_path)
             new_t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
-            new_style = await asyncio.to_thread(read_style_profiles, db_path)
             new_entry_ids = frozenset(e["id"] for e in new_league["entries"])
             new_result_id = new_league["results"][0]["id"] if new_league["results"] else 0
             new_transition_id = new_league["transitions"][0]["id"] if new_league["transitions"] else 0
-            if (
+            league_changed = (
                 new_entry_ids != last_league_entry_ids
                 or new_result_id != last_league_result_id
                 or new_transition_id != last_league_transition_id
-            ):
+            )
+            # Only re-read style profiles when league data changed
+            if league_changed:
+                new_style = await asyncio.to_thread(read_style_profiles, db_path)
+                new_fp = _style_fingerprint(new_style)
+                style_changed = new_fp != last_style_fingerprint
+                if style_changed:
+                    last_style_fingerprint = new_fp
+                    style_profiles = new_style
+            else:
+                style_changed = False
+
+            if league_changed:
                 last_league_entry_ids = new_entry_ids
                 last_league_result_id = new_result_id
                 last_league_transition_id = new_transition_id
+                msg: dict[str, Any] = {
+                    "type": "league_update",
+                    "entries": new_league["entries"],
+                    "results": new_league["results"],
+                    "historical_library": new_league["historical_library"],
+                    "gauntlet_results": new_league["gauntlet_results"],
+                    "transitions": new_league["transitions"],
+                    "elo_history": new_elo_hist,
+                    "tournament_stats": new_t_stats,
+                }
+                if style_changed:
+                    msg["style_profiles"] = style_profiles
                 await asyncio.wait_for(
-                    ws.send_json({
-                        "type": "league_update",
-                        "entries": new_league["entries"],
-                        "results": new_league["results"],
-                        "historical_library": new_league["historical_library"],
-                        "gauntlet_results": new_league["gauntlet_results"],
-                        "transitions": new_league["transitions"],
-                        "elo_history": new_elo_hist,
-                        "tournament_stats": new_t_stats,
-                        "style_profiles": new_style,
-                    }),
+                    ws.send_json(msg),
                     timeout=WS_SEND_TIMEOUT_S,
                 )
 

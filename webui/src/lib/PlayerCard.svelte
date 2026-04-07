@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy } from 'svelte'
+  import { onDestroy, afterUpdate } from 'svelte'
   import { getRoleInfo } from './roleIcons.js'
 
   /** @type {'learner' | 'opponent'} */
@@ -29,24 +29,26 @@
   $: commentary = hasStyle ? (styleProfile.commentary || []) : []
   $: profileStatus = styleProfile ? styleProfile.profile_status : null
 
-  // Rotating commentary
+  // Rotating commentary — uses afterUpdate instead of reactive side-effect
+  // block for Svelte 5 compatibility.
   let commentaryIdx = 0
   $: currentCommentary = commentary.length > 0 ? commentary[commentaryIdx % commentary.length] : null
 
   let rotationInterval = null
-  function updateRotationInterval() {
-    if (rotationInterval) clearInterval(rotationInterval)
-    rotationInterval = null
-    if (commentary.length > 1) {
-      rotationInterval = setInterval(() => {
-        commentaryIdx = (commentaryIdx + 1) % commentary.length
-      }, 20000)
+  let prevCommentaryLen = 0
+
+  afterUpdate(() => {
+    if (commentary.length !== prevCommentaryLen) {
+      prevCommentaryLen = commentary.length
+      if (rotationInterval) clearInterval(rotationInterval)
+      rotationInterval = null
+      if (commentary.length > 1) {
+        rotationInterval = setInterval(() => {
+          commentaryIdx = (commentaryIdx + 1) % commentary.length
+        }, 20000)
+      }
     }
-  }
-  $: {
-    commentary.length
-    updateRotationInterval()
-  }
+  })
   onDestroy(() => { if (rotationInterval) clearInterval(rotationInterval) })
 </script>
 

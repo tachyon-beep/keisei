@@ -9,6 +9,7 @@ Designed to run as a lightweight batch job after tournament rounds.
 
 from __future__ import annotations
 
+import bisect
 import logging
 from collections import Counter
 from datetime import datetime, timezone
@@ -30,13 +31,14 @@ THRESHOLD_TREND = 200
 def _percentile_rank(value: float, sorted_values: list[float]) -> float:
     """Compute the percentile rank of a value within a sorted list.
 
+    Uses bisect for O(log n) instead of linear scan.
     Returns a value in [0, 100].
     """
     if not sorted_values:
         return 50.0
     n = len(sorted_values)
-    count_below = sum(1 for v in sorted_values if v < value)
-    count_equal = sum(1 for v in sorted_values if v == value)
+    count_below = bisect.bisect_left(sorted_values, value)
+    count_equal = bisect.bisect_right(sorted_values, value) - count_below
     return ((count_below + 0.5 * count_equal) / n) * 100
 
 
@@ -324,7 +326,6 @@ class StyleProfiler:
 
         game_lengths = [r["total_plies"] for r in rows]
         first_captures = [r["first_capture_ply"] for r in rows if r["first_capture_ply"] is not None]
-        first_checks = [r["first_check_ply"] for r in rows if r["first_check_ply"] is not None]
         first_drops = [r["first_drop_ply"] for r in rows if r["first_drop_ply"] is not None]
         drops = [r["num_drops"] for r in rows]
         promotions = [r["num_promotions"] for r in rows]
@@ -396,7 +397,6 @@ class StyleProfiler:
             # §8.2 Tempo and aggression
             "avg_game_length": gl_mean,
             "first_capture_ply_mean": _safe_mean(first_captures),
-            "first_check_ply_mean": _safe_mean(first_checks),
             "first_drop_ply_mean": _safe_mean(first_drops),
             "num_captures_mean": _safe_mean(captures),
             "short_game_rate": short_game_rate,
