@@ -1,0 +1,87 @@
+Device: NVIDIA GeForce RTX 4060 Ti
+VRAM: 16.7 GB
+Scale: production (40 blocks, 256 channels)
+Rollout: T=128, N=64, batch_size=256
+PyTorch: 2.11.0+cu130
+
+================================================================================
+MEMORY ANALYSIS [production]
+================================================================================
+  Parameters:        213.7 MB
+  Gradients:         213.7 MB
+  Optimizer (Adam):    427.4 MB
+  Total static:      854.8 MB
+  Inference peak (bs=256):    123.3 MB
+  Training peak  (bs=256):   5330.1 MB
+  VRAM total:         16.7 GB
+  Headroom:           11.4 GB
+
+================================================================================
+MODEL FORWARD PASS
+================================================================================
+  forward(eval) bs=16 [production]              median=   13.18ms  mean=   13.18ms  std=   0.02ms  p95=   13.21ms  (n=20)
+  forward(eval) bs=64 [production]              median=   37.94ms  mean=   37.94ms  std=   0.02ms  p95=   37.97ms  (n=20)
+  forward(eval) bs=256 [production]             median=  164.67ms  mean=  164.66ms  std=   0.07ms  p95=  164.74ms  (n=20)
+  forward(train) bs=16 [production]             median=   13.72ms  mean=   13.71ms  std=   0.02ms  p95=   13.72ms  (n=20)
+  forward(train) bs=64 [production]             median=   39.25ms  mean=   39.27ms  std=   0.06ms  p95=   39.39ms  (n=20)
+  forward(train) bs=256 [production]            median=  162.15ms  mean=  162.14ms  std=   0.09ms  p95=  162.27ms  (n=20)
+
+================================================================================
+FORWARD + BACKWARD + OPTIMIZER STEP
+================================================================================
+  forward+backward+step bs=256 [production]     median=  564.01ms  mean=  564.37ms  std=   0.79ms  p95=  565.82ms  (n=20)
+
+================================================================================
+POLICY SAMPLING (masked_fill + softmax + Categorical)
+================================================================================
+  policy_sample bs=16                           median=    0.16ms  mean=    0.16ms  std=   0.00ms  p95=    0.17ms  (n=20)
+  policy_sample bs=64                           median=    0.16ms  mean=    0.17ms  std=   0.02ms  p95=    0.20ms  (n=20)
+  policy_sample bs=256                          median=    0.36ms  mean=    0.36ms  std=   0.00ms  p95=    0.36ms  (n=20)
+
+================================================================================
+GAE COMPUTATION (CPU vs GPU)
+================================================================================
+  GAE CPU T=128 N=32                            median=    1.84ms  mean=    1.84ms  std=   0.01ms  p95=    1.85ms  (n=10)
+  GAE GPU T=128 N=32                            median=    1.58ms  mean=    1.59ms  std=   0.01ms  p95=    1.60ms  (n=20)
+  GAE CPU T=128 N=64                            median=    1.83ms  mean=    1.84ms  std=   0.01ms  p95=    1.84ms  (n=10)
+  GAE GPU T=128 N=64                            median=    1.59ms  mean=    1.59ms  std=   0.01ms  p95=    1.61ms  (n=20)
+  GAE CPU T=128 N=128                           median=    1.85ms  mean=    1.85ms  std=   0.00ms  p95=    1.85ms  (n=10)
+  GAE GPU T=128 N=128                           median=    1.59ms  mean=    1.59ms  std=   0.01ms  p95=    1.60ms  (n=20)
+  GAE CPU T=128 N=256                           median=    1.86ms  mean=    1.86ms  std=   0.00ms  p95=    1.86ms  (n=10)
+  GAE GPU T=128 N=256                           median=    1.59ms  mean=    1.59ms  std=   0.01ms  p95=    1.60ms  (n=20)
+  GPU transfer size: 225.1 MB
+
+================================================================================
+BUFFER OPERATIONS
+================================================================================
+  buffer_fill+flatten T=128 N=64                median=  113.43ms  mean=  121.25ms  std=  12.30ms  p95=  133.85ms  (n=5)
+  gpu_transfer T=128 N=64                       median=   17.23ms  mean=   17.23ms  std=   0.02ms  p95=   17.25ms  (n=10)
+
+================================================================================
+PER-COMPONENT BREAKDOWN
+================================================================================
+  input_stem [production]                       median=    0.74ms  mean=    0.74ms  std=   0.00ms  p95=    0.75ms  (n=20)
+  single_block [production]                     median=    4.17ms  mean=    4.18ms  std=   0.02ms  p95=    4.19ms  (n=20)
+  residual_tower (40 blocks) [production]       median=  164.24ms  mean=  164.24ms  std=   0.06ms  p95=  164.35ms  (n=20)
+  policy_head [production]                      median=    0.16ms  mean=    0.17ms  std=   0.04ms  p95=    0.17ms  (n=20)
+  value+score_heads [production]                median=    0.23ms  mean=    0.23ms  std=   0.00ms  p95=    0.23ms  (n=20)
+
+================================================================================
+LOSS COMPONENT BREAKDOWN
+================================================================================
+  policy_log_softmax+gather bs=256              median=    0.15ms  mean=    0.15ms  std=   0.00ms  p95=    0.15ms  (n=20)
+  ppo_clip_loss bs=256                          median=    0.04ms  mean=    0.04ms  std=   0.00ms  p95=    0.04ms  (n=20)
+  entropy bs=256                                median=    0.36ms  mean=    0.36ms  std=   0.00ms  p95=    0.36ms  (n=20)
+  wdl_cross_entropy bs=256                      median=    0.01ms  mean=    0.01ms  std=   0.00ms  p95=    0.02ms  (n=20)
+  score_mse bs=256                              median=    0.02ms  mean=    0.02ms  std=   0.00ms  p95=    0.02ms  (n=20)
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+  GAE GPU vs CPU (N=64): 1.83ms -> 1.59ms (1.2x)
+    -> GPU GAE provides minimal benefit at this scale.
+
+  Residual tower: 164.24ms = 100% of forward pass
+    -> Tower dominates. Optimization effort should focus here.
+    -> Consider: fewer blocks, smaller channels, or compile mode

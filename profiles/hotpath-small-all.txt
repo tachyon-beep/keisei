@@ -1,0 +1,215 @@
+Device: NVIDIA GeForce RTX 4060 Ti
+VRAM: 16.7 GB
+Scale: small (10 blocks, 128 channels)
+Rollout: T=128, N=64, batch_size=256
+PyTorch: 2.11.0+cu130
+
+================================================================================
+MEMORY ANALYSIS [small]
+================================================================================
+  Parameters:         13.9 MB
+  Gradients:          13.9 MB
+  Optimizer (Adam):     27.9 MB
+  Total static:       55.8 MB
+  Inference peak (bs=256):     78.5 MB
+  Training peak  (bs=256):    742.6 MB
+  VRAM total:         16.7 GB
+  Headroom:           16.0 GB
+
+================================================================================
+MODEL FORWARD PASS
+================================================================================
+  forward(eval) bs=16 [small]                   median=    2.47ms  mean=    2.48ms  std=   0.03ms  p95=    2.55ms  (n=20)
+  forward(eval) bs=64 [small]                   median=    3.72ms  mean=    3.68ms  std=   0.07ms  p95=    3.73ms  (n=20)
+  forward(eval) bs=256 [small]                  median=   12.35ms  mean=   12.36ms  std=   0.03ms  p95=   12.38ms  (n=20)
+  forward(train) bs=16 [small]                  median=    3.34ms  mean=    3.37ms  std=   0.15ms  p95=    3.46ms  (n=20)
+  forward(train) bs=64 [small]                  median=    3.75ms  mean=    3.76ms  std=   0.03ms  p95=    3.77ms  (n=20)
+  forward(train) bs=256 [small]                 median=   12.82ms  mean=   12.83ms  std=   0.06ms  p95=   12.95ms  (n=20)
+
+================================================================================
+FORWARD + BACKWARD + OPTIMIZER STEP
+================================================================================
+  forward+backward+step bs=256 [small]          median=   45.20ms  mean=   45.20ms  std=   0.12ms  p95=   45.37ms  (n=20)
+
+================================================================================
+POLICY SAMPLING (masked_fill + softmax + Categorical)
+================================================================================
+  policy_sample bs=16                           median=    0.16ms  mean=    0.16ms  std=   0.00ms  p95=    0.17ms  (n=20)
+  policy_sample bs=64                           median=    0.16ms  mean=    0.16ms  std=   0.00ms  p95=    0.17ms  (n=20)
+  policy_sample bs=256                          median=    0.36ms  mean=    0.36ms  std=   0.00ms  p95=    0.36ms  (n=20)
+
+================================================================================
+GAE COMPUTATION (CPU vs GPU)
+================================================================================
+  GAE CPU T=128 N=32                            median=    1.83ms  mean=    1.82ms  std=   0.01ms  p95=    1.83ms  (n=10)
+  GAE GPU T=128 N=32                            median=    1.56ms  mean=    1.57ms  std=   0.03ms  p95=    1.59ms  (n=20)
+  GAE CPU T=128 N=64                            median=    1.79ms  mean=    1.79ms  std=   0.02ms  p95=    1.79ms  (n=10)
+  GAE GPU T=128 N=64                            median=    1.53ms  mean=    1.53ms  std=   0.01ms  p95=    1.54ms  (n=20)
+  GAE CPU T=128 N=128                           median=    1.77ms  mean=    1.77ms  std=   0.01ms  p95=    1.78ms  (n=10)
+  GAE GPU T=128 N=128                           median=    1.51ms  mean=    1.51ms  std=   0.02ms  p95=    1.53ms  (n=20)
+  GAE CPU T=128 N=256                           median=    1.74ms  mean=    1.74ms  std=   0.00ms  p95=    1.74ms  (n=10)
+  GAE GPU T=128 N=256                           median=    1.48ms  mean=    1.48ms  std=   0.00ms  p95=    1.49ms  (n=20)
+  GPU transfer size: 225.1 MB
+
+================================================================================
+BUFFER OPERATIONS
+================================================================================
+  buffer_fill+flatten T=128 N=64                median=  121.88ms  mean=  123.04ms  std=   6.64ms  p95=  126.18ms  (n=5)
+  gpu_transfer T=128 N=64                       median=   17.20ms  mean=   17.20ms  std=   0.02ms  p95=   17.22ms  (n=10)
+
+================================================================================
+PER-COMPONENT BREAKDOWN
+================================================================================
+  input_stem [small]                            median=    0.52ms  mean=    0.52ms  std=   0.00ms  p95=    0.53ms  (n=20)
+  single_block [small]                          median=    1.23ms  mean=    1.23ms  std=   0.00ms  p95=    1.23ms  (n=20)
+  residual_tower (10 blocks) [small]            median=   11.70ms  mean=   11.72ms  std=   0.04ms  p95=   11.79ms  (n=20)
+  policy_head [small]                           median=    0.11ms  mean=    0.11ms  std=   0.00ms  p95=    0.11ms  (n=20)
+  value+score_heads [small]                     median=    0.13ms  mean=    0.13ms  std=   0.00ms  p95=    0.13ms  (n=20)
+
+================================================================================
+LOSS COMPONENT BREAKDOWN
+================================================================================
+  policy_log_softmax+gather bs=256              median=    0.15ms  mean=    0.15ms  std=   0.00ms  p95=    0.15ms  (n=20)
+  ppo_clip_loss bs=256                          median=    0.04ms  mean=    0.04ms  std=   0.01ms  p95=    0.06ms  (n=20)
+  entropy bs=256                                median=    0.34ms  mean=    0.34ms  std=   0.00ms  p95=    0.35ms  (n=20)
+  wdl_cross_entropy bs=256                      median=    0.01ms  mean=    0.01ms  std=   0.00ms  p95=    0.01ms  (n=20)
+  score_mse bs=256                              median=    0.02ms  mean=    0.02ms  std=   0.00ms  p95=    0.02ms  (n=20)
+
+================================================================================
+TORCH.COMPILE DIAGNOSTICS [small]
+================================================================================
+
+Graph breaks: 0
+Graph count: 1
+Ops per graph: [[<built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function add>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function getitem>, <built-in function getitem>, <built-in method sigmoid of type object at 0x781d9fb45000>, <built-in function mul>, <built-in function add>, <built-in function add>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <function batch_norm at 0x781d3247e5c0>, <function relu at 0x781d3247d580>, <built-in method conv2d of type object at 0x781d9fb45000>, <built-in method cat of type object at 0x781d9fb45000>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>, <built-in function linear>, <function relu at 0x781d3247d580>, <built-in function linear>]]W0407 22:45:22.908000 569372 .venv/lib/python3.13/site-packages/torch/_inductor/utils.py:1731] [0/0] Not enough SMs to use max_autotune_gemm mode
+/home/john/keisei/.venv/lib/python3.13/site-packages/torch/_inductor/compile_fx.py:322: UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
+  warnings.warn(
+/home/john/keisei/.venv/lib/python3.13/site-packages/torch/_inductor/select_algorithm.py:3686: UserWarning: TypedStorage is deprecated. It will be removed in the future and UntypedStorage will be the only storage class. This should only matter to you if you are using storages directly.  To access UntypedStorage directly, use tensor.untyped_storage() instead of tensor.storage()
+  current_out_size = out_base.storage().size()
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.009119999594986439}
+AUTOTUNE addmm(256x3, 256x128, 128x3)
+strides: [0, 1], [128, 1], [1, 128]
+dtypes: torch.float32, torch.float32, torch.float32
+  bias_addmm 0.0091 ms 100.0% 
+  addmm 0.0102 ms 89.1% 
+SingleProcess AUTOTUNE benchmarking takes 0.0551 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.0655359998345375}
+AUTOTUNE addmm(20736x139, 20736x16, 16x139)
+strides: [0, 1], [16, 1], [1, 16]
+dtypes: torch.float32, torch.float32, torch.float32
+  bias_addmm 0.0655 ms 100.0% 
+  addmm 0.0768 ms 85.3% 
+SingleProcess AUTOTUNE benchmarking takes 0.0638 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.00848000030964613}
+AUTOTUNE addmm(256x128, 256x384, 384x128)
+strides: [0, 1], [384, 1], [1, 384]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0085 ms 100.0% 
+  addmm 0.0123 ms 69.0% 
+SingleProcess AUTOTUNE benchmarking takes 0.0539 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.009216000325977802}
+AUTOTUNE addmm(256x64, 256x384, 384x64)
+strides: [0, 1], [384, 1], [1, 384]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0092 ms 100.0% 
+  addmm 0.0113 ms 81.8% 
+SingleProcess AUTOTUNE benchmarking takes 0.0533 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.005119999870657921}
+AUTOTUNE addmm(256x16, 256x128, 128x16)
+strides: [0, 1], [128, 1], [1, 128]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0051 ms 100.0% 
+  addmm 0.0061 ms 83.3% 
+SingleProcess AUTOTUNE benchmarking takes 0.0533 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.005119999870657921}
+AUTOTUNE addmm(256x128, 256x64, 64x128)
+strides: [0, 1], [64, 1], [1, 64]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0051 ms 100.0% 
+  addmm 0.0072 ms 71.4% 
+SingleProcess AUTOTUNE benchmarking takes 0.0538 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.004095999989658594}
+AUTOTUNE addmm(256x256, 256x16, 16x256)
+strides: [0, 1], [16, 1], [1, 16]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0041 ms 100.0% 
+  addmm 0.0072 ms 57.1% 
+SingleProcess AUTOTUNE benchmarking takes 0.0537 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "addmm", "best_time": 0.006560000125318766}
+AUTOTUNE addmm(256x3, 256x128, 128x3)
+strides: [0, 1], [128, 1], [1, 128]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  addmm 0.0066 ms 100.0% 
+  bias_addmm 0.0075 ms 87.6% 
+SingleProcess AUTOTUNE benchmarking takes 0.0548 seconds and 0.0001 seconds precompiling for 2 choices
+Autotune Choices Stats:
+{"num_choices": 2, "num_triton_choices": 0, "best_kernel": "bias_addmm", "best_time": 0.035840000957250595}
+AUTOTUNE addmm(20736x139, 20736x16, 16x139)
+strides: [0, 1], [16, 1], [1, 16]
+dtypes: torch.bfloat16, torch.bfloat16, torch.bfloat16
+  bias_addmm 0.0358 ms 100.0% 
+  addmm 0.0512 ms 70.0% 
+SingleProcess AUTOTUNE benchmarking takes 0.0579 seconds and 0.0001 seconds precompiling for 2 choices
+
+
+--- Recompilation test (varying batch sizes) ---
+  bs=   4: graph_breaks=0
+  bs=  16: graph_breaks=0
+  bs=  64: graph_breaks=0
+  bs= 256: graph_breaks=0
+
+--- Static shapes (compile_dynamic=False) ---
+  Graph breaks (static): 0
+
+--- AMP + compile interaction ---
+  Graph breaks (AMP): 0
+
+================================================================================
+COMPILE x AMP MATRIX (forward pass only)
+================================================================================
+  forward eager bs=256 [small]                  median=   12.56ms  mean=   12.67ms  std=   0.17ms  p95=   12.91ms  (n=20)
+  forward eager+AMP bs=256 [small]              median=    7.78ms  mean=    7.78ms  std=   0.01ms  p95=    7.80ms  (n=20)
+  forward compile(default) bs=256 [small]       median=    8.97ms  mean=    8.98ms  std=   0.06ms  p95=    9.08ms  (n=20)
+  forward compile(default)+AMP bs=256 [small]   median=    4.37ms  mean=    4.37ms  std=   0.01ms  p95=    4.39ms  (n=20)
+  forward compile(reduce-overhead) bs=256 [small] median=    9.10ms  mean=    9.02ms  std=   0.17ms  p95=    9.18ms  (n=20)
+  forward compile(max-autotune) bs=256 [small]  median=    8.82ms  mean=    8.86ms  std=   0.11ms  p95=    9.13ms  (n=20)
+  forward compile(max-autotune)+AMP bs=256 [small] median=    4.24ms  mean=    4.32ms  std=   0.14ms  p95=    4.57ms  (n=20)
+
+================================================================================
+PPO UPDATE (full cycle)
+================================================================================
+  ppo_update T=128 N=64 [small, compile=None, amp=False] median= 6220.77ms  mean= 6221.97ms  std=   7.68ms  p95= 6222.93ms  (n=5)
+    update_forward_backward_ms [small, compile=None, amp=False] median=   47.35ms  mean=   47.30ms  std=   0.22ms  p95=   47.61ms  (n=128)
+    gae_ms [small, compile=None, amp=False]     median=    1.81ms  mean=    1.81ms  std=   0.00ms  p95=    1.81ms  (n=1)
+  ppo_update T=128 N=64 [small, compile=None, amp=True] median= 4083.20ms  mean= 4088.50ms  std=  24.88ms  p95= 4085.69ms  (n=5)
+    update_forward_backward_ms [small, compile=None, amp=True] median=   30.73ms  mean=   30.78ms  std=   0.41ms  p95=   31.33ms  (n=128)
+    gae_ms [small, compile=None, amp=True]      median=    1.84ms  mean=    1.84ms  std=   0.00ms  p95=    1.84ms  (n=1)
+  ppo_update T=128 N=64 [small, compile=default, amp=False] median= 5006.63ms  mean= 5008.32ms  std=   9.44ms  p95= 5017.14ms  (n=5)
+    update_forward_backward_ms [small, compile=default, amp=False] median=   37.70ms  mean=   37.78ms  std=   0.31ms  p95=   38.38ms  (n=128)
+    gae_ms [small, compile=default, amp=False]  median=    1.87ms  mean=    1.87ms  std=   0.00ms  p95=    1.87ms  (n=1)
+  ppo_update T=128 N=64 [small, compile=default, amp=True] median= 2751.84ms  mean= 2751.86ms  std=   4.63ms  p95= 2755.87ms  (n=5)
+    update_forward_backward_ms [small, compile=default, amp=True] median=   20.05ms  mean=   20.11ms  std=   0.25ms  p95=   20.52ms  (n=128)
+    gae_ms [small, compile=default, amp=True]   median=    1.80ms  mean=    1.80ms  std=   0.00ms  p95=    1.80ms  (n=1)
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+  torch.compile forward-pass speedup: 2.96x
+    Eager: 12.56ms -> Best compile (forward compile(max-autotune)+AMP bs=256 [small]): 4.24ms
+    -> Significant compile benefit. Enable with the best mode above.
+
+  GAE GPU vs CPU (N=64): 1.79ms -> 1.53ms (1.2x)
+    -> GPU GAE provides minimal benefit at this scale.
+
+  Residual tower: 11.70ms = 95% of forward pass
+    -> Tower dominates. Optimization effort should focus here.
+    -> Consider: fewer blocks, smaller channels, or compile mode
