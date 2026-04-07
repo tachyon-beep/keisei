@@ -75,9 +75,9 @@ Two workspace crates providing the core game logic:
 - **Models** — Four neural network architectures with a registry-based
   dispatch system. See [Neural Network Architecture](#neural-network-architecture)
   below.
-- **PPO** — Two algorithm variants: standard PPO (scalar value) and
-  KataGo-style PPO (W/D/L + score heads). Both use GAE, clipped surrogate
-  objective, and mini-batch updates.
+- **KataGo-PPO** — PPO with W/D/L value head + score auxiliary head, GAE,
+  clipped surrogate objective, and mini-batch updates. Supports `torch.compile`
+  for fused kernel execution.
 - **Value Adapters** — Adapter pattern that abstracts over scalar vs. multi-head
   value outputs, so the training loop is model-agnostic.
 - **Training Loop** — Orchestrates environment interaction, PPO updates, metric
@@ -197,13 +197,6 @@ masks (which would produce NaN from softmax).
 
 ### PPO Training
 
-Two algorithm variants:
-
-| Algorithm     | Value Head      | Score Head | Compatible Models |
-|---------------|-----------------|------------|-------------------|
-| `ppo`         | Scalar MSE      | No         | resnet, mlp, transformer |
-| `katago_ppo`  | W/D/L cross-entropy | MSE (normalized) | se_resnet only |
-
 **KataGo-PPO loss function:**
 
 ```
@@ -242,9 +235,6 @@ cd shogi-engine && cargo build --release && cd ..
 
 # Run training with the KataGo SE-ResNet (primary config)
 uv run keisei-train keisei-katago.toml --epochs 100 --steps-per-epoch 256
-
-# Or with the simpler ResNet baseline
-uv run keisei-train keisei.toml --epochs 100 --steps-per-epoch 256
 ```
 
 ### CLI Tools
@@ -258,39 +248,41 @@ uv run keisei-train keisei.toml --epochs 100 --steps-per-epoch 256
 
 ## Configuration
 
-Training is configured via TOML files. Two reference configurations are
-provided:
+Training is configured via TOML files. Several configurations are provided
+for different hardware and training scenarios:
+
+| Config | Model | Hardware | Purpose |
+|--------|-------|----------|---------|
+| `keisei-katago.toml` | SE-ResNet b40c256 | Single GPU | Primary training |
+| `keisei-ddp.toml` | SE-ResNet b10c128 | 2x GPU (DDP) | Quick DDP validation |
+| `keisei-500k.toml` | SE-ResNet b10c128 | 2x GPU (DDP) | Extended burn-in |
+| `keisei-h200.toml` | SE-ResNet b40c256 | H200 cluster | Production scale |
+| `keisei-league.toml` | SE-ResNet b10c128 | Single GPU | League self-play |
+| `keisei-500k-league.toml` | SE-ResNet b10c128 | 2x GPU | Extended league |
 
 **`keisei-katago.toml`** — KataGo SE-ResNet (primary):
 
-| Section                       | Key                   | Default     | Description                          |
-|-------------------------------|-----------------------|-------------|--------------------------------------|
-| `[training]`                  | `num_games`           | 128         | Parallel environments                |
-|                               | `max_ply`             | 512         | Max moves per game before truncation |
-|                               | `algorithm`           | `katago_ppo`| Multi-head PPO with W/D/L + score    |
-| `[training.algorithm_params]` | `learning_rate`       | 2e-4        | Adam learning rate                   |
-|                               | `gamma`               | 0.99        | Discount factor                      |
-|                               | `gae_lambda`          | 0.95        | GAE lambda                           |
-|                               | `clip_epsilon`        | 0.2         | PPO clipping parameter               |
-|                               | `epochs_per_batch`    | 4           | PPO update epochs per rollout        |
-|                               | `batch_size`          | 256         | Mini-batch size                      |
-|                               | `lambda_value`        | 1.5         | Value loss weight                    |
-|                               | `lambda_score`        | 0.1         | Score loss weight                    |
-|                               | `lambda_entropy`      | 0.01        | Entropy bonus weight                 |
-|                               | `grad_clip`           | 1.0         | Global gradient norm clip            |
-| `[model]`                     | `architecture`        | `se_resnet` | SE-ResNet with KataGo-style heads    |
-| `[model.params]`              | `num_blocks`          | 40          | Residual blocks in trunk             |
-|                               | `channels`            | 256         | Channel width                        |
-|                               | `se_reduction`        | 16          | SE bottleneck ratio                  |
-
-**`keisei.toml`** — ResNet baseline:
-
-| Section                       | Key              | Default    | Description                     |
-|-------------------------------|------------------|------------|---------------------------------|
-| `[training]`                  | `algorithm`      | `ppo`      | Standard scalar-value PPO       |
-| `[model]`                     | `architecture`   | `resnet`   | Plain ResNet                    |
-| `[model.params]`              | `hidden_size`    | 256        | Channel width                   |
-|                               | `num_layers`     | 8          | Residual blocks                 |
+| Section                       | Key                   | Default      | Description                          |
+|-------------------------------|-----------------------|--------------|--------------------------------------|
+| `[training]`                  | `num_games`           | 128          | Parallel environments                |
+|                               | `max_ply`             | 512          | Max moves per game before truncation |
+|                               | `algorithm`           | `katago_ppo` | Multi-head PPO with W/D/L + score    |
+|                               | `use_amp`             | true         | Mixed precision (bf16)               |
+| `[training.algorithm_params]` | `learning_rate`       | 2e-4         | Adam learning rate                   |
+|                               | `gamma`               | 0.99         | Discount factor                      |
+|                               | `gae_lambda`          | 0.95         | GAE lambda                           |
+|                               | `clip_epsilon`        | 0.2          | PPO clipping parameter               |
+|                               | `epochs_per_batch`    | 4            | PPO update epochs per rollout        |
+|                               | `batch_size`          | 1024         | Mini-batch size                      |
+|                               | `lambda_value`        | 1.5          | Value loss weight                    |
+|                               | `lambda_score`        | 0.1          | Score loss weight                    |
+|                               | `lambda_entropy`      | 0.01         | Entropy bonus weight                 |
+|                               | `grad_clip`           | 1.0          | Global gradient norm clip            |
+|                               | `compile_mode`        | `"default"`  | torch.compile mode                   |
+| `[model]`                     | `architecture`        | `se_resnet`  | SE-ResNet with KataGo-style heads    |
+| `[model.params]`              | `num_blocks`          | 40           | Residual blocks in trunk             |
+|                               | `channels`            | 256          | Channel width                        |
+|                               | `se_reduction`        | 16           | SE bottleneck ratio                  |
 
 ## Development
 
