@@ -16,6 +16,18 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_add_column(
+    conn: sqlite3.Connection, table: str, column: str, col_type: str,
+) -> None:
+    """Add a column to a table if it doesn't already exist."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+
+
 def init_db(db_path: str) -> None:
     """Create tables if they don't exist. Idempotent."""
     conn = _connect(db_path)
@@ -240,6 +252,10 @@ def init_db(db_path: str) -> None:
                 updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
         """)
+        # Migrations — add columns that may be missing from older schemas.
+        _migrate_add_column(
+            conn, "training_state", "learner_entry_id", "INTEGER",
+        )
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))

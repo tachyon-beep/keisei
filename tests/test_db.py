@@ -478,6 +478,43 @@ class TestTournamentStats:
         assert row["total_games"] == 64
 
 
+def test_init_db_migrates_learner_entry_id(tmp_path: Path) -> None:
+    """init_db should add learner_entry_id column to existing training_state tables."""
+    db = tmp_path / "migrate.db"
+    # Create a DB with the old schema (no learner_entry_id)
+    conn = sqlite3.connect(str(db))
+    conn.execute("""CREATE TABLE training_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        config_json TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        model_arch TEXT NOT NULL,
+        algorithm_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        current_epoch INTEGER NOT NULL DEFAULT 0,
+        current_step INTEGER NOT NULL DEFAULT 0,
+        checkpoint_path TEXT,
+        total_epochs INTEGER,
+        status TEXT NOT NULL DEFAULT 'running',
+        phase TEXT NOT NULL DEFAULT 'init',
+        heartbeat_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    )""")
+    conn.execute(
+        "INSERT INTO training_state (id, config_json, display_name, model_arch, "
+        "algorithm_name, started_at) VALUES (1, '{}', 'Test', 'resnet', 'ppo', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    # Run init_db — should migrate
+    init_db(str(db))
+
+    # Verify the column exists and existing data is preserved
+    state = read_training_state(str(db))
+    assert state is not None
+    assert state["display_name"] == "Test"
+    assert state["learner_entry_id"] is None
+
+
 class TestForeignKeyEnforcement:
     """db.py._connect() must enable PRAGMA foreign_keys=ON so FK constraints
     are enforced on every connection, not just OpponentPool's."""
