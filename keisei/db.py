@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -192,17 +192,69 @@ def init_db(db_path: str) -> None:
                 games_per_min       REAL NOT NULL DEFAULT 0,
                 updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
+            CREATE TABLE IF NOT EXISTS game_features (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                checkpoint_id       INTEGER NOT NULL REFERENCES league_entries(id),
+                opponent_id         INTEGER NOT NULL REFERENCES league_entries(id),
+                epoch               INTEGER NOT NULL,
+                side                TEXT NOT NULL,
+                result              TEXT NOT NULL,
+                total_plies         INTEGER NOT NULL,
+                -- §8.1 Opening features
+                first_action        INTEGER,
+                opening_seq_3       TEXT,
+                opening_seq_6       TEXT,
+                rook_moved_ply      INTEGER,
+                king_displacement_20 INTEGER NOT NULL DEFAULT 0,
+                -- §8.2 Tempo and aggression
+                first_capture_ply   INTEGER,
+                first_check_ply     INTEGER,
+                first_drop_ply      INTEGER,
+                num_checks          INTEGER NOT NULL DEFAULT 0,
+                num_captures        INTEGER NOT NULL DEFAULT 0,
+                -- §8.3 Drop and promotion behaviour
+                num_drops           INTEGER NOT NULL DEFAULT 0,
+                num_promotions      INTEGER NOT NULL DEFAULT 0,
+                num_early_drops     INTEGER NOT NULL DEFAULT 0,
+                -- §8.4 Positional style proxies
+                rook_moves_in_20    INTEGER NOT NULL DEFAULT 0,
+                king_moves_in_30    INTEGER NOT NULL DEFAULT 0,
+                num_repetitions     INTEGER NOT NULL DEFAULT 0,
+                -- §8.5 Termination
+                termination_reason  INTEGER NOT NULL DEFAULT 0,
+                created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_game_features_checkpoint ON game_features(checkpoint_id);
+            CREATE INDEX IF NOT EXISTS idx_game_features_epoch ON game_features(epoch);
+            CREATE TABLE IF NOT EXISTS style_profiles (
+                checkpoint_id       INTEGER PRIMARY KEY REFERENCES league_entries(id),
+                recomputed_at       TEXT NOT NULL,
+                profile_status      TEXT NOT NULL DEFAULT 'insufficient',
+                games_sampled       INTEGER NOT NULL DEFAULT 0,
+                raw_metrics_json    TEXT NOT NULL DEFAULT '{}',
+                percentile_json     TEXT NOT NULL DEFAULT '{}',
+                primary_style       TEXT,
+                secondary_traits    TEXT NOT NULL DEFAULT '[]',
+                commentary_json     TEXT NOT NULL DEFAULT '[]',
+                updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
         else:
             db_version: int = row[0]
-            if db_version != SCHEMA_VERSION:
+            if db_version < SCHEMA_VERSION:
+                # Migrations are handled by CREATE TABLE IF NOT EXISTS above,
+                # so just bump the stored version.
+                conn.execute(
+                    "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
+                )
+            elif db_version > SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"Database schema version {db_version} does not match "
+                    f"Database schema version {db_version} is newer than "
                     f"expected version {SCHEMA_VERSION}. "
-                    f"Delete the database and start fresh."
+                    f"Upgrade the application or delete the database."
                 )
         conn.commit()
     finally:
@@ -529,5 +581,126 @@ def read_tournament_stats(db_path: str) -> dict[str, Any] | None:
         return dict(row) if row else None
     except Exception:
         return None
+    finally:
+        conn.close()
+
+
+def write_game_features(db_path: str, features: list[dict[str, Any]]) -> None:
+    """Insert per-game feature rows (append-only)."""
+    if not features:
+        return
+    conn = _connect(db_path)
+    try:
+        conn.execute("BEGIN")
+        for f in features:
+            conn.execute(
+                """INSERT INTO game_features
+                   (checkpoint_id, opponent_id, epoch, side, result, total_plies,
+                    first_action, opening_seq_3, opening_seq_6,
+                    rook_moved_ply, king_displacement_20,
+                    first_capture_ply, first_check_ply, first_drop_ply,
+                    num_checks, num_captures,
+                    num_drops, num_promotions, num_early_drops,
+                    rook_moves_in_20, king_moves_in_30, num_repetitions,
+                    termination_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    f["checkpoint_id"], f["opponent_id"], f["epoch"],
+                    f["side"], f["result"], f["total_plies"],
+                    f.get("first_action"), f.get("opening_seq_3"), f.get("opening_seq_6"),
+                    f.get("rook_moved_ply"), f.get("king_displacement_20", 0),
+                    f.get("first_capture_ply"), f.get("first_check_ply"), f.get("first_drop_ply"),
+                    f.get("num_checks", 0), f.get("num_captures", 0),
+                    f.get("num_drops", 0), f.get("num_promotions", 0),
+                    f.get("num_early_drops", 0),
+                    f.get("rook_moves_in_20", 0), f.get("king_moves_in_30", 0),
+                    f.get("num_repetitions", 0),
+                    f.get("termination_reason", 0),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def read_game_features_for_checkpoint(
+    db_path: str, checkpoint_id: int
+) -> list[dict[str, Any]]:
+    """Read all game feature rows for a given checkpoint."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM game_features WHERE checkpoint_id = ? ORDER BY id",
+            (checkpoint_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def read_all_game_features(db_path: str) -> list[dict[str, Any]]:
+    """Read all game feature rows (for league-wide aggregation)."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute("SELECT * FROM game_features ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def write_style_profile(db_path: str, profile: dict[str, Any]) -> None:
+    """Upsert a single checkpoint style profile."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO style_profiles
+               (checkpoint_id, recomputed_at, profile_status, games_sampled,
+                raw_metrics_json, percentile_json, primary_style,
+                secondary_traits, commentary_json, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+               ON CONFLICT(checkpoint_id) DO UPDATE SET
+                 recomputed_at    = excluded.recomputed_at,
+                 profile_status   = excluded.profile_status,
+                 games_sampled    = excluded.games_sampled,
+                 raw_metrics_json = excluded.raw_metrics_json,
+                 percentile_json  = excluded.percentile_json,
+                 primary_style    = excluded.primary_style,
+                 secondary_traits = excluded.secondary_traits,
+                 commentary_json  = excluded.commentary_json,
+                 updated_at       = excluded.updated_at""",
+            (
+                profile["checkpoint_id"],
+                profile["recomputed_at"],
+                profile["profile_status"],
+                profile["games_sampled"],
+                json.dumps(profile.get("raw_metrics", {})),
+                json.dumps(profile.get("percentiles", {})),
+                profile.get("primary_style"),
+                json.dumps(profile.get("secondary_traits", [])),
+                json.dumps(profile.get("commentary", [])),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def read_style_profiles(db_path: str) -> list[dict[str, Any]]:
+    """Read all style profiles for the league."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM style_profiles ORDER BY checkpoint_id"
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["raw_metrics"] = json.loads(d.pop("raw_metrics_json"))
+            d["percentiles"] = json.loads(d.pop("percentile_json"))
+            d["secondary_traits"] = json.loads(d["secondary_traits"])
+            d["commentary"] = json.loads(d.pop("commentary_json"))
+            result.append(d)
+        return result
     finally:
         conn.close()

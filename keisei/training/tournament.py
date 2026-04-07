@@ -25,12 +25,14 @@ from keisei.training.dynamic_trainer import DynamicTrainer
 
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
+from keisei.training.game_feature_tracker import GameFeatureTracker
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler, is_training_match
 from keisei.training.match_utils import play_match, release_models
 from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
+from keisei.training.style_profiler import StyleProfiler
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +242,14 @@ class LeagueTournament:
 
                 logger.info("Tournament round %d complete", round_number)
 
+                # Recompute style profiles every 5 rounds
+                if round_number % 5 == 0 and not self._stop_event.is_set():
+                    try:
+                        profiler = StyleProfiler(self.store.db_path)
+                        profiler.recompute_all()
+                    except Exception:
+                        logger.debug("Style profiling failed", exc_info=True)
+
                 # Run historical gauntlet if due (Phase 2)
                 if (
                     self.gauntlet
@@ -272,6 +282,17 @@ class LeagueTournament:
             write_tournament_stats(self.store.db_path, stats)
         except Exception:
             logger.debug("Failed to write tournament stats", exc_info=True)
+
+    def _write_game_features(self, tracker: GameFeatureTracker) -> None:
+        """Persist completed game feature rows to DB."""
+        if not tracker.completed_rows:
+            return
+        try:
+            from keisei.db import write_game_features
+            rows = [r.to_dict() for r in tracker.completed_rows]
+            write_game_features(self.store.db_path, rows)
+        except Exception:
+            logger.debug("Failed to write game features", exc_info=True)
 
     # ── Trainability ──────────────────────────────────────────
 
@@ -314,8 +335,13 @@ class LeagueTournament:
             max_ply=self.max_ply,
             stop_event=self._stop_event,
             trainable_fn=self._is_trainable_match if self.dynamic_trainer else None,
+            epoch=epoch,
         )
         self._write_tournament_stats(round_stats)
+        # Write game features from all completed matches
+        for result in results:
+            if result.feature_tracker is not None:
+                self._write_game_features(result.feature_tracker)
         for result in results:
             total = result.a_wins + result.b_wins + result.draws
             if total == 0:
@@ -452,12 +478,12 @@ class LeagueTournament:
         if is_trainable:
             result = self._play_match(
                 vecenv, entry_a, entry_b, collect_rollout=True,
-                num_envs=num_envs,
+                num_envs=num_envs, epoch=epoch,
             )
             wins_a, wins_b, draws, rollout = result
         else:
             wins_a, wins_b, draws = self._play_match(
-                vecenv, entry_a, entry_b, num_envs=num_envs,
+                vecenv, entry_a, entry_b, num_envs=num_envs, epoch=epoch,
             )
             rollout = None
 
@@ -558,6 +584,7 @@ class LeagueTournament:
         entry_b: OpponentEntry,
         collect_rollout: bool = False,
         num_envs: int | None = None,
+        epoch: int = 0,
     ) -> tuple[int, int, int] | tuple[int, int, int, MatchRollout]:
         """Play a set of games between two frozen models.
 
@@ -567,13 +594,24 @@ class LeagueTournament:
         model_a = self.store.load_opponent(entry_a, device=str(self.device))
         model_b = self.store.load_opponent(entry_b, device=str(self.device))
 
+        effective_envs = num_envs or self.num_envs
+        tracker = GameFeatureTracker(
+            num_envs=effective_envs,
+            entry_a_id=entry_a.id,
+            entry_b_id=entry_b.id,
+            epoch=epoch,
+        )
+
         try:
-            return play_match(
+            result = play_match(
                 vecenv, model_a, model_b,
-                device=self.device, num_envs=num_envs or self.num_envs,
+                device=self.device, num_envs=effective_envs,
                 max_ply=self.max_ply, games_target=self.games_per_match,
                 stop_event=self._stop_event,
                 collect_rollout=collect_rollout,
+                feature_tracker=tracker,
             )
+            self._write_game_features(tracker)
+            return result
         finally:
             release_models(model_a, model_b, device_type=self.device.type)

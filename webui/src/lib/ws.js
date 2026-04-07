@@ -9,7 +9,7 @@ import { metrics, appendMetrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
 import {
   leagueEntries, leagueResults, eloHistory, tournamentStats, diffLeagueEntries,
-  historicalLibrary, gauntletResults, leagueTransitions,
+  historicalLibrary, gauntletResults, leagueTransitions, styleProfilesRaw,
 } from '../stores/league.js'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
@@ -75,6 +75,7 @@ export function handleMessage(msg) {
       gauntletResults.set(msg.gauntlet_results || [])
       leagueTransitions.set(msg.transitions || [])
       if (msg.tournament_stats) tournamentStats.set(msg.tournament_stats)
+      if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
       if (msg.games?.length > 0) {
         selectedGameId.update(id => id ?? 0)
       }
@@ -134,6 +135,7 @@ export function handleMessage(msg) {
       gauntletResults.set(msg.gauntlet_results || [])
       leagueTransitions.set(msg.transitions || [])
       if (msg.tournament_stats) tournamentStats.set(msg.tournament_stats)
+      if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
       break
 
     case 'ping':
