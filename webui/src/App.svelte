@@ -4,7 +4,7 @@
   import { games, selectedGame, selectedOpponent } from './stores/games.js'
   import { activeTab } from './stores/navigation.js'
   import { trainingState } from './stores/training.js'
-  import { leagueEntries, leagueResults } from './stores/league.js'
+  import { leagueResults, learnerEntry } from './stores/league.js'
   import { latestMetrics } from './stores/metrics.js'
   import StatusIndicator from './lib/StatusIndicator.svelte'
   import GameThumbnail from './lib/GameThumbnail.svelte'
@@ -28,7 +28,7 @@
   $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
 
-  let thumbPanelEl
+  let thumbPanelHeight = 0
 
   $: lastMoveIdx = (() => {
     try {
@@ -40,14 +40,7 @@
 
   // Learner info from training state
   $: learnerName = $trainingState?.display_name || $trainingState?.model_arch || 'Learner'
-  $: learnerElo = (() => {
-    if (!$leagueEntries.length) return null
-    const epoch = $trainingState?.current_epoch ?? -1
-    const match = [...$leagueEntries]
-      .filter(e => e.created_epoch <= epoch)
-      .sort((a, b) => b.created_epoch - a.created_epoch)[0]
-    return match?.elo_rating ?? null
-  })()
+  $: learnerElo = $learnerEntry?.elo_rating ?? null
   $: learnerDetail = $trainingState
     ? `${$trainingState.model_arch || ''} · Epoch ${$trainingState.current_epoch || 0} · ${($trainingState.current_step || 0).toLocaleString()} steps`
     : ''
@@ -161,10 +154,10 @@
 
   {#if $activeTab === 'training'}
     <div class="main-content">
-      <aside class="thumbnail-panel" aria-label="Game list" bind:this={thumbPanelEl}>
-        <h2 class="section-label">Games ({$games.length})</h2>
+      <aside class="thumbnail-panel" aria-label="Game list" bind:clientHeight={thumbPanelHeight} style="width: {thumbPanelHeight - 94}px">
+        <h2 class="section-label">Games ({Math.min($games.length, 16)}{#if $games.length > 16} / {$games.length}{/if})</h2>
         <div class="thumb-grid">
-          {#each $games as g (g.game_id)}
+          {#each $games.slice(0, 16) as g (g.game_id)}
             <GameThumbnail game={g} />
           {/each}
         </div>
@@ -281,11 +274,10 @@
 
   .thumbnail-panel {
     flex: 0 0 auto;
-    width: clamp(200px, 20vw, 340px);
+    min-width: 200px;
     border-right: 1px solid var(--border);
     padding: 8px;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
   }
 
   .section-label {
@@ -305,7 +297,7 @@
 
   .player-panel {
     flex: 0 0 auto;
-    width: clamp(240px, 22vw, 315px);
+    width: 315px;
     padding: 8px;
     display: flex;
     flex-direction: column;
@@ -353,8 +345,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-width: 40ch;
-    width: 100%;
+    width: 40ch;
     min-height: 0;
     overflow: hidden;
   }
@@ -392,7 +383,7 @@
   .no-game-hint { font-size: 13px; color: var(--text-muted); }
 
   .legend-area {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     min-height: 0;
     overflow: auto;

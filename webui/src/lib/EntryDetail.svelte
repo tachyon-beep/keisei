@@ -5,9 +5,28 @@
   export let entryId
   export let headingEl = undefined
 
+  const PRIMARY_ELO = {
+    frontier_static: 'elo_frontier',
+    dynamic: 'elo_dynamic',
+    recent_fixed: 'elo_recent',
+  }
+  const ELO_LABELS = {
+    elo_frontier: 'Frontier',
+    elo_dynamic: 'Dynamic',
+    elo_recent: 'Recent',
+    elo_historical: 'Historical',
+  }
+  const ALL_ELO_COLS = ['elo_frontier', 'elo_dynamic', 'elo_recent', 'elo_historical']
+
   $: entryMap = new Map($leagueEntries.map(e => [e.id, e]))
   $: entry = entryMap.get(entryId)
   $: profile = $styleProfiles.get(entryId)
+
+  /** Secondary Elos: non-primary columns that have moved from 1000 */
+  $: secondaryElos = entry ? ALL_ELO_COLS
+    .filter(col => col !== PRIMARY_ELO[entry.role] && entry[col] !== 1000)
+    .map(col => ({ label: ELO_LABELS[col], value: Math.round(entry[col]) }))
+    : []
   $: hasProfile = profile && profile.profile_status !== 'insufficient'
 
   // Last Round: matches from the entry's most recent epoch
@@ -70,7 +89,7 @@
               {#if m.opponent}
                 <div class="match-row">
                   <span class="opp-name">
-                    <span class="role-icon" aria-hidden="true">{getRoleInfo(m.opponent.role, m.opponent.status).icon}</span>
+                    <span class="role-icon" title={getRoleInfo(m.opponent.role, m.opponent.status).tooltip} aria-hidden="true">{getRoleInfo(m.opponent.role, m.opponent.status).icon}</span>
                     {m.opponent.display_name || m.opponent.architecture}
                   </span>
                   <span class="wld">{m.w}W {m.l}L {m.d}D</span>
@@ -93,7 +112,7 @@
             {#each overallOpponents as rec}
               <div class="match-row">
                 <span class="opp-name">
-                  <span class="role-icon" aria-hidden="true">{getRoleInfo(rec.opponent.role, rec.opponent.status).icon}</span>
+                  <span class="role-icon" title={getRoleInfo(rec.opponent.role, rec.opponent.status).tooltip} aria-hidden="true">{getRoleInfo(rec.opponent.role, rec.opponent.status).icon}</span>
                   {rec.opponent.display_name || rec.opponent.architecture}
                 </span>
                 <span class="wld">{rec.w}W {rec.l}L {rec.d}D</span>
@@ -128,22 +147,14 @@
         </div>
       {/if}
 
-      {#if entry}
+      {#if secondaryElos.length > 0}
         <div class="detail-section role-stats">
-          <h4 class="section-label">Role-Specific</h4>
+          <h4 class="section-label">Other Ratings</h4>
           <div class="stat-row">
-            <span class="mini-stat"><span class="mini-label">Frontier</span> {entry.elo_frontier != null ? Math.round(entry.elo_frontier) : '—'}</span>
-            <span class="mini-stat"><span class="mini-label">Dynamic</span> {entry.elo_dynamic != null ? Math.round(entry.elo_dynamic) : '—'}</span>
-            <span class="mini-stat"><span class="mini-label">Recent</span> {entry.elo_recent != null ? Math.round(entry.elo_recent) : '—'}</span>
-            <span class="mini-stat"><span class="mini-label">Historical</span> {entry.elo_historical != null ? Math.round(entry.elo_historical) : '—'}</span>
+            {#each secondaryElos as elo}
+              <span class="mini-stat"><span class="mini-label">{elo.label}</span> {elo.value}</span>
+            {/each}
           </div>
-          {#if entry.games_vs_frontier != null}
-            <div class="stat-row games">
-              <span class="mini-stat"><span class="mini-label">vs Frontier</span> {entry.games_vs_frontier}</span>
-              <span class="mini-stat"><span class="mini-label">vs Dynamic</span> {entry.games_vs_dynamic}</span>
-              <span class="mini-stat"><span class="mini-label">vs Recent</span> {entry.games_vs_recent}</span>
-            </div>
-          {/if}
         </div>
       {/if}
     </div>
@@ -178,7 +189,6 @@
   .game-count { font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
   .role-stats { min-width: 100%; }
   .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
-  .stat-row.games { margin-top: 4px; }
   .mini-stat { font-family: monospace; font-size: 12px; color: var(--text-primary); }
   .mini-label { font-size: 12px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
   .style-section { min-width: 200px; }

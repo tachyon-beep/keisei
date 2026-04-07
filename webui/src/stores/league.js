@@ -192,8 +192,8 @@ export const leagueStats = derived(
   ([$entries, $results]) => {
     const active = $entries.filter(e => e.status === 'active')
     if (active.length === 0) return null
-    const elos = active.map(e => e.elo_rating)
-    const sorted = [...active].sort((a, b) => b.elo_rating - a.elo_rating)
+    const elos = active.map(e => displayElo(e).value)
+    const sorted = [...active].sort((a, b) => displayElo(b).value - displayElo(a).value)
     const totalMatches = $results.length
     return {
       poolSize: active.length,
@@ -230,6 +230,27 @@ export const styleProfiles = derived(styleProfilesRaw, ($profiles) => {
   }
   return map
 })
+
+const ROLE_ELO_COLUMN = {
+  frontier_static: 'elo_frontier',
+  dynamic: 'elo_dynamic',
+  recent_fixed: 'elo_recent',
+}
+const ROLE_ELO_TAG = {
+  frontier_static: 'F',
+  dynamic: 'D',
+  recent_fixed: 'R',
+}
+
+/** Return { value, tag } for the entry's displayed Elo (role-specific when available). */
+export function displayElo(entry) {
+  const col = ROLE_ELO_COLUMN[entry.role]
+  const roleVal = col ? entry[col] : null
+  if (roleVal != null && roleVal !== 1000) {
+    return { value: roleVal, tag: ROLE_ELO_TAG[entry.role] || '' }
+  }
+  return { value: entry.elo_rating, tag: '' }
+}
 
 const KNOWN_ROLES = new Set(['frontier_static', 'recent_fixed', 'dynamic', 'historical'])
 

@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte'
-  import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole, styleProfiles } from '../stores/league.js'
+  import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole, styleProfiles, displayElo } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
 
   /** Current learner's display_name (used to highlight their row) */
@@ -48,6 +48,8 @@
         av = (wld.get(a.id)?.d || 0); bv = (wld.get(b.id)?.d || 0)
       } else if (sortColumn === 'elo_delta') {
         av = (deltas.get(a.id) || 0); bv = (deltas.get(b.id) || 0)
+      } else if (sortColumn === 'elo_rating') {
+        av = displayElo(a).value; bv = displayElo(b).value
       } else {
         av = a[sortColumn]; bv = b[sortColumn]
       }
@@ -163,7 +165,7 @@
                     class:top={entry.rank === 1}
                     class:learner={isLearner(entry)}
                     class:focused={$focusedEntryId === entry.id}
-                    aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, Elo {Math.round(entry.elo_rating)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
+                    aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
                     on:click={() => toggleExpand(entry.id)}
                     tabindex="0"
                     on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -171,12 +173,12 @@
                     <td class="num rank">{entry.rank}</td>
                     <td class="name-cell">
                       {entry.display_name || entry.architecture}
-                      {#if isLearner(entry)}<span class="learner-badge">YOU</span>{/if}
+                      {#if isLearner(entry)}<span class="learner-badge" title="This policy is currently being trained against the other entries in the league">TRAINEE</span>{/if}
                       {#if entry.protection_remaining > 0}
-                        <span class="protection-badge" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
+                        <span class="protection-badge" title="Protected from retirement for {entry.protection_remaining} more epochs" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
                       {/if}
                     </td>
-                    <td class="num elo">{Math.round(entry.elo_rating)}</td>
+                    <td class="num elo">{Math.round(displayElo(entry).value)}{#if displayElo(entry).tag} <span class="elo-tag">{displayElo(entry).tag}</span>{/if}</td>
                     <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
                       {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
                     </td>
@@ -213,7 +215,7 @@
                 class:learner={isLearner(entry)}
                 class:focused={$focusedEntryId === entry.id}
                 aria-expanded={$focusedEntryId === entry.id}
-                aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, Elo {Math.round(entry.elo_rating)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
+                aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
                 on:click={() => toggleExpand(entry.id)}
                 tabindex="0"
                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -227,16 +229,16 @@
                   {/if}
                 </td>
                 <td class="name-cell">
-                  <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).label} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
+                  <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).tooltip} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
                   {entry.display_name || entry.architecture}
                   {#if isLearner(entry)}
-                    <span class="learner-badge">YOU</span>
+                    <span class="learner-badge" title="This policy is currently being trained against the other entries in the league">TRAINEE</span>
                   {/if}
                   {#if entry.protection_remaining > 0}
-                    <span class="protection-badge" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
+                    <span class="protection-badge" title="Protected from retirement for {entry.protection_remaining} more epochs" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
                   {/if}
                 </td>
-                <td class="num elo">{Math.round(entry.elo_rating)}</td>
+                <td class="num elo">{Math.round(displayElo(entry).value)}{#if displayElo(entry).tag} <span class="elo-tag">{displayElo(entry).tag}</span>{/if}</td>
                 <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
                   {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
                 </td>
@@ -376,7 +378,8 @@
 
   tr.focused { background: var(--bg-card); }
 
-  .elo { font-family: monospace; }
+  .elo { font-family: monospace; white-space: nowrap; }
+  .elo-tag { font-size: 10px; font-weight: 600; color: var(--text-muted); margin-left: 2px; }
   .delta { font-family: monospace; font-size: 12px; color: var(--text-muted); }
   .delta-pos { color: var(--accent-teal); }
   .delta-neg { color: var(--danger); }

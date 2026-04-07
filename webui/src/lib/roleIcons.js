@@ -10,16 +10,16 @@
  */
 
 const ROLES = {
-  frontier_static: { icon: '🛡', label: 'Frontier', cssClass: 'role-frontier' },
-  recent_fixed:    { icon: '✦',  label: 'Recent',   cssClass: 'role-recent' },
-  dynamic:         { icon: '⚔',  label: 'Dynamic',  cssClass: 'role-dynamic' },
-  historical:      { icon: '📜', label: 'Historical', cssClass: 'role-historical' },
+  frontier_static: { icon: '🛡', label: 'Frontier', tooltip: 'Frontier — strongest fixed checkpoints that set the performance ceiling', cssClass: 'role-frontier' },
+  recent_fixed:    { icon: '✦',  label: 'Recent',   tooltip: 'Recent — recently saved snapshots of the training policy', cssClass: 'role-recent' },
+  dynamic:         { icon: '⚔',  label: 'Dynamic',  tooltip: 'Dynamic — evolving opponents that adapt during training', cssClass: 'role-dynamic' },
+  historical:      { icon: '📜', label: 'Historical', tooltip: 'Historical — archived policies from earlier training runs', cssClass: 'role-historical' },
 }
 
-const RETIRED = { icon: '⏸', label: 'Retired', cssClass: 'role-retired' }
-const UNKNOWN = { icon: '?', label: 'Unknown', cssClass: 'role-unknown' }
+const RETIRED = { icon: '⏸', label: 'Retired', tooltip: 'Retired — removed from the active opponent pool', cssClass: 'role-retired' }
+const UNKNOWN = { icon: '?', label: 'Unknown', tooltip: 'Unknown role', cssClass: 'role-unknown' }
 
-/** Get the full role descriptor { icon, label, cssClass } for a role string. */
+/** Get the full role descriptor { icon, label, tooltip, cssClass } for a role string. */
 export function getRoleInfo(role, status) {
   if (status === 'retired') return RETIRED
   return ROLES[role] || UNKNOWN

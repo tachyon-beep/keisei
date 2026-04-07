@@ -1,5 +1,5 @@
 <script>
-  import { eloHistory, leagueEntries, leagueResults, leagueStats, learnerEntry, historicalLibrary } from '../stores/league.js'
+  import { eloHistory, leagueEntries, leagueResults, leagueStats, learnerEntry, historicalLibrary, tournamentStats, displayElo } from '../stores/league.js'
   import { trainingState } from '../stores/training.js'
   import { buildEloChartData } from './eloChartData.js'
   import LeagueTable from './LeagueTable.svelte'
@@ -14,6 +14,7 @@
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
   $: stats = $leagueStats
+  $: tStats = $tournamentStats
   $: learner = $learnerEntry
   $: learnerName = learner?.display_name || null
 
@@ -52,40 +53,38 @@
 </script>
 
 <main id="league-main" class="league-view" aria-label="League standings">
-  <div class="stats-banner" role="region" aria-label="League metrics">
+  {#if stats}
+    <div class="stats-banner" role="region" aria-label="League summary">
+      <div class="stat-card">
+        <span class="stat-value">{stats.poolSize} / {POOL_CAPACITY}</span>
+        <span class="stat-label">Pool Size</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value">{stats.totalMatches}</span>
+        <span class="stat-label">Matches</span>
+      </div>
       <div class="stat-card highlight">
-        <span class="stat-value">{learner ? Math.round(learner.elo_frontier) : '—'}</span>
-        <span class="stat-label">Frontier Elo</span>
+        <span class="stat-value">{stats.topEntry?.display_name || stats.topEntry?.architecture || '—'}</span>
+        <span class="stat-label">Top Rated · {Math.round(stats.topEntry ? displayElo(stats.topEntry).value : 0)}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-value">{learner ? Math.round(learner.elo_dynamic) : '—'}</span>
-        <span class="stat-label">League Elo</span>
+        <span class="stat-value">{stats.eloMin} – {stats.eloMax}</span>
+        <span class="stat-label">Elo Range · {stats.eloSpread} spread</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-value">{learner ? Math.round(learner.elo_recent) : '—'}</span>
-        <span class="stat-label">Challenge Score</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-value">{learner ? Math.round(learner.elo_historical) : '—'}</span>
-        <span class="stat-label">Gauntlet Score</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-value">{stats?.poolSize ?? '—'} / {POOL_CAPACITY}</span>
-        <span class="stat-label">Pool</span>
-      </div>
+      {#if tStats}
+        <div class="stat-card">
+          <span class="stat-value">{Math.round(tStats.games_per_min)}</span>
+          <span class="stat-label">Games/min · {tStats.active_slots} slots</span>
+        </div>
+      {/if}
     </div>
+  {/if}
 
   <div class="league-columns">
     <div class="left-column">
       <div class="table-wrapper">
         <LeagueTable {learnerName} />
       </div>
-      {#if $focusedEntryId != null}
-        <div class="entry-detail-wrapper" role="region" aria-label="Entry detail" on:keydown={handleDetailKeydown}>
-          <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
-          <EntryDetail entryId={$focusedEntryId} bind:headingEl={entryDetailHeading} />
-        </div>
-      {/if}
       <div class="bottom-row">
         <div class="event-log-wrapper">
           <LeagueEventLog />
@@ -128,7 +127,14 @@
       </div>
     </div>
     <div class="right-column">
-      <MatchupMatrix {learnerName} />
+      {#if $focusedEntryId != null}
+        <div class="entry-detail-wrapper" role="region" aria-label="Entry detail" on:keydown={handleDetailKeydown}>
+          <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
+          <EntryDetail entryId={$focusedEntryId} bind:headingEl={entryDetailHeading} />
+        </div>
+      {:else}
+        <MatchupMatrix {learnerName} />
+      {/if}
       <div class="chart-card">
         <h2 class="section-header">Elo Over Time</h2>
         {#if chartData.xData.length > 0}
@@ -278,13 +284,14 @@
   }
 
   .entry-detail-wrapper {
-    max-height: 200px;
     overflow-y: auto;
-    flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--bg-secondary);
     position: relative;
+    flex: 1;
+    min-height: 0;
+    max-height: 90%;
   }
 
   .detail-close-btn {
@@ -297,10 +304,10 @@
     border-radius: 4px;
     color: var(--text-secondary);
     cursor: pointer;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 4px 8px;
-    font-size: 13px;
+    min-width: 22px;
+    min-height: 22px;
+    padding: 2px 4px;
+    font-size: 11px;
     display: flex;
     align-items: center;
     justify-content: center;

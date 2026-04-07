@@ -85,7 +85,7 @@
   }
 
   .board {
-    --sq: min(72px, (100vw - 60px) / 9);
+    --sq: min(68px, (100vw - 60px) / 9);
     display: grid;
     grid-template-columns: repeat(9, var(--sq));
     grid-template-rows: repeat(9, var(--sq));

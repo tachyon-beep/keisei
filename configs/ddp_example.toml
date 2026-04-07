@@ -30,6 +30,7 @@ gamma = 0.99
 gae_lambda = 0.95
 clip_epsilon = 0.2
 lambda_entropy = 0.01
+compile_mode = "default"
 
 [display]
 moves_per_minute = 30

@@ -62,22 +62,20 @@
         Keisei
       {/if}
     </h1>
-    <div class="indicator">
-      <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-teal)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
-      <span class="text">{indicator.text}</span>
-    </div>
     {#if alive || epoch > 0}
       <div class="stats">
         {#if !alive && indicator.dot === 'yellow'}
           <span class="phase-badge stale" aria-live="polite">&#9679; STALE</span>
-          <span class="sep">|</span>
+        {:else if !alive}
+          <span class="phase-badge stopped" aria-live="polite">&#9632; {indicator.text.replace('Training ', '').toUpperCase()}</span>
         {:else if phase === 'update'}
           <span class="phase-badge update" aria-live="polite">&#9650; PPO UPDATE</span>
-          <span class="sep">|</span>
         {:else if phase === 'rollout'}
           <span class="phase-badge rollout" aria-live="polite">&#9654; ROLLOUT</span>
-          <span class="sep">|</span>
+        {:else}
+          <span class="phase-badge alive" aria-live="polite">&#9679; ALIVE</span>
         {/if}
+        <span class="sep">|</span>
         <span class="stat">Epoch {epoch.toLocaleString()}{#if totalEpochs} / {totalEpochs.toLocaleString()}{/if}</span>
         <span class="sep">|</span>
         <span class="stat">Step {step.toLocaleString()}</span>
@@ -145,21 +143,6 @@
     font-family: Georgia, 'Times New Roman', serif;
   }
 
-  .indicator {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    color: var(--text-secondary);
-  }
-
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-
   .stats {
     display: flex;
     align-items: center;
@@ -198,6 +181,16 @@
   .phase-badge.stale {
     color: var(--warning);
     background: var(--badge-bg-gold);
+  }
+
+  .phase-badge.alive {
+    color: var(--accent-teal);
+    background: var(--badge-bg-teal);
+  }
+
+  .phase-badge.stopped {
+    color: var(--danger);
+    background: var(--badge-bg-danger);
   }
 
   .right {

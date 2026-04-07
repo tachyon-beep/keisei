@@ -95,7 +95,8 @@
     flex: 1;
     display: grid;
     grid-template-columns: auto auto auto;
-    justify-content: space-between;
+    gap: 0 12px;
+    justify-content: start;
     align-content: space-evenly;
   }
 

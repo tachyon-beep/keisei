@@ -80,7 +80,7 @@
     {/if}
   </div>
   {#if tierInfo}
-    <span class="tier-badge {tierInfo.cssClass}">{tierInfo.icon} {tierInfo.label}</span>
+    <span class="tier-badge {tierInfo.cssClass}" title={tierInfo.tooltip}>{tierInfo.icon} {tierInfo.label}</span>
   {/if}
   <div class="name">{name || '—'}</div>
   {#if primaryStyle}
