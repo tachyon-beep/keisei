@@ -200,10 +200,19 @@ def _generate_commentary(
         pct = percentiles.get(metric)
         value = raw_metrics.get(metric)
 
-        if pct is None or value is None:
+        if condition.startswith("mode_freq>="):
+            # Mode-frequency templates use categorical metrics (e.g. preferred
+            # first move) that don't have percentiles.  Check frequency directly.
+            if value is None:
+                continue
+            freq = raw_metrics.get(f"{metric}_freq", 0)
+            if freq >= threshold / 100.0:
+                confidence = "high" if freq >= 0.5 else "medium"
+                text = template.format(value=value, pct=0)
+                facts.append({"text": text, "category": category, "confidence": confidence})
+        elif pct is None or value is None:
             continue
-
-        if condition == "pct<=" and pct <= threshold:
+        elif condition == "pct<=" and pct <= threshold:
             confidence = "high" if pct <= threshold - 10 else "medium"
             text = template.format(value=value, pct=round(100 - pct))
             facts.append({"text": text, "category": category, "confidence": confidence})
@@ -211,19 +220,12 @@ def _generate_commentary(
             confidence = "high" if pct >= threshold + 10 else "medium"
             text = template.format(value=value, pct=round(pct))
             facts.append({"text": text, "category": category, "confidence": confidence})
-        elif condition.startswith("mode_freq>="):
-            freq = raw_metrics.get(f"{metric}_freq", 0)
-            if freq >= threshold / 100.0:
-                confidence = "high" if freq >= 0.5 else "medium"
-                text = template.format(value=value, pct=round(pct))
-                facts.append({"text": text, "category": category, "confidence": confidence})
 
     # Sort: high confidence first, then by category diversity
     facts.sort(key=lambda f: (0 if f["confidence"] == "high" else 1, f["category"]))
 
     # Cap at 5 facts, avoid repeating categories
     selected: list[dict[str, Any]] = []
-    seen_categories: set[str] = set()
     for fact in facts:
         if len(selected) >= 5:
             break
@@ -231,7 +233,6 @@ def _generate_commentary(
         cat_count = sum(1 for s in selected if s["category"] == fact["category"])
         if cat_count < 2:
             selected.append(fact)
-            seen_categories.add(fact["category"])
 
     return selected
 
@@ -251,6 +252,10 @@ class StyleProfiler:
         """Recompute profiles for all checkpoints with game data.
 
         Returns the number of profiles written.
+
+        Note: reads all game_features rows (O(N) full scan).  Acceptable for
+        v1 where the table is small; for long training runs, consider
+        incremental aggregation or epoch-windowed reads.
         """
         all_features = read_all_game_features(self.db_path)
         if not all_features:
@@ -419,12 +424,15 @@ class StyleProfiler:
         if not all_metrics:
             return {}
 
-        # Collect all numeric metric keys
-        sample = next(iter(all_metrics.values()))
-        numeric_keys = [
-            k for k, v in sample.items()
-            if isinstance(v, (int, float)) and v is not None
-        ]
+        # Collect the union of all numeric metric keys across checkpoints.
+        # Using a single sample would miss metrics that are None for that
+        # checkpoint but present for others (e.g. first_capture_ply_mean).
+        numeric_keys = sorted({
+            key
+            for metrics in all_metrics.values()
+            for key, value in metrics.items()
+            if value is not None and isinstance(value, (int, float))
+        })
 
         # Build sorted lists per metric
         sorted_per_metric: dict[str, list[float]] = {}

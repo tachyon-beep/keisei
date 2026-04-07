@@ -34,13 +34,18 @@
   $: currentCommentary = commentary.length > 0 ? commentary[commentaryIdx % commentary.length] : null
 
   let rotationInterval = null
-  $: {
+  function updateRotationInterval() {
     if (rotationInterval) clearInterval(rotationInterval)
+    rotationInterval = null
     if (commentary.length > 1) {
       rotationInterval = setInterval(() => {
         commentaryIdx = (commentaryIdx + 1) % commentary.length
       }, 20000)
     }
+  }
+  $: {
+    commentary.length
+    updateRotationInterval()
   }
   onDestroy(() => { if (rotationInterval) clearInterval(rotationInterval) })
 </script>
