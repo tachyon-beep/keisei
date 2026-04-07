@@ -255,6 +255,72 @@ num_layers = 2
         # No checkpoint should exist — we failed before SL training
         assert list(checkpoint_dir.glob("*.pt")) == []
 
+    def test_param_shape_mismatch_raises(
+        self, tmp_path: Path, sl_data_dir: Path, model_params, mock_vecenv,
+    ) -> None:
+        """Same architecture name but different model params must raise before SL training."""
+        from keisei.training.transition import sl_to_rl
+
+        checkpoint_dir = tmp_path / "checkpoints"
+        checkpoint_dir.mkdir()
+
+        # RL config uses se_resnet but with different channels/blocks than SL
+        rl_config_path = tmp_path / "rl.toml"
+        rl_config_path.write_text(
+            f"""\
+[training]
+algorithm = "katago_ppo"
+num_games = 1
+max_ply = 20
+checkpoint_interval = 10
+checkpoint_dir = "{checkpoint_dir}"
+
+[training.algorithm_params]
+learning_rate = 0.0002
+gamma = 0.99
+lambda_policy = 1.0
+lambda_value = 1.5
+lambda_score = 0.02
+lambda_entropy = 0.01
+score_normalization = 76.0
+grad_clip = 1.0
+
+[display]
+moves_per_minute = 0
+db_path = "{tmp_path / 'test.db'}"
+
+[model]
+display_name = "TestBot"
+architecture = "se_resnet"
+
+[model.params]
+num_blocks = 10
+channels = 128
+se_reduction = 16
+global_pool_channels = 64
+policy_channels = 16
+value_fc_size = 128
+score_fc_size = 64
+obs_channels = 50
+"""
+        )
+
+        with pytest.raises(ValueError, match="param.*mismatch"):
+            sl_to_rl(
+                sl_data_dir=sl_data_dir,
+                sl_epochs=1,
+                sl_batch_size=8,
+                checkpoint_dir=checkpoint_dir,
+                rl_config_path=rl_config_path,
+                architecture="se_resnet",
+                model_params=model_params,
+                vecenv=mock_vecenv,
+                db_path=str(tmp_path / "test.db"),
+            )
+
+        # No checkpoint should exist — we failed before SL training
+        assert list(checkpoint_dir.glob("*.pt")) == []
+
 
 class TestCheckpointDirCreation:
     """Test checkpoint_dir auto-creation and failure handling."""

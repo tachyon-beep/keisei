@@ -624,3 +624,48 @@ class TestMajorityWinsResult:
     def test_b_wins_with_draw(self):
         """2 wins for B + 1 draw."""
         assert majority_wins_result(0, 2, 1) == 0.0
+
+
+# ===========================================================================
+# _play_match — GPU resource cleanup on partial model load failure
+# ===========================================================================
+
+
+class TestPlayMatchModelCleanup:
+    """Verify _play_match cleans up GPU memory even if the second model load fails."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        s = OpponentStore(db_path, str(league_dir))
+        yield s
+        s.close()
+
+    def test_release_called_when_second_load_fails(self, store):
+        """If load_opponent succeeds for model_a but raises for model_b,
+        release_models must still be called with model_a to prevent GPU leak."""
+        t = _make_tournament(store)
+        entry_a = _make_entry(1)
+        entry_b = _make_entry(2)
+        fake_model = MagicMock()
+
+        # First call succeeds, second raises
+        store.load_opponent = MagicMock(
+            side_effect=[fake_model, RuntimeError("corrupt checkpoint")],
+        )
+
+        with patch(
+            "keisei.training.tournament.release_models",
+        ) as mock_release:
+            with pytest.raises(RuntimeError, match="corrupt checkpoint"):
+                t._play_match(MagicMock(), entry_a, entry_b)
+
+            # release_models must have been called with at least model_a
+            mock_release.assert_called_once()
+            args = mock_release.call_args
+            assert fake_model in args[0], (
+                "release_models should include the successfully-loaded model_a"
+            )

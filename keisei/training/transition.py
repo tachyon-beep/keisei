@@ -23,7 +23,7 @@ from keisei.sl.trainer import SLConfig, SLTrainer
 from keisei.training.models.katago_base import KataGoBaseModel
 from keisei.training.checkpoint import save_checkpoint
 from keisei.training.katago_loop import KataGoTrainingLoop
-from keisei.training.model_registry import build_model
+from keisei.training.model_registry import build_model, validate_model_params
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,16 @@ def sl_to_rl(
                 f"SL→RL architecture mismatch: sl_to_rl(architecture={architecture!r}) "
                 f"but rl_config_path specifies model.architecture="
                 f"{rl_config_early.model.architecture!r}. "
+                f"These must match for checkpoint compatibility."
+            )
+        sl_validated = validate_model_params(architecture, model_params or {})
+        rl_validated = validate_model_params(
+            rl_config_early.model.architecture, dict(rl_config_early.model.params),
+        )
+        if sl_validated != rl_validated:
+            raise ValueError(
+                f"SL→RL model param mismatch: SL params {sl_validated} "
+                f"differ from RL config params {rl_validated}. "
                 f"These must match for checkpoint compatibility."
             )
 

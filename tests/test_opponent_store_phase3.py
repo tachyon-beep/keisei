@@ -263,6 +263,48 @@ class TestSaveLoadOptimizer:
         with pytest.raises(ValueError):
             store.save_optimizer(99999, state_dict)
 
+    def test_metadata_restored_on_rollback(self, store, league_dir):
+        """If transaction rolls back after _write_metadata succeeds,
+        metadata.json must be restored to its pre-save_optimizer content."""
+        import json
+
+        entry = _add_test_entry(store, league_dir)
+        entry_dir = league_dir / "entries" / f"{entry.id:06d}"
+        meta_path = entry_dir / "metadata.json"
+
+        # Capture the original metadata content (written by add_entry)
+        assert meta_path.exists(), "add_entry should have created metadata.json"
+        original_meta = json.loads(meta_path.read_text())
+        assert "optimizer_path" not in original_meta
+
+        state_dict = torch.optim.SGD(_make_dummy_model().parameters(), lr=0.01).state_dict()
+
+        # Wrap the real _write_metadata to let it succeed, then raise after
+        real_write = OpponentStore._write_metadata
+
+        def write_then_explode(entry_dir_arg, metadata):
+            real_write(entry_dir_arg, metadata)
+            raise OSError("disk full after metadata write")
+
+        with patch.object(
+            OpponentStore, "_write_metadata",
+            side_effect=write_then_explode,
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                store.save_optimizer(entry.id, state_dict)
+
+        # metadata.json should be restored to its pre-save_optimizer content
+        restored_meta = json.loads(meta_path.read_text())
+        assert restored_meta == original_meta, (
+            "metadata.json should be restored after rollback, "
+            f"but got {restored_meta}"
+        )
+
+        # DB should also be rolled back — no optimizer_path
+        db_entry = store.get_entry(entry.id)
+        assert db_entry is not None
+        assert db_entry.optimizer_path is None
+
 
 class TestIncrementUpdateCount:
     def test_increment(self, store, league_dir):

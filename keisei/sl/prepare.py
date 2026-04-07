@@ -88,7 +88,7 @@ def prepare_sl_data(
             game_files.append(source_path)
         elif source_path.is_dir():
             for ext in parsers:
-                game_files.extend(source_path.glob(f"*{ext}"))
+                game_files.extend(sorted(source_path.glob(f"*{ext}")))
 
     logger.info("Found %d game files across %d sources", len(game_files), len(game_sources))
 

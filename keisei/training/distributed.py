@@ -119,7 +119,7 @@ def setup_distributed(ctx: DistributedContext, backend: str | None = None) -> No
         )
 
     try:
-        if backend == "nccl":
+        if torch.cuda.is_available():
             torch.cuda.set_device(ctx.local_rank)
         dist.init_process_group(backend=backend)
         logger.info(

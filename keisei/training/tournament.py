@@ -591,18 +591,20 @@ class LeagueTournament:
         Returns (a_wins, b_wins, draws), or (a_wins, b_wins, draws, MatchRollout)
         when collect_rollout=True.
         """
-        model_a = self.store.load_opponent(entry_a, device=str(self.device))
-        model_b = self.store.load_opponent(entry_b, device=str(self.device))
-
-        effective_envs = num_envs or self.num_envs
-        tracker = GameFeatureTracker(
-            num_envs=effective_envs,
-            entry_a_id=entry_a.id,
-            entry_b_id=entry_b.id,
-            epoch=epoch,
-        )
-
+        loaded: list[torch.nn.Module] = []
         try:
+            loaded.append(self.store.load_opponent(entry_a, device=str(self.device)))
+            loaded.append(self.store.load_opponent(entry_b, device=str(self.device)))
+            model_a, model_b = loaded
+
+            effective_envs = num_envs or self.num_envs
+            tracker = GameFeatureTracker(
+                num_envs=effective_envs,
+                entry_a_id=entry_a.id,
+                entry_b_id=entry_b.id,
+                epoch=epoch,
+            )
+
             result = play_match(
                 vecenv, model_a, model_b,
                 device=self.device, num_envs=effective_envs,
@@ -614,4 +616,4 @@ class LeagueTournament:
             self._write_game_features(tracker)
             return result
         finally:
-            release_models(model_a, model_b, device_type=self.device.type)
+            release_models(*loaded, device_type=self.device.type)

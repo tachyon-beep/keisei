@@ -263,6 +263,38 @@ class TestShardSizeBoundary:
         assert len(dataset) == 1
 
 
+class TestDeterministicFileOrdering:
+    """Regression: Path.glob() order is filesystem-dependent; prepare_sl_data must sort."""
+
+    def test_files_processed_in_sorted_order(self, tmp_path):
+        """Two game files with distinct outcomes: shard positions must reflect sorted filename order."""
+        games_dir = tmp_path / "games"
+        games_dir.mkdir()
+
+        # "aaa.sfen" → win_black, "zzz.sfen" → win_white
+        # If sorted, aaa comes first → positions 0,1 are win_black (value 0,2)
+        # then zzz → positions 2,3 are win_white (value 2,0)
+        (games_dir / "zzz.sfen").write_text("result:win_white\nstartpos\n7g7f\n3c3d\n")
+        (games_dir / "aaa.sfen").write_text("result:win_black\nstartpos\n2g2f\n8c8d\n")
+
+        output_dir = tmp_path / "processed"
+        prepare_sl_data(
+            game_sources=[str(games_dir)],
+            output_dir=str(output_dir),
+            min_ply=1,
+        )
+        dataset = SLDataset(output_dir, allow_placeholder=True)
+        assert len(dataset) == 4
+
+        # Sorted order: aaa.sfen (win_black) first, then zzz.sfen (win_white)
+        # aaa.sfen positions: move 0 (black-to-move, W=0), move 1 (white-to-move, L=2)
+        assert dataset[0]["value_target"].item() == 0, "aaa.sfen pos 0: black wins, black-to-move → W(0)"
+        assert dataset[1]["value_target"].item() == 2, "aaa.sfen pos 1: black wins, white-to-move → L(2)"
+        # zzz.sfen positions: move 0 (black-to-move, L=2), move 1 (white-to-move, W=0)
+        assert dataset[2]["value_target"].item() == 2, "zzz.sfen pos 0: white wins, black-to-move → L(2)"
+        assert dataset[3]["value_target"].item() == 0, "zzz.sfen pos 1: white wins, white-to-move → W(0)"
+
+
 class TestStaleShardsRemoved:
     """Regression: re-running prepare_sl_data must not leave stale shards from prior runs."""
 

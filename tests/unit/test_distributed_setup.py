@@ -69,8 +69,8 @@ class TestSetupDistributed:
             mock_set_device.assert_called_once_with(0)
             mock_init.assert_called_once_with(backend="nccl")
 
-    def test_explicit_gloo_skips_cuda_set_device(self) -> None:
-        """backend='gloo' → no cuda.set_device call."""
+    def test_explicit_gloo_no_cuda_skips_set_device(self) -> None:
+        """backend='gloo' on CPU-only host → no cuda.set_device call."""
         with patch("torch.cuda.is_available", return_value=False):
             ctx = DistributedContext(
                 rank=0, local_rank=0, world_size=2, is_distributed=True,
@@ -82,6 +82,21 @@ class TestSetupDistributed:
         ):
             setup_distributed(ctx, backend="gloo")
             mock_set_device.assert_not_called()
+            mock_init.assert_called_once_with(backend="gloo")
+
+    def test_explicit_gloo_with_cuda_still_pins_device(self) -> None:
+        """backend='gloo' on CUDA host → must still call cuda.set_device."""
+        with patch("torch.cuda.is_available", return_value=True):
+            ctx = DistributedContext(
+                rank=1, local_rank=1, world_size=2, is_distributed=True,
+            )
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.set_device") as mock_set_device,
+            patch("keisei.training.distributed.dist.init_process_group") as mock_init,
+        ):
+            setup_distributed(ctx, backend="gloo")
+            mock_set_device.assert_called_once_with(1)
             mock_init.assert_called_once_with(backend="gloo")
 
     def test_init_process_group_failure_reraises(self) -> None:

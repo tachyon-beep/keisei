@@ -994,6 +994,8 @@ class OpponentStore:
                 (str(opt_path), entry_id),
             )
             # Refresh metadata.json so the sidecar is self-describing (§14).
+            meta_path = entry_dir / "metadata.json"
+            self._register_overwrite(meta_path)
             refreshed = self._get_entry(entry_id)
             if refreshed is not None:
                 self._write_metadata(entry_dir, {

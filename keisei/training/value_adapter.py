@@ -64,6 +64,14 @@ class MultiHeadValueAdapter(ValueHeadAdapter):
 
     def __init__(self, lambda_value: float = 1.5, lambda_score: float = 0.02,
                  score_blend_alpha: float = 0.0) -> None:
+        if lambda_value < 0:
+            raise ValueError(f"lambda_value must be >= 0, got {lambda_value}")
+        if lambda_score < 0:
+            raise ValueError(f"lambda_score must be >= 0, got {lambda_score}")
+        if not (0.0 <= score_blend_alpha <= 1.0):
+            raise ValueError(
+                f"score_blend_alpha must be in [0, 1], got {score_blend_alpha}"
+            )
         self.lambda_value = lambda_value
         self.lambda_score = lambda_score
         self.score_blend_alpha = score_blend_alpha

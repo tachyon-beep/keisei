@@ -106,6 +106,39 @@ class TestMultiHeadValueAdapter:
         assert score_pred.grad is not None
 
 
+class TestMultiHeadValidation:
+    """Negative lambdas invert loss; score_blend_alpha must be in [0, 1]."""
+
+    def test_negative_lambda_value_raises(self):
+        with pytest.raises(ValueError, match="lambda_value"):
+            MultiHeadValueAdapter(lambda_value=-1.0)
+
+    def test_negative_lambda_score_raises(self):
+        with pytest.raises(ValueError, match="lambda_score"):
+            MultiHeadValueAdapter(lambda_score=-0.01)
+
+    def test_score_blend_alpha_below_zero_raises(self):
+        with pytest.raises(ValueError, match="score_blend_alpha"):
+            MultiHeadValueAdapter(score_blend_alpha=-0.1)
+
+    def test_score_blend_alpha_above_one_raises(self):
+        with pytest.raises(ValueError, match="score_blend_alpha"):
+            MultiHeadValueAdapter(score_blend_alpha=1.5)
+
+    def test_zero_lambdas_allowed(self):
+        """Zero is valid — it disables the loss component."""
+        adapter = MultiHeadValueAdapter(lambda_value=0.0, lambda_score=0.0)
+        assert adapter.lambda_value == 0.0
+        assert adapter.lambda_score == 0.0
+
+    def test_boundary_alpha_values_allowed(self):
+        """0.0 and 1.0 are both valid endpoints."""
+        a0 = MultiHeadValueAdapter(score_blend_alpha=0.0)
+        a1 = MultiHeadValueAdapter(score_blend_alpha=1.0)
+        assert a0.score_blend_alpha == 0.0
+        assert a1.score_blend_alpha == 1.0
+
+
 class TestGetValueAdapter:
     def test_returns_scalar(self):
         adapter = get_value_adapter(model_contract="scalar")
