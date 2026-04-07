@@ -275,10 +275,10 @@ class DynamicTrainer:
 
     def _update_inner(self, entry: OpponentEntry, device: str) -> bool:
         """Internal update logic — may raise."""
-        # load_opponent() builds a fresh model instance each call (no cache),
-        # so .train() is safe — it won't affect other callers' eval-mode models.
+        # load_opponent() returns model in eval mode.  Compute old_log_probs
+        # in eval mode first (matching the eval-mode rollout in match_utils),
+        # then switch to train mode for the gradient updates.
         model = self.store.load_opponent(entry, device)
-        model.train()
 
         # Concatenate and filter rollouts by perspective
         all_obs, all_actions, all_rewards, all_dones, all_legal_masks = (
@@ -305,9 +305,10 @@ class DynamicTrainer:
         value_cats[terminal_mask & (all_rewards == 0)] = 1  # draw
         value_cats[terminal_mask & (all_rewards < 0)] = 2  # loss
 
-        # Initial forward pass for old_log_probs (baseline).
-        # Processes all data in a single batch.  OOM risk is bounded by
-        # config.max_buffer_depth (default 8) and update_every_matches (default 4).
+        # Initial forward pass for old_log_probs (baseline) in eval mode.
+        # This matches the eval-mode inference used during rollout (match_utils
+        # line 126-127), so BatchNorm uses running stats — not batch stats —
+        # giving consistent importance ratios in the PPO update.
         with torch.no_grad():
             output = model(all_obs)
             flat_logits = output.policy_logits.reshape(all_obs.shape[0], -1)
@@ -317,6 +318,8 @@ class DynamicTrainer:
                 .gather(1, all_actions.unsqueeze(1))
                 .squeeze(1)
             )
+
+        model.train()
 
         # Get or create optimizer.  On failure, optimizer is NOT stored back
         # into self._optimizers (that happens at line 305 on success only).

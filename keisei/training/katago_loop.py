@@ -1611,9 +1611,12 @@ class KataGoTrainingLoop:
         now = time.monotonic()
         if now - self._last_heartbeat >= 10.0:
             self._last_heartbeat = now
-            update_training_progress(
-                self.db_path, self.epoch, self.global_step, phase=self._phase,
-            )
+            try:
+                update_training_progress(
+                    self.db_path, self.epoch, self.global_step, phase=self._phase,
+                )
+            except Exception:
+                logger.exception("Heartbeat DB write failed — continuing")
 
     def _maybe_write_snapshots(self) -> None:
         if not self.dist_ctx.is_main:
@@ -1653,7 +1656,10 @@ class KataGoTrainingLoop:
                     else None
                 ),
             })
-        write_game_snapshots(self.db_path, snapshots)
+        try:
+            write_game_snapshots(self.db_path, snapshots)
+        except Exception:
+            logger.exception("Snapshot DB write failed — continuing")
 
 
 def main() -> None:

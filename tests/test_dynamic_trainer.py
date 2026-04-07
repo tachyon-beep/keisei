@@ -655,6 +655,44 @@ class TestPostCheckpointFailureStillReturnsTrue:
         assert trainer._error_counts.get(entry.id, 0) == 0
 
 
+class TestOldLogProbsComputedInEvalMode:
+    """old_log_probs must be computed in eval mode to match rollout BN behavior."""
+
+    def test_old_log_probs_use_eval_mode(self, store_and_entry) -> None:
+        """Verify model is in eval mode during old_log_probs forward pass,
+        then switches to train mode for the gradient update loop."""
+        store, entry = store_and_entry
+        config = DynamicConfig(update_every_matches=1, update_epochs_per_batch=1)
+        trainer = DynamicTrainer(store=store, config=config, learner_lr=1e-3)
+        trainer.record_match(entry.id, _make_rollout(side=0), 0)
+
+        # Track model.training state at each forward() call
+        forward_training_states: list[bool] = []
+        original_forward = TinyModel.forward
+
+        def tracking_forward(self_model, x):
+            forward_training_states.append(self_model.training)
+            return original_forward(self_model, x)
+
+        with patch(
+            "keisei.training.opponent_store.build_model",
+            return_value=TinyModel(),
+        ), patch.object(TinyModel, "forward", tracking_forward):
+            trainer.update(entry, "cpu")
+
+        # First forward call = old_log_probs (should be eval mode = False)
+        # Subsequent calls = training updates (should be train mode = True)
+        assert len(forward_training_states) >= 2, (
+            f"Expected at least 2 forward calls, got {len(forward_training_states)}"
+        )
+        assert forward_training_states[0] is False, (
+            "old_log_probs forward pass should be in eval mode (model.training=False)"
+        )
+        assert all(s is True for s in forward_training_states[1:]), (
+            f"Training forward passes should be in train mode, got {forward_training_states[1:]}"
+        )
+
+
 class TestGlobalDisableFallback:
     """Tests for §10.4 global inference-only fallback (_globally_disabled)."""
 

@@ -351,6 +351,40 @@ class TestMaybeUpdateHeartbeat:
 
             mock_update.assert_not_called()
 
+    def test_heartbeat_db_error_does_not_crash(self, tmp_path):
+        """A transient DB error in _maybe_update_heartbeat must not crash the loop."""
+        config = _make_config(tmp_path)
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+
+        with patch(
+            "keisei.training.katago_loop.update_training_progress",
+            side_effect=OSError("disk full"),
+        ):
+            loop._last_heartbeat = time.monotonic() - 11.0
+            # Should NOT raise — error is caught and logged
+            loop._maybe_update_heartbeat()
+
+    def test_snapshot_db_error_does_not_crash(self, tmp_path):
+        """A transient DB error in _maybe_write_snapshots must not crash the loop."""
+        config = _make_config(tmp_path)
+        mock_env = _make_mock_katago_vecenv(num_envs=2)
+        loop = KataGoTrainingLoop(config, vecenv=mock_env)
+        loop.moves_per_minute = 60
+        loop._last_snapshot_time = time.monotonic() - 120.0
+
+        # Give the vecenv spectator data so we reach the DB write
+        mock_env.get_spectator_data.return_value = [
+            {"board": [], "hands": {}, "ply": 1, "is_over": False},
+        ]
+
+        with patch(
+            "keisei.training.katago_loop.write_game_snapshots",
+            side_effect=OSError("disk full"),
+        ):
+            # Should NOT raise — error is caught and logged
+            loop._maybe_write_snapshots()
+
 
 class TestValueCategoryNoLeague:
     """C1: Value category assignment in the no-league (no opponent) path."""
