@@ -120,6 +120,21 @@ def _training_alive(db_path: str) -> bool:
         return False
 
 
+def _extract_hostname(host: str) -> str:
+    """Extract hostname from a Host header, handling IPv6 bracketed literals.
+
+    Examples: "localhost:8741" → "localhost", "[::1]:8741" → "::1", "" → ""
+    """
+    if host.startswith("["):
+        # RFC 2732 bracketed IPv6: [::1]:port or [::1]
+        bracket_end = host.find("]")
+        if bracket_end != -1:
+            return host[1:bracket_end]
+        return host  # malformed — return as-is for rejection
+    # IPv4 / hostname — strip port suffix
+    return host.split(":")[0]
+
+
 class HostFilterMiddleware(BaseHTTPMiddleware):
     """Reject requests whose Host header isn't in the allowed set."""
 
@@ -129,8 +144,7 @@ class HostFilterMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
         host = request.headers.get("host", "")
-        # Strip port from host header (e.g., "keisei.foundryside.dev:443" -> "keisei.foundryside.dev")
-        hostname = host.split(":")[0]
+        hostname = _extract_hostname(host)
         if hostname not in self._hosts:
             logger.warning("Rejected request with Host: %s", host)
             return PlainTextResponse("Forbidden", status_code=403)
@@ -169,7 +183,7 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
         so we enforce the same host allowlist here.
         """
         host = websocket.headers.get("host", "")
-        hostname = host.split(":")[0]
+        hostname = _extract_hostname(host)
         return hostname in hosts
 
     @app.websocket("/ws")

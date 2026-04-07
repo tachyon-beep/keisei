@@ -88,7 +88,13 @@ def prepare_sl_data(
             game_files.append(source_path)
         elif source_path.is_dir():
             for ext in parsers:
+                # Path.glob() is case-sensitive on Linux; collect both
+                # lowercase and uppercase variants to avoid missing files
+                # like game.CSA or game.SFEN.
                 game_files.extend(sorted(source_path.glob(f"*{ext}")))
+                upper = ext.upper()
+                if upper != ext:
+                    game_files.extend(sorted(source_path.glob(f"*{upper}")))
 
     logger.info("Found %d game files across %d sources", len(game_files), len(game_sources))
 

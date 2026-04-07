@@ -80,8 +80,8 @@ class HistoricalLibrary:
                 continue
             distance = abs(best.created_epoch - target)
             threshold = neighbor_dists[i] * 0.5
-            if threshold > 0 and distance > threshold:
-                continue  # beyond threshold — leave for pass 2
+            if threshold == 0 or distance > threshold:
+                continue  # zero spacing or beyond threshold — leave for pass 2
             used_ids.add(best.id)
             mode = "log_spaced" if enough_candidates else "fallback"
             slot_assignments[i] = (best, mode)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import random
 import threading
-import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
@@ -227,7 +226,7 @@ class DemonstratorRunner(threading.Thread):
                 obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)
                 legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
                 current_player = int(step_result.current_players[0])
-                time.sleep(self.move_delay)
+                self._stop_event.wait(timeout=self.move_delay)
 
             logger.info("Demo slot %d game completed", matchup.slot)
         finally:

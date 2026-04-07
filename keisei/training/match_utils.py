@@ -163,6 +163,17 @@ def play_batch(
 
         actions = torch.zeros(num_envs, dtype=torch.long, device=device)
 
+        # Guard: zero legal actions → all-inf softmax → NaN crash.
+        # VecEnv should always provide ≥1 legal move, but defend against
+        # invariant violations (matches demonstrator.py guard).
+        legal_counts = legal_masks.sum(dim=-1)
+        if (legal_counts == 0).any():
+            logger.warning(
+                "play_batch: zero legal actions detected at ply %d — ending batch early",
+                _ply,
+            )
+            break
+
         # Model A forward (full no_grad scope covers softmax + sample)
         a_indices = player_a_mask.nonzero(as_tuple=True)[0]
         if a_indices.numel() > 0:
