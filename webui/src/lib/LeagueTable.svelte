@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte'
   import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
 
@@ -18,6 +19,16 @@
   }
 
   let viewMode = 'flat' // 'flat' | 'grouped'
+
+  function handleViewToggleKeydown(e) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault()
+      viewMode = viewMode === 'flat' ? 'grouped' : 'flat'
+      tick().then(() => {
+        document.querySelector('.view-toggle [role="radio"][tabindex="0"]')?.focus()
+      })
+    }
+  }
 
   let sortColumn = 'elo_rating'
   let sortAsc = false
@@ -79,8 +90,8 @@
 <div class="league-table-card">
   <h2 class="section-header">Elo Leaderboard {#if placeholderCount > 0}<span class="slot-count">{sorted.length} / {totalSlots}</span>{/if}</h2>
   <div class="view-toggle" role="radiogroup" aria-label="Leaderboard view">
-    <button role="radio" aria-checked={viewMode === 'flat'} on:click={() => viewMode = 'flat'} class:active={viewMode === 'flat'}>Flat</button>
-    <button role="radio" aria-checked={viewMode === 'grouped'} on:click={() => viewMode = 'grouped'} class:active={viewMode === 'grouped'}>Grouped</button>
+    <button role="radio" aria-checked={viewMode === 'flat'} tabindex={viewMode === 'flat' ? 0 : -1} on:click={() => viewMode = 'flat'} on:keydown={handleViewToggleKeydown} class:active={viewMode === 'flat'}>Flat</button>
+    <button role="radio" aria-checked={viewMode === 'grouped'} tabindex={viewMode === 'grouped' ? 0 : -1} on:click={() => viewMode = 'grouped'} on:keydown={handleViewToggleKeydown} class:active={viewMode === 'grouped'}>Grouped</button>
   </div>
     <div class="table-scroll">
       <table>
@@ -129,7 +140,6 @@
                     class:top={entry.rank === 1}
                     class:learner={isLearner(entry)}
                     class:focused={$focusedEntryId === entry.id}
-                    aria-expanded={$focusedEntryId === entry.id}
                     on:click={() => toggleExpand(entry.id)}
                     tabindex="0"
                     on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}

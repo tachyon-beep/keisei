@@ -1,53 +1,26 @@
 <script>
   import { leagueEvents, transitionCounts } from '../stores/league.js'
   import { getRoleIcon } from './roleIcons.js'
+  import { collapseEvents } from './collapseEvents.js'
 
   $: counts = $transitionCounts
-
-  /**
-   * Batch-collapse: group consecutive events of the same type and time into
-   * a single collapsed line.
-   */
-  $: collapsedEvents = (() => {
-    const out = []
-    for (const event of $leagueEvents) {
-      const prev = out[out.length - 1]
-      if (prev && !prev.collapsed && prev.type === event.type && prev.time === event.time) {
-        out[out.length - 1] = {
-          collapsed: true,
-          type: event.type,
-          icon: event.icon,
-          time: event.time,
-          count: 2,
-          names: [prev.name, event.name],
-        }
-      } else if (prev?.collapsed && prev.type === event.type && prev.time === event.time) {
-        prev.count++
-        prev.names.push(event.name)
-      } else {
-        out.push(event)
-      }
-    }
-    return out
-  })()
+  $: collapsedEvents = collapseEvents($leagueEvents)
 </script>
 
 <div class="event-log">
   <h2 class="section-header">Event Log</h2>
-  {#if counts.promotions > 0 || counts.evictions > 0 || counts.admissions > 0}
-    <div class="transition-summary" aria-live="polite">
-      {#if counts.promotions > 0}<span class="summary-item promotion">↑ {counts.promotions} promoted</span>{/if}
-      {#if counts.evictions > 0}<span class="summary-item eviction">↓ {counts.evictions} evicted</span>{/if}
-      {#if counts.admissions > 0}<span class="summary-item admission">→ {counts.admissions} admitted</span>{/if}
-    </div>
-  {/if}
+  <div class="transition-summary" aria-live="polite">
+    {#if counts.promotions > 0}<span class="summary-item promotion">↑ {counts.promotions} promoted</span>{/if}
+    {#if counts.evictions > 0}<span class="summary-item eviction">↓ {counts.evictions} evicted</span>{/if}
+    {#if counts.admissions > 0}<span class="summary-item admission">→ {counts.admissions} admitted</span>{/if}
+  </div>
   {#if $leagueEvents.length === 0}
     <p class="empty">No league events yet.</p>
   {:else}
     <div class="feed">
       {#each collapsedEvents as event}
         {#if event.collapsed}
-          <div class="event {event.type}">
+          <div class="event {event.type}" tabindex="0" aria-label="{event.count} {event.type === 'arrival' ? 'arrivals' : event.type === 'departure' ? 'departures' : event.type === 'promotion' ? 'promotions' : 'demotions'}: {event.names.join(', ')}">
             <span class="event-time">{event.time}</span>
             <span class="event-icon" aria-hidden="true">{event.icon}</span>
             <span class="sr-only">{event.type}</span>

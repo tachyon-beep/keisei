@@ -50,7 +50,8 @@
   }
 </script>
 
-<div class="entry-detail" aria-live="polite">
+<div class="entry-detail">
+  <p class="sr-only" aria-live="polite">{entry ? `Viewing ${entry.display_name || entry.architecture}` : ''}</p>
   {#if !entry}
     <p class="empty">Select an entry to view details</p>
   {:else}
@@ -106,10 +107,10 @@
         <div class="detail-section role-stats">
           <h4 class="section-label">Role-Specific</h4>
           <div class="stat-row">
-            <span class="mini-stat"><span class="mini-label">Frontier</span> {Math.round(entry.elo_frontier)}</span>
-            <span class="mini-stat"><span class="mini-label">Dynamic</span> {Math.round(entry.elo_dynamic)}</span>
-            <span class="mini-stat"><span class="mini-label">Recent</span> {Math.round(entry.elo_recent)}</span>
-            <span class="mini-stat"><span class="mini-label">Historical</span> {Math.round(entry.elo_historical)}</span>
+            <span class="mini-stat"><span class="mini-label">Frontier</span> {entry.elo_frontier != null ? Math.round(entry.elo_frontier) : '—'}</span>
+            <span class="mini-stat"><span class="mini-label">Dynamic</span> {entry.elo_dynamic != null ? Math.round(entry.elo_dynamic) : '—'}</span>
+            <span class="mini-stat"><span class="mini-label">Recent</span> {entry.elo_recent != null ? Math.round(entry.elo_recent) : '—'}</span>
+            <span class="mini-stat"><span class="mini-label">Historical</span> {entry.elo_historical != null ? Math.round(entry.elo_historical) : '—'}</span>
           </div>
           {#if entry.games_vs_frontier != null}
             <div class="stat-row games">

@@ -302,6 +302,14 @@ describe('learnerEntry', () => {
     expect(get(learnerEntry)).toBeNull()
   })
 
+  it('returns null when trainingState has no display_name key', () => {
+    trainingState.set({})
+    leagueEntries.set([
+      { id: 1, display_name: 'Bot-A', elo_rating: 1000, status: 'active' },
+    ])
+    expect(get(learnerEntry)).toBeNull()
+  })
+
   it('returns null when display_name is set but no entry matches', () => {
     trainingState.set({ display_name: 'NonExistent' })
     leagueEntries.set([

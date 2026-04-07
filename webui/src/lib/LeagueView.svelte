@@ -17,6 +17,9 @@
   $: learner = $learnerEntry
   $: learnerName = learner?.display_name || null
 
+  // Active pool = Frontier(5) + Recent(5) + Dynamic(10). Historical(5) are library entries, not pool members.
+  const POOL_CAPACITY = 20
+
   let activeBottomTab = 'recent'
   let entryDetailHeading
 
@@ -31,15 +34,21 @@
     }
   }
 
-  // Focus EntryDetail heading when an entry is selected
-  $: if ($focusedEntryId != null) {
-    tick().then(() => entryDetailHeading?.focus())
+  // Focus EntryDetail heading only when focusedEntryId actually changes value
+  let prevFocusedId = null
+  $: {
+    const currentId = $focusedEntryId
+    if (currentId !== prevFocusedId) {
+      prevFocusedId = currentId
+      if (currentId != null) {
+        tick().then(() => entryDetailHeading?.focus())
+      }
+    }
   }
 </script>
 
 <main class="league-view" aria-label="League standings">
-  {#if stats}
-    <div class="stats-banner" role="region" aria-label="League metrics">
+  <div class="stats-banner" role="region" aria-label="League metrics">
       <div class="stat-card highlight">
         <span class="stat-value">{learner ? Math.round(learner.elo_frontier) : '—'}</span>
         <span class="stat-label">Frontier Elo</span>
@@ -50,18 +59,17 @@
       </div>
       <div class="stat-card">
         <span class="stat-value">{learner ? Math.round(learner.elo_recent) : '—'}</span>
-        <span class="stat-label">Challenge</span>
+        <span class="stat-label">Challenge Score</span>
       </div>
       <div class="stat-card">
         <span class="stat-value">{learner ? Math.round(learner.elo_historical) : '—'}</span>
-        <span class="stat-label">Gauntlet</span>
+        <span class="stat-label">Gauntlet Score</span>
       </div>
       <div class="stat-card">
-        <span class="stat-value">{stats.poolSize} / 20</span>
+        <span class="stat-value">{stats?.poolSize ?? '—'} / {POOL_CAPACITY}</span>
         <span class="stat-label">Pool</span>
       </div>
     </div>
-  {/if}
 
   <div class="league-columns">
     <div class="left-column">
