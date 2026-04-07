@@ -7,11 +7,34 @@
   import RecentMatches from './RecentMatches.svelte'
   import LeagueEventLog from './LeagueEventLog.svelte'
   import MetricsChart from './MetricsChart.svelte'
+  import HistoricalLibrary from './HistoricalLibrary.svelte'
+  import EntryDetail from './EntryDetail.svelte'
+  import { focusedEntryId } from '../stores/league.js'
+  import { tick } from 'svelte'
 
   $: chartData = buildEloChartData($eloHistory, $leagueEntries)
   $: stats = $leagueStats
   $: learner = $learnerEntry
   $: learnerName = learner?.display_name || null
+
+  let activeBottomTab = 'recent'
+  let entryDetailHeading
+
+  function setBottomTab(tab) { activeBottomTab = tab }
+  function handleTabKeydown(e) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault()
+      activeBottomTab = activeBottomTab === 'recent' ? 'history' : 'recent'
+      tick().then(() => {
+        document.querySelector('[role="tab"][tabindex="0"]')?.focus()
+      })
+    }
+  }
+
+  // Focus EntryDetail heading when an entry is selected
+  $: if ($focusedEntryId != null) {
+    tick().then(() => entryDetailHeading?.focus())
+  }
 </script>
 
 <main class="league-view" aria-label="League standings">
@@ -45,11 +68,50 @@
       <div class="table-wrapper">
         <LeagueTable {learnerName} />
       </div>
+      {#if $focusedEntryId != null}
+        <div class="entry-detail-wrapper">
+          <EntryDetail entryId={$focusedEntryId} bind:headingEl={entryDetailHeading} />
+        </div>
+      {/if}
       <div class="bottom-row">
         <div class="event-log-wrapper">
           <LeagueEventLog />
         </div>
-        <RecentMatches />
+        <div class="tabbed-panel">
+          <div class="tab-bar" role="tablist" aria-label="Bottom panel">
+            <button
+              id="tab-recent"
+              role="tab"
+              aria-selected={activeBottomTab === 'recent'}
+              aria-controls="panel-recent"
+              tabindex={activeBottomTab === 'recent' ? 0 : -1}
+              on:click={() => setBottomTab('recent')}
+              on:keydown={handleTabKeydown}
+              class:active={activeBottomTab === 'recent'}
+            >Recent Matches</button>
+            <button
+              id="tab-history"
+              role="tab"
+              aria-selected={activeBottomTab === 'history'}
+              aria-controls="panel-history"
+              tabindex={activeBottomTab === 'history' ? 0 : -1}
+              on:click={() => setBottomTab('history')}
+              on:keydown={handleTabKeydown}
+              class:active={activeBottomTab === 'history'}
+            >Historical Library</button>
+          </div>
+          <div class="tab-content">
+            {#if activeBottomTab === 'recent'}
+              <div id="panel-recent" role="tabpanel" aria-labelledby="tab-recent">
+                <RecentMatches />
+              </div>
+            {:else}
+              <div id="panel-history" role="tabpanel" aria-labelledby="tab-history">
+                <HistoricalLibrary />
+              </div>
+            {/if}
+          </div>
+        </div>
       </div>
     </div>
     <div class="right-column">
@@ -200,6 +262,72 @@
     font-size: 13px;
     text-align: center;
     padding: 24px;
+  }
+
+  .entry-detail-wrapper {
+    max-height: 200px;
+    overflow-y: auto;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+  }
+
+  .tabbed-panel {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab-bar button {
+    flex: 1;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .tab-bar button.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-teal);
+  }
+
+  .tab-bar button:hover {
+    color: var(--text-primary);
+  }
+
+  .tab-bar button:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+  }
+
+  .tab-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .tab-content > [role="tabpanel"] {
+    height: 100%;
+    overflow-y: auto;
   }
 
   @media (max-width: 1200px) {
