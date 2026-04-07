@@ -615,6 +615,80 @@ def profile_per_block(
     return results
 
 
+def profile_loss_components(
+    device: str | torch.device, batch_size: int = 256,
+) -> list[TimingResult]:
+    """Profile individual loss computation components."""
+    device = torch.device(device)
+    action_space = 11259
+    results = []
+    is_cuda = device.type == "cuda"
+    timer = (lambda fn: time_cuda_op(fn, device)) if is_cuda else time_cpu_op
+
+    # Synthetic data
+    logits = torch.randn(batch_size, action_space, device=device)
+    legal_mask = torch.ones(batch_size, action_space, dtype=torch.bool, device=device)
+    legal_mask[:, action_space // 3:] = False
+    old_log_probs = torch.randn(batch_size, device=device)
+    advantages = torch.randn(batch_size, device=device)
+    value_logits = torch.randn(batch_size, 3, device=device)
+    value_cats = torch.randint(0, 3, (batch_size,), device=device)
+    score_pred = torch.randn(batch_size, 1, device=device)
+    score_targets = torch.randn(batch_size, device=device)
+
+    # 1. Masked log_softmax + gather (policy preprocessing)
+    def policy_preprocess():
+        masked = logits.masked_fill(~legal_mask, float("-inf"))
+        log_p = F.log_softmax(masked, dim=-1)
+        actions = torch.randint(0, action_space, (batch_size,), device=device)
+        log_p.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+    r = timer(policy_preprocess)
+    r.name = f"policy_log_softmax+gather bs={batch_size}"
+    results.append(r)
+
+    # 2. PPO clip loss
+    new_log_probs = torch.randn(batch_size, device=device)
+
+    def clip_loss():
+        from keisei.training.katago_ppo import ppo_clip_loss
+        ppo_clip_loss(new_log_probs, old_log_probs, advantages, 0.2)
+
+    r = timer(clip_loss)
+    r.name = f"ppo_clip_loss bs={batch_size}"
+    results.append(r)
+
+    # 3. Entropy computation
+    def entropy_op():
+        masked = logits.masked_fill(~legal_mask, float("-inf"))
+        log_p = F.log_softmax(masked, dim=-1)
+        probs = log_p.exp()
+        safe_log = log_p.masked_fill(~legal_mask, 0.0)
+        -(probs * safe_log).sum(dim=-1).mean()
+
+    r = timer(entropy_op)
+    r.name = f"entropy bs={batch_size}"
+    results.append(r)
+
+    # 4. WDL cross-entropy
+    def wdl_loss():
+        F.cross_entropy(value_logits, value_cats, ignore_index=-1)
+
+    r = timer(wdl_loss)
+    r.name = f"wdl_cross_entropy bs={batch_size}"
+    results.append(r)
+
+    # 5. Score MSE
+    def score_loss():
+        F.mse_loss(score_pred.squeeze(-1), score_targets)
+
+    r = timer(score_loss)
+    r.name = f"score_mse bs={batch_size}"
+    results.append(r)
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
@@ -763,6 +837,11 @@ def main() -> None:
     results = profile_per_block(scale, device, args.batch_size)
     all_results["per_block"] = results
     print_section("PER-COMPONENT BREAKDOWN", results)
+
+    # 6b. Loss component breakdown
+    results = profile_loss_components(device, args.batch_size)
+    all_results["loss_components"] = results
+    print_section("LOSS COMPONENT BREAKDOWN", results)
 
     # 7. Compile diagnostics (optional)
     if args.compile_diagnostics or args.all:

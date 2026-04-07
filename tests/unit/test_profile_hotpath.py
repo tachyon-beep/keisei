@@ -29,3 +29,16 @@ def test_create_model_production_scale():
 def test_invalid_scale_raises():
     with pytest.raises(KeyError):
         create_model_at_scale("nonexistent", "cpu")
+
+
+def test_profile_loss_components_returns_results():
+    """Smoke test: loss profiling returns TimingResult list (CPU-only)."""
+    from scripts.profile_hotpath import profile_loss_components, TimingResult
+
+    # Can't test CUDA profiling without GPU — just verify function signature
+    # and that it returns a list of TimingResult when given a CPU device.
+    # (The function will use time_cpu_op fallback for CPU.)
+    results = profile_loss_components("cpu", batch_size=16)
+    assert isinstance(results, list)
+    assert all(isinstance(r, TimingResult) for r in results)
+    assert len(results) >= 4  # policy, value, score, entropy
