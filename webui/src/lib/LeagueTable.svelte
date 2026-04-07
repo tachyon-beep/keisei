@@ -1,16 +1,26 @@
 <script>
-  import { leagueRanked, entryWLD, eloDelta, focusedEntryId } from '../stores/league.js'
+  import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
-  import MatchHistory from './MatchHistory.svelte'
 
   /** Current learner's display_name (used to highlight their row) */
   export let learnerName = null
   /** Total slots shown in leaderboard (empty ones are placeholders) */
   export let totalSlots = 20
 
+  const ROLE_CAPACITY = { frontier_static: 5, recent_fixed: 5, dynamic: 10, historical: 5 }
+  const ROLE_ORDER = ['frontier_static', 'recent_fixed', 'dynamic', 'historical', 'other']
+  const ROLE_LABELS = {
+    frontier_static: '🛡 Frontier',
+    recent_fixed: '✦ Recent',
+    dynamic: '⚔ Dynamic',
+    historical: '📜 Historical',
+    other: '? Other',
+  }
+
+  let viewMode = 'flat' // 'flat' | 'grouped'
+
   let sortColumn = 'elo_rating'
   let sortAsc = false
-  let expandedId = null
 
   $: wld = $entryWLD
   $: deltas = $eloDelta
@@ -45,8 +55,7 @@
   }
 
   function toggleExpand(id) {
-    expandedId = expandedId === id ? null : id
-    focusedEntryId.set(expandedId)
+    focusedEntryId.update(current => current === id ? null : id)
   }
 
   function sortIndicator(col) {
@@ -69,6 +78,10 @@
 
 <div class="league-table-card">
   <h2 class="section-header">Elo Leaderboard {#if placeholderCount > 0}<span class="slot-count">{sorted.length} / {totalSlots}</span>{/if}</h2>
+  <div class="view-toggle" role="radiogroup" aria-label="Leaderboard view">
+    <button role="radio" aria-checked={viewMode === 'flat'} on:click={() => viewMode = 'flat'} class:active={viewMode === 'flat'}>Flat</button>
+    <button role="radio" aria-checked={viewMode === 'grouped'} on:click={() => viewMode = 'grouped'} class:active={viewMode === 'grouped'}>Grouped</button>
+  </div>
     <div class="table-scroll">
       <table>
         <caption class="sr-only">Elo leaderboard, sorted by {sortColumn} {sortAsc ? 'ascending' : 'descending'}</caption>
@@ -102,62 +115,113 @@
           </tr>
         </thead>
         <tbody>
-          {#each sorted as entry}
-            <tr
-              class:top={entry.rank === 1}
-              class:learner={isLearner(entry)}
-              class:expanded={expandedId === entry.id}
-              on:click={() => toggleExpand(entry.id)}
-              aria-expanded={expandedId === entry.id}
-              tabindex="0"
-              on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
-            >
-              <td class="num rank">
-                {#if entry.rank === 1}
-                  <span class="crown" aria-hidden="true">♛</span>
-                  <span class="sr-only">1 (champion)</span>
-                {:else}
-                  {entry.rank}
-                {/if}
-              </td>
-              <td class="name-cell">
-                <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).label} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
-                {entry.display_name || entry.architecture}
-                {#if isLearner(entry)}
-                  <span class="learner-badge">YOU</span>
-                {/if}
-              </td>
-              <td class="num elo">{Math.round(entry.elo_rating)}</td>
-              <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
-                {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
-              </td>
-              <td class="num">{entry.games_played}</td>
-              <td class="num win">{wld.get(entry.id)?.w || 0}</td>
-              <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
-              <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
-              <td class="num">{entry.created_epoch}</td>
-            </tr>
-            {#if expandedId === entry.id}
-              <tr class="history-row">
-                <td colspan="9">
-                  <MatchHistory entryId={entry.id} />
+          {#if viewMode === 'grouped'}
+            {#each ROLE_ORDER as role}
+              {#if $leagueByRole.has(role)}
+                <tr class="group-header">
+                  <th colspan="9" scope="colgroup">
+                    <span aria-hidden="true">{ROLE_LABELS[role]?.split(' ')[0]}</span>
+                    {ROLE_LABELS[role]?.split(' ').slice(1).join(' ') || role} · {$leagueByRole.get(role).length}/{ROLE_CAPACITY[role] || '?'}
+                  </th>
+                </tr>
+                {#each $leagueByRole.get(role) as entry}
+                  <tr
+                    class:top={entry.rank === 1}
+                    class:learner={isLearner(entry)}
+                    class:focused={$focusedEntryId === entry.id}
+                    aria-expanded={$focusedEntryId === entry.id}
+                    on:click={() => toggleExpand(entry.id)}
+                    tabindex="0"
+                    on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
+                  >
+                    <td class="num rank">{entry.rank}</td>
+                    <td class="name-cell">
+                      {entry.display_name || entry.architecture}
+                      {#if isLearner(entry)}<span class="learner-badge">YOU</span>{/if}
+                      {#if entry.protection_remaining > 0}
+                        <span class="protection-badge" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
+                      {/if}
+                    </td>
+                    <td class="num elo">{Math.round(entry.elo_rating)}</td>
+                    <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
+                      {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
+                    </td>
+                    <td class="num">{entry.games_played}</td>
+                    <td class="num win">{wld.get(entry.id)?.w || 0}</td>
+                    <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
+                    <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
+                    <td class="num">{entry.created_epoch}</td>
+                  </tr>
+                {/each}
+                {#each Array(Math.max(0, (ROLE_CAPACITY[role] || 0) - ($leagueByRole.get(role)?.length || 0))) as _, i}
+                  <tr class="placeholder-row" aria-hidden="true">
+                    <td class="num rank placeholder-text">{($leagueByRole.get(role)?.length || 0) + i + 1}</td>
+                    <td class="placeholder-text">—</td>
+                    <td class="num placeholder-text">—</td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                    <td class="num placeholder-text"></td>
+                  </tr>
+                {/each}
+              {/if}
+            {/each}
+          {:else}
+            {#each sorted as entry}
+              <tr
+                class:top={entry.rank === 1}
+                class:learner={isLearner(entry)}
+                class:focused={$focusedEntryId === entry.id}
+                aria-expanded={$focusedEntryId === entry.id}
+                on:click={() => toggleExpand(entry.id)}
+                tabindex="0"
+                on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
+              >
+                <td class="num rank">
+                  {#if entry.rank === 1}
+                    <span class="crown" aria-hidden="true">♛</span>
+                    <span class="sr-only">1 (champion)</span>
+                  {:else}
+                    {entry.rank}
+                  {/if}
                 </td>
+                <td class="name-cell">
+                  <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).label} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
+                  {entry.display_name || entry.architecture}
+                  {#if isLearner(entry)}
+                    <span class="learner-badge">YOU</span>
+                  {/if}
+                  {#if entry.protection_remaining > 0}
+                    <span class="protection-badge" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
+                  {/if}
+                </td>
+                <td class="num elo">{Math.round(entry.elo_rating)}</td>
+                <td class="num delta" class:delta-pos={(deltas.get(entry.id) || 0) > 0} class:delta-neg={(deltas.get(entry.id) || 0) < 0}>
+                  {(deltas.get(entry.id) || 0) > 0 ? '+' : ''}{deltas.get(entry.id) || 0}
+                </td>
+                <td class="num">{entry.games_played}</td>
+                <td class="num win">{wld.get(entry.id)?.w || 0}</td>
+                <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
+                <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
+                <td class="num">{entry.created_epoch}</td>
               </tr>
-            {/if}
-          {/each}
-          {#each placeholders as slot}
-            <tr class="placeholder-row" aria-hidden="true">
-              <td class="num rank placeholder-text">{slot}</td>
-              <td class="placeholder-text">—</td>
-              <td class="num placeholder-text">—</td>
-              <td class="num placeholder-text"></td>
-              <td class="num placeholder-text"></td>
-              <td class="num placeholder-text"></td>
-              <td class="num placeholder-text"></td>
-              <td class="num placeholder-text"></td>
-              <td class="num placeholder-text"></td>
-            </tr>
-          {/each}
+            {/each}
+            {#each placeholders as slot}
+              <tr class="placeholder-row" aria-hidden="true">
+                <td class="num rank placeholder-text">{slot}</td>
+                <td class="placeholder-text">—</td>
+                <td class="num placeholder-text">—</td>
+                <td class="num placeholder-text"></td>
+                <td class="num placeholder-text"></td>
+                <td class="num placeholder-text"></td>
+                <td class="num placeholder-text"></td>
+                <td class="num placeholder-text"></td>
+                <td class="num placeholder-text"></td>
+              </tr>
+            {/each}
+          {/if}
         </tbody>
       </table>
     </div>
@@ -267,11 +331,7 @@
   .role-badge.role-unknown { color: var(--text-muted); }
   .role-badge.role-retired { color: #888; opacity: 0.6; }
 
-  tr.expanded { background: var(--bg-card); }
-
-  .history-row { cursor: default; }
-  .history-row:hover { background: transparent; }
-  .history-row td { padding: 0; }
+  tr.focused { background: var(--bg-card); }
 
   .elo { font-family: monospace; }
   .delta { font-family: monospace; font-size: 12px; color: var(--text-muted); }
@@ -300,6 +360,49 @@
   }
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 24px; text-align: center; }
+
+  .view-toggle {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 8px;
+  }
+  .view-toggle button {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .view-toggle button.active {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border-color: var(--accent-teal);
+  }
+  .view-toggle button:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .group-header th {
+    padding: 10px 10px 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
+  }
+
+  .protection-badge {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-left: 4px;
+    vertical-align: middle;
+  }
 
   @media (prefers-reduced-motion: reduce) {
     tbody tr { transition: none; }
