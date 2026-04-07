@@ -77,7 +77,8 @@ def init_db(db_path: str) -> None:
                 total_epochs     INTEGER,
                 status           TEXT NOT NULL DEFAULT 'running',
                 phase            TEXT NOT NULL DEFAULT 'init',
-                heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                heartbeat_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                learner_entry_id INTEGER
             );
             CREATE TABLE IF NOT EXISTS league_entries (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -387,10 +388,10 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
             """INSERT OR REPLACE INTO training_state
                (id, config_json, display_name, model_arch, algorithm_name,
                 started_at, current_epoch, current_step, checkpoint_path,
-                total_epochs, status, phase)
+                total_epochs, status, phase, learner_entry_id)
                VALUES (1, :config_json, :display_name, :model_arch, :algorithm_name,
                 :started_at, :current_epoch, :current_step, :checkpoint_path,
-                :total_epochs, :status, :phase)""",
+                :total_epochs, :status, :phase, :learner_entry_id)""",
             {
                 "config_json": state["config_json"], "display_name": state["display_name"],
                 "model_arch": state["model_arch"], "algorithm_name": state["algorithm_name"],
@@ -401,6 +402,7 @@ def write_training_state(db_path: str, state: dict[str, Any]) -> None:
                 "total_epochs": state.get("total_epochs"),
                 "status": state.get("status", "running"),
                 "phase": state.get("phase", "init"),
+                "learner_entry_id": state.get("learner_entry_id"),
             },
         )
         conn.commit()
@@ -431,7 +433,7 @@ def update_heartbeat(db_path: str) -> None:
 
 def update_training_progress(
     db_path: str, epoch: int, step: int, checkpoint_path: str | None = None,
-    phase: str | None = None,
+    phase: str | None = None, learner_entry_id: int | None = None,
 ) -> None:
     conn = _connect(db_path)
     try:
@@ -444,6 +446,9 @@ def update_training_progress(
         if phase is not None:
             parts.append("phase = ?")
             params.append(phase)
+        if learner_entry_id is not None:
+            parts.append("learner_entry_id = ?")
+            params.append(learner_entry_id)
         conn.execute(
             f"UPDATE training_state SET {', '.join(parts)} WHERE id = 1",
             params,

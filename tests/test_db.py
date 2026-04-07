@@ -201,6 +201,64 @@ def test_update_training_progress_no_checkpoint(db: Path) -> None:
     assert state["checkpoint_path"] == "/tmp/ckpt.pt"
 
 
+def test_training_state_learner_entry_id(db: Path) -> None:
+    """learner_entry_id should be stored and retrieved from training_state."""
+    init_db(str(db))
+    write_training_state(str(db), {
+        "config_json": '{"test": true}',
+        "display_name": "Hikaru",
+        "model_arch": "resnet",
+        "algorithm_name": "ppo",
+        "started_at": "2026-04-01T00:00:00Z",
+        "learner_entry_id": 42,
+    })
+    state = read_training_state(str(db))
+    assert state is not None
+    assert state["learner_entry_id"] == 42
+
+
+def test_training_state_learner_entry_id_defaults_null(db: Path) -> None:
+    """learner_entry_id should default to None when not provided."""
+    init_db(str(db))
+    write_training_state(str(db), {
+        "config_json": '{"test": true}',
+        "display_name": "Hikaru",
+        "model_arch": "resnet",
+        "algorithm_name": "ppo",
+        "started_at": "2026-04-01T00:00:00Z",
+    })
+    state = read_training_state(str(db))
+    assert state is not None
+    assert state["learner_entry_id"] is None
+
+
+def test_update_training_progress_with_learner_entry_id(db: Path) -> None:
+    """update_training_progress should update learner_entry_id when provided."""
+    init_db(str(db))
+    write_training_state(str(db), {
+        "config_json": "{}", "display_name": "X", "model_arch": "resnet",
+        "algorithm_name": "ppo", "started_at": "2026-04-01T00:00:00Z",
+    })
+    update_training_progress(str(db), epoch=5, step=500, learner_entry_id=99)
+    state = read_training_state(str(db))
+    assert state is not None
+    assert state["learner_entry_id"] == 99
+
+
+def test_update_training_progress_preserves_learner_entry_id(db: Path) -> None:
+    """update_training_progress without learner_entry_id should not clear it."""
+    init_db(str(db))
+    write_training_state(str(db), {
+        "config_json": "{}", "display_name": "X", "model_arch": "resnet",
+        "algorithm_name": "ppo", "started_at": "2026-04-01T00:00:00Z",
+        "learner_entry_id": 42,
+    })
+    update_training_progress(str(db), epoch=10, step=1000)
+    state = read_training_state(str(db))
+    assert state is not None
+    assert state["learner_entry_id"] == 42
+
+
 def test_read_metrics_since_with_limit(db: Path) -> None:
     """read_metrics_since should respect the limit parameter."""
     for i in range(10):
