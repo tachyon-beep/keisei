@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from keisei.config import ConcurrencyConfig
+from keisei.training.game_feature_tracker import GameFeatureTracker
 from keisei.training.opponent_store import OpponentEntry
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class MatchResult:
     b_wins: int
     draws: int
     rollout: MatchRollout | None
+    feature_tracker: GameFeatureTracker | None = None
 
 
 @dataclass
@@ -84,6 +86,7 @@ class _MatchSlot:
     _dones: list[torch.Tensor] = field(default_factory=list)
     _masks: list[torch.Tensor] = field(default_factory=list)
     _perspective: list[torch.Tensor] = field(default_factory=list)
+    feature_tracker: GameFeatureTracker | None = None
 
     @property
     def games_completed(self) -> int:
@@ -98,6 +101,7 @@ class _MatchSlot:
         model_b: torch.nn.Module,
         games_target: int,
         collect_rollout: bool = False,
+        epoch: int = 0,
     ) -> None:
         """Reset slot state for a new pairing."""
         self.entry_a = entry_a
@@ -117,6 +121,13 @@ class _MatchSlot:
         self._dones = []
         self._masks = []
         self._perspective = []
+        num_envs = self.env_end - self.env_start
+        self.feature_tracker = GameFeatureTracker(
+            num_envs=num_envs,
+            entry_a_id=entry_a.id,
+            entry_b_id=entry_b.id,
+            epoch=epoch,
+        )
 
     def to_result(self) -> MatchResult:
         """Convert slot state to a MatchResult.
@@ -148,6 +159,7 @@ class _MatchSlot:
             b_wins=self.b_wins,
             draws=self.draws,
             rollout=rollout,
+            feature_tracker=self.feature_tracker,
         )
 
 
@@ -189,6 +201,7 @@ class ConcurrentMatchPool:
         max_ply: int = 512,
         stop_event: threading.Event | None = None,
         trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
+        epoch: int = 0,
     ) -> tuple[list[MatchResult], RoundStats]:
         """Execute pairings with true concurrent partitioned inference.
 
@@ -252,7 +265,7 @@ class ConcurrentMatchPool:
             pairing_idx = next_pairing_idx
             self._assign_pairing(
                 slot, pairing_idx, pairings[pairing_idx],
-                load_fn, games_per_match, trainable_fn, stats=stats,
+                load_fn, games_per_match, trainable_fn, stats=stats, epoch=epoch,
             )
             if slot.active:
                 slot_pairing_map[slot.index] = pairing_idx
@@ -392,6 +405,21 @@ class ConcurrentMatchPool:
                 # pre_step_players tells us who moved (0=A/Black, 1=B/White).
                 # Same convention as match_utils.play_batch.
                 slot_pre_players = pre_step_players[slot.index]
+
+                # Feature tracking for this slot's partition
+                if slot.feature_tracker is not None and hasattr(step_result, 'step_metadata'):
+                    meta = step_result.step_metadata
+                    slot.feature_tracker.record_step(
+                        actions=actions[s:e].cpu().numpy(),
+                        captured_piece=np.asarray(meta.captured_piece)[s:e],
+                        termination_reason=np.asarray(meta.termination_reason)[s:e],
+                        ply_count=np.asarray(meta.ply_count)[s:e],
+                        pre_step_players=slot_pre_players,
+                        terminated=partition_term,
+                        truncated=partition_trunc,
+                        rewards=partition_rewards,
+                    )
+
                 for env_i in range(e - s):
                     if partition_done[env_i]:
                         r = float(partition_rewards[env_i])
@@ -457,7 +485,7 @@ class ConcurrentMatchPool:
                     next_pairing_idx += 1
                     self._assign_pairing(
                         slot, new_pairing_idx, pairings[new_pairing_idx],
-                        load_fn, games_per_match, trainable_fn, stats=stats,
+                        load_fn, games_per_match, trainable_fn, stats=stats, epoch=epoch,
                     )
                     if slot.active:
                         slot_pairing_map[slot.index] = new_pairing_idx
@@ -508,6 +536,7 @@ class ConcurrentMatchPool:
         games_target: int,
         trainable_fn: Callable[[OpponentEntry, OpponentEntry], bool] | None = None,
         stats: RoundStats | None = None,
+        epoch: int = 0,
     ) -> None:
         """Load models and assign a pairing to a slot."""
         entry_a, entry_b = pairing
@@ -560,4 +589,5 @@ class ConcurrentMatchPool:
             model_b=model_b,
             games_target=games_target,
             collect_rollout=collect_rollout,
+            epoch=epoch,
         )

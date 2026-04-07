@@ -6,6 +6,7 @@ export const leagueEntries = writable([])
 export const leagueResults = writable([])
 export const eloHistory = writable([])
 export const tournamentStats = writable(null)
+export const styleProfilesRaw = writable([])
 
 /** Currently expanded/focused entry in leaderboard — used for cross-highlighting */
 export const focusedEntryId = writable(null)
@@ -214,6 +215,15 @@ export const learnerEntry = derived(
     return $entries.find(e => e.display_name === name) || null
   }
 )
+
+/** Style profiles keyed by checkpoint_id for quick lookup */
+export const styleProfiles = derived(styleProfilesRaw, ($profiles) => {
+  const map = new Map()
+  for (const p of $profiles) {
+    map.set(p.checkpoint_id, p)
+  }
+  return map
+})
 
 const KNOWN_ROLES = new Set(['frontier_static', 'recent_fixed', 'dynamic', 'historical'])
 

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
+    from keisei.training.game_feature_tracker import GameFeatureRow, GameFeatureTracker
 
 
 def _combine_rollouts(rollouts: list[MatchRollout]) -> MatchRollout:
@@ -41,6 +42,7 @@ def play_match(
     games_target: int,
     stop_event: threading.Event | None = None,
     collect_rollout: bool = False,
+    feature_tracker: GameFeatureTracker | None = None,
 ) -> tuple[int, int, int] | tuple[int, int, int, Any]:
     """Play a set of games between two frozen models.
 
@@ -66,6 +68,7 @@ def play_match(
             vecenv, model_a, model_b,
             device=device, num_envs=num_envs, max_ply=max_ply,
             stop_event=stop_event, collect_rollout=collect_rollout,
+            feature_tracker=feature_tracker,
         )
         if collect_rollout:
             a_wins, b_wins, draws, rollout = result
@@ -107,6 +110,7 @@ def play_batch(
     max_ply: int,
     stop_event: threading.Event | None = None,
     collect_rollout: bool = False,
+    feature_tracker: GameFeatureTracker | None = None,
 ) -> tuple[int, int, int] | tuple[int, int, int, Any]:
     """Play one batch of games (num_envs concurrent).
 
@@ -196,6 +200,20 @@ def play_batch(
             )
             step_dones.append(
                 torch.from_numpy((terminated | truncated).astype(np.float32))
+            )
+
+        # Feature tracking — extract per-game behavioural stats
+        if feature_tracker is not None:
+            meta = step_result.step_metadata
+            feature_tracker.record_step(
+                actions=actions.cpu().numpy(),
+                captured_piece=np.asarray(meta.captured_piece),
+                termination_reason=np.asarray(meta.termination_reason),
+                ply_count=np.asarray(meta.ply_count),
+                pre_step_players=pre_step_players,
+                terminated=terminated,
+                truncated=truncated,
+                rewards=rewards,
             )
 
         # Vectorized result counting.

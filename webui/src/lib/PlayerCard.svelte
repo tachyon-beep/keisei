@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { getRoleInfo } from './roleIcons.js'
 
   /** @type {'learner' | 'opponent'} */
@@ -13,11 +14,35 @@
   export let detail = ''
   /** @type {Array<[string, string]>} */
   export let stats = []
+  /** @type {object | null} Style profile from StyleProfiler */
+  export let styleProfile = null
 
   $: icon = role === 'learner' ? '☗' : '☖'
   $: roleLabel = role === 'learner' ? 'Learner' : 'Opponent'
   $: colorClass = role === 'learner' ? 'learner' : 'opponent'
   $: tierInfo = tierRole ? getRoleInfo(tierRole) : null
+
+  // Style profile data
+  $: hasStyle = styleProfile && styleProfile.profile_status !== 'insufficient'
+  $: primaryStyle = hasStyle ? styleProfile.primary_style : null
+  $: secondaryTraits = hasStyle ? (styleProfile.secondary_traits || []) : []
+  $: commentary = hasStyle ? (styleProfile.commentary || []) : []
+  $: profileStatus = styleProfile ? styleProfile.profile_status : null
+
+  // Rotating commentary
+  let commentaryIdx = 0
+  $: currentCommentary = commentary.length > 0 ? commentary[commentaryIdx % commentary.length] : null
+
+  let rotationInterval = null
+  $: {
+    if (rotationInterval) clearInterval(rotationInterval)
+    if (commentary.length > 1) {
+      rotationInterval = setInterval(() => {
+        commentaryIdx = (commentaryIdx + 1) % commentary.length
+      }, 20000)
+    }
+  }
+  onDestroy(() => { if (rotationInterval) clearInterval(rotationInterval) })
 </script>
 
 <div
@@ -34,8 +59,26 @@
     <span class="tier-badge {tierInfo.cssClass}">{tierInfo.icon} {tierInfo.label}</span>
   {/if}
   <div class="name">{name || '—'}</div>
+  {#if primaryStyle}
+    <div class="style-label">{primaryStyle}</div>
+  {/if}
+  {#if secondaryTraits.length > 0}
+    <div class="traits">
+      {#each secondaryTraits as trait}
+        <span class="trait-badge">{trait}</span>
+      {/each}
+    </div>
+  {/if}
   {#if detail}
     <div class="detail">{detail}</div>
+  {/if}
+  {#if currentCommentary}
+    <div class="commentary" title="{currentCommentary.confidence} confidence">
+      {currentCommentary.text}
+    </div>
+  {/if}
+  {#if profileStatus === 'provisional'}
+    <div class="profile-status">provisional profile</div>
   {/if}
   {#if stats.length > 0}
     <div class="facts">
@@ -111,6 +154,47 @@
     font-size: 16px;
     color: var(--text-primary);
     margin-top: 8px;
+  }
+
+  .style-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-teal);
+    margin-top: 4px;
+  }
+
+  .traits {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+
+  .trait-badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+    background: rgba(128, 128, 128, 0.12);
+    white-space: nowrap;
+  }
+
+  .commentary {
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-muted);
+    margin-top: 6px;
+    min-height: 1.4em;
+    transition: opacity 0.3s ease;
+  }
+
+  .profile-status {
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.6;
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
 
   .detail {

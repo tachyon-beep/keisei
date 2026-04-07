@@ -1,5 +1,5 @@
 <script>
-  import { leagueResults, leagueEntries, headToHead } from '../stores/league.js'
+  import { leagueResults, leagueEntries, headToHead, styleProfiles } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
 
   export let entryId
@@ -7,6 +7,8 @@
 
   $: entryMap = new Map($leagueEntries.map(e => [e.id, e]))
   $: entry = entryMap.get(entryId)
+  $: profile = $styleProfiles.get(entryId)
+  $: hasProfile = profile && profile.profile_status !== 'insufficient'
 
   // Last Round: matches from the entry's most recent epoch
   $: entryMatches = $leagueResults.filter(
@@ -103,6 +105,29 @@
         {/if}
       </div>
 
+      {#if hasProfile}
+        <div class="detail-section style-section">
+          <h4 class="section-label">Play Style {#if profile.profile_status === 'provisional'}<span class="epoch-tag">(provisional)</span>{/if}</h4>
+          {#if profile.primary_style}
+            <div class="style-primary">{profile.primary_style}</div>
+          {/if}
+          {#if profile.secondary_traits?.length}
+            <div class="style-traits">
+              {#each profile.secondary_traits as trait}
+                <span class="style-trait">{trait}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if profile.commentary?.length}
+            <div class="commentary-list">
+              {#each profile.commentary as fact}
+                <div class="commentary-item" class:high-conf={fact.confidence === 'high'}>{fact.text}</div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
       {#if entry}
         <div class="detail-section role-stats">
           <h4 class="section-label">Role-Specific</h4>
@@ -156,6 +181,18 @@
   .stat-row.games { margin-top: 4px; }
   .mini-stat { font-family: monospace; font-size: 12px; color: var(--text-primary); }
   .mini-label { font-size: 10px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
+  .style-section { min-width: 200px; }
+  .style-primary { font-size: 13px; font-weight: 600; color: var(--accent-teal); margin-bottom: 4px; }
+  .style-traits { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .style-trait {
+    font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    color: var(--text-secondary); background: rgba(128, 128, 128, 0.12);
+  }
+  .commentary-list { display: flex; flex-direction: column; gap: 2px; }
+  .commentary-item {
+    font-size: 11px; font-style: italic; color: var(--text-muted); padding: 1px 0;
+  }
+  .commentary-item.high-conf { color: var(--text-secondary); }
   .empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px; }
   .empty-small { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
 </style>

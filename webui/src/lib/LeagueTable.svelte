@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte'
-  import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole } from '../stores/league.js'
+  import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole, styleProfiles } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
 
   /** Current learner's display_name (used to highlight their row) */
@@ -83,6 +83,27 @@
     return learnerName && entry.display_name === learnerName
   }
 
+  $: profiles = $styleProfiles
+
+  function getStyle(entryId) {
+    const p = profiles.get(entryId)
+    if (!p || p.profile_status === 'insufficient') return null
+    return p.primary_style || null
+  }
+
+  function getStyleTooltip(entryId) {
+    const p = profiles.get(entryId)
+    if (!p || p.profile_status === 'insufficient') return ''
+    const parts = []
+    if (p.primary_style) parts.push(p.primary_style)
+    const traits = p.secondary_traits || []
+    if (traits.length) parts.push(traits.join(', '))
+    const m = p.raw_metrics || {}
+    if (m.avg_game_length != null) parts.push(`Avg length: ${Math.round(m.avg_game_length)}`)
+    if (m.drops_per_game != null) parts.push(`Drops/game: ${m.drops_per_game.toFixed(1)}`)
+    return parts.join(' | ')
+  }
+
   $: placeholderCount = Math.max(0, totalSlots - sorted.length)
   $: placeholders = Array.from({ length: placeholderCount }, (_, i) => sorted.length + i + 1)
 </script>
@@ -120,6 +141,7 @@
             <th class="num wld-col" aria-sort={ariaSortValue('draws')}>
               <button class="sort-btn" title="Sort by draws" on:click={() => toggleSort('draws')}>D{sortIndicator('draws')}</button>
             </th>
+            <th class="style-col" aria-sort="none">Style</th>
             <th class="num" aria-sort={ariaSortValue('created_epoch')}>
               <button class="sort-btn" title="Sort by creation epoch" on:click={() => toggleSort('created_epoch')}>Epoch{sortIndicator('created_epoch')}</button>
             </th>
@@ -130,7 +152,7 @@
             {#each ROLE_ORDER as role}
               {#if $leagueByRole.has(role)}
                 <tr class="group-header">
-                  <th colspan="9" scope="colgroup">
+                  <th colspan="10" scope="colgroup">
                     <span aria-hidden="true">{ROLE_LABELS[role]?.split(' ')[0]}</span>
                     {ROLE_LABELS[role]?.split(' ').slice(1).join(' ') || role} · {$leagueByRole.get(role).length}/{ROLE_CAPACITY[role] || '?'}
                   </th>
@@ -160,6 +182,7 @@
                     <td class="num win">{wld.get(entry.id)?.w || 0}</td>
                     <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
                     <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
+                    <td class="style-cell" title={getStyleTooltip(entry.id)}>{getStyle(entry.id) || ''}</td>
                     <td class="num">{entry.created_epoch}</td>
                   </tr>
                 {/each}
@@ -168,6 +191,7 @@
                     <td class="num rank placeholder-text">{($leagueByRole.get(role)?.length || 0) + i + 1}</td>
                     <td class="placeholder-text">—</td>
                     <td class="num placeholder-text">—</td>
+                    <td class="num placeholder-text"></td>
                     <td class="num placeholder-text"></td>
                     <td class="num placeholder-text"></td>
                     <td class="num placeholder-text"></td>
@@ -215,6 +239,7 @@
                 <td class="num win">{wld.get(entry.id)?.w || 0}</td>
                 <td class="num loss">{wld.get(entry.id)?.l || 0}</td>
                 <td class="num draw">{wld.get(entry.id)?.d || 0}</td>
+                <td class="style-cell" title={getStyleTooltip(entry.id)}>{getStyle(entry.id) || ''}</td>
                 <td class="num">{entry.created_epoch}</td>
               </tr>
             {/each}
@@ -223,6 +248,7 @@
                 <td class="num rank placeholder-text">{slot}</td>
                 <td class="placeholder-text">—</td>
                 <td class="num placeholder-text">—</td>
+                <td class="num placeholder-text"></td>
                 <td class="num placeholder-text"></td>
                 <td class="num placeholder-text"></td>
                 <td class="num placeholder-text"></td>
@@ -367,6 +393,17 @@
     opacity: 0.35;
     font-size: 12px;
     user-select: none;
+  }
+
+  .style-col { font-size: 12px; min-width: 80px; }
+  .style-cell {
+    font-size: 11px;
+    color: var(--accent-teal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+    cursor: help;
   }
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 24px; text-align: center; }
