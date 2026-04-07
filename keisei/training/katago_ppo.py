@@ -26,7 +26,7 @@ def _amp_dtype_and_device(use_amp: bool, device: torch.device) -> tuple[torch.dt
         dtype = torch.bfloat16
     else:
         dtype = torch.float16
-    device_type = "cuda" if device.type == "cuda" else "cpu"
+    device_type = device.type
     return dtype, device_type
 
 

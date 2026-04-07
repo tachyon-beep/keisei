@@ -89,7 +89,7 @@ class SLTrainer:
             self._amp_dtype = torch.bfloat16
         else:
             self._amp_dtype = torch.float16
-        self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
+        self._amp_device_type = self.device.type
         model.configure_amp(
             enabled=config.use_amp, dtype=self._amp_dtype,
             device_type=self._amp_device_type,
