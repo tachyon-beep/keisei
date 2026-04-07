@@ -180,3 +180,5 @@ context needed to pick up where the previous session left off.
 - P3: Low
 - P4: Backlog
 <!-- /filigree:instructions -->
+
+Don't use git stash. Ever.
