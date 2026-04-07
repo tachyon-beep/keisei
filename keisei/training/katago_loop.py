@@ -485,6 +485,8 @@ class KataGoTrainingLoop:
         algo_params: dict[str, Any] = dict(config.training.algorithm_params)
         lr_config: dict[str, Any] = algo_params.pop("lr_schedule", {})
         rl_warmup_config: dict[str, Any] = algo_params.pop("rl_warmup", {})
+        # Inject use_amp from TrainingConfig so it reaches KataGoPPOParams
+        algo_params.setdefault("use_amp", config.training.use_amp)
 
         ppo_params = validate_algorithm_params(
             config.training.algorithm, algo_params
