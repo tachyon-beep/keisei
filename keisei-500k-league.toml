@@ -46,6 +46,7 @@ lambda_score = 0.1              # R3: was 0.02, 5x increase for dense score sign
 lambda_entropy = 0.01
 score_normalization = 76.0
 grad_clip = 1.0
+compile_mode = "default"
 use_terminated_for_gae = true   # R1: truncated games bootstrap V(s_next)
 score_blend_alpha = 0.1         # R2: conservative start, increase to 0.3 once score head is healthy
 entropy_decay_epochs = 200      # R5: linear decay from warmup to base entropy
