@@ -108,6 +108,63 @@ class TimingResult:
         )
 
 
+def estimate_model_memory(model: torch.nn.Module) -> dict[str, int]:
+    """Estimate parameter and activation memory for a model."""
+    param_bytes = sum(p.nelement() * p.element_size() for p in model.parameters())
+    grad_bytes = param_bytes  # gradients same size as parameters
+    # Optimizer state: Adam stores m and v per parameter = 2× param_bytes
+    optimizer_bytes = param_bytes * 2
+    return {
+        "param_bytes": param_bytes,
+        "grad_bytes": grad_bytes,
+        "optimizer_bytes": optimizer_bytes,
+        "total_static_bytes": param_bytes + grad_bytes + optimizer_bytes,
+    }
+
+
+def print_memory_report(scale: str, device: torch.device, batch_size: int) -> None:
+    """Print memory usage breakdown."""
+    model, params = create_model_at_scale(scale, device)
+    mem = estimate_model_memory(model)
+
+    print(f"\n{'='*80}")
+    print(f"MEMORY ANALYSIS [{scale}]")
+    print(f"{'='*80}")
+    print(f"  Parameters:     {mem['param_bytes'] / 1e6:8.1f} MB")
+    print(f"  Gradients:      {mem['grad_bytes'] / 1e6:8.1f} MB")
+    print(f"  Optimizer (Adam): {mem['optimizer_bytes'] / 1e6:8.1f} MB")
+    print(f"  Total static:   {mem['total_static_bytes'] / 1e6:8.1f} MB")
+
+    # Activation estimation: forward pass peak
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.empty_cache()
+        baseline = torch.cuda.memory_allocated(device)
+
+        obs = torch.randn(batch_size, 50, 9, 9, device=device)
+        model.eval()
+        with torch.no_grad():
+            model(obs)
+        peak_infer = torch.cuda.max_memory_allocated(device) - baseline
+
+        torch.cuda.reset_peak_memory_stats(device)
+        model.train()
+        out = model(obs)
+        loss = out.policy_logits.sum() + out.value_logits.sum()
+        loss.backward()
+        peak_train = torch.cuda.max_memory_allocated(device) - baseline
+
+        print(f"  Inference peak (bs={batch_size}): {peak_infer / 1e6:8.1f} MB")
+        print(f"  Training peak  (bs={batch_size}): {peak_train / 1e6:8.1f} MB")
+
+        total_vram = torch.cuda.get_device_properties(device).total_memory
+        print(f"  VRAM total:     {total_vram / 1e9:8.1f} GB")
+        print(f"  Headroom:       {(total_vram - peak_train) / 1e9:8.1f} GB")
+
+    del model
+    torch.cuda.empty_cache()
+
+
 def time_cuda_op(
     fn, device: torch.device, warmup: int = 5, repeats: int = 20,
 ) -> TimingResult:
@@ -806,6 +863,9 @@ def main() -> None:
     print(f"PyTorch: {torch.__version__}")
 
     all_results: dict[str, list[TimingResult]] = {}
+
+    # 0. Memory analysis
+    print_memory_report(scale, device, args.batch_size)
 
     # 1. Model forward pass
     batch_sizes = [16, 64, 256]
