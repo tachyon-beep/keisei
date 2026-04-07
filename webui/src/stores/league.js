@@ -206,11 +206,17 @@ export const leagueStats = derived(
   }
 )
 
-/** The league entry matching the current learner (by display_name from trainingState) */
+/** The league entry matching the current learner (by learner_entry_id from trainingState, with display_name fallback) */
 export const learnerEntry = derived(
   [leagueEntries, trainingState],
   ([$entries, $state]) => {
-    const name = $state?.display_name
+    if (!$state) return null
+    const id = $state.learner_entry_id
+    if (id != null) {
+      return $entries.find(e => e.id === id) || null
+    }
+    // Fallback for older backends that don't send learner_entry_id
+    const name = $state.display_name
     if (!name) return null
     return $entries.find(e => e.display_name === name) || null
   }
