@@ -283,6 +283,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                     "model_arch": new_state.get("model_arch"),
                     "total_epochs": new_state.get("total_epochs"),
                     "system_stats": sys_stats,
+                    "learner_entry_id": new_state.get("learner_entry_id"),
                 }),
                 timeout=WS_SEND_TIMEOUT_S,
             )

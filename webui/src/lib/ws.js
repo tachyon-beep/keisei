@@ -123,6 +123,7 @@ export function handleMessage(msg) {
         model_arch: msg.model_arch || state?.model_arch,
         total_epochs: msg.total_epochs ?? state?.total_epochs,
         system_stats: msg.system_stats || state?.system_stats,
+        learner_entry_id: msg.learner_entry_id ?? state?.learner_entry_id,
       }))
       break
 
