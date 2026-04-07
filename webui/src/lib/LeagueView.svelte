@@ -1,5 +1,5 @@
 <script>
-  import { eloHistory, leagueEntries, leagueStats, learnerEntry } from '../stores/league.js'
+  import { eloHistory, leagueEntries, leagueResults, leagueStats, learnerEntry, historicalLibrary } from '../stores/league.js'
   import { trainingState } from '../stores/training.js'
   import { buildEloChartData } from './eloChartData.js'
   import LeagueTable from './LeagueTable.svelte'
@@ -91,7 +91,7 @@
           <LeagueEventLog />
         </div>
         <div class="tabbed-panel">
-          <div class="tab-bar" role="tablist" aria-label="Bottom panel">
+          <nav aria-label="Bottom panel"><div class="tab-bar" role="tablist">
             <button
               id="tab-recent"
               role="tab"
@@ -101,7 +101,7 @@
               on:click={() => setBottomTab('recent')}
               on:keydown={handleTabKeydown}
               class:active={activeBottomTab === 'recent'}
-            >Recent Matches</button>
+            >Recent Matches{#if $leagueResults.length > 0} <span class="tab-count">({$leagueResults.length})</span>{/if}</button>
             <button
               id="tab-history"
               role="tab"
@@ -111,8 +111,8 @@
               on:click={() => setBottomTab('history')}
               on:keydown={handleTabKeydown}
               class:active={activeBottomTab === 'history'}
-            >Historical Library</button>
-          </div>
+            >Historical Library{#if $historicalLibrary.length > 0} <span class="tab-count">({$historicalLibrary.length})</span>{/if}</button>
+          </div></nav>
           <div class="tab-content">
             {#if activeBottomTab === 'recent'}
               <div id="panel-recent" role="tabpanel" aria-labelledby="tab-recent">
@@ -297,8 +297,8 @@
     border-radius: 4px;
     color: var(--text-secondary);
     cursor: pointer;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 44px;
+    min-height: 44px;
     padding: 4px 8px;
     font-size: 13px;
     display: flex;
@@ -362,6 +362,12 @@
   .tab-bar button:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: -2px;
+  }
+
+  .tab-count {
+    font-weight: 400;
+    opacity: 0.7;
+    font-size: 11px;
   }
 
   .tab-content {

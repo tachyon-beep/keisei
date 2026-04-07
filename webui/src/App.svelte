@@ -164,7 +164,7 @@
       <aside class="thumbnail-panel" aria-label="Game list" bind:this={thumbPanelEl}>
         <h2 class="section-label">Games ({$games.length})</h2>
         <div class="thumb-grid">
-          {#each $games.slice(0, 16) as g (g.game_id)}
+          {#each $games as g (g.game_id)}
             <GameThumbnail game={g} />
           {/each}
         </div>
@@ -284,11 +284,12 @@
     width: clamp(200px, 20vw, 340px);
     border-right: 1px solid var(--border);
     padding: 8px;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .section-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
@@ -352,7 +353,8 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 40ch;
+    max-width: 40ch;
+    width: 100%;
     min-height: 0;
     overflow: hidden;
   }

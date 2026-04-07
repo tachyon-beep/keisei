@@ -39,7 +39,7 @@
   /* Status */
   --danger: #e05050;
   --warning: #c8962e;
-  --promoted: #6b0000;
+  --promoted: #8b0000;
   --promoted-bright: #e05050;
 
   /* Tabs */
@@ -57,6 +57,12 @@
 
   /* Focus ring */
   --focus-ring: var(--accent-ink);
+
+  /* Badge backgrounds */
+  --badge-bg-teal: rgba(77, 184, 168, 0.12);
+  --badge-bg-gold: rgba(200, 150, 46, 0.12);
+  --badge-bg-ink: rgba(126, 184, 212, 0.12);
+  --badge-bg-danger: rgba(224, 80, 80, 0.12);
 
   /* Chart series (canvas can't use var() — resolved by chartHelpers.js) */
   --chart-gold: #c8962e;
@@ -128,6 +134,12 @@
 
   /* Focus ring */
   --focus-ring: var(--accent-ink);
+
+  /* Badge backgrounds — higher opacity for light bg contrast */
+  --badge-bg-teal: rgba(26, 110, 96, 0.15);
+  --badge-bg-gold: rgba(140, 100, 0, 0.15);
+  --badge-bg-ink: rgba(26, 92, 128, 0.15);
+  --badge-bg-danger: rgba(158, 31, 31, 0.15);
 
   /* Chart series — deeper for light bg contrast */
   --chart-gold: #8c6400;

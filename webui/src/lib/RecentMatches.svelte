@@ -220,9 +220,9 @@
     margin-left: auto;
   }
 
-  .match-score.win { color: var(--accent-teal); background: rgba(77, 184, 168, 0.1); }
-  .match-score.loss { color: var(--danger); background: rgba(224, 80, 80, 0.1); }
-  .match-score.tied { color: var(--accent-gold); background: rgba(200, 150, 46, 0.1); }
+  .match-score.win { color: var(--accent-teal); background: var(--badge-bg-teal); }
+  .match-score.loss { color: var(--danger); background: var(--badge-bg-danger); }
+  .match-score.tied { color: var(--accent-gold); background: var(--badge-bg-gold); }
 
   .match-detail {
     font-size: 12px;

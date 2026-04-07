@@ -9,10 +9,12 @@
   let notationStyle = 'western'
   const STYLES = ['western', 'japanese', 'usi']
   const STYLE_LABELS = { western: 'W', japanese: '漢', usi: 'USI' }
+  const STYLE_NAMES = { western: 'Western', japanese: 'Japanese', usi: 'USI' }
+
+  $: nextStyle = STYLES[(STYLES.indexOf(notationStyle) + 1) % STYLES.length]
 
   function toggleNotation() {
-    const idx = STYLES.indexOf(notationStyle)
-    notationStyle = STYLES[(idx + 1) % STYLES.length]
+    notationStyle = nextStyle
   }
 
   $: moves = parseMoves(moveHistoryJson)
@@ -28,7 +30,7 @@
 <div class="move-log">
   <div class="header-row">
     <h2 class="header">Move Log</h2>
-    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style ({notationStyle})" aria-label="Notation style: {notationStyle}. Click to switch.">
+    <button class="notation-toggle" on:click={toggleNotation} title="Switch to {STYLE_NAMES[nextStyle]} notation" aria-label="Notation: {STYLE_NAMES[notationStyle]}. Click to switch to {STYLE_NAMES[nextStyle]}.">
       {STYLE_LABELS[notationStyle]}
     </button>
   </div>
@@ -81,7 +83,7 @@
   }
 
   h2.header {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;

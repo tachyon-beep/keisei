@@ -54,6 +54,7 @@
 
 <header class="status-bar" role="banner">
   <div class="left">
+    <img src="/favicon.svg" alt="" class="app-icon" aria-hidden="true" />
     <h1>
       {#if displayName && displayName !== 'Player'}
         {displayName}
@@ -65,9 +66,12 @@
       <span class="dot" aria-hidden="true" style="background: {indicator.dot === 'green' ? 'var(--accent-teal)' : indicator.dot === 'yellow' ? 'var(--warning)' : 'var(--danger)'}"></span>
       <span class="text">{indicator.text}</span>
     </div>
-    {#if alive}
+    {#if alive || epoch > 0}
       <div class="stats">
-        {#if phase === 'update'}
+        {#if !alive && indicator.dot === 'yellow'}
+          <span class="phase-badge stale" aria-live="polite">&#9679; STALE</span>
+          <span class="sep">|</span>
+        {:else if phase === 'update'}
           <span class="phase-badge update" aria-live="polite">&#9650; PPO UPDATE</span>
           <span class="sep">|</span>
         {:else if phase === 'rollout'}
@@ -128,6 +132,12 @@
     gap: 16px;
   }
 
+  .app-icon {
+    height: 24px;
+    width: auto;
+    flex-shrink: 0;
+  }
+
   h1 {
     font-size: 16px;
     font-weight: 600;
@@ -177,12 +187,17 @@
 
   .phase-badge.update {
     color: var(--danger);
-    background: rgba(239, 68, 68, 0.12);
+    background: var(--badge-bg-danger);
   }
 
   .phase-badge.rollout {
     color: var(--accent-teal);
-    background: rgba(45, 212, 191, 0.12);
+    background: var(--badge-bg-teal);
+  }
+
+  .phase-badge.stale {
+    color: var(--warning);
+    background: var(--badge-bg-gold);
   }
 
   .right {

@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="tab-bar" role="tablist" aria-label="Dashboard views">
+<nav aria-label="Dashboard views"><div class="tab-bar" role="tablist">
   {#each tabs as tab}
     <button
       role="tab"
@@ -43,7 +43,7 @@
   >
     {$theme === 'dark' ? '☀' : '☾'}
   </button>
-</div>
+</div></nav>
 
 <style>
   .tab-bar {

@@ -153,16 +153,17 @@
             {#each ROLE_ORDER as role}
               {#if $leagueByRole.has(role)}
                 <tr class="group-header">
-                  <th colspan="11" scope="colgroup">
+                  <td colspan="11" class="group-heading" role="separator">
                     <span aria-hidden="true">{ROLE_LABELS[role]?.split(' ')[0]}</span>
                     {ROLE_LABELS[role]?.split(' ').slice(1).join(' ') || role} · {$leagueByRole.get(role).length}/{ROLE_CAPACITY[role] || '?'}
-                  </th>
+                  </td>
                 </tr>
                 {#each $leagueByRole.get(role) as entry}
                   <tr
                     class:top={entry.rank === 1}
                     class:learner={isLearner(entry)}
                     class:focused={$focusedEntryId === entry.id}
+                    aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, Elo {Math.round(entry.elo_rating)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
                     on:click={() => toggleExpand(entry.id)}
                     tabindex="0"
                     on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -212,6 +213,7 @@
                 class:learner={isLearner(entry)}
                 class:focused={$focusedEntryId === entry.id}
                 aria-expanded={$focusedEntryId === entry.id}
+                aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, Elo {Math.round(entry.elo_rating)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
                 on:click={() => toggleExpand(entry.id)}
                 tabindex="0"
                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -343,7 +345,7 @@
     font-weight: 700;
     letter-spacing: 0.5px;
     color: var(--accent-teal);
-    background: rgba(77, 184, 168, 0.12);
+    background: var(--badge-bg-teal);
     padding: 1px 5px;
     border-radius: 3px;
     margin-left: 6px;
@@ -439,7 +441,7 @@
     outline-offset: 2px;
   }
 
-  .group-header th {
+  .group-heading {
     padding: 10px 10px 6px;
     font-size: 12px;
     font-weight: 700;

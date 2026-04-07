@@ -98,14 +98,21 @@
   {/if}
   {#if currentCommentary}
     <div
-      class="commentary"
-      title="{currentCommentary.confidence} confidence"
+      class="commentary-row"
       on:mouseenter={() => commentaryPaused = true}
       on:mouseleave={() => commentaryPaused = false}
       on:focusin={() => commentaryPaused = true}
       on:focusout={() => commentaryPaused = false}
     >
-      {currentCommentary.text}
+      {#if commentary.length > 1}
+        <button class="commentary-nav" on:click={() => { commentaryIdx = (commentaryIdx - 1 + commentary.length) % commentary.length }} aria-label="Previous commentary">‹</button>
+      {/if}
+      <div class="commentary" title="{currentCommentary.confidence} confidence">
+        {currentCommentary.text}
+      </div>
+      {#if commentary.length > 1}
+        <button class="commentary-nav" on:click={() => { commentaryIdx = (commentaryIdx + 1) % commentary.length }} aria-label="Next commentary">›</button>
+      {/if}
     </div>
   {/if}
   {#if profileStatus === 'provisional'}
@@ -176,8 +183,8 @@
     margin-top: 6px;
   }
   .tier-badge.role-frontier { color: #7b8fa8; background: rgba(123, 143, 168, 0.12); }
-  .tier-badge.role-recent { color: #c8962e; background: rgba(200, 150, 46, 0.12); }
-  .tier-badge.role-dynamic { color: var(--accent-teal); background: rgba(77, 184, 168, 0.12); }
+  .tier-badge.role-recent { color: #c8962e; background: var(--badge-bg-gold); }
+  .tier-badge.role-dynamic { color: var(--accent-teal); background: var(--badge-bg-teal); }
   .tier-badge.role-historical { color: #9b7ec8; background: rgba(155, 126, 200, 0.12); }
   .tier-badge.role-unknown { color: var(--text-muted); background: rgba(128, 128, 128, 0.12); }
 
@@ -210,13 +217,46 @@
     white-space: nowrap;
   }
 
+  .commentary-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+  }
+
   .commentary {
     font-size: 12px;
     font-style: italic;
     color: var(--text-muted);
-    margin-top: 6px;
     min-height: 1.4em;
+    flex: 1;
     transition: opacity 0.3s ease;
+  }
+
+  .commentary-nav {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .commentary-nav:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+  }
+
+  .commentary-nav:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
   }
 
   .profile-status {
