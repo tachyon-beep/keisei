@@ -218,12 +218,12 @@ class MatchScheduler:
             share = max(1, round(round_size * weights[mc] / total_weight))
             result.extend(pool[:share])
 
-        # Final priority sort across all selected pairs
+        # Final priority sort across all selected pairs, then enforce budget
         if self._priority_scorer is not None:
             result = self._priority_scorer.sort_by_priority(result)
         else:
             random.shuffle(result)
-        return result
+        return result[:round_size]
 
     def effective_ratios(
         self, entries_by_role: dict[Role, list[OpponentEntry]],

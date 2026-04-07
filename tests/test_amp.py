@@ -110,6 +110,13 @@ def _fill_buffer(ppo: KataGoPPOAlgorithm, num_envs: int = 2, steps: int = 4) -> 
 
 
 class TestPPOAmp:
+    def test_gradscaler_disabled_on_cpu(self) -> None:
+        """GradScaler must be disabled on CPU even when use_amp=True."""
+        ppo = _make_ppo(use_amp=True)
+        assert not ppo.scaler.is_enabled(), (
+            "GradScaler should be disabled on CPU — CUDA-only feature"
+        )
+
     def test_update_with_amp_produces_finite_loss(self) -> None:
         """PPO update with use_amp=True runs without error and produces finite metrics."""
         ppo = _make_ppo(use_amp=True)

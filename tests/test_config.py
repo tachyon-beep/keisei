@@ -613,6 +613,62 @@ class TestPriorityScorerConfigValidation:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Unknown key detection in [training], [display], [model]
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownKeysRejected:
+    """Typos in TOML config sections must raise ValueError, not silently default."""
+
+    _BASE = """\
+[training]
+num_games = 4
+max_ply = 300
+algorithm = "katago_ppo"
+checkpoint_interval = 10
+checkpoint_dir = "ckpt/"
+
+[display]
+moves_per_minute = 60
+db_path = "test.db"
+
+[model]
+display_name = "TestBot"
+architecture = "resnet"
+
+[model.params]
+hidden_size = 64
+"""
+
+    def test_unknown_training_key_rejected(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "bad.toml"
+        config_file.write_text(self._BASE.replace(
+            'algorithm = "katago_ppo"',
+            'algorithm = "katago_ppo"\nalgoritm = "ppo"',
+        ))
+        with pytest.raises(ValueError, match="Unknown.*training.*config.*algoritm"):
+            load_config(config_file)
+
+    def test_unknown_display_key_rejected(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "bad.toml"
+        config_file.write_text(self._BASE.replace(
+            "moves_per_minute = 60",
+            "moves_per_minute = 60\nmoves_per_sec = 1",
+        ))
+        with pytest.raises(ValueError, match="Unknown.*display.*config.*moves_per_sec"):
+            load_config(config_file)
+
+    def test_unknown_model_key_rejected(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "bad.toml"
+        config_file.write_text(self._BASE.replace(
+            'architecture = "resnet"',
+            'architecture = "resnet"\narchitectur = "cnn"',
+        ))
+        with pytest.raises(ValueError, match="Unknown.*model.*config.*architectur"):
+            load_config(config_file)
+
+
 class TestLeagueConfigKFactors:
     def test_league_config_elo_k_zero_raises(self):
         with pytest.raises(ValueError, match="elo_k_factor must be > 0"):

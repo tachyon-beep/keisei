@@ -301,6 +301,26 @@ class TestIsTrainingMatch:
 class TestWeightedTournamentMode:
     """Test generate_round() in weighted mode with mixed-role entry pool."""
 
+    def test_weighted_round_respects_round_size_budget(self):
+        """Per-class max(1,...) must not produce more pairings than round_size."""
+        # 5 match classes with non-zero weight + round_size=3 → bug would give 5
+        scheduler = _make_scheduler(
+            tournament_mode="weighted",
+            weighted_round_size=3,
+        )
+        entries = [
+            _make_entry(1, Role.DYNAMIC),
+            _make_entry(2, Role.DYNAMIC),
+            _make_entry(3, Role.RECENT_FIXED),
+            _make_entry(4, Role.RECENT_FIXED),
+            _make_entry(5, Role.FRONTIER_STATIC),
+            _make_entry(6, Role.FRONTIER_STATIC),
+        ]
+        pairings = scheduler.generate_round(entries)
+        assert len(pairings) <= 3, (
+            f"Expected at most 3 pairings (round_size=3), got {len(pairings)}"
+        )
+
     def test_weighted_round_produces_multiple_match_classes(self):
         scheduler = _make_scheduler(tournament_mode="weighted")
         entries = [

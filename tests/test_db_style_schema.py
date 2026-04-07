@@ -279,6 +279,46 @@ class TestSchemaVersion:
         assert "style_profiles" in tables
         conn.close()
 
+    def test_v1_to_v2_migration_adds_columns_to_existing_tables(self):
+        """v1→v2 must add new columns to league_entries, not just new tables."""
+        f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        # Create a v1 database with a minimal league_entries (missing v2 columns)
+        conn = sqlite3.connect(f.name)
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (1);
+            CREATE TABLE league_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                flavour_facts TEXT NOT NULL DEFAULT '[]',
+                architecture TEXT NOT NULL,
+                model_params TEXT NOT NULL DEFAULT '{}',
+                checkpoint_path TEXT NOT NULL,
+                elo_rating REAL NOT NULL DEFAULT 1000,
+                created_epoch INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO league_entries (display_name, architecture, model_params, checkpoint_path, created_epoch)
+            VALUES ('old_entry', 'resnet', '{}', '/p/1.pt', 1);
+        """)
+        conn.commit()
+        conn.close()
+
+        # Run init_db which should migrate v1 -> v2
+        init_db(f.name)
+
+        # Verify v2 columns were added to the existing league_entries table
+        conn = sqlite3.connect(f.name)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM league_entries WHERE id = 1").fetchone()
+        columns = row.keys()
+        conn.close()
+
+        # These columns exist in the v2 CREATE TABLE but would NOT be
+        # added by CREATE TABLE IF NOT EXISTS to an existing v1 table
+        for col in ("role", "status", "elo_frontier", "games_vs_frontier",
+                     "training_enabled", "protection_remaining"):
+            assert col in columns, f"v2 column '{col}' missing from migrated league_entries"
+
     def test_future_version_raises(self):
         """A database with version > SCHEMA_VERSION raises RuntimeError."""
         f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)

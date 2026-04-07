@@ -352,8 +352,8 @@ class KataGoPPOAlgorithm:
 
         # Configure AMP inside the model's forward() so inductor can fuse
         # dtype casts with the first conv/BN ops.
+        device = next(model.parameters()).device
         if hasattr(model, "configure_amp"):
-            device = next(model.parameters()).device
             amp_dtype, amp_device_type = _amp_dtype_and_device(params.use_amp, device)
             model.configure_amp(
                 enabled=params.use_amp, dtype=amp_dtype, device_type=amp_device_type,
@@ -364,7 +364,7 @@ class KataGoPPOAlgorithm:
                 model._amp_frozen = True
 
         self.optimizer = torch.optim.Adam(model.parameters(), lr=params.learning_rate)
-        self.scaler = GradScaler(enabled=params.use_amp)
+        self.scaler = GradScaler(enabled=params.use_amp and device.type == "cuda")
         self.warmup_epochs = warmup_epochs
         self.warmup_entropy = warmup_entropy
         self.current_entropy_coeff = params.lambda_entropy

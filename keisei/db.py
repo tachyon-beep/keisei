@@ -28,6 +28,50 @@ def _migrate_add_column(
             raise
 
 
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2: Add columns to league_entries and training_state.
+
+    New *tables* (game_features, style_profiles, tournament_stats, etc.) are
+    handled by CREATE TABLE IF NOT EXISTS in init_db().  This migration covers
+    columns added to tables that already exist in v1.
+
+    Note: SQLite ALTER TABLE ADD COLUMN does not support expression defaults
+    like strftime(...). Constant defaults are used; the expression defaults in
+    the CREATE TABLE DDL apply to freshly-created v2 databases.
+    """
+    # league_entries columns added in v2
+    _migrate_add_column(conn, "league_entries", "games_played", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "league_entries", "created_at", "TEXT NOT NULL DEFAULT ''")
+    _migrate_add_column(conn, "league_entries", "role", "TEXT NOT NULL DEFAULT 'unassigned'")
+    _migrate_add_column(conn, "league_entries", "status", "TEXT NOT NULL DEFAULT 'active'")
+    _migrate_add_column(conn, "league_entries", "parent_entry_id", "INTEGER")
+    _migrate_add_column(conn, "league_entries", "lineage_group", "TEXT")
+    _migrate_add_column(conn, "league_entries", "protection_remaining", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "league_entries", "last_match_at", "TEXT")
+    _migrate_add_column(conn, "league_entries", "elo_frontier", "REAL NOT NULL DEFAULT 1000.0")
+    _migrate_add_column(conn, "league_entries", "elo_dynamic", "REAL NOT NULL DEFAULT 1000.0")
+    _migrate_add_column(conn, "league_entries", "elo_recent", "REAL NOT NULL DEFAULT 1000.0")
+    _migrate_add_column(conn, "league_entries", "elo_historical", "REAL NOT NULL DEFAULT 1000.0")
+    _migrate_add_column(conn, "league_entries", "optimizer_path", "TEXT")
+    _migrate_add_column(conn, "league_entries", "update_count", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "league_entries", "last_train_at", "TEXT")
+    _migrate_add_column(conn, "league_entries", "retired_at", "TEXT")
+    _migrate_add_column(conn, "league_entries", "training_enabled", "INTEGER NOT NULL DEFAULT 1")
+    _migrate_add_column(conn, "league_entries", "games_vs_frontier", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "league_entries", "games_vs_dynamic", "INTEGER NOT NULL DEFAULT 0")
+    _migrate_add_column(conn, "league_entries", "games_vs_recent", "INTEGER NOT NULL DEFAULT 0")
+    # training_state column added in v2
+    _migrate_add_column(conn, "training_state", "learner_entry_id", "INTEGER")
+
+
+# Migration registry: maps target version to the function that migrates
+# from (target - 1) → target.  Each function receives an open connection
+# and must be idempotent (safe to re-run on an already-migrated DB).
+_MIGRATIONS: dict[int, callable] = {
+    2: _migrate_v1_to_v2,
+}
+
+
 def init_db(db_path: str) -> None:
     """Create tables if they don't exist. Idempotent."""
     conn = _connect(db_path)
@@ -253,26 +297,32 @@ def init_db(db_path: str) -> None:
                 updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
         """)
-        # Migrations — add columns that may be missing from older schemas.
-        _migrate_add_column(
-            conn, "training_state", "learner_entry_id", "INTEGER",
-        )
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
-            conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+            # No version row: either a truly fresh DB or a pre-versioning DB.
+            # Treat as version 0 so all migrations run (they're idempotent).
+            db_version = 0
         else:
-            db_version: int = row[0]
-            if db_version < SCHEMA_VERSION:
-                # Migrations are handled by CREATE TABLE IF NOT EXISTS above,
-                # so just bump the stored version.
+            db_version = row[0]
+
+        if db_version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema version {db_version} is newer than "
+                f"expected version {SCHEMA_VERSION}. "
+                f"Upgrade the application or delete the database."
+            )
+        if db_version < SCHEMA_VERSION:
+            for target in range(db_version + 1, SCHEMA_VERSION + 1):
+                migrate_fn = _MIGRATIONS.get(target)
+                if migrate_fn is not None:
+                    migrate_fn(conn)
+            if row is None:
+                conn.execute(
+                    "INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,)
+                )
+            else:
                 conn.execute(
                     "UPDATE schema_version SET version = ?", (SCHEMA_VERSION,)
-                )
-            elif db_version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"Database schema version {db_version} is newer than "
-                    f"expected version {SCHEMA_VERSION}. "
-                    f"Upgrade the application or delete the database."
                 )
         conn.commit()
     finally:

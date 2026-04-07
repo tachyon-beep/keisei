@@ -514,6 +514,13 @@ def load_config(path: Path) -> AppConfig:
     config_dir = path.parent.resolve()
 
     t = raw.get("training", {})
+    _valid_training_keys = {f.name for f in fields(TrainingConfig)}
+    _unknown_training = set(t.keys()) - _valid_training_keys
+    if _unknown_training:
+        raise ValueError(
+            f"Unknown [training] config keys: {sorted(_unknown_training)}. "
+            f"Valid keys: {sorted(_valid_training_keys)}"
+        )
     num_games = t.get("num_games", 8)
     if not (1 <= num_games <= 512):
         raise ValueError(f"num_games must be 1-512, got {num_games}")
@@ -556,6 +563,13 @@ def load_config(path: Path) -> AppConfig:
     )
 
     d = raw.get("display", {})
+    _valid_display_keys = {f.name for f in fields(DisplayConfig)}
+    _unknown_display = set(d.keys()) - _valid_display_keys
+    if _unknown_display:
+        raise ValueError(
+            f"Unknown [display] config keys: {sorted(_unknown_display)}. "
+            f"Valid keys: {sorted(_valid_display_keys)}"
+        )
     moves_per_minute = d.get("moves_per_minute", 30)
     if moves_per_minute < 0:
         raise ValueError(f"moves_per_minute must be >= 0, got {moves_per_minute}")
@@ -564,6 +578,13 @@ def load_config(path: Path) -> AppConfig:
     display = DisplayConfig(moves_per_minute=moves_per_minute, db_path=db_path)
 
     m = raw.get("model", {})
+    _valid_model_keys = {f.name for f in fields(ModelConfig)}
+    _unknown_model = set(m.keys()) - _valid_model_keys
+    if _unknown_model:
+        raise ValueError(
+            f"Unknown [model] config keys: {sorted(_unknown_model)}. "
+            f"Valid keys: {sorted(_valid_model_keys)}"
+        )
     display_name = m.get("display_name", "Player")
     architecture = m.get("architecture", "resnet")
     if architecture not in VALID_ARCHITECTURES:
