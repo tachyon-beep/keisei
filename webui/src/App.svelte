@@ -28,7 +28,7 @@
   $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
 
-  let thumbPanelHeight = 0
+  let thumbPanelEl
 
   $: lastMoveIdx = (() => {
     try {
@@ -161,7 +161,7 @@
 
   {#if $activeTab === 'training'}
     <div class="main-content">
-      <aside class="thumbnail-panel" aria-label="Game list" bind:clientHeight={thumbPanelHeight} style="width: {thumbPanelHeight - 94}px">
+      <aside class="thumbnail-panel" aria-label="Game list" bind:this={thumbPanelEl}>
         <h2 class="section-label">Games ({$games.length})</h2>
         <div class="thumb-grid">
           {#each $games.slice(0, 16) as g (g.game_id)}
@@ -281,7 +281,7 @@
 
   .thumbnail-panel {
     flex: 0 0 auto;
-    min-width: 200px;
+    width: clamp(200px, 20vw, 340px);
     border-right: 1px solid var(--border);
     padding: 8px;
     overflow: hidden;
@@ -304,7 +304,7 @@
 
   .player-panel {
     flex: 0 0 auto;
-    width: 315px;
+    width: clamp(240px, 22vw, 315px);
     padding: 8px;
     display: flex;
     flex-direction: column;

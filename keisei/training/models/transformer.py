@@ -61,8 +61,8 @@ class TransformerModel(BaseModel):
         # Pre-compute positional index tensors — embedding weights are learned
         # but the index grids are constant. Registered as buffers so they
         # move with the model on .to(device) calls.
-        self.register_buffer("_row_idx", torch.arange(self.BOARD_SIZE))
-        self.register_buffer("_col_idx", torch.arange(self.BOARD_SIZE))
+        self.register_buffer("_row_idx", torch.arange(self.BOARD_SIZE), persistent=False)
+        self.register_buffer("_col_idx", torch.arange(self.BOARD_SIZE), persistent=False)
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if obs.ndim != 4 or obs.shape[1] != self.OBS_CHANNELS or obs.shape[2] != self.BOARD_SIZE or obs.shape[3] != self.BOARD_SIZE:

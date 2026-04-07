@@ -39,7 +39,7 @@
   /* Status */
   --danger: #e05050;
   --warning: #c8962e;
-  --promoted: #8b0000;
+  --promoted: #6b0000;
   --promoted-bright: #e05050;
 
   /* Tabs */
@@ -58,7 +58,7 @@
   /* Focus ring */
   --focus-ring: var(--accent-ink);
 
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans JP', 'Hiragino Sans', sans-serif;
   color: var(--text-primary);
   background-color: var(--bg-primary);
 }
@@ -103,7 +103,7 @@
   /* Status */
   --danger: #9e1f1f;
   --warning: #8c6400;
-  --promoted: #660000;
+  --promoted: #580000;
   --promoted-bright: #9e1f1f;
 
   /* Tabs */
@@ -135,7 +135,7 @@ body {
 
 /* ── Shared component styles ─────────────────── */
 .section-header {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;

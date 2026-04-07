@@ -28,7 +28,7 @@
 <div class="move-log">
   <div class="header-row">
     <h2 class="header">Move Log</h2>
-    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style ({notationStyle})">
+    <button class="notation-toggle" on:click={toggleNotation} title="Switch notation style ({notationStyle})" aria-label="Notation style: {notationStyle}. Click to switch.">
       {STYLE_LABELS[notationStyle]}
     </button>
   </div>

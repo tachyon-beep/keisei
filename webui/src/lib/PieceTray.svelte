@@ -13,10 +13,10 @@
   <span class="label">{label}</span>
   <div class="pieces">
     {#each pieces as p}
-      <div class="hand-piece" title="{p.type} ×{p.count}">
-        <span class="kanji" lang="ja">{p.kanji}</span>
+      <div class="hand-piece" title="{p.type} ×{p.count}" aria-label="{p.type}, count {p.count}">
+        <span class="kanji" lang="ja" aria-hidden="true">{p.kanji}</span>
         {#if p.count > 1}
-          <span class="count">{p.count}</span>
+          <span class="count" aria-hidden="true">{p.count}</span>
         {/if}
       </div>
     {/each}

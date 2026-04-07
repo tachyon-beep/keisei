@@ -11,7 +11,14 @@
 
 <div class="eval-bar" title="Value estimate: {displayValue}">
   <div class="label top">☖</div>
-  <div class="bar">
+  <div
+    class="bar"
+    role="meter"
+    aria-valuenow={blackPct}
+    aria-valuemin={0}
+    aria-valuemax={100}
+    aria-label="Evaluation: {displayValue} — Black {blackPct}%"
+  >
     <div class="white-fill" style="flex: {100 - blackPct}"></div>
     <div class="midline"></div>
     <div class="black-fill" style="flex: {blackPct}"></div>

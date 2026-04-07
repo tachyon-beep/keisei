@@ -130,6 +130,7 @@
     <span class="legend-label">0%</span>
     <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.08)"></span>
     <span class="legend-swatch" style="background: transparent; border: 1px solid var(--border-subtle)"></span>
+    <span class="legend-label">50%</span>
     <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.08)"></span>
     <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.43)"></span>
     <span class="legend-label">100%</span>

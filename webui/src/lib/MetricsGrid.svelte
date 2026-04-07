@@ -107,7 +107,7 @@
   }
 
   .mini-column {
-    flex: 0 0 880px;
+    flex: 0 0 clamp(400px, 60%, 880px);
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8px;
@@ -185,6 +185,7 @@
   .collapse-btn:hover {
     color: var(--text-primary);
     border-color: var(--text-secondary);
+    background: var(--bg-card);
   }
 
   .collapse-btn:focus-visible {

@@ -528,9 +528,10 @@ class OpponentStore:
             if entry is None:
                 raise ValueError(f"Entry {entry_id} not found")
             old_role = entry.role
+            training_enabled = 1 if new_role == Role.DYNAMIC else 0
             self._conn.execute(
-                "UPDATE league_entries SET role = ? WHERE id = ?",
-                (new_role, entry_id),
+                "UPDATE league_entries SET role = ?, training_enabled = ? WHERE id = ?",
+                (new_role, training_enabled, entry_id),
             )
             self._log_transition_unlocked(
                 entry_id, old_role, new_role,

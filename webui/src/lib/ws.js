@@ -4,6 +4,7 @@
  * Auto-reconnects on disconnect with exponential backoff.
  */
 
+import { writable } from 'svelte/store'
 import { games, selectedGameId } from '../stores/games.js'
 import { metrics, appendMetrics } from '../stores/metrics.js'
 import { trainingState } from '../stores/training.js'
@@ -15,6 +16,9 @@ import {
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 30000
+
+/** Connection state: 'connecting' | 'connected' | 'reconnecting' */
+export const connectionState = writable('connecting')
 
 let ws = null
 let reconnectAttempt = 0
@@ -28,6 +32,7 @@ export function connect() {
   ws.onopen = () => {
     console.log('[ws] connected')
     reconnectAttempt = 0
+    connectionState.set('connected')
   }
 
   ws.onmessage = (event) => {
@@ -41,6 +46,7 @@ export function connect() {
 
   ws.onclose = () => {
     console.log('[ws] disconnected, reconnecting...')
+    connectionState.set('reconnecting')
     scheduleReconnect()
   }
 

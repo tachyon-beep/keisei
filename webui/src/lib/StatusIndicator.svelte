@@ -1,6 +1,7 @@
 <script>
   import { onDestroy } from 'svelte'
   import { trainingState, trainingAlive } from '../stores/training.js'
+  import { connectionState } from './ws.js'
   import { getIndicator } from './indicator.js'
   import { buildConfigTooltip } from './configTooltip.js'
   import { parseUTC, formatElapsed } from './timeFormat.js'
@@ -67,10 +68,10 @@
     {#if alive}
       <div class="stats" aria-live="polite">
         {#if phase === 'update'}
-          <span class="phase-badge update">PPO UPDATE</span>
+          <span class="phase-badge update">&#9650; PPO UPDATE</span>
           <span class="sep">|</span>
         {:else if phase === 'rollout'}
-          <span class="phase-badge rollout">ROLLOUT</span>
+          <span class="phase-badge rollout">&#9654; ROLLOUT</span>
           <span class="sep">|</span>
         {/if}
         <span class="stat">Epoch {epoch.toLocaleString()}{#if totalEpochs} / {totalEpochs.toLocaleString()}{/if}</span>
@@ -101,6 +102,11 @@
     <TabBar />
   </div>
 </header>
+{#if $connectionState === 'reconnecting'}
+  <div class="reconnect-banner" role="alert">
+    Disconnected from server — reconnecting&hellip;
+  </div>
+{/if}
 
 <style>
   header.status-bar {
@@ -183,5 +189,15 @@
     color: var(--accent-teal);
     font-weight: 600;
     cursor: help;
+  }
+
+  .reconnect-banner {
+    background: rgba(224, 80, 80, 0.15);
+    border-bottom: 1px solid var(--danger);
+    color: var(--danger);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    padding: 6px 16px;
   }
 </style>

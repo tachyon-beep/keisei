@@ -1139,8 +1139,8 @@ class KataGoTrainingLoop:
                         _scratch_log_probs.zero_()
                         _scratch_values.zero_()
                         if li.numel() > 0:
-                            _scratch_log_probs[li] = sm_result.learner_log_probs
-                            _scratch_values[li] = sm_result.learner_values
+                            _scratch_log_probs[li] = sm_result.learner_log_probs.float()
+                            _scratch_values[li] = sm_result.learner_values.float()
 
                         # Update spectator-facing value estimates so snapshots
                         # reflect current policy predictions (not stale zeros).

@@ -527,10 +527,11 @@ class LeagueTournament:
                 elo_before_b = current_b.elo_rating
                 role_new_a = new_a_elo
                 role_new_b = new_b_elo
+            is_train_now = is_training_match(current_a, current_b)
             self.store.record_result(
                 epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,
                 wins_a=wins_a, wins_b=wins_b, draws=draws,
-                match_type="train" if is_trainable else "calibration",
+                match_type="train" if is_train_now else "calibration",
                 role_a=current_a.role,
                 role_b=current_b.role,
                 elo_before_a=elo_before_a,
@@ -554,7 +555,12 @@ class LeagueTournament:
 
             # Training trigger (after Elo update) — use re-fetched entries
             # so role changes between pairing and completion are respected.
-            if is_trainable and rollout is not None:
+            if is_train_now and rollout is None:
+                logger.debug(
+                    "  %s vs %s became trainable mid-match but rollout was not collected",
+                    entry_a.display_name, entry_b.display_name,
+                )
+            if is_train_now and rollout is not None:
                 for i, entry in enumerate([current_a, current_b]):
                     if entry.role == Role.DYNAMIC:
                         self.dynamic_trainer.record_match(entry.id, rollout, side=i)

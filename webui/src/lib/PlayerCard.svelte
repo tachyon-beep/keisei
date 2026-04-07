@@ -36,20 +36,37 @@
 
   let rotationInterval = null
   let prevCommentaryLen = 0
+  let commentaryPaused = false
+
+  // Respect prefers-reduced-motion: disable auto-rotation entirely
+  const prefersReducedMotion = typeof window !== 'undefined'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false
+
+  function startRotation() {
+    if (rotationInterval || prefersReducedMotion) return
+    if (commentary.length > 1) {
+      rotationInterval = setInterval(() => {
+        if (!commentaryPaused) {
+          commentaryIdx = (commentaryIdx + 1) % commentary.length
+        }
+      }, 20000)
+    }
+  }
+
+  function stopRotation() {
+    if (rotationInterval) clearInterval(rotationInterval)
+    rotationInterval = null
+  }
 
   afterUpdate(() => {
     if (commentary.length !== prevCommentaryLen) {
       prevCommentaryLen = commentary.length
-      if (rotationInterval) clearInterval(rotationInterval)
-      rotationInterval = null
-      if (commentary.length > 1) {
-        rotationInterval = setInterval(() => {
-          commentaryIdx = (commentaryIdx + 1) % commentary.length
-        }, 20000)
-      }
+      stopRotation()
+      startRotation()
     }
   })
-  onDestroy(() => { if (rotationInterval) clearInterval(rotationInterval) })
+  onDestroy(() => stopRotation())
 </script>
 
 <div
@@ -80,7 +97,14 @@
     <div class="detail">{detail}</div>
   {/if}
   {#if currentCommentary}
-    <div class="commentary" title="{currentCommentary.confidence} confidence">
+    <div
+      class="commentary"
+      title="{currentCommentary.confidence} confidence"
+      on:mouseenter={() => commentaryPaused = true}
+      on:mouseleave={() => commentaryPaused = false}
+      on:focusin={() => commentaryPaused = true}
+      on:focusout={() => commentaryPaused = false}
+    >
       {currentCommentary.text}
     </div>
   {/if}
