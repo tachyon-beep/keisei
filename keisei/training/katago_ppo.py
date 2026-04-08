@@ -596,7 +596,7 @@ class KataGoPPOAlgorithm:
                 from keisei.training.gae import compute_gae_padded_gpu
                 padded_adv = compute_gae_padded_gpu(
                     rewards_pad.to(device), values_pad.to(device),
-                    terminated_pad.to(device), next_values.detach().float(),
+                    terminated_pad.to(device), nv.to(device),
                     lengths_t, gamma=self.params.gamma, lam=self.params.gae_lambda,
                 ).cpu()
             else:
