@@ -348,7 +348,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 40ch;
+    width: 52ch;
     min-height: 0;
     overflow: hidden;
   }

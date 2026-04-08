@@ -28,8 +28,9 @@
   $: charts = [
     { title: 'Policy & Value Loss', xKey: 'steps', xLabel: 'Step', series: (c) => [
       { label: 'Policy', data: c.policyLoss, color: chartColors.gold || '#c8962e' },
-      { label: 'Value', data: c.valueLoss, color: chartColors.ink || '#7eb8d4' },
-    ], annotation: 'Both should fall together — divergence may indicate overfitting' },
+      { label: 'Value', data: c.valueLoss, color: chartColors.ink || '#7eb8d4', scale: 'y2' },
+      { label: 'P/V Ratio', data: c.pvRatio, color: chartColors.teal || '#4db8a8', scale: 'y2', dash: [4, 4] },
+    ], annotation: 'Stable P/V ratio = healthy co-training; drift = overfitting risk' },
     { title: 'Win Rate', xKey: 'epochs', xLabel: 'Epoch', series: (c) => [
       { label: '☗ Black', data: c.blackWinRate, color: chartColors.cream || '#e8e0d4' },
       { label: '☖ White', data: c.whiteWinRate, color: chartColors.ink || '#7eb8d4' },

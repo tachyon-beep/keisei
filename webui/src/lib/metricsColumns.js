@@ -14,11 +14,15 @@ export function extractColumns(rows) {
     drawRate = [],
     avgEpLen = [],
     entropy = [],
-    epochs = []
+    epochs = [],
+    pvRatio = []
   for (const r of rows) {
     steps.push(r.step || 0)
     policyLoss.push(r.policy_loss ?? null)
     valueLoss.push(r.value_loss ?? null)
+    const pl = r.policy_loss ?? null
+    const vl = r.value_loss ?? null
+    pvRatio.push(pl != null && vl != null && vl !== 0 ? Math.abs(pl / vl) : null)
     winRate.push(r.win_rate ?? null)
     lossRate.push(r.loss_rate ?? null)
     blackWinRate.push(r.black_win_rate ?? null)
@@ -40,5 +44,6 @@ export function extractColumns(rows) {
     avgEpLen,
     entropy,
     epochs,
+    pvRatio,
   }
 }

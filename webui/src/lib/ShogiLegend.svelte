@@ -94,9 +94,8 @@
   .piece-grid {
     flex: 1;
     display: grid;
-    grid-template-columns: auto auto auto;
+    grid-template-columns: 1fr auto 1fr;
     gap: 0 12px;
-    justify-content: start;
     align-content: space-evenly;
   }
 
@@ -110,6 +109,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  .prom-col {
+    justify-content: flex-end;
   }
 
   .kanji {

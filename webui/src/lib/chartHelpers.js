@@ -25,33 +25,55 @@ export function resolveThemeColors() {
  */
 export function buildChartOpts({ width, height, series, compact = false, xLabel = null, colors = null }) {
   const c = colors || resolveThemeColors()
+  const hasDualAxis = series.some(s => s.scale === 'y2')
+
+  const axes = [
+    {
+      show: !compact,
+      label: !compact && xLabel ? xLabel : undefined,
+      labelFont: '11px sans-serif',
+      stroke: c.textColor,
+      grid: { stroke: c.gridColor, width: 0.5 },
+      ticks: { stroke: c.axisColor },
+      font: '12px sans-serif',
+      values: (u, vals) => vals.map(v => Number.isInteger(v) ? v : ''),
+      incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    },
+    {
+      show: !compact,
+      scale: 'y',
+      stroke: !compact && hasDualAxis ? series.find(s => s.scale !== 'y2')?.color : c.textColor,
+      grid: { stroke: c.gridColor, width: 0.5 },
+      ticks: { stroke: c.axisColor },
+      font: '12px sans-serif',
+    },
+  ]
+
+  if (hasDualAxis && !compact) {
+    const y2Color = series.find(s => s.scale === 'y2')?.color
+    axes.push({
+      show: true,
+      scale: 'y2',
+      side: 1,
+      stroke: y2Color || c.textColor,
+      grid: { show: false },
+      ticks: { stroke: c.axisColor },
+      font: '12px sans-serif',
+    })
+  }
+
   return {
     width,
     height,
     padding: compact ? [4, 4, 0, 0] : [8, 8, 0, 0],
     cursor: { show: !compact },
     legend: { show: !compact },
-    scales: { x: { time: false } },
-    axes: [
-      {
-        show: !compact,
-        label: !compact && xLabel ? xLabel : undefined,
-        labelFont: '11px sans-serif',
-        stroke: c.textColor,
-        grid: { stroke: c.gridColor, width: 0.5 },
-        ticks: { stroke: c.axisColor },
-        font: '12px sans-serif',
-        values: (u, vals) => vals.map(v => Number.isInteger(v) ? v : ''),
-        incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-      },
-      {
-        show: !compact,
-        stroke: c.textColor,
-        grid: { stroke: c.gridColor, width: 0.5 },
-        ticks: { stroke: c.axisColor },
-        font: '12px sans-serif',
-      },
-    ],
+    scales: {
+      x: { time: false },
+      y: { auto: true, range: (u, min, max) => [min, max] },
+      ...(hasDualAxis ? { y2: { auto: true, range: (u, min, max) => [min, max] } } : {}),
+    },
+    axes,
     series: [
       { label: xLabel || 'X' },
       ...series.map(s => ({
@@ -60,6 +82,7 @@ export function buildChartOpts({ width, height, series, compact = false, xLabel 
         width: compact ? 1 : 1.5,
         fill: s.dash ? undefined : s.color + '20',
         dash: s.dash || undefined,
+        scale: s.scale || 'y',
       })),
     ],
   }
