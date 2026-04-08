@@ -130,24 +130,55 @@ class KataGoRolloutBuffer:
         self.num_envs = num_envs
         self.obs_shape = obs_shape
         self.action_space = action_space
-        self.clear()
+        # Pre-allocate for up to _alloc_samples entries. Grows if needed.
+        self._alloc_samples = 0
+        self._write_offset = 0  # sample-level offset (not step count)
+        self._step_count = 0
+        self._storage: dict[str, torch.Tensor] = {}
+        self._has_env_ids = False
 
-    def clear(self) -> None:
-        self.observations: list[torch.Tensor] = []
-        self.actions: list[torch.Tensor] = []
-        self.log_probs: list[torch.Tensor] = []
-        self.values: list[torch.Tensor] = []
-        self.rewards: list[torch.Tensor] = []
-        self.dones: list[torch.Tensor] = []
-        self.terminated: list[torch.Tensor] = []
-        self.legal_masks: list[torch.Tensor] = []
-        self.value_categories: list[torch.Tensor] = []
-        self.score_targets: list[torch.Tensor] = []
-        self.env_ids: list[torch.Tensor] = []
+    def _ensure_capacity(self, n_samples: int) -> None:
+        """Grow storage if needed to fit n_samples more entries."""
+        needed = self._write_offset + n_samples
+        if needed <= self._alloc_samples:
+            return
+
+        # Double capacity (minimum 512 * num_envs to avoid repeated reallocs)
+        new_cap = max(needed * 2, 512 * self.num_envs)
+        new_storage: dict[str, torch.Tensor] = {
+            "observations": torch.empty(new_cap, *self.obs_shape),
+            "actions": torch.empty(new_cap, dtype=torch.long),
+            "log_probs": torch.empty(new_cap),
+            "values": torch.empty(new_cap),
+            "rewards": torch.empty(new_cap),
+            "dones": torch.empty(new_cap, dtype=torch.bool),
+            "terminated": torch.empty(new_cap, dtype=torch.bool),
+            "legal_masks": torch.empty(new_cap, self.action_space, dtype=torch.bool),
+            "value_categories": torch.empty(new_cap, dtype=torch.long),
+            "score_targets": torch.empty(new_cap),
+        }
+        if self._has_env_ids:
+            new_storage["env_ids"] = torch.empty(new_cap, dtype=torch.long)
+
+        # Copy existing data
+        if self._write_offset > 0:
+            off = self._write_offset
+            for key in new_storage:
+                if key in self._storage:
+                    new_storage[key][:off] = self._storage[key][:off]
+
+        self._storage = new_storage
+        self._alloc_samples = new_cap
 
     @property
     def size(self) -> int:
-        return len(self.observations)
+        return self._step_count
+
+    def clear(self) -> None:
+        self._write_offset = 0
+        self._step_count = 0
+        # Keep storage allocated for reuse — just reset the write head.
+        # This avoids re-allocation every epoch.
 
     def add(
         self,
@@ -182,7 +213,7 @@ class KataGoRolloutBuffer:
         dones_cpu = dones.detach().cpu()
         terminated_cpu = terminated.detach().cpu()
 
-        # Guard: terminated must be a subset of dones (can't be terminated without being done)
+        # Guard: terminated must be a subset of dones
         if (terminated_cpu.bool() & ~dones_cpu.bool()).any():
             raise AssertionError(
                 "terminated must be a subset of dones: every terminated position must also be done. "
@@ -202,17 +233,14 @@ class KataGoRolloutBuffer:
                 f"Expected only {{-1=ignore, 0=W, 1=D, 2=L}}."
             )
 
-        # Guard: NaN score targets are no longer valid — every position gets real material balance.
+        # Guard: NaN score targets are no longer valid
         if score_cpu.isnan().any():
             raise ValueError(
                 "score_targets contains NaN. With per-step material balance, "
                 "all targets should be real-valued."
             )
 
-        # Guard against unnormalized score targets (catches integration bugs).
-        # With per-step material balance / 76.0, typical range is [-1.7, +1.7].
-        # Theoretical max: fully promoted one-sided = 196/76 = 2.58. Threshold
-        # at 3.5 gives 35% headroom above the theoretical maximum.
+        # Guard against unnormalized score targets
         abs_max = score_cpu.abs().max()
         if abs_max > 3.5:
             raise ValueError(
@@ -221,42 +249,54 @@ class KataGoRolloutBuffer:
                 f"Expected in [-1.7, +1.7] typical, theoretical max 2.58 (guard 3.5)."
             )
 
-        # Store on CPU to reduce GPU memory pressure during rollout collection.
-        # Mini-batches are transferred back to GPU during update().
-        self.observations.append(obs_cpu)
-        self.actions.append(actions_cpu)
-        self.log_probs.append(log_probs_cpu)
-        self.values.append(values_cpu)
-        self.rewards.append(rewards_cpu)
-        self.dones.append(dones_cpu)
-        self.terminated.append(terminated_cpu)
-        self.legal_masks.append(legal_masks_cpu)
-        self.value_categories.append(value_cats_cpu)
-        self.score_targets.append(score_cpu)
+        n = obs_cpu.shape[0]
+
+        # Track env_ids presence on first add
+        if self._step_count == 0 and env_ids is not None:
+            self._has_env_ids = True
+
+        self._ensure_capacity(n)
+        off = self._write_offset
+
+        self._storage["observations"][off:off + n] = obs_cpu
+        self._storage["actions"][off:off + n] = actions_cpu
+        self._storage["log_probs"][off:off + n] = log_probs_cpu
+        self._storage["values"][off:off + n] = values_cpu
+        self._storage["rewards"][off:off + n] = rewards_cpu
+        self._storage["dones"][off:off + n] = dones_cpu
+        self._storage["terminated"][off:off + n] = terminated_cpu
+        self._storage["legal_masks"][off:off + n] = legal_masks_cpu
+        self._storage["value_categories"][off:off + n] = value_cats_cpu
+        self._storage["score_targets"][off:off + n] = score_cpu
         if env_ids is not None:
-            self.env_ids.append(env_ids.detach().cpu())
+            if "env_ids" not in self._storage:
+                # Late init — first add didn't have env_ids but a later one does
+                self._storage["env_ids"] = torch.empty(self._alloc_samples, dtype=torch.long)
+            self._storage["env_ids"][off:off + n] = env_ids.detach().cpu()
+
+        self._write_offset = off + n
+        self._step_count += 1
 
     def flatten(self) -> dict[str, torch.Tensor]:
-        if self.size == 0:
+        if self._step_count == 0:
             raise ValueError(
                 "Cannot flatten an empty buffer. Call add() at least once before flatten()."
             )
-        # Use cat instead of stack to support variable-sized timesteps
-        # (split-merge mode stores only learner envs per step, which varies).
+        off = self._write_offset
         result = {
-            "observations": torch.cat(self.observations, dim=0).reshape(-1, *self.obs_shape),
-            "actions": torch.cat(self.actions, dim=0).reshape(-1),
-            "log_probs": torch.cat(self.log_probs, dim=0).reshape(-1),
-            "values": torch.cat(self.values, dim=0).reshape(-1),
-            "rewards": torch.cat(self.rewards, dim=0).reshape(-1),
-            "dones": torch.cat(self.dones, dim=0).reshape(-1),
-            "terminated": torch.cat(self.terminated, dim=0).reshape(-1),
-            "legal_masks": torch.cat(self.legal_masks, dim=0).reshape(-1, self.action_space),
-            "value_categories": torch.cat(self.value_categories, dim=0).reshape(-1),
-            "score_targets": torch.cat(self.score_targets, dim=0).reshape(-1),
+            "observations": self._storage["observations"][:off].reshape(-1, *self.obs_shape),
+            "actions": self._storage["actions"][:off].reshape(-1),
+            "log_probs": self._storage["log_probs"][:off].reshape(-1),
+            "values": self._storage["values"][:off].reshape(-1),
+            "rewards": self._storage["rewards"][:off].reshape(-1),
+            "dones": self._storage["dones"][:off].reshape(-1),
+            "terminated": self._storage["terminated"][:off].reshape(-1),
+            "legal_masks": self._storage["legal_masks"][:off].reshape(-1, self.action_space),
+            "value_categories": self._storage["value_categories"][:off].reshape(-1),
+            "score_targets": self._storage["score_targets"][:off].reshape(-1),
         }
-        if self.env_ids:
-            result["env_ids"] = torch.cat(self.env_ids, dim=0).reshape(-1)
+        if self._has_env_ids and "env_ids" in self._storage:
+            result["env_ids"] = self._storage["env_ids"][:off].reshape(-1)
         return result
 
 
@@ -558,31 +598,21 @@ class KataGoPPOAlgorithm:
                 _gae_end.record(_gae_stream)
                 self._timing_events["gae_ms"].append((_gae_start, _gae_end))
         elif "env_ids" in data:
-            # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
-            # compute GAE in a single vectorized pass.
+            # Per-env GAE for split-merge mode: partition by env via argsort
+            # (O(N log N)) instead of per-env boolean indexing (O(envs × N)).
             from keisei.training.gae import compute_gae_padded
 
             env_ids = data["env_ids"]
-            unique_envs = env_ids.unique()
-            advantages = torch.zeros(total_samples)
 
-            # Collect per-env data and pad into (T_max, N_env) tensors
-            env_rewards = []
-            env_values = []
-            env_terminated = []
-            env_lengths = []
-            env_masks = []
+            # Single sort partitions all envs; stable=True preserves temporal order.
+            sort_idx = torch.argsort(env_ids, stable=True)
+            sorted_ids = env_ids[sort_idx]
+            unique_envs, counts = sorted_ids.unique_consecutive(return_counts=True)
+            splits = torch.split(sort_idx, counts.tolist())
 
-            for env_id in unique_envs:
-                mask = env_ids == env_id
-                env_rewards.append(data["rewards"][mask])
-                env_values.append(data["values"][mask])
-                env_terminated.append(data[gae_dones_key][mask])
-                env_lengths.append(mask.sum().item())
-                env_masks.append(mask)
-
-            max_T = max(env_lengths)
             N_env = len(unique_envs)
+            env_lengths = counts.tolist()
+            max_T = max(env_lengths)
 
             rewards_pad = torch.zeros(max_T, N_env)
             values_pad = torch.zeros(max_T, N_env)
@@ -594,20 +624,31 @@ class KataGoPPOAlgorithm:
                     f"env_id {unique_envs.max().item()} >= next_values size "
                     f"{next_values_cpu.shape[0]}"
                 )
-            for i, L in enumerate(env_lengths):
-                rewards_pad[:L, i] = env_rewards[i]
-                values_pad[:L, i] = env_values[i]
-                terminated_pad[:L, i] = env_terminated[i]
+            for i, idx in enumerate(splits):
+                L = env_lengths[i]
+                rewards_pad[:L, i] = data["rewards"][idx]
+                values_pad[:L, i] = data["values"][idx]
+                terminated_pad[:L, i] = data[gae_dones_key][idx]
                 nv[i] = next_values_cpu[unique_envs[i]]
 
             lengths_t = torch.tensor(env_lengths)
-            padded_adv = compute_gae_padded(
-                rewards_pad, values_pad, terminated_pad, nv, lengths_t,
-                gamma=self.params.gamma, lam=self.params.gae_lambda,
-            )
+            if device.type == "cuda":
+                from keisei.training.gae import compute_gae_padded_gpu
+                padded_adv = compute_gae_padded_gpu(
+                    rewards_pad.to(device), values_pad.to(device),
+                    terminated_pad.to(device), nv.to(device),
+                    lengths_t, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).cpu()
+            else:
+                padded_adv = compute_gae_padded(
+                    rewards_pad, values_pad, terminated_pad, nv, lengths_t,
+                    gamma=self.params.gamma, lam=self.params.gae_lambda,
+                )
 
-            for i, L in enumerate(env_lengths):
-                advantages[env_masks[i]] = padded_adv[:L, i]
+            advantages = torch.zeros(total_samples)
+            for i, idx in enumerate(splits):
+                L = env_lengths[i]
+                advantages[idx] = padded_adv[:L, i]
         else:
             # Fallback: flat GAE (no env_ids — legacy split-merge behavior).
             # Mean across all envs is a rough bootstrap approximation; the
@@ -619,24 +660,41 @@ class KataGoPPOAlgorithm:
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
-        if advantages.numel() > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
         batch_size = min(self.params.batch_size, total_samples)
 
         amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
-        # --- Optimization: move entire dataset to GPU once ---
-        # Previously each mini-batch transferred ~2.8 MB from CPU 512 times
-        # (~1.4 GB PCIe traffic per update). Now we transfer once (~900 MB)
-        # and index GPU tensors directly — pure GPU gathers, no PCIe.
-        gpu_obs = data["observations"].to(device, non_blocking=True)
+        # --- Optimization: overlap CPU→GPU transfer with advantage normalization ---
+        # Observations are the largest tensor (~1 GB for 65K × 50 × 9 × 9).
+        # Start their transfer on a dedicated stream so it overlaps with the
+        # advantage normalization and remaining small transfers on the default stream.
+        # pin_memory() makes the async transfer truly non-blocking on CUDA.
+        if device.type == "cuda":
+            _transfer_stream = torch.cuda.Stream(device)
+            with torch.cuda.stream(_transfer_stream):
+                obs_pinned = data["observations"].pin_memory()
+                gpu_obs = obs_pinned.to(device, non_blocking=True)
+                lm_pinned = data["legal_masks"].pin_memory()
+                gpu_legal_masks = lm_pinned.to(device, non_blocking=True)
+        else:
+            _transfer_stream = None
+            gpu_obs = data["observations"].to(device)
+            gpu_legal_masks = data["legal_masks"].to(device)
+
+        # Advantage normalization runs on CPU while obs transfer proceeds on GPU
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # Small tensors — transfer on default stream (fast, not worth a separate stream)
         gpu_actions = data["actions"].to(device, non_blocking=True)
         gpu_old_log_probs = data["log_probs"].to(device, non_blocking=True)
         gpu_advantages = advantages.to(device, non_blocking=True)
-        gpu_legal_masks = data["legal_masks"].to(device, non_blocking=True)
         gpu_value_cats = data["value_categories"].to(device, non_blocking=True)
         gpu_score_targets = data["score_targets"].to(device, non_blocking=True)
+
+        # Wait for observation transfer to complete before training begins
+        if _transfer_stream is not None:
+            torch.cuda.current_stream(device).wait_stream(_transfer_stream)
 
         # --- Optimization: accumulate losses as GPU tensors ---
         # Previously 5x .item() per mini-batch = 2560 CPU-GPU syncs per update.

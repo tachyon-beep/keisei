@@ -168,3 +168,68 @@ def compute_gae_gpu(
         advantages[t] = last_gae
 
     return advantages
+
+
+def compute_gae_padded_gpu(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    terminated: torch.Tensor,
+    next_values: torch.Tensor,
+    lengths: torch.Tensor,
+    gamma: float,
+    lam: float,
+) -> torch.Tensor:
+    """GPU GAE for variable-length per-env sequences via padding.
+
+    Same interface as compute_gae_padded() but runs the backward scan on the
+    input device (typically CUDA). Padding positions must have terminated=1.0
+    so that not_done=0 zeroes out GAE propagation through padding.
+
+    The lengths tensor stays on CPU (used only for the next_vals override loop,
+    which is O(N) scalar assignments — cheaper than a GPU kernel launch).
+
+    Args:
+        rewards: (T_max, N) padded rewards, on target device
+        values: (T_max, N) padded value estimates, on target device
+        terminated: (T_max, N) termination flags (padding=1.0), on target device
+        next_values: (N,) bootstrap values per env, on target device
+        lengths: (N,) actual sequence length per env (CPU tensor is fine)
+        gamma: discount factor
+        lam: GAE lambda
+
+    Returns:
+        (T_max, N) advantages on the same device as inputs
+    """
+    if rewards.ndim != 2:
+        raise ValueError(
+            f"compute_gae_padded_gpu only supports 2D (T_max, N) input, got shape {rewards.shape}"
+        )
+
+    T_max, N = rewards.shape
+    compute_dtype = values.dtype
+    rewards = rewards.to(dtype=compute_dtype)
+    device = rewards.device
+
+    # Build next_vals: shift values by 1, override last valid step per env
+    next_vals = torch.zeros_like(rewards)
+    next_vals[:-1] = values[1:]
+    next_vals[-1] = next_values
+
+    # Override each env's last valid step with its bootstrap value.
+    # This is O(N) scalar writes — negligible vs the T_max backward scan.
+    last_step_idx = (lengths - 1).clamp(min=0).cpu().numpy().astype(int)
+    for i in range(N):
+        next_vals[last_step_idx[i], i] = next_values[i]
+
+    not_done = 1.0 - terminated.float()
+    delta = rewards + gamma * next_vals * not_done - values
+    decay = gamma * lam * not_done
+
+    # Sequential backward scan — each step is a fused GPU kernel over N envs.
+    advantages = torch.empty_like(rewards)
+    last_gae = torch.zeros(N, device=device, dtype=compute_dtype)
+    for t in reversed(range(T_max)):
+        last_gae = delta[t] + decay[t] * last_gae
+        advantages[t] = last_gae
+
+    return advantages
