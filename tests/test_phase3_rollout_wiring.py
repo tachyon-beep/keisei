@@ -16,7 +16,7 @@ from keisei.config import DynamicConfig, FrontierStaticConfig
 from keisei.db import init_db
 from keisei.training.dynamic_trainer import DynamicTrainer, MatchRollout
 from keisei.training.frontier_promoter import FrontierPromoter
-from keisei.training.match_utils import play_batch, play_match
+from keisei.training.match_utils import MatchOutcome, play_batch, play_match
 from keisei.training.opponent_store import EloColumn, EntryStatus, OpponentEntry, OpponentStore, Role
 from keisei.training.tier_managers import FrontierManager
 from keisei.training.tournament import LeagueTournament
@@ -107,8 +107,8 @@ def test_play_batch_collects_rollout_when_requested():
         collect_rollout=True,
     )
 
-    assert len(result) == 4, f"Expected 4-tuple, got {len(result)}-tuple"
-    a_wins, b_wins, draws, rollout = result
+    _, _, _, rollout = result
+    assert rollout is not None
     assert isinstance(rollout, MatchRollout)
     assert rollout.observations.shape[0] > 0
     # All tensors should be on CPU
@@ -198,10 +198,9 @@ def test_play_match_collects_rollout():
         collect_rollout=True,
     )
 
-    assert len(result) == 4, f"Expected 4-tuple, got {len(result)}-tuple"
-    a_wins, b_wins, draws, rollout = result
-    assert isinstance(rollout, MatchRollout)
-    assert rollout.observations.shape[0] > 0
+    assert result.rollout is not None
+    assert isinstance(result.rollout, MatchRollout)
+    assert result.rollout.observations.shape[0] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +305,8 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.DYNAMIC)
         rollout = _make_mock_rollout()
 
-        # Mock _play_match to return (wins_a, wins_b, draws, rollout)
-        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+        # Mock _play_match to return a MatchOutcome with rollout
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -332,9 +331,9 @@ class TestTournamentTrainingTrigger:
 
         assert not t._is_trainable_match(entry_a, entry_b)
 
-        # 3-tuple is correct: non-trainable path calls _play_match without
-        # collect_rollout, so it returns (wins_a, wins_b, draws) only.
-        with patch.object(t, "_play_match", return_value=(2, 1, 1)):
+        # Non-trainable path calls _play_match without collect_rollout,
+        # so it returns a MatchOutcome with rollout=None.
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -355,7 +354,7 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.DYNAMIC)
         rollout = _make_mock_rollout()
 
-        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -378,7 +377,7 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.RECENT_FIXED)
         rollout = _make_mock_rollout()
 
-        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -403,7 +402,7 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.DYNAMIC)
         rollout = _make_mock_rollout()
 
-        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -427,7 +426,7 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.DYNAMIC)
         rollout = _make_mock_rollout()
 
-        with patch.object(t, "_play_match", return_value=(2, 1, 0, rollout)):
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 0, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -445,7 +444,7 @@ class TestTournamentTrainingTrigger:
         entry_c = _make_entry(3, Role.DYNAMIC)
         entry_d = _make_entry(4, Role.FRONTIER_STATIC)
 
-        with patch.object(t2, "_play_match", return_value=(1, 2, 0)):
+        with patch.object(t2, "_play_match", return_value=MatchOutcome(1, 2, 0)):
             t2.store.get_entry.side_effect = lambda eid: (
                 entry_c if eid == 3 else entry_d
             )
@@ -471,7 +470,7 @@ class TestTournamentTrainingTrigger:
         entry_b = _make_entry(2, Role.DYNAMIC)
         rollout = _make_mock_rollout()
 
-        with patch.object(t, "_play_match", return_value=(2, 1, 1, rollout)):
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1, rollout)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )
@@ -490,10 +489,9 @@ class TestTournamentTrainingTrigger:
 
         assert t._is_trainable_match(entry_a, entry_b) is True
 
-        # 3-tuple is correct despite D-vs-D being trainable by _is_trainable_match:
-        # with dynamic_trainer=None, is_trainable evaluates to False in _run_one_match,
-        # so _play_match is called without collect_rollout and returns 3-tuple.
-        with patch.object(t, "_play_match", return_value=(2, 1, 1)):
+        # With dynamic_trainer=None, is_trainable evaluates to False in _run_one_match,
+        # so _play_match is called without collect_rollout (rollout=None).
+        with patch.object(t, "_play_match", return_value=MatchOutcome(2, 1, 1)):
             t.store.get_entry.side_effect = lambda eid: (
                 entry_a if eid == 1 else entry_b
             )

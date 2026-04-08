@@ -316,6 +316,17 @@ class ConcurrentMatchPool:
 
                     slot_actions = torch.zeros(e - s, dtype=torch.long, device=device)
 
+                    # Guard: zero legal actions would produce NaN from softmax(-inf)
+                    legal_counts = partition_legal.sum(dim=-1)
+                    if (legal_counts == 0).any():
+                        logger.warning(
+                            "Zero legal actions in concurrent pool slot %d — "
+                            "ending match early to avoid NaN",
+                            slot.index,
+                        )
+                        slot.games_target = slot.games_completed
+                        break
+
                     # Model A forward (player 0 = Black)
                     a_indices = player_a_mask.nonzero(as_tuple=True)[0]
                     if a_indices.numel() > 0:

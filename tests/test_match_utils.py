@@ -308,10 +308,9 @@ class TestPlayMatchBasic:
             max_ply=200,
             games_target=games_target,
         )
-        assert len(result) == 3
-        a_wins, b_wins, draws = result
-        total = a_wins + b_wins + draws
+        total = result.a_wins + result.b_wins + result.draws
         assert total >= games_target, f"Expected >= {games_target} games, got {total}"
+        assert result.rollout is None
 
 
 class TestPlayMatchStopEvent:
@@ -337,8 +336,7 @@ class TestPlayMatchStopEvent:
             games_target=100,
             stop_event=stop_event,
         )
-        a_wins, b_wins, draws = result
-        total = a_wins + b_wins + draws
+        total = result.a_wins + result.b_wins + result.draws
         assert total < 100, "stop_event should have interrupted before completing 100 games"
 
 
@@ -362,8 +360,7 @@ class TestPlayMatchMaxBatches:
                 games_target=games_target,
             )
 
-        a_wins, b_wins, draws = result
-        total = a_wins + b_wins + draws
+        total = result.a_wins + result.b_wins + result.draws
         assert total == 0, "NeverTerminatingVecEnv should not produce any completed games"
         assert "batch ceiling" in caplog.text, (
             f"Expected warning about batch ceiling, got: {caplog.text!r}"
@@ -388,12 +385,10 @@ class TestPlayMatchRollout:
             games_target=2,
             collect_rollout=True,
         )
-        assert len(result) == 4
-        a_wins, b_wins, draws, rollout = result
-        assert rollout is not None
-        assert isinstance(rollout, MatchRollout)
+        assert result.rollout is not None
+        assert isinstance(result.rollout, MatchRollout)
         # Should have observations with ndim == 5: (steps, envs, C, 9, 9)
-        assert rollout.observations.ndim == 5
+        assert result.rollout.observations.ndim == 5
 
 
 # ---------------------------------------------------------------------------

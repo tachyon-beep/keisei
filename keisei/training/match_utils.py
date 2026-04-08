@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,20 @@ import torch.nn.functional as F
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
     from keisei.training.game_feature_tracker import GameFeatureTracker
+
+
+@dataclass
+class MatchOutcome:
+    """Result of a single match between two entries.
+
+    ``rollout`` is populated only when ``collect_rollout=True`` was passed to
+    ``play_match`` / ``_play_match`` and at least one valid game was played.
+    """
+
+    a_wins: int
+    b_wins: int
+    draws: int
+    rollout: MatchRollout | None = field(default=None)
 
 
 def _combine_rollouts(rollouts: list[MatchRollout]) -> MatchRollout:
@@ -43,13 +58,13 @@ def play_match(
     stop_event: threading.Event | None = None,
     collect_rollout: bool = False,
     feature_tracker: GameFeatureTracker | None = None,
-) -> tuple[int, int, int] | tuple[int, int, int, Any]:
+) -> MatchOutcome:
     """Play a set of games between two frozen models.
 
-    Returns (a_wins, b_wins, draws). Includes a batch-count ceiling
-    to prevent infinite loops if VecEnv never terminates games.
-
-    When collect_rollout=True, returns (a_wins, b_wins, draws, MatchRollout).
+    Returns a ``MatchOutcome`` with a_wins, b_wins, draws, and (when
+    ``collect_rollout=True`` and games were played) a populated rollout field.
+    Includes a batch-count ceiling to prevent infinite loops if VecEnv never
+    terminates games.
     """
     total_a_wins = 0
     total_b_wins = 0
@@ -64,18 +79,18 @@ def play_match(
     while games_remaining > 0 and batches_run < max_batches:
         if stop_event is not None and stop_event.is_set():
             break
-        result = play_batch(
+        batch_result = play_batch(
             vecenv, model_a, model_b,
             device=device, num_envs=num_envs, max_ply=max_ply,
             stop_event=stop_event, collect_rollout=collect_rollout,
             feature_tracker=feature_tracker,
         )
         if collect_rollout:
-            a_wins, b_wins, draws, rollout = result
+            a_wins, b_wins, draws, rollout = batch_result
             assert all_rollouts is not None
             all_rollouts.append(rollout)
         else:
-            a_wins, b_wins, draws = result
+            a_wins, b_wins, draws = batch_result
         total_a_wins += a_wins
         total_b_wins += b_wins
         total_draws += draws
@@ -88,16 +103,21 @@ def play_match(
             max_batches, games_remaining, games_target,
         )
 
+    combined_rollout: MatchRollout | None = None
     if collect_rollout:
         assert all_rollouts is not None
         # Filter out empty rollouts from interrupted batches (shape (0,)
         # tensors would crash _combine_rollouts due to rank mismatch).
         valid_rollouts = [r for r in all_rollouts if r.observations.dim() > 1]
-        if not valid_rollouts:
-            return total_a_wins, total_b_wins, total_draws, None
-        combined = _combine_rollouts(valid_rollouts)
-        return total_a_wins, total_b_wins, total_draws, combined
-    return total_a_wins, total_b_wins, total_draws
+        if valid_rollouts:
+            combined_rollout = _combine_rollouts(valid_rollouts)
+
+    return MatchOutcome(
+        a_wins=total_a_wins,
+        b_wins=total_b_wins,
+        draws=total_draws,
+        rollout=combined_rollout,
+    )
 
 
 def play_batch(
@@ -265,11 +285,42 @@ def play_batch(
 
 
 def release_models(*models: torch.nn.Module, device_type: str = "cpu") -> None:
-    """Reclaim cached CUDA allocator blocks if on GPU.
+    """Move models to CPU and reclaim cached CUDA allocator blocks.
+
+    Moves each model's weights off GPU before flushing the allocator cache.
+    Without the explicit ``.cpu()`` calls the tensors remain on the CUDA
+    device until Python GC runs, keeping VRAM pinned.  ``empty_cache()`` is
+    also targeted at the specific CUDA device the models lived on (not always
+    cuda:0).
 
     Note: callers still hold references to the model objects — this function
-    cannot free them.  The value is ``empty_cache()``, which returns unused
-    cached blocks to the CUDA allocator (useful even with live tensors).
+    cannot fully free them, but moving to CPU frees the VRAM immediately.
     """
-    if device_type == "cuda":
-        torch.cuda.empty_cache()
+    if not models:
+        return
+
+    # Determine the CUDA device index from the first model that has parameters
+    # on CUDA, so we flush the correct allocator.
+    cuda_device_idx: int | None = None
+    for model in models:
+        try:
+            param = next(iter(model.parameters()))
+            if param.is_cuda:
+                cuda_device_idx = param.get_device()
+                break
+        except StopIteration:
+            pass
+
+    # Move all models to CPU to free VRAM immediately.
+    for model in models:
+        try:
+            model.cpu()
+        except Exception:
+            pass
+
+    if device_type == "cuda" or cuda_device_idx is not None:
+        if cuda_device_idx is not None:
+            with torch.cuda.device(cuda_device_idx):
+                torch.cuda.empty_cache()
+        else:
+            torch.cuda.empty_cache()

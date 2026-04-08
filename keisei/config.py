@@ -199,6 +199,11 @@ class MatchSchedulerConfig:
     dynamic_frontier_weight: float = 0.20
     recent_frontier_weight: float = 0.10
     recent_recent_weight: float = 0.05
+    # Challenge threshold: when the learner's rolling win rate against a tier
+    # exceeds this value, halve that tier's sampling weight so the learner
+    # trains more against tiers it hasn't yet mastered.
+    challenge_threshold: float = 0.70
+    challenge_window: int = 100  # rolling window of recent results per tier
 
     def __post_init__(self) -> None:
         for name in ("learner_dynamic_ratio", "learner_frontier_ratio", "learner_recent_ratio"):

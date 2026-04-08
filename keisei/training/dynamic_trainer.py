@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -40,10 +41,12 @@ class MatchRollout:
 class DynamicTrainer:
     """Small PPO updates for Dynamic entries from league match data.
 
-    Threading: all methods are called from the tournament thread only.
-    record_match(), should_update(), is_rate_limited(), and update() are
-    called sequentially within _run_concurrent_round/_run_one_match.
-    No lock is needed — there is no concurrent access from other threads.
+    Threading: record_match(), should_update(), is_rate_limited(), and
+    update() are called from the tournament thread within
+    _run_concurrent_round/_run_one_match.  An ``_update_lock`` serialises
+    update() calls so that the training loop (which loads models from the
+    same OpponentStore on cuda:1) cannot observe a half-updated model if
+    future callers invoke update() from other threads.
     """
 
     def __init__(
@@ -66,6 +69,7 @@ class DynamicTrainer:
         # Global inference-only fallback (§10.4)
         self._globally_disabled: bool = False
         self._global_error_timestamps: list[float] = []
+        self._update_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Record & query
@@ -245,7 +249,15 @@ class DynamicTrainer:
 
         Returns True on success, False if an error was caught and handled.
         Raises on error when config.disable_on_error is False.
+
+        Thread-safe: ``_update_lock`` serialises concurrent calls so that
+        model weights are never half-updated when observed from another thread.
         """
+        with self._update_lock:
+            return self._update_guarded(entry, device)
+
+    def _update_guarded(self, entry: OpponentEntry, device: str) -> bool:
+        """Inner update with error handling — called under ``_update_lock``."""
         try:
             return self._update_inner(entry, device)
         except Exception:

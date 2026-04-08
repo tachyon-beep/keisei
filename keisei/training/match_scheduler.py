@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections import deque
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -104,6 +105,12 @@ class MatchScheduler:
         self.config = config
         self._priority_scorer = priority_scorer
         self._match_class_weights = build_match_class_weights(config)
+        # Rolling win-rate tracker per tier for challenge threshold (Fix 9).
+        # Each deque stores recent (won: bool) outcomes for learner vs that tier.
+        self._tier_outcomes: dict[Role, deque[bool]] = {
+            role: deque(maxlen=config.challenge_window)
+            for role in (Role.DYNAMIC, Role.FRONTIER_STATIC, Role.RECENT_FIXED)
+        }
 
     @property
     def match_class_weights(self) -> dict[MatchClass, float]:
@@ -114,6 +121,18 @@ class MatchScheduler:
     def priority_scorer(self) -> PriorityScorer | None:
         """The PriorityScorer instance, or None if not configured."""
         return self._priority_scorer
+
+    def record_learner_result(self, opponent_role: Role, won: bool) -> None:
+        """Record a learner win/loss for challenge threshold tracking."""
+        if opponent_role in self._tier_outcomes:
+            self._tier_outcomes[opponent_role].append(won)
+
+    def tier_win_rate(self, role: Role) -> float | None:
+        """Rolling win rate against a tier, or None if insufficient data."""
+        outcomes = self._tier_outcomes.get(role)
+        if not outcomes or len(outcomes) < 10:
+            return None
+        return sum(outcomes) / len(outcomes)
 
     def sample_for_learner(
         self, entries_by_role: dict[Role, list[OpponentEntry]],
@@ -236,6 +255,17 @@ class MatchScheduler:
         non_empty = {r: w for r, w in raw.items() if entries_by_role.get(r)}
         if not non_empty:
             return {r: 0.0 for r in raw}
+
+        # Challenge threshold: halve weight for tiers the learner dominates.
+        # This redirects training time toward tiers that still provide
+        # useful gradient signal, countering the "success to the successful"
+        # dynamic where the learner gets ever-easier opponents.
+        threshold = self.config.challenge_threshold
+        for role in list(non_empty):
+            wr = self.tier_win_rate(role)
+            if wr is not None and wr > threshold:
+                non_empty[role] *= 0.5
+
         total = sum(non_empty.values())
         if total <= 0:
             # All populated tiers have zero (or negative) weight — no valid

@@ -29,7 +29,7 @@ from keisei.training.game_feature_tracker import GameFeatureTracker
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalLibrary
 from keisei.training.match_scheduler import MatchScheduler, is_training_match
-from keisei.training.match_utils import play_match, release_models
+from keisei.training.match_utils import MatchOutcome, play_match, release_models
 from keisei.training.opponent_store import EntryStatus, OpponentEntry, OpponentStore, Role, compute_elo_update
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.style_profiler import StyleProfiler
@@ -109,6 +109,10 @@ class LeagueTournament:
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.Lock()
+        # Elo ceiling alert: track consecutive rounds where learner exceeds
+        # max Frontier Elo by 200+. Warns when pool may be too weak.
+        self._elo_ceiling_streak = 0
 
     @property
     def learner_entry_id(self) -> int | None:
@@ -124,33 +128,65 @@ class LeagueTournament:
 
     def start(self) -> None:
         """Start the tournament background thread."""
-        if self._thread is not None and self._thread.is_alive():
-            logger.warning("Tournament thread already running")
-            return
-        self._stop_event.clear()
-        if self.gauntlet is not None:
-            self.gauntlet.set_stop_event(self._stop_event)
-        self._thread = threading.Thread(
-            target=self._run_loop, name="league-tournament", daemon=True,
-        )
-        self._thread.start()
-        logger.info(
-            "Tournament started: device=%s, num_envs=%d, games_per_match=%d",
-            self.device, self.num_envs, self.games_per_match,
-        )
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                logger.warning("Tournament thread already running")
+                return
+            self._stop_event.clear()
+            if self.gauntlet is not None:
+                self.gauntlet.set_stop_event(self._stop_event)
+            self._thread = threading.Thread(
+                target=self._run_loop, name="league-tournament", daemon=True,
+            )
+            self._thread.start()
+            logger.info(
+                "Tournament started: device=%s, num_envs=%d, games_per_match=%d",
+                self.device, self.num_envs, self.games_per_match,
+            )
 
     def stop(self, timeout: float = 30.0) -> None:
         """Signal the tournament thread to stop and wait for it."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            if self._thread.is_alive():
-                logger.warning("Tournament thread did not stop within %.0fs", timeout)
-            self._thread = None
+        with self._lifecycle_lock:
+            self._stop_event.set()
+            if self._thread is not None:
+                self._thread.join(timeout=timeout)
+                if self._thread.is_alive():
+                    logger.warning("Tournament thread did not stop within %.0fs", timeout)
+                self._thread = None
 
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    # ── Elo ceiling ──────────────────────────────────────────
+
+    def _check_elo_ceiling(self, entries: list[OpponentEntry]) -> None:
+        """Warn if the learner has outgrown the opponent pool."""
+        learner_id = self.learner_entry_id
+        if learner_id is None:
+            return
+        learner = self.store.get_entry(learner_id)
+        if learner is None:
+            return
+        frontier_elos = [
+            e.elo_rating for e in entries
+            if e.role == Role.FRONTIER_STATIC and e.id != learner_id
+        ]
+        if not frontier_elos:
+            return
+        max_frontier = max(frontier_elos)
+        margin = learner.elo_rating - max_frontier
+        if margin >= 200:
+            self._elo_ceiling_streak += 1
+            if self._elo_ceiling_streak >= 2:
+                logger.warning(
+                    "Elo ceiling alert: learner (%.0f) exceeds max Frontier (%.0f) "
+                    "by %.0f for %d consecutive rounds — pool may be too weak",
+                    learner.elo_rating, max_frontier, margin,
+                    self._elo_ceiling_streak,
+                )
+        else:
+            self._elo_ceiling_streak = 0
 
     # ── Main loop ────────────────────────────────────────────
 
@@ -200,9 +236,13 @@ class LeagueTournament:
                     continue
 
                 round_number += 1
+                zero_game_ids = [e.id for e in entries if e.games_played == 0]
                 logger.info(
-                    "Tournament round %d (epoch %d): %d entries, %d pairings",
+                    "Tournament round %d (epoch %d): %d entries, %d pairings, "
+                    "%d entries with 0 games%s",
                     round_number, epoch, len(entries), len(pairings),
+                    len(zero_game_ids),
+                    f" (ids={zero_game_ids})" if zero_game_ids else "",
                 )
 
                 if self.concurrent_pool is not None:
@@ -241,6 +281,11 @@ class LeagueTournament:
                         self.scheduler.priority_scorer.advance_round()
 
                 logger.info("Tournament round %d complete", round_number)
+
+                # Elo ceiling alert: warn if the learner has outgrown the pool.
+                # When learner Elo exceeds max Frontier Elo by 200+ for 2+
+                # consecutive rounds, the pool provides diminishing training signal.
+                self._check_elo_ceiling(entries)
 
                 # Recompute style profiles every 5 rounds
                 if round_number % 5 == 0 and not self._stop_event.is_set():
@@ -281,7 +326,7 @@ class LeagueTournament:
             from keisei.db import write_tournament_stats
             write_tournament_stats(self.store.db_path, stats)
         except Exception:
-            logger.debug("Failed to write tournament stats", exc_info=True)
+            logger.warning("Failed to write tournament stats", exc_info=True)
 
     def _write_game_features(self, tracker: GameFeatureTracker) -> None:
         """Persist completed game feature rows to DB."""
@@ -292,7 +337,7 @@ class LeagueTournament:
             rows = [r.to_dict() for r in tracker.completed_rows]
             write_game_features(self.store.db_path, rows)
         except Exception:
-            logger.debug("Failed to write game features", exc_info=True)
+            logger.warning("Failed to write game features", exc_info=True)
 
     # ── Trainability ──────────────────────────────────────────
 
@@ -301,6 +346,118 @@ class LeagueTournament:
     ) -> bool:
         """D-vs-D or D-vs-RF produces training data (§8.2 / §10.1)."""
         return is_training_match(entry_a, entry_b)
+
+    # ── Shared result recording ──────────────────────────
+
+    def _record_match_result(
+        self,
+        *,
+        epoch: int,
+        entry_a_id: int,
+        entry_b_id: int,
+        a_wins: int,
+        b_wins: int,
+        draws: int,
+        rollout: MatchRollout | None,
+    ) -> bool:
+        """Record the result of a match: Elo update, DB persistence, and dynamic
+        training trigger.
+
+        Returns ``True`` if the result was successfully recorded, ``False`` if
+        the result was skipped (entries not found in store).
+
+        The caller is responsible for per-path-specific bookkeeping such as
+        ``recorded_ids`` tracking and priority scorer state updates.
+        """
+        current_a = self.store.get_entry(entry_a_id)
+        current_b = self.store.get_entry(entry_b_id)
+        if current_a is None or current_b is None:
+            return False  # entry deleted from DB
+
+        # Entries may have been retired during the round — result is still
+        # valid (snapshot-isolation: active at pairing time = valid).
+        if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
+            logger.debug(
+                "  Recording result for since-retired entry: %s vs %s",
+                current_a.display_name, current_b.display_name,
+            )
+
+        result_score = majority_wins_result(a_wins, b_wins, draws)
+        context = RoleEloTracker.determine_match_context(current_a, current_b)
+        k = (
+            self.role_elo_tracker.k_for_context(context)
+            if self.role_elo_tracker
+            else self.k_factor
+        )
+        new_a_elo, new_b_elo = compute_elo_update(
+            current_a.elo_rating, current_b.elo_rating,
+            result=result_score, k=k,
+        )
+        is_train = is_training_match(current_a, current_b)
+        # §9.1/13.3: store role-specific Elo (not composite) in match
+        # records so analytics see the context-appropriate view.
+        if self.role_elo_tracker:
+            col_a, col_b = self.role_elo_tracker.columns_for_context(
+                current_a, current_b, context,
+            )
+            elo_before_a = getattr(current_a, col_a.value)
+            elo_before_b = getattr(current_b, (col_b or col_a).value)
+            role_new_a, role_new_b = compute_elo_update(
+                elo_before_a, elo_before_b, result=result_score, k=k,
+            )
+        else:
+            elo_before_a = current_a.elo_rating
+            elo_before_b = current_b.elo_rating
+            role_new_a = new_a_elo
+            role_new_b = new_b_elo
+        self.store.record_result(
+            epoch=epoch,
+            entry_a_id=entry_a_id,
+            entry_b_id=entry_b_id,
+            wins_a=a_wins,
+            wins_b=b_wins,
+            draws=draws,
+            match_type="train" if is_train else "calibration",
+            role_a=current_a.role,
+            role_b=current_b.role,
+            elo_before_a=elo_before_a,
+            elo_after_a=role_new_a,
+            elo_before_b=elo_before_b,
+            elo_after_b=role_new_b,
+            training_updates_a=current_a.update_count,
+            training_updates_b=current_b.update_count,
+        )
+        self.store.update_elo(entry_a_id, new_a_elo, epoch=epoch)
+        self.store.update_elo(entry_b_id, new_b_elo, epoch=epoch)
+        if self.role_elo_tracker:
+            self.role_elo_tracker.update_from_result(
+                current_a, current_b, result_score, context,
+            )
+        logger.info(
+            "  %s vs %s — %dW %dL %dD",
+            current_a.display_name, current_b.display_name,
+            a_wins, b_wins, draws,
+        )
+        # Dynamic training trigger (after Elo update) — use re-fetched entries
+        # so role changes between pairing and completion are respected.
+        if is_train and rollout is None:
+            logger.debug(
+                "  %s vs %s became trainable mid-match but rollout was not collected",
+                current_a.display_name, current_b.display_name,
+            )
+        if is_train and rollout is not None and self.dynamic_trainer is not None:
+            for i, entry in enumerate([current_a, current_b]):
+                if entry.role == Role.DYNAMIC:
+                    self.dynamic_trainer.record_match(entry.id, rollout, side=i)
+                    if (
+                        self.dynamic_trainer.should_update(entry.id)
+                        and not self.dynamic_trainer.is_rate_limited()
+                        and not self.dynamic_trainer.is_gpu_backpressured(str(self.device))
+                    ):
+                        self.dynamic_trainer.update(
+                            entry, device=str(self.device),
+                        )
+        return True
 
     # ── Concurrent round ───────────────────────────────────
 
@@ -338,106 +495,48 @@ class LeagueTournament:
             epoch=epoch,
         )
         self._write_tournament_stats(round_stats)
+        logger.info(
+            "Concurrent round stats: %d/%d pairings completed, %d total games, %.1fs",
+            round_stats.pairings_completed, round_stats.pairings_requested,
+            round_stats.total_games, round_stats.round_duration_s,
+        )
         # Write game features from all completed matches
         for result in results:
             if result.feature_tracker is not None:
                 self._write_game_features(result.feature_tracker)
+        recorded_ids: set[int] = set()
         for result in results:
             total = result.a_wins + result.b_wins + result.draws
             if total == 0:
                 continue
             try:
-                current_a = self.store.get_entry(result.entry_a.id)
-                current_b = self.store.get_entry(result.entry_b.id)
-                if current_a is None or current_b is None:
-                    continue
-                # Entries may have been retired by the tier manager during the
-                # round.  The match was played while both were active, so the
-                # result is valid calibration data — record it regardless of
-                # current status.  (Snapshot-isolation principle: validity is
-                # determined at pairing time, not at recording time.)
-                if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
-                    logger.debug(
-                        "  Recording result for since-retired entry: %s vs %s",
-                        result.entry_a.display_name, result.entry_b.display_name,
-                    )
-                result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
-                context = RoleEloTracker.determine_match_context(
-                    current_a, current_b,
-                )
-                k = (
-                    self.role_elo_tracker.k_for_context(context)
-                    if self.role_elo_tracker
-                    else self.k_factor
-                )
-                new_a_elo, new_b_elo = compute_elo_update(
-                    current_a.elo_rating, current_b.elo_rating,
-                    result=result_score, k=k,
-                )
-                is_train = is_training_match(current_a, current_b)
-                # §9.1/13.3: store role-specific Elo (not composite) in match
-                # records so analytics see the context-appropriate view.
-                if self.role_elo_tracker:
-                    col_a, col_b = self.role_elo_tracker.columns_for_context(
-                        current_a, current_b, context,
-                    )
-                    elo_before_a = getattr(current_a, col_a.value)
-                    elo_before_b = getattr(current_b, (col_b or col_a).value)
-                    role_new_a, role_new_b = compute_elo_update(
-                        elo_before_a, elo_before_b, result=result_score, k=k,
-                    )
-                else:
-                    elo_before_a = current_a.elo_rating
-                    elo_before_b = current_b.elo_rating
-                    role_new_a = new_a_elo
-                    role_new_b = new_b_elo
-                self.store.record_result(
+                recorded = self._record_match_result(
                     epoch=epoch,
                     entry_a_id=result.entry_a.id,
                     entry_b_id=result.entry_b.id,
-                    wins_a=result.a_wins,
-                    wins_b=result.b_wins,
+                    a_wins=result.a_wins,
+                    b_wins=result.b_wins,
                     draws=result.draws,
-                    match_type="train" if is_train else "calibration",
-                    role_a=current_a.role,
-                    role_b=current_b.role,
-                    elo_before_a=elo_before_a,
-                    elo_after_a=role_new_a,
-                    elo_before_b=elo_before_b,
-                    elo_after_b=role_new_b,
-                    training_updates_a=current_a.update_count,
-                    training_updates_b=current_b.update_count,
+                    rollout=result.rollout,
                 )
-                self.store.update_elo(result.entry_a.id, new_a_elo, epoch=epoch)
-                self.store.update_elo(result.entry_b.id, new_b_elo, epoch=epoch)
-                if self.role_elo_tracker:
-                    self.role_elo_tracker.update_from_result(
-                        current_a, current_b, result_score, context,
-                    )
-                logger.info(
-                    "  %s vs %s — %dW %dL %dD",
-                    result.entry_a.display_name, result.entry_b.display_name,
-                    result.a_wins, result.b_wins, result.draws,
-                )
-                if self.dynamic_trainer and result.rollout is not None:
-                    for i, entry in enumerate([current_a, current_b]):
-                        if entry.role == Role.DYNAMIC:
-                            self.dynamic_trainer.record_match(
-                                entry.id, result.rollout, side=i,
-                            )
-                            if (
-                                self.dynamic_trainer.should_update(entry.id)
-                                and not self.dynamic_trainer.is_rate_limited()
-                                and not self.dynamic_trainer.is_gpu_backpressured(str(self.device))
-                            ):
-                                self.dynamic_trainer.update(
-                                    entry, device=str(self.device),
-                                )
+                if recorded:
+                    recorded_ids.add(result.entry_a.id)
+                    recorded_ids.add(result.entry_b.id)
             except Exception:
                 logger.exception(
                     "Failed to process result: %s vs %s",
                     result.entry_a.display_name, result.entry_b.display_name,
                 )
+
+        # Post-round: log which entries still have 0 games
+        all_entry_ids = {e.id for p in pairings for e in p}
+        unrecorded = all_entry_ids - recorded_ids
+        if unrecorded:
+            logger.warning(
+                "Round had %d entries that appeared in pairings but got "
+                "no recorded results: %s",
+                len(unrecorded), sorted(unrecorded),
+            )
 
         # Update priority scorer state after concurrent round
         if self.scheduler.priority_scorer is not None:
@@ -478,104 +577,23 @@ class LeagueTournament:
             and self._is_trainable_match(entry_a, entry_b)
         )
 
-        if is_trainable:
-            result = self._play_match(
-                vecenv, entry_a, entry_b, collect_rollout=True,
-                num_envs=num_envs, epoch=epoch,
-            )
-            wins_a, wins_b, draws, rollout = result
-        else:
-            wins_a, wins_b, draws = self._play_match(
-                vecenv, entry_a, entry_b, num_envs=num_envs, epoch=epoch,
-            )
-            rollout = None
+        outcome = self._play_match(
+            vecenv, entry_a, entry_b,
+            collect_rollout=is_trainable,
+            num_envs=num_envs, epoch=epoch,
+        )
 
-        total = wins_a + wins_b + draws
+        total = outcome.a_wins + outcome.b_wins + outcome.draws
         if total > 0:
-            current_a = self.store.get_entry(entry_a.id)
-            current_b = self.store.get_entry(entry_b.id)
-            if current_a is None or current_b is None:
-                return total  # entry deleted from DB
-            # Entries may have been retired during the round — result is still
-            # valid (snapshot-isolation: active at pairing time = valid).
-            if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
-                logger.debug(
-                    "  Recording result for since-retired entry: %s vs %s",
-                    entry_a.display_name, entry_b.display_name,
-                )
-            result_score = majority_wins_result(wins_a, wins_b, draws)
-            context = RoleEloTracker.determine_match_context(
-                current_a, current_b,
+            self._record_match_result(
+                epoch=epoch,
+                entry_a_id=entry_a.id,
+                entry_b_id=entry_b.id,
+                a_wins=outcome.a_wins,
+                b_wins=outcome.b_wins,
+                draws=outcome.draws,
+                rollout=outcome.rollout,
             )
-            k = (
-                self.role_elo_tracker.k_for_context(context)
-                if self.role_elo_tracker
-                else self.k_factor
-            )
-            new_a_elo, new_b_elo = compute_elo_update(
-                current_a.elo_rating, current_b.elo_rating,
-                result=result_score, k=k,
-            )
-            # §9.1/13.3: store role-specific Elo in match records
-            if self.role_elo_tracker:
-                col_a, col_b = self.role_elo_tracker.columns_for_context(
-                    current_a, current_b, context,
-                )
-                elo_before_a = getattr(current_a, col_a.value)
-                elo_before_b = getattr(current_b, (col_b or col_a).value)
-                role_new_a, role_new_b = compute_elo_update(
-                    elo_before_a, elo_before_b, result=result_score, k=k,
-                )
-            else:
-                elo_before_a = current_a.elo_rating
-                elo_before_b = current_b.elo_rating
-                role_new_a = new_a_elo
-                role_new_b = new_b_elo
-            is_train_now = is_training_match(current_a, current_b)
-            self.store.record_result(
-                epoch=epoch, entry_a_id=entry_a.id, entry_b_id=entry_b.id,
-                wins_a=wins_a, wins_b=wins_b, draws=draws,
-                match_type="train" if is_train_now else "calibration",
-                role_a=current_a.role,
-                role_b=current_b.role,
-                elo_before_a=elo_before_a,
-                elo_after_a=role_new_a,
-                elo_before_b=elo_before_b,
-                elo_after_b=role_new_b,
-                training_updates_a=current_a.update_count,
-                training_updates_b=current_b.update_count,
-            )
-            self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
-            self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
-            if self.role_elo_tracker:
-                self.role_elo_tracker.update_from_result(
-                    current_a, current_b, result_score, context,
-                )
-            logger.info(
-                "  %s vs %s — %dW %dL %dD",
-                entry_a.display_name, entry_b.display_name,
-                wins_a, wins_b, draws,
-            )
-
-            # Training trigger (after Elo update) — use re-fetched entries
-            # so role changes between pairing and completion are respected.
-            if is_train_now and rollout is None:
-                logger.debug(
-                    "  %s vs %s became trainable mid-match but rollout was not collected",
-                    entry_a.display_name, entry_b.display_name,
-                )
-            if is_train_now and rollout is not None:
-                for i, entry in enumerate([current_a, current_b]):
-                    if entry.role == Role.DYNAMIC:
-                        self.dynamic_trainer.record_match(entry.id, rollout, side=i)
-                        if (
-                            self.dynamic_trainer.should_update(entry.id)
-                            and not self.dynamic_trainer.is_rate_limited()
-                            and not self.dynamic_trainer.is_gpu_backpressured(str(self.device))
-                        ):
-                            self.dynamic_trainer.update(
-                                entry, device=str(self.device),
-                            )
 
         return total
 
@@ -595,11 +613,11 @@ class LeagueTournament:
         collect_rollout: bool = False,
         num_envs: int | None = None,
         epoch: int = 0,
-    ) -> tuple[int, int, int] | tuple[int, int, int, MatchRollout]:
+    ) -> MatchOutcome:
         """Play a set of games between two frozen models.
 
-        Returns (a_wins, b_wins, draws), or (a_wins, b_wins, draws, MatchRollout)
-        when collect_rollout=True.
+        Returns a ``MatchOutcome`` with a_wins, b_wins, draws, and (when
+        ``collect_rollout=True`` and games were played) a populated rollout.
         """
         loaded: list[torch.nn.Module] = []
         try:
@@ -615,7 +633,7 @@ class LeagueTournament:
                 epoch=epoch,
             )
 
-            result = play_match(
+            outcome = play_match(
                 vecenv, model_a, model_b,
                 device=self.device, num_envs=effective_envs,
                 max_ply=self.max_ply, games_target=self.games_per_match,
@@ -624,6 +642,6 @@ class LeagueTournament:
                 feature_tracker=tracker,
             )
             self._write_game_features(tracker)
-            return result
+            return outcome
         finally:
             release_models(*loaded, device_type=self.device.type)
