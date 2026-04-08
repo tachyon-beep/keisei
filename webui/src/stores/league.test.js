@@ -43,28 +43,29 @@ describe('diffLeagueEntries', () => {
   let diffLeagueEntries, leagueEvents
 
   beforeEach(async () => {
+    // Clear persisted state — league.js persists events to localStorage,
+    // and jsdom shares it across vi.resetModules() calls.
+    try { localStorage.removeItem('keisei_league_events') } catch {}
     vi.resetModules()
     const mod = await import('./league.js')
     diffLeagueEntries = mod.diffLeagueEntries
     leagueEvents = mod.leagueEvents
+    // resetLeagueEvents clears _prevEntryMap, _prevRanks, and the store
+    mod.resetLeagueEvents()
     mod.leagueEntries.set([])
     mod.leagueResults.set([])
     mod.eloHistory.set([])
-    leagueEvents.set([])
   })
 
   const entry = (id, elo, name) => ({
     id, elo_rating: elo, display_name: name, architecture: `arch-${id}`, status: 'active',
   })
 
-  it('first call generates arrival events but no rank-change events', () => {
+  it('first call seeds state without generating events (avoids phantom arrivals on refresh)', () => {
     diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
     const events = get(leagueEvents)
-    // Every entry looks "new" on the first call (empty _prevEntryMap)
-    expect(events).toHaveLength(2)
-    expect(events.every(e => e.type === 'arrival')).toBe(true)
-    // No rank changes on first load
-    expect(events.filter(e => e.type === 'promotion' || e.type === 'demotion')).toHaveLength(0)
+    // First call seeds _prevEntryMap and returns early — no events generated
+    expect(events).toHaveLength(0)
   })
 
   it('detects an arrival on subsequent calls', () => {
@@ -138,10 +139,15 @@ describe('diffLeagueEntries', () => {
 
   it('uses architecture as fallback when display_name is missing', () => {
     const e = { id: 1, elo_rating: 1000, architecture: 'resnet-v2', status: 'active' }
-    diffLeagueEntries([])
-    diffLeagueEntries([e])
+    // Seed with a different entry first (first call seeds state, no events)
+    diffLeagueEntries([entry(99, 800, 'Seed')])
+    leagueEvents.set([])
+    // Now add the nameless entry — should detect arrival with arch fallback
+    diffLeagueEntries([entry(99, 800, 'Seed'), e])
     const events = get(leagueEvents)
-    expect(events[0].name).toBe('resnet-v2')
+    const arrival = events.find(ev => ev.type === 'arrival')
+    expect(arrival).toBeDefined()
+    expect(arrival.name).toBe('resnet-v2')
   })
 })
 
