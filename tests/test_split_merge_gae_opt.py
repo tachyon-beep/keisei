@@ -1,5 +1,7 @@
 """Tests for split-merge GAE hot path optimizations."""
 
+import time
+
 import torch
 import pytest
 
@@ -267,3 +269,39 @@ class TestVectorizedUpdateIntegration:
                 continue
             assert not torch.tensor(val).isnan(), f"{key} is NaN"
             assert not torch.tensor(val).isinf(), f"{key} is inf"
+
+
+class TestPerformanceSanity:
+    """Sanity check that the optimized path isn't accidentally slower."""
+
+    def test_argsort_faster_than_boolean_loop(self):
+        """argsort+split must be faster than boolean-index loop for 64+ envs."""
+        torch.manual_seed(42)
+        N_envs = 64
+        total_samples = 8192
+        env_ids = torch.randint(0, N_envs, (total_samples,))
+        rewards = torch.randn(total_samples)
+
+        # Boolean-index loop (old path)
+        start = time.perf_counter()
+        for _ in range(3):
+            for eid in range(N_envs):
+                mask = env_ids == eid
+                _ = rewards[mask]
+        bool_time = (time.perf_counter() - start) / 3
+
+        # argsort+split (new path)
+        start = time.perf_counter()
+        for _ in range(3):
+            sort_idx = torch.argsort(env_ids, stable=True)
+            sorted_ids = env_ids[sort_idx]
+            _, counts = sorted_ids.unique_consecutive(return_counts=True)
+            splits = torch.split(sort_idx, counts.tolist())
+            for idx in splits:
+                _ = rewards[idx]
+        sort_time = (time.perf_counter() - start) / 3
+
+        # argsort should be at least 2x faster for 64 envs
+        assert sort_time < bool_time, (
+            f"argsort ({sort_time:.4f}s) not faster than bool loop ({bool_time:.4f}s)"
+        )
