@@ -480,7 +480,18 @@ class LeagueTournament:
             )
 
         def _release_fn(model_a: object, model_b: object) -> None:
-            release_models(model_a, model_b, device_type=self.device.type)
+            # When using the LRU model cache, the same model object is shared
+            # across multiple concurrent slots (e.g. entry1 appears in pairings
+            # (1,2) and (1,3)).  release_models() calls model.cpu(), which would
+            # move the shared object off GPU and crash any other slot still using
+            # it.  Instead, just flush the CUDA allocator for freed blocks —
+            # the cache manages model lifecycle and VRAM.
+            if max_cached > 0:
+                if self.device.type == "cuda":
+                    with torch.cuda.device(self.device):
+                        torch.cuda.empty_cache()
+            else:
+                release_models(model_a, model_b, device_type=self.device.type)
 
         results, round_stats = self.concurrent_pool.run_round(
             vecenv,

@@ -631,6 +631,110 @@ class TestMajorityWinsResult:
 # ===========================================================================
 
 
+class TestCachedModelReleaseSafety:
+    """Regression: release_fn must not call model.cpu() on LRU-cached models.
+
+    When using ConcurrentMatchPool with max_resident_models > 0, the same
+    model object is shared across multiple concurrent slots via the LRU
+    cache.  If release_fn moves a model to CPU, other active slots that
+    still reference the same object will crash with a device mismatch:
+    "Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor)".
+    """
+
+    def test_cached_release_fn_does_not_call_release_models(self, tmp_path):
+        """Capture the release_fn closure from _run_concurrent_round and
+        verify it does NOT delegate to release_models when cache is active."""
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4,
+            max_resident_models=4,
+        )
+        pool = ConcurrentMatchPool(config)
+        t = _make_tournament(store, concurrent_pool=pool)
+
+        entries = [_make_entry(1), _make_entry(2), _make_entry(3)]
+        pairings = [(entries[0], entries[1])]
+
+        # Capture the release_fn and load_fn closures passed to run_round
+        captured_release_fn = None
+
+        def spy_run_round(vecenv, pairings, *, load_fn, release_fn, **kwargs):
+            nonlocal captured_release_fn
+            captured_release_fn = release_fn
+            from keisei.training.concurrent_matches import RoundStats
+            return [], RoundStats()
+
+        with patch.object(pool, "run_round", side_effect=spy_run_round):
+            t._run_concurrent_round(MagicMock(), pairings, epoch=10)
+
+        assert captured_release_fn is not None
+
+        # Now call the captured release_fn and verify it does NOT call
+        # release_models (which would move models to CPU).
+        model_a = MagicMock()
+        model_b = MagicMock()
+
+        with patch(
+            "keisei.training.tournament.release_models",
+        ) as mock_release:
+            captured_release_fn(model_a, model_b)
+            mock_release.assert_not_called()
+
+        store.close()
+
+    def test_uncached_release_fn_calls_release_models(self, tmp_path):
+        """When max_cached=0 (caching disabled), release_fn should delegate
+        to release_models so VRAM is freed immediately."""
+        db_path = str(tmp_path / "test.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+
+        # max_resident_models=2 → effective but set to 0 in the closure
+        # by overriding the config to simulate no caching.
+        config = ConcurrencyConfig(
+            parallel_matches=2, envs_per_match=2, total_envs=4,
+            max_resident_models=2,
+        )
+        pool = ConcurrentMatchPool(config)
+        t = _make_tournament(store, concurrent_pool=pool)
+
+        # Override max_resident_models to 0 to simulate uncached path
+        object.__setattr__(config, "max_resident_models", 0)
+
+        pairings = [(_make_entry(1), _make_entry(2))]
+
+        captured_release_fn = None
+
+        def spy_run_round(vecenv, pairings, *, load_fn, release_fn, **kwargs):
+            nonlocal captured_release_fn
+            captured_release_fn = release_fn
+            from keisei.training.concurrent_matches import RoundStats
+            return [], RoundStats()
+
+        with patch.object(pool, "run_round", side_effect=spy_run_round):
+            t._run_concurrent_round(MagicMock(), pairings, epoch=10)
+
+        assert captured_release_fn is not None
+
+        model_a = MagicMock()
+        model_b = MagicMock()
+
+        with patch(
+            "keisei.training.tournament.release_models",
+        ) as mock_release:
+            captured_release_fn(model_a, model_b)
+            mock_release.assert_called_once()
+
+        store.close()
+
+
 class TestPlayMatchModelCleanup:
     """Verify _play_match cleans up GPU memory even if the second model load fails."""
 
