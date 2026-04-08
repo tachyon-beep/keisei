@@ -36,6 +36,14 @@ leagueEvents.subscribe(events => {
 let _prevEntryMap = new Map()
 let _prevRanks = new Map()
 
+/** Clear persisted events and diff state. Used in tests to reset
+ *  module-level mutable state after vi.resetModules(). */
+export function resetLeagueEvents() {
+  _prevEntryMap = new Map()
+  _prevRanks = new Map()
+  leagueEvents.set([])
+}
+
 /**
  * Call after leagueEntries is updated to diff and generate events.
  * Kept as an explicit function (not a derived store) because it needs

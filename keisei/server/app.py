@@ -216,6 +216,11 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
                 tg.create_task(_poll_showcase(websocket, db_path))
         except* WebSocketDisconnect:
             pass
+        except* asyncio.CancelledError:
+            # Normal: client disconnected while a background DB thread was
+            # in flight.  CancelledError is a BaseException and escapes
+            # except* Exception, so it needs its own clause.
+            pass
         except* Exception as eg:
             for exc in eg.exceptions:
                 if not isinstance(exc, WebSocketDisconnect):

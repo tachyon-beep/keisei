@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from starlette.testclient import TestClient
 
 from keisei.db import init_db, write_metrics, write_training_state
 from keisei.server.app import TEST_ALLOWED_HOSTS, create_app
@@ -48,11 +47,10 @@ async def test_healthz_db_missing() -> None:
     assert data["db_accessible"] is False
 
 
-def test_ws_sends_init_on_connect(db_path: str) -> None:
+def test_ws_sends_init_on_connect(db_path: str, ws_connect) -> None:
     write_metrics(db_path, {"epoch": 0, "step": 100, "policy_loss": 1.5})
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert "games" in msg
@@ -61,10 +59,9 @@ def test_ws_sends_init_on_connect(db_path: str) -> None:
         assert msg["training_state"]["display_name"] == "TestBot"
 
 
-def test_ws_init_includes_league_data(db_path: str) -> None:
+def test_ws_init_includes_league_data(db_path: str, ws_connect) -> None:
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert "league_entries" in msg
@@ -73,7 +70,7 @@ def test_ws_init_includes_league_data(db_path: str) -> None:
         assert isinstance(msg["league_entries"], list)
 
 
-def test_ws_init_league_data_populated(db_path: str) -> None:
+def test_ws_init_league_data_populated(db_path: str, ws_connect) -> None:
     import sqlite3
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -85,8 +82,7 @@ def test_ws_init_league_data_populated(db_path: str) -> None:
     conn.close()
 
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert len(msg["league_entries"]) == 1
         assert msg["league_entries"][0]["architecture"] == "transformer"
@@ -113,11 +109,10 @@ def test_league_change_detection_uses_entry_ids_not_count() -> None:
     assert old_ids != new_ids
 
 
-def test_ws_init_includes_historical_library_and_gauntlet_results(db_path: str) -> None:
+def test_ws_init_includes_historical_library_and_gauntlet_results(db_path: str, ws_connect) -> None:
     """Assert the init message contains historical_library and gauntlet_results keys."""
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert "historical_library" in msg
@@ -126,18 +121,17 @@ def test_ws_init_includes_historical_library_and_gauntlet_results(db_path: str) 
         assert isinstance(msg["gauntlet_results"], list)
 
 
-def test_ws_init_includes_transitions(db_path: str) -> None:
+def test_ws_init_includes_transitions(db_path: str, ws_connect) -> None:
     """Assert the init message contains the transitions key."""
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert "transitions" in msg
         assert isinstance(msg["transitions"], list)
 
 
-def test_ws_init_role_field_propagation(db_path: str) -> None:
+def test_ws_init_role_field_propagation(db_path: str, ws_connect) -> None:
     """Insert a league entry with explicit role, verify it appears in the init payload."""
     import sqlite3
     conn = sqlite3.connect(db_path)
@@ -150,15 +144,14 @@ def test_ws_init_role_field_propagation(db_path: str) -> None:
     conn.close()
 
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert len(msg["league_entries"]) == 1
         assert msg["league_entries"][0]["role"] == "frontier_static"
 
 
-def test_ws_init_multi_view_elo_metrics(db_path: str) -> None:
+def test_ws_init_multi_view_elo_metrics(db_path: str, ws_connect) -> None:
     """Insert a league entry with multi-view Elo ratings, verify they appear in the init payload."""
     import sqlite3
     conn = sqlite3.connect(db_path)
@@ -172,8 +165,7 @@ def test_ws_init_multi_view_elo_metrics(db_path: str) -> None:
     conn.close()
 
     app = create_app(db_path, allowed_hosts=TEST_ALLOWED_HOSTS)
-    client = TestClient(app)
-    with client.websocket_connect("/ws") as ws:
+    with ws_connect(app) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "init"
         assert len(msg["league_entries"]) == 1

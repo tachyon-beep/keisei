@@ -94,20 +94,19 @@ class TestHostFilterMiddleware:
         # (which is what TestClient sends by default).
         restricted_hosts = frozenset({"only-this-host.example.com"})
         app = create_app(db_path, allowed_hosts=restricted_hosts)
-        client = TestClient(app)
+        client = TestClient(app, raise_server_exceptions=False)
         with pytest.raises(Exception):
             # TestClient sends Host: testserver, which isn't in restricted_hosts.
             # The server should close the WebSocket with code 1008.
             with client.websocket_connect("/ws") as ws:
                 ws.receive_json()  # Should not reach here
 
-    def test_websocket_allowed_host_connects(self, db_path: str) -> None:
+    def test_websocket_allowed_host_connects(self, db_path: str, ws_connect) -> None:
         """WebSocket with allowed host → accepts connection and sends init."""
         # Include 'testserver' in the allowlist (what TestClient sends)
         hosts_with_testserver = ALLOWED_HOSTS | frozenset({"testserver"})
         app = create_app(db_path, allowed_hosts=hosts_with_testserver)
-        client = TestClient(app)
-        with client.websocket_connect("/ws") as ws:
+        with ws_connect(app) as ws:
             msg = ws.receive_json()
             assert msg["type"] == "init"
 

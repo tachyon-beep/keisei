@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from starlette.testclient import TestClient
 
 from keisei.db import (
     init_db,
@@ -112,14 +111,13 @@ class TestTrainingAlive:
 class TestWSMetricsUpdate:
     """After init, new metrics written to DB should be pushed as metrics_update."""
 
-    def test_metrics_update_pushed(self, server_db: str) -> None:
+    def test_metrics_update_pushed(self, server_db: str, ws_connect) -> None:
         app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         # Patch poll interval to be very short
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 # Consume init message
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
@@ -151,13 +149,12 @@ class TestWSMetricsUpdate:
 class TestWSGameUpdate:
     """Game snapshots written after init should be pushed as game_update."""
 
-    def test_game_update_pushed(self, server_db: str) -> None:
+    def test_game_update_pushed(self, server_db: str, ws_connect) -> None:
         app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
 
@@ -190,13 +187,12 @@ class TestWSGameUpdate:
 class TestWSTrainingStatusDiff:
     """training_status is only pushed when epoch or status changes."""
 
-    def test_status_pushed_on_epoch_change(self, server_db: str) -> None:
+    def test_status_pushed_on_epoch_change(self, server_db: str, ws_connect) -> None:
         app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
 
@@ -214,7 +210,7 @@ class TestWSTrainingStatusDiff:
 
                 assert found, "Expected training_status message after epoch change"
 
-    def test_no_status_push_when_epoch_unchanged(self, server_db: str) -> None:
+    def test_no_status_push_when_epoch_unchanged(self, server_db: str, ws_connect) -> None:
         """When epoch and status don't change, no training_status is pushed.
         We force a metrics_update (observable) and check no training_status
         arrives before it."""
@@ -222,8 +218,7 @@ class TestWSTrainingStatusDiff:
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
 
@@ -255,14 +250,13 @@ class TestWSTrainingStatusDiff:
 class TestWSKeepalive:
     """The server sends periodic ping messages."""
 
-    def test_ping_received(self, server_db: str) -> None:
+    def test_ping_received(self, server_db: str, ws_connect) -> None:
         app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         # Set ping interval very short so we get one quickly
         with patch("keisei.server.app.WS_PING_INTERVAL_S", 0.05), \
              patch("keisei.server.app.POLL_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 # First message is init (from _poll_and_push)
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
@@ -331,14 +325,13 @@ class TestGetSystemStats:
 class TestWSTrainingStatusSystemStats:
     """H2: training_status push includes system_stats with expected structure."""
 
-    def test_system_stats_present_in_training_status(self, server_db: str) -> None:
+    def test_system_stats_present_in_training_status(self, server_db: str, ws_connect) -> None:
         """Trigger a training_status push and verify system_stats field."""
         app = create_app(server_db, allowed_hosts=TEST_ALLOWED_HOSTS)
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
 
@@ -379,7 +372,7 @@ class TestWSInitWithPreExistingGames:
     """HIGH-2: When games already exist in DB before WebSocket connect,
     init message should include them and last_game_ts should be set."""
 
-    def test_init_includes_pre_existing_games(self, server_db: str) -> None:
+    def test_init_includes_pre_existing_games(self, server_db: str, ws_connect) -> None:
         """Seed DB with game snapshots before connecting; verify init message."""
         # Write games BEFORE WebSocket connect
         write_game_snapshots(server_db, [
@@ -403,8 +396,7 @@ class TestWSInitWithPreExistingGames:
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
                 # Init should include the 2 pre-existing games
@@ -412,7 +404,7 @@ class TestWSInitWithPreExistingGames:
                 plies = {g["ply"] for g in init_msg["games"]}
                 assert plies == {10, 20}
 
-    def test_subsequent_updates_after_pre_existing_games(self, server_db: str) -> None:
+    def test_subsequent_updates_after_pre_existing_games(self, server_db: str, ws_connect) -> None:
         """After init with pre-existing games, updating an existing game should push game_update.
 
         We update an existing game_id (not create a new one) to ensure the
@@ -432,8 +424,7 @@ class TestWSInitWithPreExistingGames:
 
         with patch("keisei.server.app.POLL_INTERVAL_S", 0.01), \
              patch("keisei.server.app.WS_PING_INTERVAL_S", 999):
-            client = TestClient(app)
-            with client.websocket_connect("/ws") as ws:
+            with ws_connect(app) as ws:
                 init_msg = ws.receive_json()
                 assert init_msg["type"] == "init"
                 assert len(init_msg["games"]) == 1
