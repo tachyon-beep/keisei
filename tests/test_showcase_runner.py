@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -142,3 +143,40 @@ class TestShowcaseRunner:
         assert runner._get_delay("slow") == 4.0
         assert runner._get_delay("normal") == 2.0
         assert runner._get_delay("fast") == 0.5
+
+
+class TestShowcaseIntegration:
+    """Integration tests using real (tiny) models."""
+
+    @pytest.fixture
+    def tiny_model_checkpoint(self, tmp_path: Path) -> tuple[str, Path]:
+        """Create a tiny MLP model checkpoint."""
+        from keisei.training.model_registry import build_model
+        arch = "mlp"
+        params = {"hidden_sizes": [64, 64]}  # MLPParams.hidden_sizes has no default
+        model = build_model(arch, params)
+        ckpt = tmp_path / "tiny.pt"
+        torch.save(model.state_dict(), ckpt)
+        return arch, ckpt
+
+    def test_inference_cpu_only(self, tiny_model_checkpoint: tuple[str, Path]) -> None:
+        """Verify inference runs on CPU and produces valid output."""
+        from keisei.showcase.inference import load_model_for_showcase, run_inference
+        arch, ckpt = tiny_model_checkpoint
+        model = load_model_for_showcase(ckpt, arch, {"hidden_sizes": [64, 64]})
+
+        # All params should be on CPU
+        for name, param in model.named_parameters():
+            assert param.device == torch.device("cpu"), f"{name} on {param.device}"
+
+        # Run inference
+        obs = np.random.randn(46, 9, 9).astype(np.float32)  # SpectatorEnv channels
+        policy, win_prob = run_inference(model, obs, arch)
+        assert policy.shape[0] > 0
+        assert 0.0 <= win_prob <= 1.0
+
+    def test_cuda_not_available_in_showcase(self) -> None:
+        """After enforce_cpu_only, CUDA should not be available."""
+        from keisei.showcase.inference import enforce_cpu_only
+        enforce_cpu_only(cpu_threads=1)
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == ""
