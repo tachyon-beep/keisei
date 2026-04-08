@@ -56,6 +56,11 @@ export function diffLeagueEntries(entries) {
   // First load: seed state without generating events (avoids phantom
   // arrivals for every existing entry on page refresh).
   if (_prevEntryMap.size === 0) {
+    // Empty init means the DB was wiped — clear stale persisted events
+    // so the event log doesn't show history from a previous run.
+    if (entries.length === 0) {
+      leagueEvents.set([])
+    }
     _prevEntryMap = newMap
     const activeEntries = entries.filter(e => e.status === 'active')
     if (activeEntries.length > 0) {
