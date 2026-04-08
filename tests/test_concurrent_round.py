@@ -182,8 +182,12 @@ class TestConcurrentRoundEloWrites:
         assert result_row["match_type"] == "calibration"
         check_conn.close()
 
-    def test_retired_entry_skipped(self, store, db_path) -> None:
-        """Entries retired mid-round should not get Elo updates."""
+    def test_retired_entry_still_recorded(self, store, db_path) -> None:
+        """Entries retired mid-round should still get results (snapshot isolation).
+
+        The match was played while both entries were active — their results
+        are valid calibration data regardless of subsequent retirement.
+        """
         conn = sqlite3.connect(db_path)
         entry_a = _make_entry(1, elo=1000.0)
         entry_b = _make_entry(2, elo=1000.0)
@@ -211,17 +215,17 @@ class TestConcurrentRoundEloWrites:
                 MagicMock(), [(entry_a, entry_b)], epoch=5,
             )
 
-        # No league_results row should be inserted
         check_conn = sqlite3.connect(db_path)
+        # Result SHOULD be recorded — match was valid
         count = check_conn.execute(
             "SELECT COUNT(*) FROM league_results"
         ).fetchone()[0]
-        assert count == 0, "Retired entry should not produce league_results"
-        # Elo should not change
+        assert count == 1, "Retired-mid-round result should still be recorded"
+        # Elo SHOULD be updated — winner's Elo increases
         row_a = check_conn.execute(
             "SELECT elo_rating FROM league_entries WHERE id = 1"
         ).fetchone()
-        assert row_a[0] == 1000.0, "Elo should not change for retired match"
+        assert row_a[0] > 1000.0, "Winner Elo should increase even if opponent retired"
         check_conn.close()
 
     def test_zero_total_games_skipped(self, store, db_path) -> None:

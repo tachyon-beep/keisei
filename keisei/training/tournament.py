@@ -351,13 +351,16 @@ class LeagueTournament:
                 current_b = self.store.get_entry(result.entry_b.id)
                 if current_a is None or current_b is None:
                     continue
-                # Skip results for entries retired mid-round (race with tier manager)
+                # Entries may have been retired by the tier manager during the
+                # round.  The match was played while both were active, so the
+                # result is valid calibration data — record it regardless of
+                # current status.  (Snapshot-isolation principle: validity is
+                # determined at pairing time, not at recording time.)
                 if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
-                    logger.info(
-                        "  Skipping result %s vs %s — entry retired mid-round",
+                    logger.debug(
+                        "  Recording result for since-retired entry: %s vs %s",
                         result.entry_a.display_name, result.entry_b.display_name,
                     )
-                    continue
                 result_score = majority_wins_result(result.a_wins, result.b_wins, result.draws)
                 context = RoleEloTracker.determine_match_context(
                     current_a, current_b,
@@ -492,13 +495,14 @@ class LeagueTournament:
             current_a = self.store.get_entry(entry_a.id)
             current_b = self.store.get_entry(entry_b.id)
             if current_a is None or current_b is None:
-                return total  # entry retired mid-round
+                return total  # entry deleted from DB
+            # Entries may have been retired during the round — result is still
+            # valid (snapshot-isolation: active at pairing time = valid).
             if current_a.status != EntryStatus.ACTIVE or current_b.status != EntryStatus.ACTIVE:
-                logger.info(
-                    "  Skipping %s vs %s — entry retired mid-round",
+                logger.debug(
+                    "  Recording result for since-retired entry: %s vs %s",
                     entry_a.display_name, entry_b.display_name,
                 )
-                return total
             result_score = majority_wins_result(wins_a, wins_b, draws)
             context = RoleEloTracker.determine_match_context(
                 current_a, current_b,
