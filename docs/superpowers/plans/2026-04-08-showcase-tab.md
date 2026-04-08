@@ -161,6 +161,17 @@ _MIGRATIONS: dict[int, callable] = {
 }
 ```
 
+In `_connect()` at line 12, add `busy_timeout` so all connections (not just `init_db`'s) wait on locks:
+
+```python
+def _connect(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+```
+
 Inside `init_db()`, after the existing `CREATE TABLE IF NOT EXISTS` statements (before the schema version check at ~line 300), add the following SQL to the `executescript()` call:
 
 ```sql
@@ -208,7 +219,8 @@ CREATE TABLE IF NOT EXISTS showcase_moves (
     value_estimate  REAL,
     top_candidates  TEXT,
     move_time_ms    INTEGER,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    UNIQUE(game_id, ply)
 );
 CREATE INDEX IF NOT EXISTS idx_showcase_moves_game_ply ON showcase_moves(game_id, ply);
 
@@ -585,23 +597,39 @@ def write_showcase_move(
     top_candidates: str,
     move_time_ms: int,
 ) -> None:
-    """Write a single showcase move to the database."""
+    """Write a single showcase move to the database.
+
+    Both the INSERT and the total_ply UPDATE happen in one transaction
+    on one connection — a crash between them cannot leave inconsistent state.
+    """
     conn = _connect(db_path)
     try:
-        _retry_write(conn,
-            """INSERT INTO showcase_moves
-               (game_id, ply, action_index, usi_notation, board_json, hands_json,
-                current_player, in_check, value_estimate, top_candidates, move_time_ms, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (game_id, ply, action_index, usi_notation, board_json, hands_json,
-             current_player, int(in_check), value_estimate, top_candidates,
-             move_time_ms, _now_iso()),
-        )
-        # Also update total_ply on the game row
-        _retry_write(conn,
-            "UPDATE showcase_games SET total_ply = ? WHERE id = ?",
-            (ply, game_id),
-        )
+        now = _now_iso()
+        for attempt in range(MAX_RETRIES):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """INSERT OR IGNORE INTO showcase_moves
+                       (game_id, ply, action_index, usi_notation, board_json, hands_json,
+                        current_player, in_check, value_estimate, top_candidates, move_time_ms, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (game_id, ply, action_index, usi_notation, board_json, hands_json,
+                     current_player, int(in_check), value_estimate, top_candidates,
+                     move_time_ms, now),
+                )
+                conn.execute(
+                    "UPDATE showcase_games SET total_ply = ? WHERE id = ?",
+                    (ply, game_id),
+                )
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                if "database is locked" in str(e) and attempt < MAX_RETRIES - 1:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.05)
+                    time.sleep(delay)
+                else:
+                    raise
     finally:
         conn.close()
 
@@ -688,12 +716,28 @@ def read_heartbeat(db_path: str) -> dict[str, Any] | None:
 # ── Crash recovery ────────────────────────────────────────
 
 
-def cleanup_orphaned_games(db_path: str) -> int:
+def cleanup_orphaned_games(db_path: str, stale_after_s: float = 60.0) -> int:
     """Mark orphaned in-progress games as abandoned and reset running queue entries.
-    Called on sidecar startup. Returns number of games cleaned up."""
+
+    Only abandons games when no fresh heartbeat exists (avoids destroying
+    legitimate games during an operator restart).
+    Called on sidecar startup. Returns number of games cleaned up.
+    """
     conn = _connect(db_path)
     try:
         now = _now_iso()
+        # Check heartbeat age — skip cleanup if a recent heartbeat exists
+        # (another sidecar instance may still be running)
+        hb = conn.execute("SELECT last_heartbeat FROM showcase_heartbeat WHERE id = 1").fetchone()
+        if hb:
+            from datetime import datetime, timezone
+            try:
+                last_hb = datetime.fromisoformat(hb["last_heartbeat"].replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - last_hb).total_seconds()
+                if age < stale_after_s:
+                    return 0  # another instance may still be alive
+            except (ValueError, TypeError):
+                pass  # stale or unparseable — proceed with cleanup
         # Abandon in-progress games
         cursor = conn.execute(
             "UPDATE showcase_games SET status = 'abandoned', abandon_reason = 'crash_recovery', completed_at = ? WHERE status = 'in_progress'",
@@ -799,7 +843,7 @@ class TestInference:
         return model
 
     def test_run_inference_returns_policy_and_value(self, resnet_model: nn.Module) -> None:
-        obs = np.random.randn(50, 9, 9).astype(np.float32)
+        obs = np.random.randn(46, 9, 9).astype(np.float32)  # SpectatorEnv produces 46ch
         policy_logits, win_prob = run_inference(resnet_model, obs, "resnet")
         assert isinstance(policy_logits, np.ndarray)
         assert isinstance(win_prob, float)
@@ -809,8 +853,7 @@ class TestInference:
         params = {"channels": 32, "num_blocks": 2}
         model = build_model("se_resnet", params)
         model.eval()
-        obs_channels = params.get("obs_channels", 50)
-        obs = np.random.randn(obs_channels, 9, 9).astype(np.float32)
+        obs = np.random.randn(46, 9, 9).astype(np.float32)  # 46ch from SpectatorEnv, padded to 50 internally
         policy_logits, win_prob = run_inference(model, obs, "se_resnet")
         assert isinstance(policy_logits, np.ndarray)
         assert isinstance(win_prob, float)
@@ -927,16 +970,30 @@ def run_inference(
 ) -> tuple[np.ndarray, float]:
     """Run a single forward pass. Returns (policy_logits, win_probability).
 
+    Handles the observation channel mismatch: SpectatorEnv produces 46-channel
+    observations (default obs generator), but models expect 50 channels
+    (KataGo obs). We zero-pad the extra channels — the model was trained on
+    KataGo observations where those channels carry data, so the zeros act
+    as a neutral fill.  This is acceptable for showcase (entertainment-quality
+    inference, not tournament-grade).
+
     win_probability is normalized to [0, 1] regardless of model contract:
     - scalar (resnet/mlp/transformer): tanh output mapped from [-1,1] to [0,1]
     - multi_head (se_resnet): softmax(value_logits)[0] = P(win)
     """
+    spec = _get_spec(architecture)
+    expected_channels = spec.obs_channels
+    actual_channels = obs.shape[0]
+    if actual_channels < expected_channels:
+        padding = np.zeros((expected_channels - actual_channels, 9, 9), dtype=obs.dtype)
+        obs = np.concatenate([obs, padding], axis=0)
+    elif actual_channels > expected_channels:
+        obs = obs[:expected_channels]
+
     obs_tensor = torch.from_numpy(obs).unsqueeze(0).float()
 
     with torch.inference_mode():
         output = model(obs_tensor)
-
-    spec = _get_spec(architecture)
 
     if spec.contract == "multi_head":
         # KataGoOutput: .policy_logits (batch, 9, 9, 139), .value_logits (batch, 3)
@@ -1044,7 +1101,7 @@ def db(tmp_path: Path) -> str:
 def mock_spectator_env() -> MagicMock:
     """Mock SpectatorEnv that plays a 3-move game."""
     env = MagicMock()
-    env.action_space_size.return_value = 11259
+    env.action_space_size = 13527  # property, not method
 
     move_count = 0
     def mock_step(action: int) -> dict:
@@ -1080,8 +1137,9 @@ def mock_spectator_env() -> MagicMock:
     env.step.side_effect = mock_step
     env.reset.side_effect = mock_reset
     env.legal_actions.return_value = [42, 100, 200]
-    env.get_observation.return_value = np.zeros((50, 9, 9), dtype=np.float32)
-    env.is_over.side_effect = lambda: move_count >= 3
+    env.get_observation.return_value = np.zeros((46, 9, 9), dtype=np.float32)
+    # is_over is a @property (#[getter]) on real SpectatorEnv — use PropertyMock
+    type(env).is_over = property(lambda self: move_count >= 3)
     return env
 
 
@@ -1094,7 +1152,7 @@ def mock_model() -> MagicMock:
 
     def mock_forward(obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch = obs.shape[0]
-        policy = torch.randn(batch, 11259)
+        policy = torch.randn(batch, 13527)
         value = torch.tensor([[0.3]])
         return policy, value
 
@@ -1122,6 +1180,9 @@ class TestShowcaseRunner:
         qid = queue_match(db, "e1", "e2", "normal")
 
         runner = ShowcaseRunner(db_path=db)
+
+        # Seed numpy RNG for deterministic test (temperature sampling)
+        np.random.seed(42)
 
         with patch.object(runner, "_create_env", return_value=mock_spectator_env), \
              patch.object(runner, "_load_models", return_value=(mock_model, mock_model, "resnet", "resnet")):
@@ -1182,10 +1243,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# GPU firewall — MUST be before any torch import
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
-import torch  # noqa: E402
+import torch
 
 from keisei.showcase.db_ops import (
     claim_next_match,
@@ -1285,148 +1343,175 @@ class ShowcaseRunner:
         return model_black, model_white, arch_black, arch_white
 
     def _run_game(self, match: dict[str, Any]) -> None:
-        """Play a single showcase game to completion."""
+        """Play a single showcase game to completion.
+
+        Queue entry is ALWAYS finalized (completed or cancelled) via finally
+        block, preventing permanent 'running' leaks on errors.
+        """
+        game_id: int | None = None
         try:
-            model_black, model_white, arch_black, arch_white = self._load_models(match)
-        except (FileNotFoundError, ValueError) as e:
-            logger.warning("Cannot start showcase game: %s", e)
-            return
+            try:
+                model_black, model_white, arch_black, arch_white = self._load_models(match)
+            except (FileNotFoundError, ValueError) as e:
+                logger.warning("Cannot start showcase game: %s", e)
+                return  # finally block cancels the queue entry
 
-        # Look up entry info for display
-        from keisei.db import _connect
-        conn = _connect(self.db_path)
-        try:
-            e1 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_1"],)).fetchone()
-            e2 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_2"],)).fetchone()
-        finally:
-            conn.close()
-
-        game_id = create_showcase_game(
-            self.db_path,
-            queue_id=match["id"],
-            entry_id_black=match["entry_id_1"],
-            entry_id_white=match["entry_id_2"],
-            elo_black=e1["elo_rating"] if e1 else 0.0,
-            elo_white=e2["elo_rating"] if e2 else 0.0,
-            name_black=e1["display_name"] if e1 else "Unknown",
-            name_white=e2["display_name"] if e2 else "Unknown",
-        )
-
-        env = self._create_env()
-        state = env.reset()
-        logger.info("Showcase game %d started: %s vs %s", game_id,
-                     e1["display_name"] if e1 else "?", e2["display_name"] if e2 else "?")
-
-        ply = 0
-        while not self._stop_event.is_set() and not env.is_over() and ply < MAX_PLY:
-            # Select the right model for current player
-            is_black_turn = state["current_player"] == "black"
-            model = model_black if is_black_turn else model_white
-            arch = arch_black if is_black_turn else arch_white
-
-            # Get observation and run inference
-            obs = env.get_observation()
-            start_ms = time.monotonic()
-            policy_logits, win_prob = run_inference(model, obs, arch)
-            inference_ms = int((time.monotonic() - start_ms) * 1000)
-
-            # Mask illegal moves and select action
-            legal = env.legal_actions()
-            mask = np.full(policy_logits.shape, -1e9)
-            mask[legal] = 0.0
-            masked_logits = policy_logits + mask
-
-            # Softmax for probabilities
-            probs = np.exp(masked_logits - masked_logits.max())
-            probs = probs / probs.sum()
-
-            # Select top-3 candidates
-            top_indices = np.argsort(probs)[::-1][:3]
-            top_candidates = []
-            for idx in top_indices:
-                if probs[idx] > 0.001:
-                    top_candidates.append({"action": int(idx), "probability": round(float(probs[idx]), 4)})
-
-            # Pick the best move (greedy)
-            action = int(np.argmax(masked_logits))
-
-            # Step the environment
-            state = env.step(action)
-            ply = state["ply"]
-
-            # Extract USI notation from move history
-            usi_notation = state["move_history"][-1]["notation"] if state["move_history"] else f"action_{action}"
-
-            # Add USI to top candidates
-            for tc in top_candidates:
-                # We only have USI for the move that was played — for candidates,
-                # we'd need to decode actions. For now, just use action index.
-                tc["usi"] = usi_notation if tc["action"] == action else f"a{tc['action']}"
-
-            # Write move to DB
-            write_showcase_move(
-                self.db_path,
-                game_id=game_id,
-                ply=ply,
-                action_index=action,
-                usi_notation=usi_notation,
-                board_json=json.dumps(state["board"]),
-                hands_json=json.dumps(state["hands"]),
-                current_player=state["current_player"],
-                in_check=state.get("in_check", False),
-                value_estimate=win_prob,
-                top_candidates=json.dumps(top_candidates),
-                move_time_ms=inference_ms,
-            )
-
-            # Read current speed from queue (allows mid-game speed changes)
-            from keisei.showcase.db_ops import _connect
+            # Look up entry info for display
+            from keisei.db import _connect
             conn = _connect(self.db_path)
             try:
-                row = conn.execute(
-                    "SELECT speed FROM showcase_queue WHERE id = ?", (match["id"],)
-                ).fetchone()
-                speed = row["speed"] if row else match.get("speed", "normal")
+                e1 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_1"],)).fetchone()
+                e2 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_2"],)).fetchone()
             finally:
                 conn.close()
 
-            # Wait for pacing delay (interruptible)
-            delay = self._get_delay(speed)
-            self._speed_event.wait(timeout=delay)
-            self._speed_event.clear()
-
-        # Determine result
-        if self._stop_event.is_set():
-            mark_game_abandoned(self.db_path, game_id, "shutdown")
-            logger.info("Showcase game %d abandoned (shutdown)", game_id)
-        elif ply >= MAX_PLY:
-            mark_game_completed(self.db_path, game_id, "draw", total_ply=ply)
-            logger.info("Showcase game %d ended: draw (max ply)", game_id)
-        else:
-            result = state.get("result", "in_progress")
-            # Map SpectatorEnv result to our status
-            if result == "checkmate":
-                # The player who just moved won
-                winner = "white" if state["current_player"] == "black" else "black"
-                status = f"{winner}_win"
-            elif result in ("repetition", "perpetual_check", "impasse", "max_moves"):
-                status = "draw"
-            else:
-                status = "draw"
-            mark_game_completed(self.db_path, game_id, status, total_ply=ply)
-            logger.info("Showcase game %d ended: %s (%d ply)", game_id, status, ply)
-
-        # Mark queue entry as completed
-        conn = _connect(self.db_path)
-        try:
-            from keisei.showcase.db_ops import _now_iso
-            conn.execute(
-                "UPDATE showcase_queue SET status = 'completed', completed_at = ? WHERE id = ?",
-                (_now_iso(), match["id"]),
+            game_id = create_showcase_game(
+                self.db_path,
+                queue_id=match["id"],
+                entry_id_black=match["entry_id_1"],
+                entry_id_white=match["entry_id_2"],
+                elo_black=e1["elo_rating"] if e1 else 0.0,
+                elo_white=e2["elo_rating"] if e2 else 0.0,
+                name_black=e1["display_name"] if e1 else "Unknown",
+                name_white=e2["display_name"] if e2 else "Unknown",
             )
-            conn.commit()
+
+            env = self._create_env()
+            state = env.reset()
+            logger.info("Showcase game %d started: %s vs %s", game_id,
+                         e1["display_name"] if e1 else "?", e2["display_name"] if e2 else "?")
+
+            ply = 0
+            while not self._stop_event.is_set() and not env.is_over and ply < MAX_PLY:
+                # Select the right model for current player
+                is_black_turn = state["current_player"] == "black"
+                model = model_black if is_black_turn else model_white
+                arch = arch_black if is_black_turn else arch_white
+
+                # Get observation and run inference
+                obs = env.get_observation()
+                start_ms = time.monotonic()
+                policy_logits, win_prob = run_inference(model, obs, arch)
+                inference_ms = int((time.monotonic() - start_ms) * 1000)
+
+                # Mask illegal moves and select action
+                legal = env.legal_actions()
+                mask = np.full(policy_logits.shape, -1e9)
+                mask[legal] = 0.0
+                masked_logits = policy_logits + mask
+
+                # Softmax for probabilities (with temperature for variety)
+                temperature = 0.5  # mild randomness — prevents identical replays
+                scaled_logits = masked_logits / temperature
+                probs = np.exp(scaled_logits - scaled_logits.max())
+                probs = probs / probs.sum()
+
+                # Select top-3 candidates
+                top_indices = np.argsort(probs)[::-1][:3]
+                top_candidates = []
+                for idx in top_indices:
+                    if probs[idx] > 0.001:
+                        top_candidates.append({"action": int(idx), "probability": round(float(probs[idx]), 4)})
+
+                # Sample from the distribution (not greedy — avoids identical games)
+                action = int(np.random.choice(len(probs), p=probs))
+
+                # Step the environment
+                state = env.step(action)
+                ply = state["ply"]
+
+                # Extract USI notation from move history
+                if state["move_history"]:
+                    usi_notation = state["move_history"][-1]["notation"]
+                else:
+                    usi_notation = f"action_{action}"
+
+                # Add USI to top candidates
+                for tc in top_candidates:
+                    # We only have USI for the move that was played — for candidates,
+                    # we'd need to decode actions via SpectatorEnv. Tracked as follow-up.
+                    tc["usi"] = usi_notation if tc["action"] == action else f"a{tc['action']}"
+
+                # Write move to DB
+                write_showcase_move(
+                    self.db_path,
+                    game_id=game_id,
+                    ply=ply,
+                    action_index=action,
+                    usi_notation=usi_notation,
+                    board_json=json.dumps(state["board"]),
+                    hands_json=json.dumps(state["hands"]),
+                    current_player=state["current_player"],
+                    in_check=state.get("in_check", False),
+                    value_estimate=win_prob,
+                    top_candidates=json.dumps(top_candidates),
+                    move_time_ms=inference_ms,
+                )
+
+                # Read current speed from queue (allows mid-game speed changes)
+                try:
+                    from keisei.db import _connect as _db_connect
+                    conn = _db_connect(self.db_path)
+                    try:
+                        row = conn.execute(
+                            "SELECT speed FROM showcase_queue WHERE id = ?", (match["id"],)
+                        ).fetchone()
+                        speed = row["speed"] if row else match.get("speed", "normal")
+                    finally:
+                        conn.close()
+                except Exception:
+                    speed = match.get("speed", "normal")  # fallback on DB error
+
+                # Wait for pacing delay (interruptible)
+                delay = self._get_delay(speed)
+                self._speed_event.wait(timeout=delay)
+                self._speed_event.clear()
+
+            # Determine result
+            if self._stop_event.is_set():
+                mark_game_abandoned(self.db_path, game_id, "shutdown")
+                logger.info("Showcase game %d abandoned (shutdown)", game_id)
+            elif ply >= MAX_PLY:
+                mark_game_completed(self.db_path, game_id, "draw", total_ply=ply)
+                logger.info("Showcase game %d ended: draw (max ply)", game_id)
+            else:
+                result = state.get("result", "in_progress")
+                # Map SpectatorEnv result to our status
+                if result == "checkmate":
+                    # The player who just moved won
+                    winner = "white" if state["current_player"] == "black" else "black"
+                    status = f"{winner}_win"
+                elif result in ("repetition", "perpetual_check", "impasse", "max_moves"):
+                    status = "draw"
+                else:
+                    status = "draw"
+                mark_game_completed(self.db_path, game_id, status, total_ply=ply)
+                logger.info("Showcase game %d ended: %s (%d ply)", game_id, status, ply)
+
+        except Exception:
+            logger.exception("Showcase game failed (queue_id=%s, game_id=%s)", match["id"], game_id)
+            if game_id is not None:
+                try:
+                    mark_game_abandoned(self.db_path, game_id, "error")
+                except Exception:
+                    logger.warning("Failed to abandon game %d during error recovery", game_id)
+
         finally:
-            conn.close()
+            # ALWAYS finalize queue entry — prevents permanent 'running' leak
+            try:
+                from keisei.db import _connect as _db_connect
+                conn = _db_connect(self.db_path)
+                try:
+                    from keisei.showcase.db_ops import _now_iso
+                    conn.execute(
+                        "UPDATE showcase_queue SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'running'",
+                        (_now_iso(), match["id"]),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                logger.warning("Failed to finalize queue entry %s", match["id"])
 
     def _maybe_auto_showcase(self) -> None:
         """Queue an auto-showcase match if conditions are met."""
@@ -1477,11 +1562,19 @@ class ShowcaseRunner:
             # Try to claim a match
             match = claim_next_match(self.db_path)
             if match is not None:
-                self._run_game(match)
+                try:
+                    self._run_game(match)
+                except Exception:
+                    # _run_game already logs + cleans up internally,
+                    # but guard against truly unexpected propagation
+                    logger.exception("Unhandled error in _run_game (queue_id=%s)", match["id"])
                 continue
 
             # No match — maybe auto-showcase
-            self._maybe_auto_showcase()
+            try:
+                self._maybe_auto_showcase()
+            except Exception:
+                logger.warning("Auto-showcase check failed", exc_info=True)
 
             # Wait before polling again
             self._stop_event.wait(timeout=POLL_INTERVAL)
@@ -1495,6 +1588,11 @@ class ShowcaseRunner:
 
 
 def main() -> None:
+    # GPU firewall — MUST be before any model loading.
+    # Set here (not at module level) so that importing runner.py in tests
+    # does not disable CUDA for the entire test process.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
     parser = argparse.ArgumentParser(description="Showcase sidecar runner")
     parser.add_argument("--db-path", required=True, help="Path to SQLite database")
     parser.add_argument("--cpu-threads", type=int, default=2, help="PyTorch CPU threads")
@@ -1577,9 +1675,16 @@ from keisei.showcase.db_ops import (
 def server_db(tmp_path: Path) -> str:
     path = str(tmp_path / "server_test.db")
     init_db(path)
-    # Write minimal training state so init message works
+    # Write minimal training state so init message works — all required fields
     write_training_state(path, {
-        "status": "idle", "current_epoch": 0, "current_step": 0,
+        "config_json": "{}",
+        "display_name": "test-model",
+        "model_arch": "resnet",
+        "algorithm_name": "ppo",
+        "started_at": "2026-01-01T00:00:00Z",
+        "status": "idle",
+        "current_epoch": 0,
+        "current_step": 0,
     })
     return path
 
@@ -1722,14 +1827,26 @@ Add the `_receive_commands()` coroutine:
 ```python
 async def _receive_commands(ws: WebSocket, db_path: str) -> None:
     """Handle client-to-server WebSocket messages."""
+    import json as _json
     import time as _time
     last_match_request_time = 0.0  # rate limit: 1 match request per 10s per connection
 
     while True:
         try:
             data = await ws.receive_json()
+        except _json.JSONDecodeError:
+            # Malformed JSON — tell the client, keep the loop alive
+            try:
+                await asyncio.wait_for(ws.send_json({
+                    "type": "showcase_error",
+                    "message": "Malformed JSON in client message",
+                    "request_type": "unknown",
+                }), timeout=WS_SEND_TIMEOUT_S)
+            except Exception:
+                return
+            continue
         except Exception:
-            return  # connection closed
+            return  # genuine connection close
 
         msg_type = data.get("type")
 
@@ -1861,16 +1978,25 @@ Add the `_poll_showcase()` coroutine:
 
 ```python
 async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
-    """Poll showcase tables and push updates."""
+    """Poll showcase tables and push updates.
+
+    Uses change detection to avoid sending redundant messages — only sends
+    showcase_status when queue/game/sidecar state has changed.
+    """
     last_move_ply = 0
     last_game_id: int | None = None
+    last_status_fingerprint: tuple = ()  # (game_id, queue_ids, sidecar_alive)
 
     while True:
         await asyncio.sleep(SHOWCASE_POLL_INTERVAL_S)
 
-        game = await asyncio.to_thread(read_active_showcase_game, db_path)
-        queue = await asyncio.to_thread(showcase_read_queue, db_path)
-        hb = await asyncio.to_thread(showcase_read_heartbeat, db_path)
+        try:
+            game = await asyncio.to_thread(read_active_showcase_game, db_path)
+            queue = await asyncio.to_thread(showcase_read_queue, db_path)
+            hb = await asyncio.to_thread(showcase_read_heartbeat, db_path)
+        except Exception:
+            logger.debug("_poll_showcase: DB read failed, retrying next tick", exc_info=True)
+            continue
 
         sidecar_alive = False
         if hb:
@@ -1882,17 +2008,26 @@ async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
             except (ValueError, TypeError):
                 pass
 
-        # Send queue/status update
-        try:
-            await asyncio.wait_for(ws.send_json({
-                "type": "showcase_status",
-                "queue": queue,
-                "active_game_id": game["id"] if game else None,
-                "sidecar_alive": sidecar_alive,
-                "queue_depth": sum(1 for q in queue if q["status"] == "pending"),
-            }), timeout=WS_SEND_TIMEOUT_S)
-        except Exception:
-            return
+        # Change detection — only send status when something changed
+        current_fingerprint = (
+            game["id"] if game else None,
+            tuple(q["id"] for q in queue),
+            tuple(q["status"] for q in queue),
+            sidecar_alive,
+        )
+        if current_fingerprint != last_status_fingerprint:
+            last_status_fingerprint = current_fingerprint
+            try:
+                await asyncio.wait_for(ws.send_json({
+                    "type": "showcase_status",
+                    "queue": queue,
+                    "active_game_id": game["id"] if game else None,
+                    "sidecar_alive": sidecar_alive,
+                    "queue_depth": sum(1 for q in queue if q["status"] == "pending"),
+                }), timeout=WS_SEND_TIMEOUT_S)
+            except Exception:
+                logger.debug("_poll_showcase: send failed, closing", exc_info=True)
+                return
 
         # Send new moves if game is active
         if game:
@@ -1913,7 +2048,11 @@ async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
                         "new_moves": moves,
                     }), timeout=WS_SEND_TIMEOUT_S)
                 except Exception:
+                    logger.debug("_poll_showcase: send failed, closing", exc_info=True)
                     return
+        else:
+            last_game_id = None
+            last_move_ply = 0
 ```
 
 Modify the init message in `_poll_and_push()` to include showcase data:
@@ -2013,8 +2152,8 @@ export const showcaseSpeed = writable('normal')
 /** Whether the sidecar process is alive */
 export const sidecarAlive = writable(false)
 
-/** Latest board state from most recent move */
-export const showcaseBoard = derived(showcaseMoves, moves => {
+/** Full move object for the most recent move (board, candidates, eval, etc.) */
+export const showcaseCurrentMove = derived(showcaseMoves, moves => {
   if (moves.length === 0) return null
   return moves[moves.length - 1]
 })
@@ -2038,21 +2177,21 @@ import { describe, it, expect } from 'vitest'
 import { get } from 'svelte/store'
 import {
   showcaseGame, showcaseMoves, showcaseQueue,
-  showcaseBoard, winProbHistory, queueDepth, sidecarAlive,
+  showcaseCurrentMove, winProbHistory, queueDepth, sidecarAlive,
 } from './showcase.js'
 
 describe('showcase stores', () => {
-  it('showcaseBoard returns null when no moves', () => {
+  it('showcaseCurrentMove returns null when no moves (not board — full move obj)', () => {
     showcaseMoves.set([])
-    expect(get(showcaseBoard)).toBeNull()
+    expect(get(showcaseCurrentMove)).toBeNull()
   })
 
-  it('showcaseBoard returns latest move', () => {
+  it('showcaseCurrentMove returns latest move', () => {
     showcaseMoves.set([
       { ply: 1, board_json: 'b1', value_estimate: 0.5 },
       { ply: 2, board_json: 'b2', value_estimate: 0.6 },
     ])
-    expect(get(showcaseBoard).ply).toBe(2)
+    expect(get(showcaseCurrentMove).ply).toBe(2)
   })
 
   it('winProbHistory maps moves to ply/value pairs', () => {
@@ -2314,9 +2453,9 @@ const tabs = [
 ```svelte
 <!-- webui/src/lib/CommentaryPanel.svelte -->
 <script>
-  import { showcaseBoard } from '../stores/showcase.js'
+  import { showcaseCurrentMove } from '../stores/showcase.js'
 
-  $: move = $showcaseBoard
+  $: move = $showcaseCurrentMove
   $: topCandidates = (() => {
     if (!move?.top_candidates) return []
     try {
@@ -2508,7 +2647,7 @@ const tabs = [
 ```svelte
 <!-- webui/src/lib/ShowcaseView.svelte -->
 <script>
-  import { showcaseGame, showcaseMoves, showcaseBoard, sidecarAlive } from '../stores/showcase.js'
+  import { showcaseGame, showcaseMoves, showcaseCurrentMove, sidecarAlive } from '../stores/showcase.js'
   import { safeParse } from './safeParse.js'
   import Board from './Board.svelte'
   import PieceTray from './PieceTray.svelte'
@@ -2519,7 +2658,7 @@ const tabs = [
   import WinProbGraph from './WinProbGraph.svelte'
   import MatchQueue from './MatchQueue.svelte'
 
-  $: move = $showcaseBoard
+  $: move = $showcaseCurrentMove
   $: board = move ? safeParse(move.board_json, []) : []
   $: hands = move ? safeParse(move.hands_json, {}) : {}
   $: game = $showcaseGame
@@ -2861,7 +3000,7 @@ class TestShowcaseIntegration:
         """Create a tiny MLP model checkpoint."""
         from keisei.training.model_registry import build_model
         arch = "mlp"
-        params = {}  # use defaults
+        params = {"hidden_sizes": [64, 64]}  # MLPParams.hidden_sizes has no default
         model = build_model(arch, params)
         ckpt = tmp_path / "tiny.pt"
         torch.save(model.state_dict(), ckpt)
@@ -2871,14 +3010,14 @@ class TestShowcaseIntegration:
         """Verify inference runs on CPU and produces valid output."""
         from keisei.showcase.inference import load_model_for_showcase, run_inference
         arch, ckpt = tiny_model_checkpoint
-        model = load_model_for_showcase(ckpt, arch, {})
+        model = load_model_for_showcase(ckpt, arch, {"hidden_sizes": [64, 64]})
 
         # All params should be on CPU
         for name, param in model.named_parameters():
             assert param.device == torch.device("cpu"), f"{name} on {param.device}"
 
         # Run inference
-        obs = np.random.randn(50, 9, 9).astype(np.float32)
+        obs = np.random.randn(46, 9, 9).astype(np.float32)  # SpectatorEnv channels
         policy, win_prob = run_inference(model, obs, arch)
         assert policy.shape[0] > 0
         assert 0.0 <= win_prob <= 1.0
@@ -2961,11 +3100,17 @@ Run `git status` to check for any unstaged files. Stage and commit anything miss
 
 ## Deferred Work
 
-These items from the spec are deliberately deferred from this plan:
+These items from the spec are deliberately deferred from this plan. **Each must be filed as a filigree issue before the implementation branch is merged** (per project convention: deferred findings must be tracked).
 
 - **Refactoring `_poll_and_push` into coroutine-per-domain**: The spec recommends splitting the 150-line function into separate coroutines (metrics, games, league, showcase). This plan adds showcase polling as a separate `_poll_showcase()` coroutine in the TaskGroup, which is the right first step. The full refactor of the existing polling should be a separate task to avoid scope creep.
-- **Checkpoint TOCTOU test**: The spec mentions testing what happens when a checkpoint file is deleted between queue claim and `torch.load()`. The runner handles this with a try/except in `_load_models()`, but a dedicated test for this edge case should be added as follow-up.
-- **`_poll_and_push` refactoring**: Existing metrics/games/league polling should eventually be split into separate coroutines for maintainability. Track as a separate filigree task.
+- **Checkpoint TOCTOU test**: The spec mentions testing what happens when a checkpoint file is deleted between queue claim and `torch.load()`. The runner handles this with a try/except in `_load_models()`, but a dedicated test for this edge case should be added as follow-up. **File filigree issue.**
+- **Svelte component tests**: Task 7 ships 5 components with reactive logic (`canStart` computation, `topCandidates` JSON parsing, `moveHistoryJson` serialization) but no component-level tests. **File filigree issue for component test coverage.**
+- **USI notation for candidate moves**: Top candidates currently show action indices (`a4291`) instead of human-readable USI notation (`7g7f`). Decoding non-chosen actions requires SpectatorEnv to expose an action→notation method. This directly degrades the primary UX value proposition (comprehensible commentary). **File as P2 filigree issue.**
+- **`showcase_moves` table retention**: The table grows ~200 rows per game with large JSON blobs (`board_json`, `hands_json`). No archival, cleanup, or VACUUM strategy is specified. At ~10 games/day, this is manageable for months, but a retention policy (e.g., drop moves for completed games older than 7 days) should be added before extended deployment. **File filigree issue.**
+- **`elo_rating` vs specialized ELO columns in auto-showcase**: `_maybe_auto_showcase` selects by `ORDER BY elo_rating DESC`. The v2 migration added `elo_frontier`, `elo_dynamic`, `elo_recent`, `elo_historical`. If training writes to those columns and `elo_rating` stagnates, auto-showcase will always pick the same two entries. Verify which ELO column the training loop updates and align auto-showcase accordingly.
+- **Schema v3 rollback**: If the release needs to be rolled back, manual steps are: `DROP TABLE showcase_queue; DROP TABLE showcase_games; DROP TABLE showcase_moves; DROP TABLE showcase_heartbeat; UPDATE schema_version SET version = 2;`. Document this in the release notes.
+- **Per-client poll amplification**: Each WebSocket connection drives ~7 DB reads/sec (existing polling + showcase). At scale, consider a broadcast pattern: a single background task polls showcase tables and pushes to a shared `asyncio.Queue` that all WebSocket handlers drain, eliminating O(N) read load.
+- **ws.js dispatch tests**: The showcase message handling added to `ws.js` (`showcase_update`, `showcase_status`, `showcase_error` cases, `sendShowcaseCommand`) is only tested indirectly through Python server integration tests. Vitest tests for the dispatch path would catch regressions when ws.js is modified.
 
 ## Post-Implementation Checklist
 
