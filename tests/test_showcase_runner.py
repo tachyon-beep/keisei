@@ -119,8 +119,9 @@ class TestShowcaseRunner:
         # Seed numpy RNG for deterministic test (temperature sampling)
         np.random.seed(42)
 
+        mock_entry = {"elo_rating": 1500.0, "display_name": "TestModel"}
         with patch.object(runner, "_create_env", return_value=mock_spectator_env), \
-             patch.object(runner, "_load_models", return_value=(mock_model, mock_model, "resnet", "resnet")):
+             patch.object(runner, "_load_models", return_value=(mock_model, mock_model, "resnet", "resnet", mock_entry, mock_entry)):
             match = claim_next_match(db)
             runner._run_game(match)
 

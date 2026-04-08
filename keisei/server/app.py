@@ -264,7 +264,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         try:
             last_hb = datetime.fromisoformat(showcase_hb["last_heartbeat"].replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - last_hb).total_seconds()
-            showcase_alive = age < 30
+            showcase_alive = age < HEARTBEAT_STALE_S
         except (ValueError, TypeError):
             pass
 
@@ -460,16 +460,16 @@ async def _handle_match_request(ws: WebSocket, db_path: str, data: dict[str, Any
         )
         return
 
-    if entry_id_1 == entry_id_2:
+    if not entry_id_1 or not entry_id_2:
         await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "Cannot match an entry against itself"}),
+            ws.send_json({"type": "showcase_error", "error": "Both entry_id_1 and entry_id_2 are required"}),
             timeout=WS_SEND_TIMEOUT_S,
         )
         return
 
-    if not entry_id_1 or not entry_id_2:
+    if entry_id_1 == entry_id_2:
         await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "Both entry_id_1 and entry_id_2 are required"}),
+            ws.send_json({"type": "showcase_error", "error": "Cannot match an entry against itself"}),
             timeout=WS_SEND_TIMEOUT_S,
         )
         return
@@ -536,9 +536,14 @@ async def _handle_cancel(ws: WebSocket, db_path: str, data: dict[str, Any]) -> N
 
 
 async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
-    """Poll showcase tables and push updates on change."""
-    # Fingerprint: (game_id or None, total_ply or 0, queue_len, alive)
-    last_fingerprint: tuple[int | None, int, int, bool] = (None, 0, 0, False)
+    """Poll showcase tables and push incremental updates.
+
+    Uses incremental move delivery: only moves since last_sent_ply are sent.
+    Status updates use fingerprinting to avoid redundant sends.
+    """
+    last_status_fingerprint: tuple[int | None, int, bool] = (None, 0, False)
+    last_game_id: int | None = None
+    last_sent_ply = 0
 
     while True:
         await asyncio.sleep(SHOWCASE_POLL_INTERVAL_S)
@@ -552,36 +557,52 @@ async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
             try:
                 last_hb = datetime.fromisoformat(hb["last_heartbeat"].replace("Z", "+00:00"))
                 age = (datetime.now(timezone.utc) - last_hb).total_seconds()
-                alive = age < 30
+                alive = age < HEARTBEAT_STALE_S
             except (ValueError, TypeError):
                 pass
 
         game_id = game["id"] if game else None
-        total_ply = game["total_ply"] if game and game.get("total_ply") else 0
-        fingerprint = (game_id, total_ply, len(queue), alive)
 
-        if fingerprint == last_fingerprint:
-            continue
+        # Reset cursor when game changes
+        if game_id != last_game_id:
+            last_sent_ply = 0
+            last_game_id = game_id
 
-        last_fingerprint = fingerprint
+        # Status fingerprint — only send when queue/game/sidecar state changes
+        status_fingerprint = (game_id, len(queue), alive)
+        if status_fingerprint != last_status_fingerprint:
+            last_status_fingerprint = status_fingerprint
+            try:
+                await asyncio.wait_for(
+                    ws.send_json({
+                        "type": "showcase_status",
+                        "queue": queue,
+                        "active_game_id": game_id,
+                        "sidecar_alive": alive,
+                    }),
+                    timeout=WS_SEND_TIMEOUT_S,
+                )
+            except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
+                raise WebSocketDisconnect()
 
-        moves: list[dict[str, Any]] = []
+        # Send incremental moves only (not full history)
         if game:
-            moves = await asyncio.to_thread(read_all_showcase_moves, db_path, game["id"])
-
-        try:
-            await asyncio.wait_for(
-                ws.send_json({
-                    "type": "showcase_update",
-                    "game": dict(game) if game else None,
-                    "moves": moves,
-                    "queue": queue,
-                    "sidecar_alive": alive,
-                }),
-                timeout=WS_SEND_TIMEOUT_S,
+            new_moves = await asyncio.to_thread(
+                read_showcase_moves_since, db_path, game["id"], last_sent_ply,
             )
-        except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
-            raise WebSocketDisconnect()
+            if new_moves:
+                last_sent_ply = max(m["ply"] for m in new_moves)
+                try:
+                    await asyncio.wait_for(
+                        ws.send_json({
+                            "type": "showcase_update",
+                            "game": dict(game),
+                            "new_moves": new_moves,
+                        }),
+                        timeout=WS_SEND_TIMEOUT_S,
+                    )
+                except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
+                    raise WebSocketDisconnect()
 
 
 def create_app_from_env() -> FastAPI:

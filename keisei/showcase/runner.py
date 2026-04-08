@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import signal
-import sys
 import threading
 import time
 from pathlib import Path
@@ -23,9 +22,12 @@ logger = logging.getLogger(__name__)
 
 import torch
 
+from keisei.db import _connect
 from keisei.showcase.db_ops import (
+    _now_iso,
     claim_next_match,
     cleanup_orphaned_games,
+    complete_queue_entry,
     create_showcase_game,
     mark_game_abandoned,
     mark_game_completed,
@@ -46,6 +48,8 @@ MAX_PLY = 512
 SPEED_DELAYS = {"slow": 4.0, "normal": 2.0, "fast": 0.5}
 HEARTBEAT_INTERVAL = 10.0
 POLL_INTERVAL = 5.0
+SAMPLING_TEMPERATURE = 0.5
+SPEED_POLL_INTERVAL = 5  # re-read speed from DB every N plies (not every ply)
 
 
 class ShowcaseRunner:
@@ -82,8 +86,8 @@ class ShowcaseRunner:
         from shogi_gym import SpectatorEnv
         return SpectatorEnv(max_ply=MAX_PLY)
 
-    def _load_models(self, match: dict[str, Any]) -> tuple[Any, Any, str, str]:
-        from keisei.db import _connect
+    def _load_models(self, match: dict[str, Any]) -> tuple[Any, Any, str, str, Any, Any]:
+        """Load models and return (model_b, model_w, arch_b, arch_w, entry1, entry2)."""
         conn = _connect(self.db_path)
         try:
             e1 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_1"],)).fetchone()
@@ -103,39 +107,32 @@ class ShowcaseRunner:
 
         model_black, arch_black = _load_entry(e1)
         model_white, arch_white = _load_entry(e2)
-        return model_black, model_white, arch_black, arch_white
+        return model_black, model_white, arch_black, arch_white, e1, e2
 
     def _run_game(self, match: dict[str, Any]) -> None:
         """Play a single showcase game. Queue entry ALWAYS finalized via finally."""
         game_id: int | None = None
         try:
             try:
-                model_black, model_white, arch_black, arch_white = self._load_models(match)
+                model_black, model_white, arch_black, arch_white, e1, e2 = self._load_models(match)
             except (FileNotFoundError, ValueError) as e:
                 logger.warning("Cannot start showcase game: %s", e)
                 return
 
-            from keisei.db import _connect
-            conn = _connect(self.db_path)
-            try:
-                e1 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_1"],)).fetchone()
-                e2 = conn.execute("SELECT * FROM league_entries WHERE id = ?", (match["entry_id_2"],)).fetchone()
-            finally:
-                conn.close()
-
             game_id = create_showcase_game(
                 self.db_path, queue_id=match["id"],
                 entry_id_black=match["entry_id_1"], entry_id_white=match["entry_id_2"],
-                elo_black=e1["elo_rating"] if e1 else 0.0, elo_white=e2["elo_rating"] if e2 else 0.0,
-                name_black=e1["display_name"] if e1 else "Unknown", name_white=e2["display_name"] if e2 else "Unknown",
+                elo_black=e1["elo_rating"], elo_white=e2["elo_rating"],
+                name_black=e1["display_name"], name_white=e2["display_name"],
             )
 
             env = self._create_env()
             state = env.reset()
             logger.info("Showcase game %d started: %s vs %s", game_id,
-                        e1["display_name"] if e1 else "?", e2["display_name"] if e2 else "?")
+                        e1["display_name"], e2["display_name"])
 
             ply = 0
+            speed = match.get("speed", "normal")
             while not self._stop_event.is_set() and not env.is_over and ply < MAX_PLY:
                 is_black_turn = state["current_player"] == "black"
                 model = model_black if is_black_turn else model_white
@@ -151,10 +148,19 @@ class ShowcaseRunner:
                 mask[legal] = 0.0
                 masked_logits = policy_logits + mask
 
-                temperature = 0.5
-                scaled_logits = masked_logits / temperature
-                probs = np.exp(scaled_logits - scaled_logits.max())
-                probs = probs / probs.sum()
+                # Temperature-scaled softmax over legal moves only (S3: NaN guard)
+                scaled_logits = masked_logits / SAMPLING_TEMPERATURE
+                legal_logits = scaled_logits[legal]
+                legal_probs = np.exp(legal_logits - legal_logits.max())
+                total = legal_probs.sum()
+                if total < 1e-10:
+                    legal_probs = np.ones(len(legal)) / len(legal)
+                else:
+                    legal_probs = legal_probs / total
+
+                # Full probability array for top-candidates display
+                probs = np.zeros_like(scaled_logits)
+                probs[legal] = legal_probs
 
                 top_indices = np.argsort(probs)[::-1][:3]
                 top_candidates = []
@@ -162,7 +168,9 @@ class ShowcaseRunner:
                     if probs[idx] > 0.001:
                         top_candidates.append({"action": int(idx), "probability": round(float(probs[idx]), 4)})
 
-                action = int(np.random.choice(len(probs), p=probs))
+                # Sample from legal moves only (avoids illegal-action residual risk)
+                chosen_idx = int(np.random.choice(len(legal), p=legal_probs))
+                action = legal[chosen_idx]
 
                 state = env.step(action)
                 ply = state["ply"]
@@ -183,16 +191,17 @@ class ShowcaseRunner:
                     top_candidates=json.dumps(top_candidates), move_time_ms=inference_ms,
                 )
 
-                try:
-                    from keisei.db import _connect as _db_connect
-                    conn = _db_connect(self.db_path)
+                # Re-read speed from DB periodically (not every ply — W10)
+                if ply % SPEED_POLL_INTERVAL == 0:
                     try:
-                        row = conn.execute("SELECT speed FROM showcase_queue WHERE id = ?", (match["id"],)).fetchone()
-                        speed = row["speed"] if row else match.get("speed", "normal")
-                    finally:
-                        conn.close()
-                except Exception:
-                    speed = match.get("speed", "normal")
+                        conn = _connect(self.db_path)
+                        try:
+                            row = conn.execute("SELECT speed FROM showcase_queue WHERE id = ?", (match["id"],)).fetchone()
+                            speed = row["speed"] if row else speed
+                        finally:
+                            conn.close()
+                    except Exception:
+                        pass  # keep current speed
 
                 delay = self._get_delay(speed)
                 self._speed_event.wait(timeout=delay)
@@ -225,17 +234,9 @@ class ShowcaseRunner:
                     logger.warning("Failed to abandon game %d during error recovery", game_id)
 
         finally:
+            # S8: Use db_ops function with retry instead of raw SQL
             try:
-                from keisei.db import _connect as _db_connect
-                conn = _db_connect(self.db_path)
-                try:
-                    from keisei.showcase.db_ops import _now_iso
-                    conn.execute(
-                        "UPDATE showcase_queue SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'running'",
-                        (_now_iso(), match["id"]))
-                    conn.commit()
-                finally:
-                    conn.close()
+                complete_queue_entry(self.db_path, match["id"])
             except Exception:
                 logger.warning("Failed to finalize queue entry %s", match["id"])
 
@@ -247,7 +248,6 @@ class ShowcaseRunner:
         queue = read_queue(self.db_path)
         if queue:
             return
-        from keisei.db import _connect
         conn = _connect(self.db_path)
         try:
             rows = conn.execute("SELECT id FROM league_entries WHERE status = 'active' ORDER BY elo_rating DESC LIMIT 2").fetchall()

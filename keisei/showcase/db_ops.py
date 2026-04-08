@@ -40,6 +40,7 @@ def queue_match(db_path: str, entry_id_1: str, entry_id_2: str, speed: str) -> i
         cursor = _retry_write(conn,
             "INSERT INTO showcase_queue (entry_id_1, entry_id_2, speed, status, requested_at) VALUES (?, ?, ?, 'pending', ?)",
             (entry_id_1, entry_id_2, speed, _now_iso()))
+        assert cursor.lastrowid is not None
         return cursor.lastrowid
     finally:
         conn.close()
@@ -61,9 +62,10 @@ def claim_next_match(db_path: str) -> dict[str, Any] | None:
 
 
 def read_queue(db_path: str) -> list[dict[str, Any]]:
+    """Read active queue entries (pending + running). Cancelled/completed are excluded."""
     conn = _connect(db_path)
     try:
-        rows = conn.execute("SELECT * FROM showcase_queue WHERE status IN ('pending', 'running', 'cancelled') ORDER BY id").fetchall()
+        rows = conn.execute("SELECT * FROM showcase_queue WHERE status IN ('pending', 'running') ORDER BY id").fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
@@ -93,7 +95,19 @@ def create_showcase_game(db_path: str, *, queue_id: int, entry_id_black: str, en
             """INSERT INTO showcase_games (queue_id, entry_id_black, entry_id_white, elo_black, elo_white,
                name_black, name_white, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'in_progress', ?)""",
             (queue_id, entry_id_black, entry_id_white, elo_black, elo_white, name_black, name_white, _now_iso()))
+        assert cursor.lastrowid is not None
         return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+def complete_queue_entry(db_path: str, queue_id: int) -> None:
+    """Mark a running queue entry as completed. Uses retry logic."""
+    conn = _connect(db_path)
+    try:
+        _retry_write(conn,
+            "UPDATE showcase_queue SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'running'",
+            (_now_iso(), queue_id))
     finally:
         conn.close()
 

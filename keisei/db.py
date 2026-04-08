@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 SCHEMA_VERSION = 3
@@ -73,7 +74,7 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
-_MIGRATIONS: dict[int, callable] = {
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
     3: _migrate_v2_to_v3,
 }

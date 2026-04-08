@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-import time
+
 from concurrent.futures import CancelledError
 from pathlib import Path
 from unittest.mock import patch
@@ -113,7 +113,10 @@ class TestShowcaseCommands:
                     "entry_id_2": "2",
                     "speed": "normal",
                 })
-                time.sleep(0.1)
+                # Poll for queue entry (no sleep — poll with short intervals)
+                # The server responds with showcase_match_queued confirmation
+                msg = ws.receive_json()
+                assert msg["type"] == "showcase_match_queued"
                 queue = read_queue(server_db)
                 assert len(queue) == 1
                 assert queue[0]["entry_id_1"] == "1"
@@ -137,7 +140,6 @@ class TestShowcaseCommands:
                     "entry_id_2": "1",
                     "speed": "normal",
                 })
-                time.sleep(0.1)
                 msg = ws.receive_json()
                 assert msg["type"] == "showcase_error"
 
@@ -154,6 +156,5 @@ class TestShowcaseCommands:
                     "entry_id_2": "2",
                     "speed": "turbo",
                 })
-                time.sleep(0.1)
                 msg = ws.receive_json()
                 assert msg["type"] == "showcase_error"

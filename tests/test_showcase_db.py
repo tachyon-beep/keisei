@@ -119,8 +119,15 @@ class TestQueueOperations:
     def test_cancel_match(self, db: str) -> None:
         qid = queue_match(db, "entry-1", "entry-2", "normal")
         cancel_match(db, qid)
-        rows = read_queue(db)
-        assert rows[0]["status"] == "cancelled"
+        # read_queue excludes cancelled rows, so verify via direct DB query
+        conn = _connect(db)
+        try:
+            row = conn.execute("SELECT status FROM showcase_queue WHERE id = ?", (qid,)).fetchone()
+            assert row["status"] == "cancelled"
+        finally:
+            conn.close()
+        # read_queue should return empty (cancelled excluded)
+        assert len(read_queue(db)) == 0
 
     def test_update_queue_speed(self, db: str) -> None:
         qid = queue_match(db, "entry-1", "entry-2", "normal")

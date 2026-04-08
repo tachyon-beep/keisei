@@ -11,7 +11,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from keisei.training.model_registry import build_model, _get_spec
+import threading
+
+from keisei.training.model_registry import build_model, get_model_contract, get_obs_channels
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +72,7 @@ def run_inference(
     - scalar contract: tanh [-1,1] -> [0,1]
     - multi_head contract: softmax(value_logits)[0] = P(win)
     """
-    spec = _get_spec(architecture)
-    expected_channels = spec.obs_channels
+    expected_channels = get_obs_channels(architecture)
     actual_channels = obs.shape[0]
     if actual_channels < expected_channels:
         padding = np.zeros((expected_channels - actual_channels, 9, 9), dtype=obs.dtype)
@@ -84,7 +85,13 @@ def run_inference(
     with torch.inference_mode():
         output = model(obs_tensor)
 
-    if spec.contract == "multi_head":
+    contract = get_model_contract(architecture)
+
+    if contract == "multi_head":
+        # NOTE: reshape(-1) flattens (9,9,139) in row-major order.
+        # This matches the DefaultActionMapper's flat index convention
+        # used by SpectatorEnv. If a spatial action mapper is used instead,
+        # the flatten order must be verified against that mapper.
         policy_logits = output.policy_logits.squeeze(0).reshape(-1)
         win_prob = torch.softmax(output.value_logits.squeeze(0), dim=0)[0].item()
     else:
@@ -96,15 +103,20 @@ def run_inference(
 
 
 class ModelCache:
-    """LRU cache for loaded models, keyed on (entry_id, checkpoint_path)."""
+    """LRU cache for loaded models, keyed on (entry_id, checkpoint_path).
+
+    Thread-safe: all access is guarded by a lock.
+    """
 
     def __init__(self, max_size: int = 2) -> None:
         self._cache: OrderedDict[tuple[str, str], nn.Module] = OrderedDict()
         self._max_size = max_size
+        self._lock = threading.Lock()
 
     @property
     def size(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
     def get_or_load(
         self,
@@ -114,13 +126,20 @@ class ModelCache:
         model_params: dict[str, Any],
     ) -> nn.Module:
         key = (entry_id, checkpoint_path)
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
 
+        # Load outside the lock (slow I/O)
         model = load_model_for_showcase(checkpoint_path, architecture, model_params)
-        self._cache[key] = model
-        while len(self._cache) > self._max_size:
-            evicted_key, _ = self._cache.popitem(last=False)
-            logger.debug("Evicted model %s from cache", evicted_key)
+
+        with self._lock:
+            # Check again — another thread may have loaded it
+            if key in self._cache:
+                return self._cache[key]
+            self._cache[key] = model
+            while len(self._cache) > self._max_size:
+                evicted_key, _ = self._cache.popitem(last=False)
+                logger.debug("Evicted model %s from cache", evicted_key)
         return model

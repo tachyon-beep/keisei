@@ -26,7 +26,7 @@
       <span class="label">Last move</span>
       <span class="value">{move.usi_notation}
         {#if topCandidates.length > 0}
-          ({(topCandidates.find(c => c.usi === move.usi_notation)?.probability * 100 || 0).toFixed(1)}%)
+          ({((topCandidates.find(c => c.usi === move.usi_notation)?.probability ?? 0) * 100).toFixed(1)}%)
         {/if}
       </span>
     </div>
