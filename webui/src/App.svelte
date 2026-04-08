@@ -15,6 +15,7 @@
   import MetricsGrid from './lib/MetricsGrid.svelte'
   import PlayerCard from './lib/PlayerCard.svelte'
   import LeagueView from './lib/LeagueView.svelte'
+  import ShowcaseView from './lib/ShowcaseView.svelte'
   import ShogiLegend from './lib/ShogiLegend.svelte'
   import { safeParse } from './lib/safeParse.js'
 
@@ -233,8 +234,10 @@
     <section class="metrics-panel" aria-label="Training metrics">
       <MetricsGrid />
     </section>
-  {:else}
+  {:else if $activeTab === 'league'}
     <LeagueView />
+  {:else if $activeTab === 'showcase'}
+    <ShowcaseView />
   {/if}
 </div>
 

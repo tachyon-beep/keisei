@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -14,6 +15,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -65,11 +67,17 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "training_state", "learner_entry_id", "INTEGER")
 
 
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 -> v3: Add showcase tables (created by init_db IF NOT EXISTS)."""
+    pass
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
-_MIGRATIONS: dict[int, callable] = {
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
+    3: _migrate_v2_to_v3,
 }
 
 
@@ -285,6 +293,60 @@ def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_game_features_checkpoint ON game_features(checkpoint_id);
             CREATE INDEX IF NOT EXISTS idx_game_features_opponent ON game_features(opponent_id);
             CREATE INDEX IF NOT EXISTS idx_game_features_epoch ON game_features(epoch);
+            CREATE TABLE IF NOT EXISTS showcase_queue (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id_1  TEXT NOT NULL,
+                entry_id_2  TEXT NOT NULL,
+                speed       TEXT NOT NULL DEFAULT 'normal',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                requested_at TEXT NOT NULL,
+                started_at  TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_showcase_queue_status ON showcase_queue(status);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_showcase_queue_one_running
+                ON showcase_queue(status) WHERE status = 'running';
+
+            CREATE TABLE IF NOT EXISTS showcase_games (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                queue_id        INTEGER NOT NULL REFERENCES showcase_queue(id),
+                entry_id_black  TEXT NOT NULL,
+                entry_id_white  TEXT NOT NULL,
+                elo_black       REAL,
+                elo_white       REAL,
+                name_black      TEXT,
+                name_white      TEXT,
+                status          TEXT NOT NULL DEFAULT 'in_progress',
+                abandon_reason  TEXT,
+                started_at      TEXT NOT NULL,
+                completed_at    TEXT,
+                total_ply       INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_showcase_games_status ON showcase_games(status);
+
+            CREATE TABLE IF NOT EXISTS showcase_moves (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id         INTEGER NOT NULL REFERENCES showcase_games(id),
+                ply             INTEGER NOT NULL,
+                action_index    INTEGER NOT NULL,
+                usi_notation    TEXT NOT NULL,
+                board_json      TEXT NOT NULL,
+                hands_json      TEXT NOT NULL,
+                current_player  TEXT NOT NULL,
+                in_check        INTEGER NOT NULL DEFAULT 0,
+                value_estimate  REAL,
+                top_candidates  TEXT,
+                move_time_ms    INTEGER,
+                created_at      TEXT NOT NULL,
+                UNIQUE(game_id, ply)
+            );
+            CREATE INDEX IF NOT EXISTS idx_showcase_moves_game_ply ON showcase_moves(game_id, ply);
+
+            CREATE TABLE IF NOT EXISTS showcase_heartbeat (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                last_heartbeat  TEXT NOT NULL,
+                runner_pid      INTEGER
+            );
             CREATE TABLE IF NOT EXISTS style_profiles (
                 checkpoint_id       INTEGER PRIMARY KEY REFERENCES league_entries(id),
                 recomputed_at       TEXT NOT NULL,

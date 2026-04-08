@@ -12,6 +12,9 @@ import {
   leagueEntries, leagueResults, eloHistory, tournamentStats, diffLeagueEntries,
   historicalLibrary, gauntletResults, leagueTransitions, styleProfilesRaw,
 } from '../stores/league.js'
+import {
+  showcaseGame, showcaseMoves, showcaseQueue, sidecarAlive,
+} from '../stores/showcase.js'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
 const RECONNECT_BASE_MS = 1000
@@ -23,6 +26,12 @@ export const connectionState = writable('connecting')
 let ws = null
 let reconnectAttempt = 0
 let reconnectTimer = null
+
+export function sendShowcaseCommand(message) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message))
+  }
+}
 
 export function connect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return
@@ -85,6 +94,13 @@ export function handleMessage(msg) {
       if (msg.games?.length > 0) {
         selectedGameId.update(id => id ?? 0)
       }
+      // Showcase init (cold-start support)
+      if (msg.showcase) {
+        showcaseGame.set(msg.showcase.game || null)
+        showcaseMoves.set(msg.showcase.moves || [])
+        showcaseQueue.set(msg.showcase.queue || [])
+        sidecarAlive.set(msg.showcase.sidecar_alive || false)
+      }
       break
 
     case 'game_update': {
@@ -143,6 +159,25 @@ export function handleMessage(msg) {
       leagueTransitions.set(msg.transitions || [])
       if (msg.tournament_stats) tournamentStats.set(msg.tournament_stats)
       if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
+      break
+
+    case 'showcase_update':
+      showcaseGame.set(msg.game || null)
+      showcaseMoves.update(existing => {
+        const newMoves = msg.new_moves || []
+        const maxPly = existing.length > 0 ? existing[existing.length - 1].ply : 0
+        const fresh = newMoves.filter(m => m.ply > maxPly)
+        return [...existing, ...fresh]
+      })
+      break
+
+    case 'showcase_status':
+      showcaseQueue.set(msg.queue || [])
+      sidecarAlive.set(msg.sidecar_alive || false)
+      break
+
+    case 'showcase_error':
+      console.warn('[ws] showcase error:', msg.message)
       break
 
     case 'ping':

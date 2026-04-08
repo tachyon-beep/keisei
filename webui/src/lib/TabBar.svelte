@@ -5,6 +5,7 @@
   const tabs = [
     { id: 'training', label: 'Training' },
     { id: 'league', label: 'League' },
+    { id: 'showcase', label: 'Showcase' },
   ]
 
   function handleTabKeydown(e) {
