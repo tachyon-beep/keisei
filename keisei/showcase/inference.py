@@ -22,7 +22,10 @@ def enforce_cpu_only(cpu_threads: int = 2) -> None:
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     torch.set_num_threads(cpu_threads)
-    torch.set_num_interop_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass  # already set — safe to ignore in tests
 
 
 def load_model_for_showcase(
