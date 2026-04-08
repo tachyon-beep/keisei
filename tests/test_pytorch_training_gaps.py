@@ -338,16 +338,8 @@ class TestBufferMemoryLifecycle:
         buf.clear()
 
         assert buf.size == 0
-        assert len(buf.observations) == 0
-        assert len(buf.actions) == 0
-        assert len(buf.log_probs) == 0
-        assert len(buf.values) == 0
-        assert len(buf.rewards) == 0
-        assert len(buf.dones) == 0
-        assert len(buf.legal_masks) == 0
-        assert len(buf.value_categories) == 0
-        assert len(buf.score_targets) == 0
-        assert len(buf.env_ids) == 0
+        # Pre-allocated storage: verify write offset is reset (no data written)
+        assert buf._write_offset == 0
 
     def test_update_calls_clear(self):
         """PPO update() should clear the buffer after consuming it."""

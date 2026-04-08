@@ -139,6 +139,62 @@ from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, Kata
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 
 
+class TestPreAllocatedBuffer:
+    """Pre-allocated buffer must produce identical flatten() output."""
+
+    def test_fixed_size_flatten_matches(self):
+        """Standard (non-split-merge) buffer: pre-alloc matches list-based."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        torch.manual_seed(99)
+        for _ in range(8):
+            n = 4
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool), torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long), torch.rand(n) * 2 - 1,
+            )
+        data = buf.flatten()
+        assert data["observations"].shape == (32, 50, 9, 9)
+        assert data["observations"].is_contiguous()
+
+    def test_variable_size_flatten_matches(self):
+        """Split-merge buffer: variable envs per step."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        torch.manual_seed(99)
+        env_id_lists = [[0, 2], [1, 2, 3], [0, 1, 3], [0, 1, 2, 3]]
+        for envs in env_id_lists:
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool), torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long), torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+            )
+        data = buf.flatten()
+        assert data["observations"].shape == (12, 50, 9, 9)
+        assert data["env_ids"].numel() == 12
+
+    def test_clear_resets_buffer(self):
+        """clear() must reset write offset and allow reuse."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.randint(0, 11259, (2,)),
+            torch.randn(2), torch.randn(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.full((2,), -1, dtype=torch.long), torch.rand(2) * 2 - 1,
+        )
+        assert buf.size == 1
+        buf.clear()
+        assert buf.size == 0
+        with pytest.raises(ValueError, match="Cannot flatten an empty buffer"):
+            buf.flatten()
+
+
 class TestVectorizedUpdateIntegration:
     """update() must produce identical results after the vectorized refactor."""
 

@@ -597,10 +597,10 @@ class TestBufferCPUStorage:
             torch.randint(0, 3, (2,)),
             torch.rand(2) * 2 - 1,
         )
-        for tensor in buf.observations:
-            assert tensor.device == torch.device("cpu")
-        for tensor in buf.legal_masks:
-            assert tensor.device == torch.device("cpu")
+        # With pre-allocated storage, verify via flatten() that tensors are on CPU
+        data = buf.flatten()
+        assert data["observations"].device == torch.device("cpu")
+        assert data["legal_masks"].device == torch.device("cpu")
 
     def test_flatten_returns_cpu_tensors(self):
         buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
