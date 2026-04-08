@@ -162,47 +162,47 @@
 </div>
 
 <style>
-  .entry-detail { padding: 10px 14px; }
-  .detail-sections { display: flex; gap: 16px; flex-wrap: wrap; }
-  .detail-section { flex: 1; min-width: 200px; }
+  .entry-detail { padding: 14px 18px; }
+  .detail-sections { display: flex; gap: 20px; flex-wrap: wrap; }
+  .detail-section { flex: 1; min-width: 220px; }
   .section-label {
-    font-size: 12px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 6px;
+    font-size: 13px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 8px;
   }
   .epoch-tag {
-    font-weight: 400; color: var(--text-muted); font-size: 12px;
+    font-weight: 400; color: var(--text-muted); font-size: 13px;
     margin-left: 6px; text-transform: none; letter-spacing: 0;
   }
-  .match-list { display: flex; flex-direction: column; gap: 2px; }
+  .match-list { display: flex; flex-direction: column; gap: 4px; }
   .match-row {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; padding: 2px 4px; border-radius: 3px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 14px; padding: 4px 6px; border-radius: 4px;
   }
   .match-row:hover { background: var(--bg-card); }
   .opp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
-  .role-icon { font-size: 12px; margin-right: 3px; }
-  .wld { font-family: monospace; font-size: 12px; color: var(--text-secondary); flex-shrink: 0; }
-  .elo-delta { font-family: monospace; font-size: 12px; font-weight: 600; flex-shrink: 0; min-width: 36px; text-align: right; }
+  .role-icon { font-size: 14px; margin-right: 4px; }
+  .wld { font-family: monospace; font-size: 14px; color: var(--text-secondary); flex-shrink: 0; }
+  .elo-delta { font-family: monospace; font-size: 14px; font-weight: 600; flex-shrink: 0; min-width: 40px; text-align: right; }
   .elo-delta.positive { color: var(--accent-teal); }
   .elo-delta.negative { color: var(--danger); }
-  .win-pct { font-family: monospace; font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
-  .game-count { font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+  .win-pct { font-family: monospace; font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
+  .game-count { font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
   .role-stats { min-width: 100%; }
-  .stat-row { display: flex; gap: 12px; flex-wrap: wrap; }
-  .mini-stat { font-family: monospace; font-size: 12px; color: var(--text-primary); }
-  .mini-label { font-size: 12px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
-  .style-section { min-width: 200px; }
-  .style-primary { font-size: 13px; font-weight: 600; color: var(--accent-teal); margin-bottom: 4px; }
-  .style-traits { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .stat-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .mini-stat { font-family: monospace; font-size: 14px; color: var(--text-primary); }
+  .mini-label { font-size: 13px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
+  .style-section { min-width: 220px; }
+  .style-primary { font-size: 15px; font-weight: 600; color: var(--accent-teal); margin-bottom: 6px; }
+  .style-traits { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   .style-trait {
-    font-size: 12px; padding: 1px 6px; border-radius: 3px;
+    font-size: 13px; padding: 2px 8px; border-radius: 3px;
     color: var(--text-secondary); background: rgba(128, 128, 128, 0.12);
   }
-  .commentary-list { display: flex; flex-direction: column; gap: 2px; }
+  .commentary-list { display: flex; flex-direction: column; gap: 4px; }
   .commentary-item {
-    font-size: 12px; font-style: italic; color: var(--text-muted); padding: 1px 0;
+    font-size: 13px; font-style: italic; color: var(--text-muted); padding: 2px 0;
   }
   .commentary-item.high-conf { color: var(--text-secondary); }
-  .empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px; }
-  .empty-small { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+  .empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 24px; }
+  .empty-small { color: var(--text-muted); font-size: 13px; padding: 10px 0; }
 </style>
