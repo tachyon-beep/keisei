@@ -15,9 +15,23 @@ export const historicalLibrary = writable([])
 export const gauntletResults = writable([])
 export const leagueTransitions = writable([])
 
-/** Event log: tracks arrivals, departures, and rank changes */
+/** Event log: tracks arrivals, departures, and rank changes.
+ *  Persisted to localStorage so events survive page refresh. */
 const MAX_EVENTS = 50
-export const leagueEvents = writable([])
+const EVENTS_STORAGE_KEY = 'keisei_league_events'
+
+function loadPersistedEvents() {
+  try {
+    const raw = localStorage.getItem(EVENTS_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+export const leagueEvents = writable(loadPersistedEvents())
+
+leagueEvents.subscribe(events => {
+  try { localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events)) } catch {}
+})
 
 let _prevEntryMap = new Map()
 let _prevRanks = new Map()
@@ -30,6 +44,19 @@ let _prevRanks = new Map()
 export function diffLeagueEntries(entries) {
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const newMap = new Map(entries.map(e => [e.id, e]))
+
+  // First load: seed state without generating events (avoids phantom
+  // arrivals for every existing entry on page refresh).
+  if (_prevEntryMap.size === 0) {
+    _prevEntryMap = newMap
+    const activeEntries = entries.filter(e => e.status === 'active')
+    if (activeEntries.length > 0) {
+      const sorted = [...activeEntries].sort((a, b) => b.elo_rating - a.elo_rating)
+      _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
+    }
+    return
+  }
+
   const events = []
 
   // Arrivals (active entries only)
@@ -99,10 +126,6 @@ export function diffLeagueEntries(entries) {
       }
     }
     // Update rank cache
-    _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
-  } else if (activeEntries.length > 0) {
-    // First load — seed ranks without generating events
-    const sorted = [...activeEntries].sort((a, b) => b.elo_rating - a.elo_rating)
     _prevRanks = new Map(sorted.map((e, i) => [e.id, i + 1]))
   }
 
