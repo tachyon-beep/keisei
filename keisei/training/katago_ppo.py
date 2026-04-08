@@ -660,24 +660,41 @@ class KataGoPPOAlgorithm:
                 bootstrap, gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
-        if advantages.numel() > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
         batch_size = min(self.params.batch_size, total_samples)
 
         amp_dtype, autocast_device = _amp_dtype_and_device(self.params.use_amp, device)
 
-        # --- Optimization: move entire dataset to GPU once ---
-        # Previously each mini-batch transferred ~2.8 MB from CPU 512 times
-        # (~1.4 GB PCIe traffic per update). Now we transfer once (~900 MB)
-        # and index GPU tensors directly — pure GPU gathers, no PCIe.
-        gpu_obs = data["observations"].to(device, non_blocking=True)
+        # --- Optimization: overlap CPU→GPU transfer with advantage normalization ---
+        # Observations are the largest tensor (~1 GB for 65K × 50 × 9 × 9).
+        # Start their transfer on a dedicated stream so it overlaps with the
+        # advantage normalization and remaining small transfers on the default stream.
+        # pin_memory() makes the async transfer truly non-blocking on CUDA.
+        if device.type == "cuda":
+            _transfer_stream = torch.cuda.Stream(device)
+            with torch.cuda.stream(_transfer_stream):
+                obs_pinned = data["observations"].pin_memory()
+                gpu_obs = obs_pinned.to(device, non_blocking=True)
+                lm_pinned = data["legal_masks"].pin_memory()
+                gpu_legal_masks = lm_pinned.to(device, non_blocking=True)
+        else:
+            _transfer_stream = None
+            gpu_obs = data["observations"].to(device)
+            gpu_legal_masks = data["legal_masks"].to(device)
+
+        # Advantage normalization runs on CPU while obs transfer proceeds on GPU
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # Small tensors — transfer on default stream (fast, not worth a separate stream)
         gpu_actions = data["actions"].to(device, non_blocking=True)
         gpu_old_log_probs = data["log_probs"].to(device, non_blocking=True)
         gpu_advantages = advantages.to(device, non_blocking=True)
-        gpu_legal_masks = data["legal_masks"].to(device, non_blocking=True)
         gpu_value_cats = data["value_categories"].to(device, non_blocking=True)
         gpu_score_targets = data["score_targets"].to(device, non_blocking=True)
+
+        # Wait for observation transfer to complete before training begins
+        if _transfer_stream is not None:
+            torch.cuda.current_stream(device).wait_stream(_transfer_stream)
 
         # --- Optimization: accumulate losses as GPU tensors ---
         # Previously 5x .item() per mini-batch = 2560 CPU-GPU syncs per update.

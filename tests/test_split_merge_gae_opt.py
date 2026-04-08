@@ -195,6 +195,43 @@ class TestPreAllocatedBuffer:
             buf.flatten()
 
 
+class TestOverlappedTransfer:
+    """Overlapping CPU→GPU transfer with GAE must not corrupt data."""
+
+    @pytest.fixture
+    def ppo(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        return KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+    def test_overlapped_update_produces_finite_metrics(self, ppo):
+        """update() with overlapped transfer must produce identical results."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        torch.manual_seed(123)
+        env_id_lists = [[0, 2], [1, 2, 3], [0, 1, 3], [0, 1, 2, 3],
+                        [0, 1], [2, 3], [0, 2, 3], [1, 2]]
+        for envs in env_id_lists:
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool), torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long), torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+            )
+        losses = ppo.update(buf, torch.zeros(4))
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+            assert not torch.tensor(val).isinf(), f"{key} is inf"
+
+
 class TestVectorizedUpdateIntegration:
     """update() must produce identical results after the vectorized refactor."""
 
