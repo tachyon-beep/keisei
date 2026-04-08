@@ -208,8 +208,8 @@
     padding: 14px;
     display: flex;
     flex-direction: column;
+    flex: 1;
     min-height: 0;
-    max-height: 90%;
     overflow: hidden;
   }
 

@@ -63,8 +63,8 @@ describe('buildChartOpts', () => {
     // Skip first entry (the X label)
     const mapped = opts.series.slice(1)
     expect(mapped).toEqual([
-      { label: 'Loss', stroke: '#ff0000', width: 1.5, fill: '#ff000020' },
-      { label: 'Accuracy', stroke: '#00ff00', width: 1.5, fill: '#00ff0020' },
+      { label: 'Loss', stroke: '#ff0000', width: 1.5, fill: '#ff000020', dash: undefined, scale: 'y' },
+      { label: 'Accuracy', stroke: '#00ff00', width: 1.5, fill: '#00ff0020', dash: undefined, scale: 'y' },
     ])
   })
 

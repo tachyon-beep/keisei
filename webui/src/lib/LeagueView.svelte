@@ -80,53 +80,13 @@
     </div>
   {/if}
 
-  <div class="league-columns">
-    <div class="left-column">
+  <div class="league-grid">
+    <div class="left-top">
       <div class="table-wrapper">
         <LeagueTable {learnerName} />
       </div>
-      <div class="bottom-row">
-        <div class="event-log-wrapper">
-          <LeagueEventLog />
-        </div>
-        <div class="tabbed-panel">
-          <nav aria-label="Bottom panel"><div class="tab-bar" role="tablist">
-            <button
-              id="tab-recent"
-              role="tab"
-              aria-selected={activeBottomTab === 'recent'}
-              aria-controls="panel-recent"
-              tabindex={activeBottomTab === 'recent' ? 0 : -1}
-              on:click={() => setBottomTab('recent')}
-              on:keydown={handleTabKeydown}
-              class:active={activeBottomTab === 'recent'}
-            >Recent Matches{#if $leagueResults.length > 0} <span class="tab-count">({$leagueResults.length})</span>{/if}</button>
-            <button
-              id="tab-history"
-              role="tab"
-              aria-selected={activeBottomTab === 'history'}
-              aria-controls="panel-history"
-              tabindex={activeBottomTab === 'history' ? 0 : -1}
-              on:click={() => setBottomTab('history')}
-              on:keydown={handleTabKeydown}
-              class:active={activeBottomTab === 'history'}
-            >Historical Library{#if $historicalLibrary.length > 0} <span class="tab-count">({$historicalLibrary.length})</span>{/if}</button>
-          </div></nav>
-          <div class="tab-content">
-            {#if activeBottomTab === 'recent'}
-              <div id="panel-recent" role="tabpanel" aria-labelledby="tab-recent">
-                <RecentMatches />
-              </div>
-            {:else}
-              <div id="panel-history" role="tabpanel" aria-labelledby="tab-history">
-                <HistoricalLibrary />
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
     </div>
-    <div class="right-column">
+    <div class="right-top">
       {#if $focusedEntryId != null}
         <div class="entry-detail-wrapper" role="region" aria-label="Entry detail" on:keydown={handleDetailKeydown}>
           <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
@@ -135,21 +95,61 @@
       {:else}
         <MatchupMatrix {learnerName} />
       {/if}
-      <div class="chart-card">
-        <h2 class="section-header">Elo Over Time</h2>
-        {#if chartData.xData.length > 0}
-          <MetricsChart
-            title=""
-            xData={chartData.xData}
-            series={chartData.series}
-            height={200}
-            xLabel="Epoch"
-            legendPosition="right"
-          />
-        {:else}
-          <p class="empty">No matches yet.</p>
-        {/if}
+    </div>
+    <div class="left-bottom">
+      <div class="event-log-wrapper">
+        <LeagueEventLog />
       </div>
+      <div class="tabbed-panel">
+        <nav aria-label="Bottom panel"><div class="tab-bar" role="tablist">
+          <button
+            id="tab-recent"
+            role="tab"
+            aria-selected={activeBottomTab === 'recent'}
+            aria-controls="panel-recent"
+            tabindex={activeBottomTab === 'recent' ? 0 : -1}
+            on:click={() => setBottomTab('recent')}
+            on:keydown={handleTabKeydown}
+            class:active={activeBottomTab === 'recent'}
+          >Recent Matches{#if $leagueResults.length > 0} <span class="tab-count">({$leagueResults.length})</span>{/if}</button>
+          <button
+            id="tab-history"
+            role="tab"
+            aria-selected={activeBottomTab === 'history'}
+            aria-controls="panel-history"
+            tabindex={activeBottomTab === 'history' ? 0 : -1}
+            on:click={() => setBottomTab('history')}
+            on:keydown={handleTabKeydown}
+            class:active={activeBottomTab === 'history'}
+          >Historical Library{#if $historicalLibrary.length > 0} <span class="tab-count">({$historicalLibrary.length})</span>{/if}</button>
+        </div></nav>
+        <div class="tab-content">
+          {#if activeBottomTab === 'recent'}
+            <div id="panel-recent" role="tabpanel" aria-labelledby="tab-recent">
+              <RecentMatches />
+            </div>
+          {:else}
+            <div id="panel-history" role="tabpanel" aria-labelledby="tab-history">
+              <HistoricalLibrary />
+            </div>
+          {/if}
+        </div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h2 class="section-header">Elo Over Time</h2>
+      {#if chartData.xData.length > 0}
+        <MetricsChart
+          title=""
+          xData={chartData.xData}
+          series={chartData.series}
+          height={200}
+          xLabel="Epoch"
+          legendPosition="right"
+        />
+      {:else}
+        <p class="empty">No matches yet.</p>
+      {/if}
     </div>
   </div>
 </main>
@@ -207,56 +207,42 @@
     letter-spacing: 0.5px;
   }
 
-  .league-columns {
+  .league-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: 3fr 1fr;
     gap: 12px;
     flex: 1;
     min-height: 0;
     overflow: hidden;
   }
 
-  .left-column {
+  .left-top {
     min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
     overflow: hidden;
   }
 
   .table-wrapper {
-    flex: 0 1 auto;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
-    max-height: 70%;
   }
 
-  .chart-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px;
-    flex: 1;
+  .right-top {
     min-height: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
 
-  .chart-card > :global(.chart-wrapper) {
-    flex: 1;
-    min-height: 0;
-  }
-
-  .bottom-row {
+  .left-bottom {
     display: flex;
     gap: 12px;
-    flex: 1;
     min-height: 0;
     overflow: hidden;
   }
 
-  .bottom-row > :global(*) {
+  .left-bottom > :global(*) {
     flex: 1;
     min-width: 0;
     min-height: 0;
@@ -268,12 +254,20 @@
     flex-direction: column;
   }
 
-  .right-column {
+  .chart-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
     overflow: hidden;
+  }
+
+  .chart-card > :global(.chart-wrapper) {
+    flex: 1;
+    min-height: 0;
   }
 
   .empty {
@@ -291,7 +285,6 @@
     position: relative;
     flex: 1;
     min-height: 0;
-    max-height: 90%;
   }
 
   .detail-close-btn {
@@ -389,16 +382,13 @@
   }
 
   @media (max-width: 1200px) {
-    .league-columns {
+    .league-grid {
       grid-template-columns: 1fr;
+      grid-template-rows: auto auto auto auto;
       overflow-y: auto;
     }
 
-    .table-wrapper {
-      max-height: none;
-    }
-
-    .bottom-row {
+    .left-bottom {
       flex-direction: column;
     }
   }
