@@ -219,3 +219,108 @@ class TestCrashRecovery:
         assert count == 1
         game = read_active_showcase_game(db)
         assert game is None
+
+
+import concurrent.futures
+import threading
+
+
+class TestSQLiteConcurrency:
+    """Verify showcase DB operations work under concurrent access."""
+
+    def test_concurrent_move_writes(self, db: str) -> None:
+        """Multiple threads writing moves should not lose data."""
+        qid = queue_match(db, "e1", "e2", "normal")
+        game_id = create_showcase_game(
+            db, queue_id=qid, entry_id_black="e1", entry_id_white="e2",
+            elo_black=1500.0, elo_white=1480.0, name_black="A", name_white="B",
+        )
+
+        errors: list[Exception] = []
+
+        def write_move(ply: int) -> None:
+            try:
+                write_showcase_move(
+                    db, game_id=game_id, ply=ply, action_index=ply,
+                    usi_notation=f"move{ply}", board_json="[]", hands_json="{}",
+                    current_player="black" if ply % 2 == 0 else "white",
+                    in_check=False, value_estimate=0.5,
+                    top_candidates="[]", move_time_ms=10,
+                )
+            except Exception as e:
+                errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(write_move, i) for i in range(1, 21)]
+            concurrent.futures.wait(futures)
+
+        assert len(errors) == 0, f"Errors during concurrent writes: {errors}"
+        moves = read_showcase_moves_since(db, game_id, since_ply=0)
+        assert len(moves) == 20
+
+    def test_concurrent_queue_claim(self, db: str) -> None:
+        """Only one thread should successfully claim a match."""
+        queue_match(db, "e1", "e2", "normal")
+
+        results: list[dict | None] = []
+        lock = threading.Lock()
+
+        def try_claim() -> None:
+            result = claim_next_match(db)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=try_claim) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        claimed = [r for r in results if r is not None]
+        assert len(claimed) == 1, f"Expected 1 claim, got {len(claimed)}"
+
+    def test_read_during_write(self, db: str) -> None:
+        """Reads should not block during writes (WAL mode)."""
+        qid = queue_match(db, "e1", "e2", "normal")
+        game_id = create_showcase_game(
+            db, queue_id=qid, entry_id_black="e1", entry_id_white="e2",
+            elo_black=1500.0, elo_white=1480.0, name_black="A", name_white="B",
+        )
+
+        for ply in range(1, 6):
+            write_showcase_move(
+                db, game_id=game_id, ply=ply, action_index=ply,
+                usi_notation=f"move{ply}", board_json="[]", hands_json="{}",
+                current_player="white", in_check=False, value_estimate=0.5,
+                top_candidates="[]", move_time_ms=10,
+            )
+
+        read_errors: list[Exception] = []
+
+        def concurrent_read() -> None:
+            try:
+                for _ in range(10):
+                    read_showcase_moves_since(db, game_id, since_ply=0)
+            except Exception as e:
+                read_errors.append(e)
+
+        def concurrent_write() -> None:
+            try:
+                for ply in range(6, 16):
+                    write_showcase_move(
+                        db, game_id=game_id, ply=ply, action_index=ply,
+                        usi_notation=f"move{ply}", board_json="[]", hands_json="{}",
+                        current_player="black", in_check=False, value_estimate=0.5,
+                        top_candidates="[]", move_time_ms=10,
+                    )
+            except Exception as e:
+                read_errors.append(e)
+
+        t_read = threading.Thread(target=concurrent_read)
+        t_write = threading.Thread(target=concurrent_write)
+        t_read.start()
+        t_write.start()
+        t_read.join()
+        t_write.join()
+
+        assert len(read_errors) == 0
