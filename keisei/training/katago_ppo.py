@@ -558,31 +558,21 @@ class KataGoPPOAlgorithm:
                 _gae_end.record(_gae_stream)
                 self._timing_events["gae_ms"].append((_gae_start, _gae_end))
         elif "env_ids" in data:
-            # Per-env GAE for split-merge mode: pad all envs to (T_max, N) and
-            # compute GAE in a single vectorized pass.
+            # Per-env GAE for split-merge mode: partition by env via argsort
+            # (O(N log N)) instead of per-env boolean indexing (O(envs × N)).
             from keisei.training.gae import compute_gae_padded
 
             env_ids = data["env_ids"]
-            unique_envs = env_ids.unique()
-            advantages = torch.zeros(total_samples)
 
-            # Collect per-env data and pad into (T_max, N_env) tensors
-            env_rewards = []
-            env_values = []
-            env_terminated = []
-            env_lengths = []
-            env_masks = []
+            # Single sort partitions all envs; stable=True preserves temporal order.
+            sort_idx = torch.argsort(env_ids, stable=True)
+            sorted_ids = env_ids[sort_idx]
+            unique_envs, counts = sorted_ids.unique_consecutive(return_counts=True)
+            splits = torch.split(sort_idx, counts.tolist())
 
-            for env_id in unique_envs:
-                mask = env_ids == env_id
-                env_rewards.append(data["rewards"][mask])
-                env_values.append(data["values"][mask])
-                env_terminated.append(data[gae_dones_key][mask])
-                env_lengths.append(mask.sum().item())
-                env_masks.append(mask)
-
-            max_T = max(env_lengths)
             N_env = len(unique_envs)
+            env_lengths = counts.tolist()
+            max_T = max(env_lengths)
 
             rewards_pad = torch.zeros(max_T, N_env)
             values_pad = torch.zeros(max_T, N_env)
@@ -594,10 +584,11 @@ class KataGoPPOAlgorithm:
                     f"env_id {unique_envs.max().item()} >= next_values size "
                     f"{next_values_cpu.shape[0]}"
                 )
-            for i, L in enumerate(env_lengths):
-                rewards_pad[:L, i] = env_rewards[i]
-                values_pad[:L, i] = env_values[i]
-                terminated_pad[:L, i] = env_terminated[i]
+            for i, idx in enumerate(splits):
+                L = env_lengths[i]
+                rewards_pad[:L, i] = data["rewards"][idx]
+                values_pad[:L, i] = data["values"][idx]
+                terminated_pad[:L, i] = data[gae_dones_key][idx]
                 nv[i] = next_values_cpu[unique_envs[i]]
 
             lengths_t = torch.tensor(env_lengths)
@@ -606,8 +597,10 @@ class KataGoPPOAlgorithm:
                 gamma=self.params.gamma, lam=self.params.gae_lambda,
             )
 
-            for i, L in enumerate(env_lengths):
-                advantages[env_masks[i]] = padded_adv[:L, i]
+            advantages = torch.zeros(total_samples)
+            for i, idx in enumerate(splits):
+                L = env_lengths[i]
+                advantages[idx] = padded_adv[:L, i]
         else:
             # Fallback: flat GAE (no env_ids — legacy split-merge behavior).
             # Mean across all envs is a rough bootstrap approximation; the

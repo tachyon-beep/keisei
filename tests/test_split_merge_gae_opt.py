@@ -1,0 +1,121 @@
+"""Tests for split-merge GAE hot path optimizations."""
+
+import torch
+import pytest
+
+from keisei.training.gae import compute_gae, compute_gae_padded
+
+
+class TestVectorizedEnvPartition:
+    """The vectorized argsort+split must produce identical GAE to the old boolean-index loop."""
+
+    def test_vectorized_partition_matches_reference(self):
+        """Partition via argsort+split gives same per-env chunks as boolean indexing."""
+        torch.manual_seed(42)
+        env_id_lists = [[0, 2], [1, 2, 3], [0, 1, 3], [0, 1, 2, 3],
+                        [0, 1], [2, 3], [0, 2, 3], [1, 2]]
+        all_env_ids = []
+        all_rewards = []
+        all_values = []
+        all_terminated = []
+
+        for step_envs in env_id_lists:
+            n = len(step_envs)
+            all_env_ids.append(torch.tensor(step_envs))
+            all_rewards.append(torch.randn(n))
+            all_values.append(torch.randn(n) * 0.5)
+            all_terminated.append(torch.zeros(n))
+
+        flat_env_ids = torch.cat(all_env_ids)
+        flat_rewards = torch.cat(all_rewards)
+        flat_values = torch.cat(all_values)
+        flat_terminated = torch.cat(all_terminated)
+        next_values = torch.randn(4)
+
+        # --- Reference: old boolean-index loop ---
+        unique_envs_ref = flat_env_ids.unique()
+        ref_advantages = torch.zeros(flat_rewards.numel())
+        for env_id in unique_envs_ref:
+            mask = flat_env_ids == env_id
+            env_adv = compute_gae(
+                flat_rewards[mask], flat_values[mask], flat_terminated[mask],
+                next_values[env_id], gamma=0.99, lam=0.95,
+            )
+            ref_advantages[mask] = env_adv
+
+        # --- New: argsort + split ---
+        sort_idx = torch.argsort(flat_env_ids, stable=True)
+        sorted_ids = flat_env_ids[sort_idx]
+        unique_envs, counts = sorted_ids.unique_consecutive(return_counts=True)
+        splits = torch.split(sort_idx, counts.tolist())
+
+        new_advantages = torch.zeros(flat_rewards.numel())
+        for i, env_id in enumerate(unique_envs):
+            idx = splits[i]
+            env_adv = compute_gae(
+                flat_rewards[idx], flat_values[idx], flat_terminated[idx],
+                next_values[env_id], gamma=0.99, lam=0.95,
+            )
+            new_advantages[idx] = env_adv
+
+        assert torch.allclose(new_advantages, ref_advantages, atol=1e-6), (
+            f"Vectorized partition diverged from reference: "
+            f"max diff = {(new_advantages - ref_advantages).abs().max().item()}"
+        )
+
+    def test_single_env_partition(self):
+        """Edge case: all samples from one env."""
+        flat_env_ids = torch.zeros(10, dtype=torch.long)
+        sort_idx = torch.argsort(flat_env_ids, stable=True)
+        sorted_ids = flat_env_ids[sort_idx]
+        unique_envs, counts = sorted_ids.unique_consecutive(return_counts=True)
+        splits = torch.split(sort_idx, counts.tolist())
+        assert len(splits) == 1
+        assert splits[0].numel() == 10
+
+    def test_partition_preserves_temporal_order(self):
+        """argsort(stable=True) must preserve insertion order within each env."""
+        flat_env_ids = torch.tensor([0, 1, 0, 1, 0])
+        sort_idx = torch.argsort(flat_env_ids, stable=True)
+        assert sort_idx.tolist() == [0, 2, 4, 1, 3]
+
+
+from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
+from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
+
+
+class TestVectorizedUpdateIntegration:
+    """update() must produce identical results after the vectorized refactor."""
+
+    @pytest.fixture
+    def ppo(self):
+        params = SEResNetParams(
+            num_blocks=2, channels=32, se_reduction=8,
+            global_pool_channels=16, policy_channels=8,
+            value_fc_size=32, score_fc_size=16, obs_channels=50,
+        )
+        model = SEResNetModel(params)
+        return KataGoPPOAlgorithm(KataGoPPOParams(), model)
+
+    def test_update_with_env_ids_produces_finite_metrics(self, ppo):
+        """Vectorized per-env GAE path must produce finite losses."""
+        buf = KataGoRolloutBuffer(num_envs=4, obs_shape=(50, 9, 9), action_space=11259)
+        env_id_lists = [[0, 2], [1, 2, 3], [0, 1, 3], [0, 1, 2, 3]]
+        for envs in env_id_lists:
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), torch.randn(n) * 0.1, torch.zeros(n),
+                torch.zeros(n, dtype=torch.bool),
+                torch.zeros(n, dtype=torch.bool),
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long),
+                torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+            )
+        losses = ppo.update(buf, torch.zeros(4))
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+            assert not torch.tensor(val).isinf(), f"{key} is inf"
