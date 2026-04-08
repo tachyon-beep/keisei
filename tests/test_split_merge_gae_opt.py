@@ -80,6 +80,61 @@ class TestVectorizedEnvPartition:
         assert sort_idx.tolist() == [0, 2, 4, 1, 3]
 
 
+class TestGAEPaddedGPU:
+    """GPU padded GAE must match CPU padded GAE within floating-point tolerance."""
+
+    def test_gpu_padded_matches_cpu_padded(self):
+        from keisei.training.gae import compute_gae_padded, compute_gae_padded_gpu
+
+        torch.manual_seed(42)
+        T_max, N = 20, 8
+        rewards = torch.randn(T_max, N)
+        values = torch.randn(T_max, N) * 0.5
+        terminated = torch.zeros(T_max, N)
+        lengths = torch.tensor([20, 15, 10, 20, 8, 12, 18, 20])
+        for i in range(N):
+            terminated[lengths[i]:, i] = 1.0
+        next_values = torch.randn(N)
+
+        cpu_adv = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95,
+        )
+
+        # compute_gae_padded_gpu should work on CPU tensors too (just runs on whatever device)
+        gpu_adv = compute_gae_padded_gpu(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95,
+        )
+
+        assert torch.allclose(cpu_adv, gpu_adv, rtol=1e-4, atol=1e-5), (
+            f"GPU padded GAE diverged: max diff = "
+            f"{(cpu_adv - gpu_adv).abs().max().item()}"
+        )
+
+    def test_gpu_padded_all_same_length(self):
+        """When all envs have max length, result should match compute_gae_gpu."""
+        from keisei.training.gae import compute_gae_gpu, compute_gae_padded_gpu
+
+        torch.manual_seed(7)
+        T, N = 10, 4
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        terminated = torch.zeros(T, N)
+        next_values = torch.randn(N)
+        lengths = torch.full((N,), T)
+
+        padded_adv = compute_gae_padded_gpu(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95,
+        )
+        direct_adv = compute_gae_gpu(
+            rewards, values, terminated, next_values,
+            gamma=0.99, lam=0.95,
+        )
+        assert torch.allclose(padded_adv, direct_adv, atol=1e-5)
+
+
 from keisei.training.katago_ppo import KataGoPPOAlgorithm, KataGoPPOParams, KataGoRolloutBuffer
 from keisei.training.models.se_resnet import SEResNetModel, SEResNetParams
 

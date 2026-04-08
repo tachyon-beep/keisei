@@ -592,10 +592,18 @@ class KataGoPPOAlgorithm:
                 nv[i] = next_values_cpu[unique_envs[i]]
 
             lengths_t = torch.tensor(env_lengths)
-            padded_adv = compute_gae_padded(
-                rewards_pad, values_pad, terminated_pad, nv, lengths_t,
-                gamma=self.params.gamma, lam=self.params.gae_lambda,
-            )
+            if device.type == "cuda":
+                from keisei.training.gae import compute_gae_padded_gpu
+                padded_adv = compute_gae_padded_gpu(
+                    rewards_pad.to(device), values_pad.to(device),
+                    terminated_pad.to(device), next_values.detach().float(),
+                    lengths_t, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                ).cpu()
+            else:
+                padded_adv = compute_gae_padded(
+                    rewards_pad, values_pad, terminated_pad, nv, lengths_t,
+                    gamma=self.params.gamma, lam=self.params.gae_lambda,
+                )
 
             advantages = torch.zeros(total_samples)
             for i, idx in enumerate(splits):
