@@ -321,7 +321,7 @@ class RecentFixedManager:
             )
 
         # Plan §7.1 criterion 4: "acceptable uncertainty / volatility"
-        spread = self._store.elo_spread(oldest.id)
+        spread = self._store.elo_spread(oldest.id, window=self._config.spread_window)
         stable_ok = spread <= self._config.max_elo_spread
 
         if games_ok and opponents_ok and elo_qualified and stable_ok:

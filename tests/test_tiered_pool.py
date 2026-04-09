@@ -877,3 +877,74 @@ class TestProtectedCandidateIds:
         )
 
         store.close()
+
+
+# ===========================================================================
+# Bug fix: elo_spread windowed metric enables promotion
+# ===========================================================================
+
+
+class TestPromotionWithWindowedSpread:
+    """With spread_window, entries with stable recent Elo can promote
+    even if their lifetime spread exceeds max_elo_spread."""
+
+    def test_windowed_spread_allows_promotion(self, tmp_path):
+        """Entry with large lifetime spread but stable recent Elo should PROMOTE."""
+        db_path = str(tmp_path / "windowed.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+
+        config = LeagueConfig(
+            recent=RecentFixedConfig(
+                slots=3,
+                soft_overflow=0,
+                min_games_for_review=2,
+                min_unique_opponents=1,
+                promotion_margin_elo=0.0,
+                max_elo_spread=50.0,
+                spread_window=10,
+            ),
+            dynamic=DynamicConfig(slots=10),
+            frontier=FrontierStaticConfig(slots=5),
+        )
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        # Fill Recent Fixed to capacity
+        entries = []
+        for i in range(1, 4):
+            entries.append(pool.snapshot_learner(model, "resnet", {}, epoch=i))
+        oldest = entries[0]
+
+        # Give oldest a wide EARLY Elo range (lifetime spread > 50)
+        store.update_elo(oldest.id, 800.0, epoch=1)
+        store.update_elo(oldest.id, 1200.0, epoch=2)
+        # Then stable recent history (spread < 50 in recent window)
+        for ep in range(3, 15):
+            store.update_elo(oldest.id, 1000.0 + ep * 0.5, epoch=ep)
+
+        # Give oldest enough games and unique opponents
+        opp = store.add_entry(model, "resnet", {}, epoch=50, role=Role.DYNAMIC)
+        store.record_result(
+            epoch=10, entry_a_id=oldest.id, entry_b_id=opp.id,
+            wins_a=1, wins_b=1, draws=0, match_type="tournament",
+        )
+
+        # Trigger overflow
+        pool.snapshot_learner(model, "resnet", {}, epoch=4)
+
+        # Oldest should have been promoted (not retired)
+        oldest_refreshed = store.get_entry(oldest.id)
+        assert oldest_refreshed is not None
+        assert oldest_refreshed.status == EntryStatus.RETIRED  # source is retired after clone
+        # A Dynamic clone should exist
+        dynamic_entries = store.list_by_role(Role.DYNAMIC)
+        promoted = [e for e in dynamic_entries if e.parent_entry_id == oldest.id]
+        assert len(promoted) == 1, (
+            f"Expected promotion to Dynamic, got {len(promoted)} clones. "
+            f"Windowed spread should have allowed promotion."
+        )
+
+        store.close()

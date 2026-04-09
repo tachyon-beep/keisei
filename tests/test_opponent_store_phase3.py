@@ -628,3 +628,42 @@ class TestRetiredAtField:
         assert len(retired) == 1
         assert retired[0].retired_at is not None
         assert retired[0].status is EntryStatus.RETIRED
+
+
+# ---------- elo_spread windowing ----------
+
+
+class TestEloSpreadWindow:
+    """elo_spread should support a window parameter for recent-only spread."""
+
+    def test_lifetime_spread_without_window(self, store, league_dir):
+        """Without window, elo_spread returns lifetime max-min."""
+        entry = _add_test_entry(store, league_dir)
+        # Wide early history, then stable recent history
+        store.update_elo(entry.id, 800.0, epoch=1)
+        store.update_elo(entry.id, 1200.0, epoch=2)  # 400 spread
+        for i in range(3, 13):
+            store.update_elo(entry.id, 1000.0, epoch=i)
+        spread = store.elo_spread(entry.id)
+        assert spread == pytest.approx(400.0)
+
+    def test_windowed_spread_ignores_old_outliers(self, store, league_dir):
+        """With window=5, only the 5 most recent history points are considered."""
+        entry = _add_test_entry(store, league_dir)
+        # Wide early history
+        store.update_elo(entry.id, 800.0, epoch=1)
+        store.update_elo(entry.id, 1200.0, epoch=2)
+        # Stable recent history (epochs 3-7, all near 1000)
+        for i in range(3, 8):
+            store.update_elo(entry.id, 1000.0 + i, epoch=i)
+        spread = store.elo_spread(entry.id, window=5)
+        # Window covers epochs 3-7: values 1003-1007, spread = 4
+        assert spread < 10.0, f"Windowed spread should be small, got {spread}"
+
+    def test_windowed_spread_with_fewer_points_than_window(self, store, league_dir):
+        """When fewer history points exist than window, use all points."""
+        entry = _add_test_entry(store, league_dir)
+        store.update_elo(entry.id, 900.0, epoch=1)
+        store.update_elo(entry.id, 950.0, epoch=2)
+        spread = store.elo_spread(entry.id, window=50)
+        assert spread == pytest.approx(50.0)

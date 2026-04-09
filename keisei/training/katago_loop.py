@@ -604,6 +604,9 @@ class KataGoTrainingLoop:
             self.scheduler = MatchScheduler(
                 scheduler_config, priority_scorer=priority_scorer,
             )
+            # Assign roles to any UNASSIGNED entries from a previous run.
+            # Idempotent: no-op if already bootstrapped or no UNASSIGNED entries.
+            self.tiered_pool.bootstrap_from_flat_pool()
             # Bootstrap snapshot so pool is never empty
             bootstrap_entry = self.tiered_pool.snapshot_learner(
                 self._base_model, config.model.architecture,

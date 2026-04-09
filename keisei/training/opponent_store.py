@@ -832,18 +832,33 @@ class OpponentStore:
                 (epoch, EntryStatus.ACTIVE),
             )
 
-    def elo_spread(self, entry_id: int) -> float:
+    def elo_spread(self, entry_id: int, window: int = 0) -> float:
         """Return Elo spread (max - min) from elo_history for an entry.
+
+        Args:
+            window: When > 0, only the most recent *window* history points
+                are considered (ordered by epoch DESC).  When 0, the full
+                lifetime spread is returned (legacy behaviour).
 
         Returns 0.0 if fewer than 2 history points exist (insufficient data
         to assess volatility).
         """
         with self._lock:
-            row = self._conn.execute(
-                "SELECT MAX(elo_rating) - MIN(elo_rating) AS spread, COUNT(*) AS cnt "
-                "FROM elo_history WHERE entry_id = ?",
-                (entry_id,),
-            ).fetchone()
+            if window > 0:
+                row = self._conn.execute(
+                    "SELECT MAX(elo_rating) - MIN(elo_rating) AS spread, "
+                    "COUNT(*) AS cnt FROM ("
+                    "  SELECT elo_rating FROM elo_history "
+                    "  WHERE entry_id = ? ORDER BY epoch DESC LIMIT ?"
+                    ")",
+                    (entry_id, window),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT MAX(elo_rating) - MIN(elo_rating) AS spread, COUNT(*) AS cnt "
+                    "FROM elo_history WHERE entry_id = ?",
+                    (entry_id,),
+                ).fetchone()
             if row is None or row["cnt"] < 2:
                 return 0.0
             return float(row["spread"])

@@ -86,6 +86,7 @@ class RecentFixedConfig:
     min_unique_opponents: int = 6
     promotion_margin_elo: float = 25.0
     max_elo_spread: float = 200.0  # Plan §7.1 criterion 4: "acceptable uncertainty / volatility"
+    spread_window: int = 50  # Recent history window for elo_spread; 0 = lifetime (legacy)
     soft_overflow: int = 1
     retire_if_below_dynamic_floor: bool = True
 
