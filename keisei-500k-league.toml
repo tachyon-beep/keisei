@@ -84,9 +84,9 @@ recent_fixed_slots = 5      # §4.1B: fresh blood / probation queue
 dynamic_slots = 10           # §4.1C: live trainable population
 
 [league.concurrency]
-parallel_matches = 128       # 40% GPU at 32 slots → double to target ~80%
+parallel_matches = 64        # 190 pairings / 64 = 3 waves per round
 envs_per_match = 4          # best-of-3 needs 3 games; 4 = minimal overshoot
-total_envs = 512            # 128 × 4
+total_envs = 256            # 64 × 4
 max_resident_models = 22    # pool has 20 entries max; 22 keeps entire pool in LRU cache
 
 [league.dynamic]

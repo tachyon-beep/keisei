@@ -9,6 +9,9 @@ import {
   leagueEntries, leagueResults, eloHistory,
   historicalLibrary, gauntletResults, leagueTransitions,
 } from '../stores/league.js'
+import {
+  showcaseGame, showcaseMoves, showcaseQueue, sidecarAlive,
+} from '../stores/showcase.js'
 
 beforeEach(() => {
   games.set([])
@@ -21,6 +24,10 @@ beforeEach(() => {
   historicalLibrary.set([])
   gauntletResults.set([])
   leagueTransitions.set([])
+  showcaseGame.set(null)
+  showcaseMoves.set([])
+  showcaseQueue.set([])
+  sidecarAlive.set(false)
 })
 
 describe('handleMessage — init', () => {
@@ -332,5 +339,91 @@ describe('handleMessage — league_update with dropped data streams', () => {
     expect(get(historicalLibrary)).toEqual([])
     expect(get(gauntletResults)).toEqual([])
     expect(get(leagueTransitions)).toEqual([])
+  })
+})
+
+describe('handleMessage — showcase_update', () => {
+  it('sets game and appends moves within the same game', () => {
+    showcaseMoves.set([{ ply: 1, game_id: 10 }])
+    handleMessage({
+      type: 'showcase_update',
+      game: { id: 10, status: 'in_progress' },
+      new_moves: [{ ply: 2, game_id: 10 }],
+    })
+    expect(get(showcaseGame)).toEqual({ id: 10, status: 'in_progress' })
+    expect(get(showcaseMoves)).toHaveLength(2)
+    expect(get(showcaseMoves)[1].ply).toBe(2)
+  })
+
+  it('resets moves when game_id changes (new game)', () => {
+    showcaseMoves.set([{ ply: 1, game_id: 10 }, { ply: 2, game_id: 10 }])
+    handleMessage({
+      type: 'showcase_update',
+      game: { id: 20, status: 'in_progress' },
+      new_moves: [{ ply: 1, game_id: 20 }],
+    })
+    expect(get(showcaseGame).id).toBe(20)
+    expect(get(showcaseMoves)).toHaveLength(1)
+    expect(get(showcaseMoves)[0].game_id).toBe(20)
+  })
+
+  it('deduplicates moves already seen', () => {
+    showcaseMoves.set([{ ply: 1, game_id: 10 }, { ply: 2, game_id: 10 }])
+    handleMessage({
+      type: 'showcase_update',
+      game: { id: 10, status: 'in_progress' },
+      new_moves: [{ ply: 2, game_id: 10 }, { ply: 3, game_id: 10 }],
+    })
+    expect(get(showcaseMoves)).toHaveLength(3)
+    expect(get(showcaseMoves)[2].ply).toBe(3)
+  })
+
+  it('sets sidecarAlive to true', () => {
+    sidecarAlive.set(false)
+    handleMessage({
+      type: 'showcase_update',
+      game: { id: 10, status: 'in_progress' },
+      new_moves: [],
+    })
+    expect(get(sidecarAlive)).toBe(true)
+  })
+})
+
+describe('handleMessage — showcase_status', () => {
+  it('updates queue and sidecar status', () => {
+    handleMessage({
+      type: 'showcase_status',
+      queue: [{ id: 1, status: 'pending' }],
+      active_game_id: 10,
+      sidecar_alive: true,
+    })
+    expect(get(showcaseQueue)).toHaveLength(1)
+    expect(get(sidecarAlive)).toBe(true)
+  })
+
+  it('clears game and moves when active_game_id is null (game ended)', () => {
+    showcaseGame.set({ id: 10, status: 'in_progress' })
+    showcaseMoves.set([{ ply: 1, game_id: 10 }, { ply: 2, game_id: 10 }])
+    handleMessage({
+      type: 'showcase_status',
+      queue: [],
+      active_game_id: null,
+      sidecar_alive: true,
+    })
+    expect(get(showcaseGame)).toBeNull()
+    expect(get(showcaseMoves)).toEqual([])
+  })
+
+  it('preserves game and moves when active_game_id is present', () => {
+    showcaseGame.set({ id: 10, status: 'in_progress' })
+    showcaseMoves.set([{ ply: 1, game_id: 10 }])
+    handleMessage({
+      type: 'showcase_status',
+      queue: [],
+      active_game_id: 10,
+      sidecar_alive: true,
+    })
+    expect(get(showcaseGame)).not.toBeNull()
+    expect(get(showcaseMoves)).toHaveLength(1)
   })
 })

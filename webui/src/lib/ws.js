@@ -161,19 +161,33 @@ export function handleMessage(msg) {
       if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
       break
 
-    case 'showcase_update':
-      showcaseGame.set(msg.game || null)
+    case 'showcase_update': {
+      const game = msg.game || null
+      const gameId = game ? game.id : null
+      showcaseGame.set(game)
+      // Reset moves when game changes; append within same game
       showcaseMoves.update(existing => {
         const newMoves = msg.new_moves || []
+        if (existing.length > 0 && existing[0].game_id !== gameId) {
+          return newMoves
+        }
         const maxPly = existing.length > 0 ? existing[existing.length - 1].ply : 0
         const fresh = newMoves.filter(m => m.ply > maxPly)
         return [...existing, ...fresh]
       })
+      // Moves only arrive when sidecar is actively playing
+      sidecarAlive.set(true)
       break
+    }
 
     case 'showcase_status':
       showcaseQueue.set(msg.queue || [])
       sidecarAlive.set(msg.sidecar_alive || false)
+      // Clear game state when no active game (game ended or abandoned)
+      if (!msg.active_game_id) {
+        showcaseGame.set(null)
+        showcaseMoves.set([])
+      }
       break
 
     case 'showcase_error':
