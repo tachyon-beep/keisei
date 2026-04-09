@@ -711,3 +711,110 @@ class TestPartitionRange:
             pool.partition_range(2)
         with pytest.raises(ValueError, match="out of range"):
             pool.partition_range(10)
+
+
+# ---------------------------------------------------------------------------
+# TestZeroLegalActionGuard
+# ---------------------------------------------------------------------------
+
+
+class ZeroLegalVecEnv(MockVecEnv):
+    """MockVecEnv that returns zero legal masks for a specific env range after N steps."""
+
+    def __init__(
+        self,
+        num_envs: int,
+        *,
+        zero_range: tuple[int, int],
+        zero_after_step: int = 1,
+        terminate_after: int = 3,
+    ) -> None:
+        super().__init__(num_envs, terminate_after=terminate_after)
+        self._zero_range = zero_range
+        self._zero_after_step = zero_after_step
+        self._step_count = 0
+
+    def step(self, actions: np.ndarray) -> SimpleNamespace:
+        self._step_count += 1
+        result = super().step(actions)
+        if self._step_count >= self._zero_after_step:
+            s, e = self._zero_range
+            result.legal_masks[s:e] = False
+        return result
+
+
+class TestZeroLegalActionGuard:
+    """Guard must prevent NaN without crashing or corrupting other slots."""
+
+    def test_single_slot_zero_legal_completes_without_crash(self) -> None:
+        """Zero legal actions in a single-slot pool should yield a result, not crash."""
+        pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
+        vecenv = ZeroLegalVecEnv(num_envs=2, zero_range=(0, 2), zero_after_step=2)
+        entries = [_make_entry(i) for i in range(2)]
+        pairings = [(entries[0], entries[1])]
+
+        results, stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=100,
+        )
+        assert len(results) == 1
+
+    def test_multi_slot_zero_legal_does_not_skip_other_slots(self) -> None:
+        """Zero legal in slot 0 must not prevent slot 1 from completing."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4, max_resident_models=4)
+        # Zero legal only for envs 0-2 (slot 0), slot 1 (envs 2-4) stays normal
+        vecenv = ZeroLegalVecEnv(
+            num_envs=4, zero_range=(0, 2), zero_after_step=2, terminate_after=3,
+        )
+        entries = [_make_entry(i) for i in range(4)]
+        pairings = [
+            (entries[0], entries[1]),  # slot 0 — will hit zero legal
+            (entries[2], entries[3]),  # slot 1 — should complete normally
+        ]
+
+        results, stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=4,
+        )
+        # Both slots should produce results
+        assert len(results) == 2
+        # Slot 1 should have completed its games normally
+        slot1_result = results[1]
+        total = slot1_result.a_wins + slot1_result.b_wins + slot1_result.draws
+        assert total >= 4, f"Slot 1 should complete all games, got {total}"
+
+    def test_zero_legal_with_rollout_no_buffer_misalignment(self) -> None:
+        """Rollout buffers must stay aligned when zero-legal fires mid-collection."""
+        pool = _make_pool(parallel_matches=1, envs_per_match=2, total_envs=2, max_resident_models=2)
+        vecenv = ZeroLegalVecEnv(
+            num_envs=2, zero_range=(0, 2), zero_after_step=3, terminate_after=2,
+        )
+        entries = [_make_entry(i) for i in range(2)]
+        pairings = [(entries[0], entries[1])]
+
+        results, stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=100,
+            trainable_fn=lambda ea, eb: True,
+        )
+        assert len(results) == 1
+        rollout = results[0].rollout
+        if rollout is not None:
+            # All rollout tensors must have the same number of time steps
+            T = rollout.observations.shape[0]
+            assert rollout.actions.shape[0] == T, "actions misaligned"
+            assert rollout.rewards.shape[0] == T, "rewards misaligned"
+            assert rollout.dones.shape[0] == T, "dones misaligned"
+            assert rollout.legal_masks.shape[0] == T, "legal_masks misaligned"

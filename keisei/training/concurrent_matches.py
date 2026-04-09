@@ -295,6 +295,20 @@ class ConcurrentMatchPool:
                     partition_obs = obs[s:e]
                     partition_legal = legal_masks[s:e]
                     partition_players = current_players[s:e]
+
+                    # Guard: zero legal actions would produce NaN from softmax(-inf).
+                    # Must be checked BEFORE rollout data or pre_step_players are
+                    # recorded so the slot is cleanly skipped for this ply.
+                    legal_counts = partition_legal.sum(dim=-1)
+                    if (legal_counts == 0).any():
+                        logger.warning(
+                            "Zero legal actions in concurrent pool slot %d — "
+                            "ending match early to avoid NaN",
+                            slot.index,
+                        )
+                        slot.games_target = slot.games_completed
+                        continue
+
                     pre_step_players[slot.index] = partition_players.copy()
 
                     # Collect pre-step rollout data.  Exactly one append per
@@ -315,17 +329,6 @@ class ConcurrentMatchPool:
                     player_b_mask = ~player_a_mask
 
                     slot_actions = torch.zeros(e - s, dtype=torch.long, device=device)
-
-                    # Guard: zero legal actions would produce NaN from softmax(-inf)
-                    legal_counts = partition_legal.sum(dim=-1)
-                    if (legal_counts == 0).any():
-                        logger.warning(
-                            "Zero legal actions in concurrent pool slot %d — "
-                            "ending match early to avoid NaN",
-                            slot.index,
-                        )
-                        slot.games_target = slot.games_completed
-                        break
 
                     # Model A forward (player 0 = Black)
                     a_indices = player_a_mask.nonzero(as_tuple=True)[0]
@@ -393,6 +396,14 @@ class ConcurrentMatchPool:
                 # Process completions per slot
                 completed_slot_indices: list[int] = []
                 for i, slot in enumerate(active_slots):
+                    # Slots skipped by the zero-legal guard were not stepped
+                    # this ply — no pre_step_players, no rollout data, no game
+                    # counting.  Just check if they should be marked complete.
+                    if slot.index not in pre_step_players:
+                        if slot.games_completed >= slot.games_target:
+                            completed_slot_indices.append(i)
+                        continue
+
                     s, e = slot.env_start, slot.env_end
                     partition_rewards = rewards_np[s:e]
                     partition_term = terminated[s:e]
