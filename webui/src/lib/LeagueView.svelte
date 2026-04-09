@@ -95,10 +95,12 @@
     <div class="right-col">
       <MatchupMatrix {learnerName} />
     </div>
-    <div class="bottom-row">
+    <div class="bottom-left">
       <div class="recent-matches-wrapper">
         <RecentMatches />
       </div>
+    </div>
+    <div class="bottom-right">
       <div class="event-log-wrapper">
         <LeagueEventLog />
       </div>
@@ -181,11 +183,11 @@
     background: var(--border);
   }
 
-  /* --- Main grid: 2 columns + bottom row --- */
+  /* --- Main grid: 2 columns, 2 rows --- */
   .league-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr auto;
+    grid-template-rows: 3fr 1fr;
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -218,7 +220,7 @@
   .entry-detail-wrapper {
     flex: 0 1 auto;
     min-height: 120px;
-    max-height: 300px;
+    max-height: 60%;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -266,20 +268,17 @@
     flex-direction: column;
   }
 
-  /* Bottom row: spans both columns */
-  .bottom-row {
-    grid-row: 2;
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 12px;
+  /* Bottom cells: align with columns above */
+  .bottom-left,
+  .bottom-right {
     min-height: 0;
-    max-height: 220px;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .recent-matches-wrapper {
-    flex: 2;
-    min-width: 0;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
     background: var(--bg-secondary);
@@ -288,24 +287,22 @@
   }
 
   .event-log-wrapper {
-    flex: 1;
-    min-width: 0;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
   }
 
   @media (max-width: 1200px) {
     .league-grid {
       grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto;
+      grid-template-rows: auto auto auto auto;
       overflow-y: auto;
     }
 
-    .bottom-row {
-      flex-direction: column;
+    .bottom-left,
+    .bottom-right {
       max-height: none;
     }
   }

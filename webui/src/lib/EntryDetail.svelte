@@ -122,9 +122,28 @@
   {#if !entry}
     <p class="empty">Select an entry to view details</p>
   {:else}
-    <h3 class="sr-only" tabindex="-1" bind:this={headingEl}>{entry.display_name || entry.architecture} — Details</h3>
+    <h3 class="detail-heading" tabindex="-1" bind:this={headingEl}>
+      <span class="role-icon" aria-hidden="true">{getRoleInfo(entry.role, entry.status).icon}</span>
+      {entry.display_name || entry.architecture}
+      <span class="heading-elo">{Math.round(entry.elo_rating)}</span>
+    </h3>
 
     <div class="detail-sections">
+      {#if sparkData.xData.length > 0}
+        <div class="detail-section spark-section">
+          <h4 class="section-label">Elo Trend</h4>
+          <div class="spark-chart">
+            <MetricsChart
+              title=""
+              xData={sparkData.xData}
+              series={sparkData.series}
+              height={160}
+              xLabel="Epoch"
+            />
+          </div>
+        </div>
+      {/if}
+
       <div class="detail-section">
         <h4 class="section-label">Last Round {#if maxEpoch != null}<span class="epoch-tag">Epoch {maxEpoch}</span>{/if}</h4>
         {#if lastRound.length === 0}
@@ -148,22 +167,6 @@
           </div>
         {/if}
       </div>
-
-      {#if sparkData.xData.length > 0}
-        <div class="detail-section spark-section">
-          <h4 class="section-label">Elo Trend</h4>
-          <div class="spark-chart">
-            <MetricsChart
-              title=""
-              xData={sparkData.xData}
-              series={sparkData.series}
-              height={120}
-              compact={true}
-              xLabel="Epoch"
-            />
-          </div>
-        </div>
-      {/if}
 
       <div class="detail-section">
         <h4 class="section-label">Overall Record</h4>
@@ -225,8 +228,16 @@
 
 <style>
   .entry-detail { padding: 14px 18px; }
-  .detail-sections { display: flex; gap: 20px; flex-wrap: wrap; }
-  .detail-section { flex: 1; min-width: 220px; }
+  .detail-heading {
+    font-size: 16px; font-weight: 700; color: var(--text-primary);
+    margin: 0 0 12px; display: flex; align-items: center; gap: 6px;
+    padding-right: 28px; /* space for close button */
+  }
+  .detail-heading:focus { outline: none; }
+  .detail-heading:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .heading-elo { font-family: monospace; font-weight: 400; color: var(--text-muted); font-size: 14px; }
+  .detail-sections { display: flex; flex-direction: column; gap: 16px; }
+  .detail-section { min-width: 0; }
   .section-label {
     font-size: 13px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 8px;
@@ -249,11 +260,11 @@
   .elo-delta.negative { color: var(--danger); }
   .win-pct { font-family: monospace; font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
   .game-count { font-size: 14px; color: var(--text-muted); flex-shrink: 0; }
-  .role-stats { min-width: 100%; }
+  .role-stats { }
   .stat-row { display: flex; gap: 14px; flex-wrap: wrap; }
   .mini-stat { font-family: monospace; font-size: 14px; color: var(--text-primary); }
   .mini-label { font-size: 13px; color: var(--text-muted); margin-right: 4px; font-family: inherit; }
-  .style-section { min-width: 220px; }
+  .style-section { }
   .style-primary { font-size: 15px; font-weight: 600; color: var(--accent-teal); margin-bottom: 6px; }
   .style-traits { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
   .style-trait {
@@ -265,8 +276,8 @@
     font-size: 13px; font-style: italic; color: var(--text-muted); padding: 2px 0;
   }
   .commentary-item.high-conf { color: var(--text-secondary); }
-  .spark-section { min-width: 100%; }
-  .spark-chart { height: 120px; }
+  .spark-section { }
+  .spark-chart { height: 160px; }
   .spark-chart :global(.chart-wrapper) {
     border: none;
     padding: 0;
