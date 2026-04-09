@@ -105,11 +105,22 @@
     const isA = m.entry_a_id === entryId
     const oppId = isA ? m.entry_b_id : m.entry_a_id
     const opp = entryMap.get(oppId)
+    const w = isA ? (m.wins_a || 0) : (m.wins_b || 0)
+    const l = isA ? (m.wins_b || 0) : (m.wins_a || 0)
+    const d = m.draws || 0
+    const myElo = isA ? m.elo_before_a : m.elo_before_b
+    const oppElo = isA ? m.elo_before_b : m.elo_before_a
+    const won = w > l
+    const draw = w === l
+    // Upset: this entry won despite being 100+ Elo below opponent
+    const upset = won && myElo != null && oppElo != null && oppElo - myElo >= 100
+    // Opponent upset: opponent won despite being 100+ Elo below this entry
+    const oppUpset = !won && !draw && myElo != null && oppElo != null && myElo - oppElo >= 100
     return {
       opponent: opp,
-      w: isA ? (m.wins_a || 0) : (m.wins_b || 0),
-      l: isA ? (m.wins_b || 0) : (m.wins_a || 0),
-      d: m.draws || 0,
+      w, l, d,
+      oppElo: oppElo != null ? Math.round(oppElo) : null,
+      upset: upset || oppUpset,
       eloDelta: isA
         ? Math.round((m.elo_after_a || 0) - (m.elo_before_a || 0))
         : Math.round((m.elo_after_b || 0) - (m.elo_before_b || 0)),
@@ -178,8 +189,9 @@
                 <div class="match-row">
                   <span class="opp-name">
                     <span class="role-icon" title={getRoleInfo(m.opponent.role, m.opponent.status).tooltip} aria-hidden="true">{getRoleInfo(m.opponent.role, m.opponent.status).icon}</span>
-                    {m.opponent.display_name || m.opponent.architecture}
+                    {m.opponent.display_name || m.opponent.architecture}{#if m.oppElo != null}<span class="name-elo">({m.oppElo})</span>{/if}
                   </span>
+                  {#if m.upset}<span class="upset-badge" title="Upset: lower-rated player won">!</span>{/if}
                   <span class="wld">{m.w}W {m.l}L {m.d}D</span>
                   <span class="elo-delta" class:positive={m.eloDelta > 0} class:negative={m.eloDelta < 0}>
                     {m.eloDelta > 0 ? '+' : ''}{m.eloDelta}
@@ -201,7 +213,7 @@
               <div class="match-row">
                 <span class="opp-name">
                   <span class="role-icon" title={getRoleInfo(rec.opponent.role, rec.opponent.status).tooltip} aria-hidden="true">{getRoleInfo(rec.opponent.role, rec.opponent.status).icon}</span>
-                  {rec.opponent.display_name || rec.opponent.architecture}
+                  {rec.opponent.display_name || rec.opponent.architecture}<span class="name-elo">({Math.round(rec.opponent.elo_rating)})</span>
                 </span>
                 <span class="wld">{rec.w}W {rec.l}L {rec.d}D</span>
                 <span class="win-pct">{rec.total > 0 ? Math.round(rec.winRate * 100) : 0}%</span>
@@ -237,7 +249,8 @@
   .detail-heading:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   .heading-elo { font-family: monospace; font-weight: 400; color: var(--text-muted); font-size: 14px; }
   .detail-sections { display: flex; flex-direction: column; gap: 16px; }
-  .detail-section { min-width: 0; }
+  .detail-section { min-width: 0; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .detail-section:last-child { border-bottom: none; padding-bottom: 0; }
   .section-label {
     font-size: 13px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-muted); margin: 0 0 8px;
@@ -253,6 +266,8 @@
   }
   .match-row:hover { background: var(--bg-card); }
   .opp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+  .name-elo { font-family: monospace; font-size: 12px; color: var(--text-muted); font-weight: 400; margin-left: 3px; }
+  .upset-badge { font-size: 12px; font-weight: 700; color: var(--accent-gold); opacity: 0.7; flex-shrink: 0; }
   .role-icon { font-size: 14px; margin-right: 4px; }
   .wld { font-family: monospace; font-size: 14px; color: var(--text-secondary); flex-shrink: 0; }
   .elo-delta { font-family: monospace; font-size: 14px; font-weight: 600; flex-shrink: 0; min-width: 40px; text-align: right; }

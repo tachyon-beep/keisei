@@ -585,6 +585,7 @@ class KataGoTrainingLoop:
         # _loaded_by_role) is gated by _opponent_results being non-None, so an
         # empty _loaded_by_role from __init__ can never reach sample_for_learner.
         self._opponent_models: dict[int, torch.nn.Module] | None = None
+        self._opponent_pool_fingerprint: frozenset[tuple[int, str]] = frozenset()
         self._env_opponent_ids: np.ndarray | None = None
         self._cached_entries: list[OpponentEntry] = []
         self._cached_entries_by_id: dict[int, OpponentEntry] = {}
@@ -862,23 +863,39 @@ class KataGoTrainingLoop:
                 )
 
                 if use_per_env_opps:
-                    # Memory cleanup: release previous epoch's models.
-                    # Safe at epoch start: ppo.update() backward pass is a
-                    # CUDA sync point, so all prior kernels have completed.
-                    if self._opponent_models is not None:
-                        del self._opponent_models
-                        self._opponent_models = None
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                    # Check if the pool has changed since last epoch by comparing
+                    # a lightweight fingerprint of (id, checkpoint_path) tuples.
+                    # Skips the expensive load_all_opponents() + empty_cache()
+                    # cycle when the pool is unchanged (the common case).
+                    new_fingerprint = frozenset(
+                        (e.id, e.checkpoint_path) for e in self._cached_entries
+                    )
+                    pool_changed = new_fingerprint != self._opponent_pool_fingerprint
 
-                    # NOTE: Models are loaded once per epoch and NOT refreshed
-                    # mid-epoch. Dynamic entries may train on the tournament thread
-                    # between loads, making these snapshots ~1 epoch stale. This is
-                    # intentional: mid-epoch reloads would require cross-thread
-                    # synchronization, risk inference inconsistency within a rollout,
-                    # and add CUDA sync overhead. The ~1 epoch lag is acceptable
-                    # since Dynamic updates are small (§10.2: lr_scale=0.25, 2 epochs).
-                    self._opponent_models = self.store.load_all_opponents(device=opp_device)
+                    if pool_changed:
+                        # Memory cleanup: release previous epoch's models.
+                        # Safe at epoch start: ppo.update() backward pass is a
+                        # CUDA sync point, so all prior kernels have completed.
+                        if self._opponent_models is not None:
+                            del self._opponent_models
+                            self._opponent_models = None
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+
+                        # NOTE: Models are loaded once per pool change and NOT refreshed
+                        # mid-epoch. Dynamic entries may train on the tournament thread
+                        # between loads, making these snapshots ~1 epoch stale. This is
+                        # intentional: mid-epoch reloads would require cross-thread
+                        # synchronization, risk inference inconsistency within a rollout,
+                        # and add CUDA sync overhead. The ~1 epoch lag is acceptable
+                        # since Dynamic updates are small (§10.2: lr_scale=0.25, 2 epochs).
+                        self._opponent_models = self.store.load_all_opponents(device=opp_device)
+                        self._opponent_pool_fingerprint = new_fingerprint
+                        logger.info(
+                            "Opponent pool changed: loaded %d models", len(self._opponent_models),
+                        )
+                    else:
+                        assert self._opponent_models is not None
 
                     # Filter cached entries to only those whose models loaded.
                     # Without this, sample_from could assign an entry whose

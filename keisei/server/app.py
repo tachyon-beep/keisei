@@ -367,7 +367,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         if league_poll_elapsed >= LEAGUE_POLL_INTERVAL_S:
             league_poll_elapsed = 0.0
             new_league = await asyncio.to_thread(read_league_data, db_path)
-            new_elo_hist = await asyncio.to_thread(read_elo_history, db_path)
+            new_elo_hist = await asyncio.to_thread(read_elo_history, db_path, max_epochs=500)
             new_t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
             new_entry_ids = frozenset(e["id"] for e in new_league["entries"])
             new_result_id = new_league["results"][0]["id"] if new_league["results"] else 0

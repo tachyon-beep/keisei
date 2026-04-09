@@ -59,10 +59,17 @@
       const w = aWon || draw ? winsA : winsB
       const l = aWon || draw ? winsB : winsA
       const winPct = total > 0 ? Math.round((w / total) * 100) : 0
+      const eloA = r.elo_before_a != null ? Math.round(r.elo_before_a) : null
+      const eloB = r.elo_before_b != null ? Math.round(r.elo_before_b) : null
+      const winnerElo = aWon || draw ? eloA : eloB
+      const loserElo = aWon || draw ? eloB : eloA
       const eloDeltaA = r.elo_after_a != null && r.elo_before_a != null ? Math.round(r.elo_after_a - r.elo_before_a) : 0
       const eloDeltaB = r.elo_after_b != null && r.elo_before_b != null ? Math.round(r.elo_after_b - r.elo_before_b) : 0
       const eloWinner = aWon || draw ? eloDeltaA : eloDeltaB
       const eloLoser = aWon || draw ? eloDeltaB : eloDeltaA
+
+      // Upset: winner's pre-match Elo was 100+ points below loser's
+      const upset = !draw && winnerElo != null && loserElo != null && loserElo - winnerElo >= 100
 
       out.push({
         type: 'match',
@@ -73,6 +80,8 @@
         loserRole,
         winnerStatus,
         loserStatus,
+        winnerElo,
+        loserElo,
         w, l, draws,
         total,
         aWon,
@@ -81,6 +90,7 @@
         winPct,
         eloWinner,
         eloLoser,
+        upset,
       })
     }
     return out
@@ -105,9 +115,10 @@
         {:else}
           <div class="match-item">
             <div class="match-top">
-              <span class="name winner"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.winnerRole, item.winnerStatus)}</span>{item.winnerName}</span>
+              <span class="name winner"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.winnerRole, item.winnerStatus)}</span>{item.winnerName}{#if item.winnerElo != null}<span class="name-elo">({item.winnerElo})</span>{/if}</span>
               <span class="vs">vs</span>
-              <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole, item.loserStatus)}</span>{item.loserName}</span>
+              <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole, item.loserStatus)}</span>{item.loserName}{#if item.loserElo != null}<span class="name-elo">({item.loserElo})</span>{/if}</span>
+              {#if item.upset}<span class="upset-badge" title="Upset: lower-rated player won">!</span>{/if}
               <span class="match-score" class:win={item.aWon} class:loss={!item.aWon && !item.draw} class:tied={item.draw}>
                 {item.w}W {item.l}L {item.draws}D
               </span>
@@ -197,6 +208,22 @@
   .name.winner {
     color: var(--text-primary);
     font-weight: 600;
+  }
+
+  .name-elo {
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 3px;
+  }
+
+  .upset-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent-gold);
+    opacity: 0.7;
+    flex-shrink: 0;
   }
 
   .role-icon {

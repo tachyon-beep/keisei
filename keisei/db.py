@@ -12,10 +12,10 @@ SCHEMA_VERSION = 3
 
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -205,6 +205,7 @@ def init_db(db_path: str) -> None:
                 recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             );
             CREATE INDEX IF NOT EXISTS idx_elo_history_entry ON elo_history(entry_id);
+            CREATE INDEX IF NOT EXISTS idx_elo_history_entry_epoch ON elo_history(entry_id, epoch);
             CREATE TABLE IF NOT EXISTS league_transitions (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 entry_id    INTEGER NOT NULL REFERENCES league_entries(id),
@@ -661,13 +662,26 @@ def read_league_data(
         conn.close()
 
 
-def read_elo_history(db_path: str) -> list[dict[str, Any]]:
-    """Read all Elo history points for charting."""
+def read_elo_history(db_path: str, *, max_epochs: int = 0) -> list[dict[str, Any]]:
+    """Read Elo history points for charting.
+
+    Args:
+        max_epochs: When > 0, return only the most recent *max_epochs* worth of
+            data (by epoch number). 0 returns the full history.
+    """
     conn = _connect(db_path)
     try:
-        rows = conn.execute(
-            "SELECT entry_id, epoch, elo_rating FROM elo_history ORDER BY epoch, entry_id"
-        ).fetchall()
+        if max_epochs > 0:
+            rows = conn.execute(
+                """SELECT entry_id, epoch, elo_rating FROM elo_history
+                   WHERE epoch >= (SELECT MAX(epoch) - ? FROM elo_history)
+                   ORDER BY epoch, entry_id""",
+                (max_epochs,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT entry_id, epoch, elo_rating FROM elo_history ORDER BY epoch, entry_id"
+            ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
