@@ -68,11 +68,11 @@ describe('diffLeagueEntries', () => {
     expect(events).toHaveLength(0)
   })
 
-  it('clears stale persisted events when first call receives empty entries (DB wipe)', () => {
+  it('clears stale persisted events on first call even when entries exist (run restart)', () => {
     // Simulate stale events left over from a previous training run
     leagueEvents.set([{ time: '04:06:26', type: 'departure', icon: '←', name: 'Stale-Bot', detail: 'retired' }])
-    // First diff call with empty entries = wiped DB → should clear stale events
-    diffLeagueEntries([])
+    // First diff call should always clear stale events, regardless of entry count
+    diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
     const events = get(leagueEvents)
     expect(events).toHaveLength(0)
   })

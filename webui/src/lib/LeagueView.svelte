@@ -59,9 +59,21 @@
         <span class="stat-value">{stats.poolSize} / {POOL_CAPACITY}</span>
         <span class="stat-label">Pool Size</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-value">{stats.totalMatches}</span>
-        <span class="stat-label">Matches</span>
+      <div class="stat-card stat-trio">
+        <div class="trio-item">
+          <span class="stat-value">{stats.totalRounds}</span>
+          <span class="stat-label">Rounds</span>
+        </div>
+        <span class="trio-sep" aria-hidden="true"></span>
+        <div class="trio-item">
+          <span class="stat-value">{stats.totalMatches}</span>
+          <span class="stat-label">Matches</span>
+        </div>
+        <span class="trio-sep" aria-hidden="true"></span>
+        <div class="trio-item">
+          <span class="stat-value">{stats.totalGames}</span>
+          <span class="stat-label">Games</span>
+        </div>
       </div>
       <div class="stat-card highlight">
         <span class="stat-value">{stats.topEntry?.display_name || stats.topEntry?.architecture || '—'}</span>
@@ -205,6 +217,28 @@
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+  }
+
+  .stat-trio {
+    flex-direction: row;
+    justify-content: center;
+    gap: 0;
+    padding: 10px 8px;
+  }
+
+  .trio-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .trio-sep {
+    width: 1px;
+    align-self: stretch;
+    margin: 4px 0;
+    background: var(--border);
   }
 
   .league-grid {

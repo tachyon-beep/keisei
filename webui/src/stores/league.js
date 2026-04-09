@@ -56,11 +56,11 @@ export function diffLeagueEntries(entries) {
   // First load: seed state without generating events (avoids phantom
   // arrivals for every existing entry on page refresh).
   if (_prevEntryMap.size === 0) {
-    // Empty init means the DB was wiped — clear stale persisted events
-    // so the event log doesn't show history from a previous run.
-    if (entries.length === 0) {
-      leagueEvents.set([])
-    }
+    // Always clear persisted events on first load.  Stale events from a
+    // previous (possibly deleted) run would otherwise linger in
+    // localStorage indefinitely.  Fresh events will accumulate naturally
+    // from subsequent league_update diffs within this page session.
+    leagueEvents.set([])
     _prevEntryMap = newMap
     const activeEntries = entries.filter(e => e.status === 'active')
     if (activeEntries.length > 0) {
@@ -231,9 +231,13 @@ export const leagueStats = derived(
     const elos = active.map(e => displayElo(e).value)
     const sorted = [...active].sort((a, b) => displayElo(b).value - displayElo(a).value)
     const totalMatches = $results.length
+    const totalRounds = new Set($results.map(r => r.epoch)).size
+    const totalGames = $results.reduce((sum, r) => sum + (r.wins_a || 0) + (r.wins_b || 0) + (r.draws || 0), 0)
     return {
       poolSize: active.length,
       totalMatches,
+      totalRounds,
+      totalGames,
       topEntry: sorted[0],
       eloMin: Math.round(Math.min(...elos)),
       eloMax: Math.round(Math.max(...elos)),
