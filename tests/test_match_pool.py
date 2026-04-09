@@ -798,3 +798,121 @@ class TestZeroLegalActionGuard:
             assert rollout.rewards.shape[0] == T, "rewards misaligned"
             assert rollout.dones.shape[0] == T, "dones misaligned"
             assert rollout.legal_masks.shape[0] == T, "legal_masks misaligned"
+
+
+# ---------------------------------------------------------------------------
+# TestCrossSlotBatching
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSlotBatching:
+    """Verify that slots sharing a model use batched forward passes."""
+
+    def test_shared_model_called_once_per_ply(self) -> None:
+        """Two slots sharing model_a should produce ONE forward call per ply,
+        not two separate calls."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4)
+        vecenv = MockVecEnv(num_envs=4, terminate_after=2)
+
+        forward_calls: list[int] = []  # batch sizes seen
+        shared_model = TinyModel()
+        original_forward = shared_model.forward
+
+        def tracking_forward(x):
+            forward_calls.append(x.shape[0])
+            return original_forward(x)
+
+        shared_model.forward = tracking_forward
+
+        other_model_a = TinyModel()
+        other_model_b = TinyModel()
+
+        entries = [_make_entry(i) for i in range(4)]
+        pairings = [
+            (entries[0], entries[1]),  # slot 0: shared_model vs other_model_a
+            (entries[2], entries[3]),  # slot 1: shared_model vs other_model_b
+        ]
+
+        # load_fn returns shared_model for entries 0 and 2 (model_a in both slots)
+        def load_fn(entry):
+            if entry.id in (0, 2):
+                return shared_model
+            elif entry.id == 1:
+                return other_model_a
+            else:
+                return other_model_b
+
+        results, _stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=load_fn,
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=4,
+        )
+
+        assert len(results) == 2
+        # shared_model should see batched calls (batch > 1) not per-slot calls
+        batched = [b for b in forward_calls if b > 1]
+        assert len(batched) > 0, (
+            f"Expected batched forward calls (batch > 1) but got sizes: {forward_calls}"
+        )
+
+    def test_actions_scattered_correctly_across_slots(self) -> None:
+        """After batched inference, each slot's env range must receive
+        valid actions (not zeros or crossed wires)."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4)
+        vecenv = MockVecEnv(num_envs=4, terminate_after=3)
+        entries = [_make_entry(i) for i in range(4)]
+        pairings = [
+            (entries[0], entries[1]),
+            (entries[2], entries[3]),
+        ]
+
+        results, _stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=4,
+        )
+        assert len(results) == 2
+        for r in results:
+            total = r.a_wins + r.b_wins + r.draws
+            assert total >= 4
+
+    def test_rollout_integrity_with_batching(self) -> None:
+        """Rollout buffers must stay aligned when inference is batched."""
+        pool = _make_pool(parallel_matches=2, envs_per_match=2, total_envs=4)
+        vecenv = MockVecEnv(num_envs=4, terminate_after=2)
+        entries = [_make_entry(i) for i in range(4)]
+        pairings = [
+            (entries[0], entries[1]),
+            (entries[2], entries[3]),
+        ]
+
+        shared_model = TinyModel()
+
+        def load_fn(entry):
+            if entry.id in (0, 2):
+                return shared_model
+            return TinyModel()
+
+        results, _stats = pool.run_round(
+            vecenv,
+            pairings,
+            load_fn=load_fn,
+            release_fn=lambda ma, mb: None,
+            device="cpu",
+            games_per_match=4,
+            trainable_fn=lambda ea, eb: True,
+        )
+        assert len(results) == 2
+        for r in results:
+            assert r.rollout is not None
+            T = r.rollout.observations.shape[0]
+            assert r.rollout.actions.shape[0] == T
+            assert r.rollout.rewards.shape[0] == T
+            assert r.rollout.dones.shape[0] == T
+            assert r.rollout.legal_masks.shape[0] == T

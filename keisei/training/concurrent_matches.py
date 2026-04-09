@@ -290,6 +290,10 @@ class ConcurrentMatchPool:
                 actions = torch.zeros(self.config.total_envs, dtype=torch.long, device=device)
                 pre_step_players: dict[int, np.ndarray] = {}
 
+                # --- Phase 1: Collect per-slot data and build model batches ---
+                # model_batches: id(model) -> (model, [(global_indices, slot)])
+                model_batches: dict[int, tuple[torch.nn.Module, list[tuple[torch.Tensor, _MatchSlot]]]] = {}
+
                 for slot in active_slots:
                     s, e = slot.env_start, slot.env_end
                     partition_obs = obs[s:e]
@@ -328,40 +332,44 @@ class ConcurrentMatchPool:
                     player_a_mask = torch.from_numpy(partition_players == 0).to(device)
                     player_b_mask = ~player_a_mask
 
-                    slot_actions = torch.zeros(e - s, dtype=torch.long, device=device)
+                    # Model A envs (player 0 = Black)
+                    a_local = player_a_mask.nonzero(as_tuple=True)[0]
+                    if a_local.numel() > 0:
+                        a_global = a_local + s  # convert to global env indices
+                        mid = id(slot.model_a)
+                        if mid not in model_batches:
+                            model_batches[mid] = (slot.model_a, [])
+                        model_batches[mid][1].append((a_global, slot))
 
-                    # Model A forward (player 0 = Black)
-                    a_indices = player_a_mask.nonzero(as_tuple=True)[0]
-                    if a_indices.numel() > 0:
-                        with torch.no_grad():
-                            a_out = slot.model_a(partition_obs[a_indices])
-                            a_logits = a_out.policy_logits.reshape(a_indices.numel(), -1)
-                            a_masked = a_logits.masked_fill(
-                                ~partition_legal[a_indices], float("-inf")
-                            )
-                            a_probs = F.softmax(a_masked, dim=-1)
-                            slot_actions[a_indices] = torch.distributions.Categorical(
-                                a_probs
-                            ).sample()
+                    # Model B envs (player 1 = White)
+                    b_local = player_b_mask.nonzero(as_tuple=True)[0]
+                    if b_local.numel() > 0:
+                        b_global = b_local + s
+                        mid = id(slot.model_b)
+                        if mid not in model_batches:
+                            model_batches[mid] = (slot.model_b, [])
+                        model_batches[mid][1].append((b_global, slot))
 
-                    # Model B forward (player 1 = White)
-                    b_indices = player_b_mask.nonzero(as_tuple=True)[0]
-                    if b_indices.numel() > 0:
-                        with torch.no_grad():
-                            b_out = slot.model_b(partition_obs[b_indices])
-                            b_logits = b_out.policy_logits.reshape(b_indices.numel(), -1)
-                            b_masked = b_logits.masked_fill(
-                                ~partition_legal[b_indices], float("-inf")
-                            )
-                            b_probs = F.softmax(b_masked, dim=-1)
-                            slot_actions[b_indices] = torch.distributions.Categorical(
-                                b_probs
-                            ).sample()
+                # --- Phase 2: Batched forward passes per unique model ---
+                for _mid, (model, batch_entries) in model_batches.items():
+                    all_indices = torch.cat([idx for idx, _slot in batch_entries])
+                    with torch.no_grad():
+                        out = model(obs[all_indices])
+                        logits = out.policy_logits.reshape(all_indices.numel(), -1)
+                        masked = logits.masked_fill(
+                            ~legal_masks[all_indices], float("-inf")
+                        )
+                        probs = F.softmax(masked, dim=-1)
+                        sampled = torch.distributions.Categorical(probs).sample()
+                    actions[all_indices] = sampled
 
-                    actions[s:e] = slot_actions
-
+                # --- Phase 3: Per-slot rollout action collection ---
+                for slot in active_slots:
+                    if slot.index not in pre_step_players:
+                        continue  # skipped by zero-legal guard
                     if slot.collect_rollout:
-                        slot._actions.append(slot_actions.cpu())
+                        s, e = slot.env_start, slot.env_end
+                        slot._actions.append(actions[s:e].cpu())
 
                 # For inactive env ranges, pick first legal action.
                 # Iterates ALL parallel_matches partitions (not just effective_parallel)
