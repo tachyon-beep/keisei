@@ -84,7 +84,7 @@ class ShowcaseRunner:
 
     def _create_env(self) -> Any:
         from shogi_gym import SpectatorEnv
-        return SpectatorEnv(max_ply=MAX_PLY)
+        return SpectatorEnv(max_ply=MAX_PLY, action_mode="spatial")
 
     def _load_models(self, match: dict[str, Any]) -> tuple[Any, Any, str, str, Any, Any]:
         """Load models and return (model_b, model_w, arch_b, arch_w, entry1, entry2)."""

@@ -5,8 +5,7 @@
 # Purpose:  Production-scale training with large batch size and more envs.
 #           Migrate here once burn-in on 4060 Ti shows stable curves.
 #
-# Single GPU: ./run-training.sh --config keisei-h200.toml --ngpus 1
-# Multi-GPU:  ./run-training.sh --config keisei-h200.toml --ngpus 4
+# Launch:     ./run.sh keisei-h200.toml
 
 [model]
 display_name = "Raijin"
@@ -51,6 +50,9 @@ entropy_decay_epochs = 200      # R5
 [display]
 moves_per_minute = 60
 db_path = "data/keisei.db"
+
+[run]
+default_epochs = 500000
 
 [distributed]
 sync_batchnorm = true

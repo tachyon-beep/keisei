@@ -15,6 +15,7 @@
 #   ./run.sh keisei-league.toml --seed checkpoints/500k/epoch_00100.pt
 #   ./run.sh keisei-ddp.toml --epochs 2000
 #   ./run.sh keisei-ddp.toml --port 8741    # use TCP instead of unix socket
+#   ./run.sh keisei-league.toml --no-showcase  # skip the showcase sidecar
 #
 # Options:
 #   --resume              Resume from existing DB/checkpoint (default: fresh)
@@ -23,6 +24,7 @@
 #   --socket PATH         Unix socket for dashboard (default: /run/keisei/uvicorn.sock)
 #   --port N              Use TCP port instead of unix socket
 #   --host ADDR           Bind address for TCP mode (default: 0.0.0.0)
+#   --no-showcase         Skip the showcase sidecar
 #   --background          Detach processes (default: foreground with monitor)
 #   --stop                Kill processes from a previous --background run
 #
@@ -35,8 +37,9 @@
 #   2. If the DB already exists (and not --resume), prompts for confirmation
 #   3. Launches training (torchrun for DDP configs, python for others)
 #   4. Launches the web dashboard on the same DB
-#   5. In foreground mode: monitors both, restarts dashboard if it dies
-#   6. Shuts down cleanly on Ctrl+C
+#   5. Launches the showcase sidecar (model-vs-model games)
+#   6. In foreground mode: monitors all, restarts dashboard/sidecar if they die
+#   7. Shuts down cleanly on Ctrl+C
 # ============================================================================
 
 set -euo pipefail
@@ -57,6 +60,7 @@ if [[ "${1:-}" == "--stop" ]]; then
         echo "No PID file found. Checking for running processes..."
         pkill -f 'keisei.training.katago_loop' 2>/dev/null && echo "  Killed training" || true
         pkill -f 'keisei-serve' 2>/dev/null && echo "  Killed web server" || true
+        pkill -f 'keisei.showcase.runner' 2>/dev/null && echo "  Killed showcase sidecar" || true
     fi
     exit 0
 fi
@@ -94,17 +98,19 @@ WEB_HOST="0.0.0.0"
 WEB_PORT=""
 WEB_SOCKET="/run/keisei/uvicorn.sock"
 BACKGROUND=false
+NO_SHOWCASE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --resume)     RESUME=true; shift ;;
-        --seed)       SEED_CHECKPOINT="$2"; shift 2 ;;
-        --epochs)     EPOCHS="$2"; shift 2 ;;
-        --port)       WEB_PORT="$2"; WEB_SOCKET=""; shift 2 ;;
-        --host)       WEB_HOST="$2"; shift 2 ;;
-        --socket)     WEB_SOCKET="$2"; WEB_PORT=""; shift 2 ;;
-        --background) BACKGROUND=true; shift ;;
-        --help)       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        --resume)       RESUME=true; shift ;;
+        --seed)         SEED_CHECKPOINT="$2"; shift 2 ;;
+        --epochs)       EPOCHS="$2"; shift 2 ;;
+        --port)         WEB_PORT="$2"; WEB_SOCKET=""; shift 2 ;;
+        --host)         WEB_HOST="$2"; shift 2 ;;
+        --socket)       WEB_SOCKET="$2"; WEB_PORT=""; shift 2 ;;
+        --no-showcase)  NO_SHOWCASE=true; shift ;;
+        --background)   BACKGROUND=true; shift ;;
+        --help)         sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -143,7 +149,8 @@ db_path = str((config_dir / d.get('db_path', 'keisei.db')).resolve())
 
 t = raw.get('training', {})
 ckpt_dir = str((config_dir / t.get('checkpoint_dir', 'checkpoints/')).resolve())
-default_epochs = t.get('default_epochs', 1000)
+r = raw.get('run', {})
+default_epochs = r.get('default_epochs', 1000)
 
 # DDP: configs with [distributed] use torchrun, others use plain python
 use_ddp = 'distributed' in raw
@@ -241,6 +248,7 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 CONFIG_STEM=$(basename "$CONFIG" .toml)
 TRAIN_LOG="logs/${CONFIG_STEM}_train_${TIMESTAMP}.log"
 SERVER_LOG="logs/${CONFIG_STEM}_server_${TIMESTAMP}.log"
+SHOWCASE_LOG="logs/${CONFIG_STEM}_showcase_${TIMESTAMP}.log"
 
 # ---- Build server command ----
 
@@ -257,6 +265,10 @@ else
     echo "Error: no dashboard endpoint configured"
     exit 1
 fi
+
+# ---- Build showcase sidecar command ----
+
+SHOWCASE_CMD=(uv run python -m keisei.showcase.runner --db-path "$DB_PATH")
 
 # ---- Build training command ----
 
@@ -292,8 +304,16 @@ if [[ "$BACKGROUND" == true ]]; then
     echo "$TRAIN_PID" >> "$PIDFILE"
     echo "  Training PID: $TRAIN_PID (log: $TRAIN_LOG)"
 
+    if [[ "$NO_SHOWCASE" != true ]]; then
+        echo "Starting showcase sidecar ..."
+        nohup "${SHOWCASE_CMD[@]}" > "$SHOWCASE_LOG" 2>&1 &
+        SHOWCASE_PID=$!
+        echo "$SHOWCASE_PID" >> "$PIDFILE"
+        echo "  Showcase PID: $SHOWCASE_PID (log: $SHOWCASE_LOG)"
+    fi
+
     echo ""
-    echo "Both processes running in background."
+    echo "All processes running in background."
     echo "  Dashboard: $DASHBOARD_URL"
     echo "  Stop:      ./run.sh --stop"
     echo "  Logs:      tail -f $TRAIN_LOG"
@@ -307,6 +327,7 @@ cleanup() {
     echo "Shutting down..."
     [[ -n "${TRAIN_PID:-}" ]] && kill "$TRAIN_PID" 2>/dev/null && echo "  Trainer stopped (PID $TRAIN_PID)"
     [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null && echo "  Server stopped (PID $SERVER_PID)"
+    [[ -n "${SHOWCASE_PID:-}" ]] && kill "$SHOWCASE_PID" 2>/dev/null && echo "  Showcase stopped (PID $SHOWCASE_PID)"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -337,6 +358,16 @@ echo "  Log:    $SERVER_LOG"
 SERVER_PID=$!
 echo "  PID:    $SERVER_PID"
 
+# Start showcase sidecar
+SHOWCASE_PID=""
+if [[ "$NO_SHOWCASE" != true ]]; then
+    echo "Starting showcase sidecar"
+    echo "  Log:    $SHOWCASE_LOG"
+    "${SHOWCASE_CMD[@]}" > "$SHOWCASE_LOG" 2>&1 &
+    SHOWCASE_PID=$!
+    echo "  PID:    $SHOWCASE_PID"
+fi
+
 echo ""
 echo "=========================================="
 echo "  Keisei Training — $(basename "$CONFIG" .toml)"
@@ -344,13 +375,19 @@ echo "=========================================="
 echo "  Dashboard:  $DASHBOARD_URL"
 echo "  Trainer:    PID $TRAIN_PID ($GPU_DESC)"
 echo "  Server:     PID $SERVER_PID"
+if [[ -n "$SHOWCASE_PID" ]]; then
+echo "  Showcase:   PID $SHOWCASE_PID"
+fi
 echo "  Train log:  $TRAIN_LOG"
 echo "  Server log: $SERVER_LOG"
+if [[ -n "$SHOWCASE_PID" ]]; then
+echo "  Showcase:   $SHOWCASE_LOG"
+fi
 if [[ -n "$SEED_CHECKPOINT" ]]; then
 echo "  Seeded:     $SEED_CHECKPOINT"
 fi
 echo ""
-echo "  Press Ctrl+C to stop both processes"
+echo "  Press Ctrl+C to stop all processes"
 echo "=========================================="
 echo ""
 
@@ -363,8 +400,9 @@ while true; do
         echo "Trainer exited (code $TRAIN_EXIT)"
         tail -5 "$TRAIN_LOG"
         echo ""
-        echo "Stopping server..."
+        echo "Stopping server and sidecar..."
         kill "$SERVER_PID" 2>/dev/null
+        [[ -n "${SHOWCASE_PID:-}" ]] && kill "$SHOWCASE_PID" 2>/dev/null
         exit "$TRAIN_EXIT"
     fi
 
@@ -373,6 +411,13 @@ while true; do
         "${SERVER_CMD[@]}" >> "$SERVER_LOG" 2>&1 &
         SERVER_PID=$!
         echo "  Server restarted (PID $SERVER_PID)"
+    fi
+
+    if [[ -n "$SHOWCASE_PID" ]] && ! kill -0 "$SHOWCASE_PID" 2>/dev/null; then
+        echo "Showcase sidecar died, restarting..."
+        "${SHOWCASE_CMD[@]}" >> "$SHOWCASE_LOG" 2>&1 &
+        SHOWCASE_PID=$!
+        echo "  Showcase restarted (PID $SHOWCASE_PID)"
     fi
 
     sleep 30

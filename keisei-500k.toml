@@ -5,7 +5,7 @@
 # Purpose:  Extended burn-in run to validate reward collection fix and
 #           establish baseline training curves. Run overnight, check in AM.
 #
-# Launch:   ./run-500k.sh
+# Launch:   ./run.sh keisei-500k.toml
 # Dashboard: http://keisei.foundryside.dev:8741
 
 [model]
@@ -51,6 +51,9 @@ entropy_decay_epochs = 200      # R5
 [display]
 moves_per_minute = 30
 db_path = "data/keisei.db"
+
+[run]
+default_epochs = 500000
 
 [distributed]
 sync_batchnorm = true

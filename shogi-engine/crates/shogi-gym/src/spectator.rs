@@ -3,9 +3,42 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use shogi_core::GameState;
 
-use crate::action_mapper::{ActionMapper, DefaultActionMapper};
+use crate::action_mapper::{ActionMapper, DefaultActionMapper, ACTION_SPACE_SIZE};
 use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS};
+use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
 use crate::spectator_data::{build_spectator_dict, color_name, move_notation};
+
+// ---------------------------------------------------------------------------
+// ActionMode dispatch (mirrors vec_env.rs)
+// ---------------------------------------------------------------------------
+
+enum SpectatorActionMode {
+    Default(DefaultActionMapper),
+    Spatial(SpatialActionMapper),
+}
+
+impl SpectatorActionMode {
+    fn action_space_size(&self) -> usize {
+        match self {
+            SpectatorActionMode::Default(_) => ACTION_SPACE_SIZE,
+            SpectatorActionMode::Spatial(_) => SPATIAL_ACTION_SPACE_SIZE,
+        }
+    }
+
+    fn encode(&self, mv: shogi_core::Move, perspective: shogi_core::Color) -> Result<usize, String> {
+        match self {
+            SpectatorActionMode::Default(m) => <DefaultActionMapper as ActionMapper>::encode(m, mv, perspective),
+            SpectatorActionMode::Spatial(m) => <SpatialActionMapper as ActionMapper>::encode(m, mv, perspective),
+        }
+    }
+
+    fn decode(&self, idx: usize, perspective: shogi_core::Color) -> Result<shogi_core::Move, String> {
+        match self {
+            SpectatorActionMode::Default(m) => <DefaultActionMapper as ActionMapper>::decode(m, idx, perspective),
+            SpectatorActionMode::Spatial(m) => <SpatialActionMapper as ActionMapper>::decode(m, idx, perspective),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SpectatorEnv
@@ -22,7 +55,7 @@ use crate::spectator_data::{build_spectator_dict, color_name, move_notation};
 pub struct SpectatorEnv {
     game: GameState,
     max_ply: u32,
-    mapper: DefaultActionMapper,
+    mapper: SpectatorActionMode,
     obs_gen: DefaultObservationGenerator,
     move_history: Vec<(usize, String)>,  // (action_index, move_notation)
 }
@@ -33,16 +66,24 @@ impl SpectatorEnv {
     ///
     /// Args:
     ///     max_ply: Maximum number of plies before the game ends (default 500).
+    ///     action_mode: "default" (13527 actions) or "spatial" (11259, matches CNN policy head).
     #[new]
-    #[pyo3(signature = (max_ply = 500))]
-    pub fn new(max_ply: u32) -> Self {
-        SpectatorEnv {
+    #[pyo3(signature = (max_ply = 500, action_mode = "default"))]
+    pub fn new(max_ply: u32, action_mode: &str) -> PyResult<Self> {
+        let mapper = match action_mode {
+            "default" => SpectatorActionMode::Default(DefaultActionMapper),
+            "spatial" => SpectatorActionMode::Spatial(SpatialActionMapper::new()),
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Unknown action_mode '{}'. Valid: 'default', 'spatial'", other)
+            )),
+        };
+        Ok(SpectatorEnv {
             game: GameState::with_max_ply(max_ply),
             max_ply,
-            mapper: DefaultActionMapper,
+            mapper,
             obs_gen: DefaultObservationGenerator::new(),
             move_history: Vec::new(),
-        }
+        })
     }
 
     /// Create a SpectatorEnv from a SFEN string.
@@ -53,15 +94,22 @@ impl SpectatorEnv {
     ///
     /// Raises ValueError if the SFEN is invalid.
     #[staticmethod]
-    #[pyo3(signature = (sfen, max_ply = None))]
-    pub fn from_sfen(sfen: &str, max_ply: Option<u32>) -> PyResult<Self> {
+    #[pyo3(signature = (sfen, max_ply = None, action_mode = "default"))]
+    pub fn from_sfen(sfen: &str, max_ply: Option<u32>, action_mode: &str) -> PyResult<Self> {
         let max_ply = max_ply.unwrap_or(500);
+        let mapper = match action_mode {
+            "default" => SpectatorActionMode::Default(DefaultActionMapper),
+            "spatial" => SpectatorActionMode::Spatial(SpatialActionMapper::new()),
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Unknown action_mode '{}'. Valid: 'default', 'spatial'", other)
+            )),
+        };
         let game = GameState::from_sfen(sfen, max_ply)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid SFEN: {e}")))?;
         Ok(SpectatorEnv {
             game,
             max_ply,
-            mapper: DefaultActionMapper,
+            mapper,
             obs_gen: DefaultObservationGenerator::new(),
             move_history: Vec::new(),
         })
@@ -86,7 +134,7 @@ impl SpectatorEnv {
         }
 
         let perspective = self.game.position.current_player;
-        let mv = <DefaultActionMapper as ActionMapper>::decode(&self.mapper, action, perspective)
+        let mv = self.mapper.decode(action, perspective)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let legal_moves = self.game.legal_moves();
         if !legal_moves.contains(&mv) {
@@ -187,7 +235,8 @@ impl SpectatorEnv {
         self.game.ply
     }
 
-    /// Total number of actions in the action space (13527).
+    /// Total number of actions in the action space.
+    /// 13527 for "default", 11259 for "spatial".
     #[getter]
     pub fn action_space_size(&self) -> usize {
         self.mapper.action_space_size()
@@ -201,9 +250,9 @@ impl SpectatorEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyo3::Python;
-    use shogi_core::{GameState, Color, HandPieceType, Move, Square};
     use crate::action_mapper::ActionMapper;
+    use pyo3::Python;
+    use shogi_core::{Color, GameState, HandPieceType, Move, Square};
 
     // -----------------------------------------------------------------------
     // SpectatorEnv internal logic tests (no Python needed)
@@ -259,13 +308,18 @@ mod tests {
 
     #[test]
     fn test_spectator_step_rejects_illegal_drop() {
-        let mut env = SpectatorEnv::new(500);
-        let mapper = DefaultActionMapper;
+        let mut env = SpectatorEnv {
+            game: GameState::with_max_ply(500),
+            max_ply: 500,
+            mapper: SpectatorActionMode::Default(DefaultActionMapper),
+            obs_gen: DefaultObservationGenerator::new(),
+            move_history: Vec::new(),
+        };
         let illegal_drop = Move::Drop {
             to: Square::from_row_col(4, 4).unwrap(),
             piece_type: HandPieceType::Pawn,
         };
-        let action = mapper
+        let action = DefaultActionMapper
             .encode(illegal_drop, Color::Black)
             .expect("drop should be encodable");
 

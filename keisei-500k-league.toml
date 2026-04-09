@@ -6,8 +6,8 @@
 #           The learner trains on GPU 0 while historical opponents serve on GPU 1.
 #           NOT DDP — single process using both GPUs for different roles.
 #
-# Launch:   ./run-500k-league.sh                    # fresh start
-#           ./run-500k-league.sh resume              # resume from checkpoint
+# Launch:   ./run.sh keisei-500k-league.toml          # fresh start
+#           ./run.sh keisei-500k-league.toml --resume # resume from checkpoint
 #
 # Dashboard: https://keisei.foundryside.dev
 
@@ -59,6 +59,9 @@ entropy_bonus = 0.05
 moves_per_minute = 30
 db_path = "data/keisei-500k-league.db"
 
+[run]
+default_epochs = 500000
+
 [league]
 enabled = true
 mode = "mixed"
@@ -81,9 +84,9 @@ recent_fixed_slots = 5      # §4.1B: fresh blood / probation queue
 dynamic_slots = 10           # §4.1C: live trainable population
 
 [league.concurrency]
-parallel_matches = 64       # 40% GPU at 32 slots → double to target ~80%
+parallel_matches = 128       # 40% GPU at 32 slots → double to target ~80%
 envs_per_match = 4          # best-of-3 needs 3 games; 4 = minimal overshoot
-total_envs = 256            # 64 × 4
+total_envs = 512            # 128 × 4
 max_resident_models = 22    # pool has 20 entries max; 22 keeps entire pool in LRU cache
 
 [league.dynamic]

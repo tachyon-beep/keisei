@@ -3,8 +3,6 @@
   import { leagueRanked, entryWLD, eloDelta, focusedEntryId, leagueByRole, styleProfiles, displayElo } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
 
-  /** Current learner's display_name (used to highlight their row) */
-  export let learnerName = null
   /** Total slots shown in leaderboard (empty ones are placeholders) */
   export let totalSlots = 20
 
@@ -79,10 +77,6 @@
   function ariaSortValue(col) {
     if (sortColumn !== col) return 'none'
     return sortAsc ? 'ascending' : 'descending'
-  }
-
-  function isLearner(entry) {
-    return learnerName && entry.display_name === learnerName
   }
 
   $: profiles = $styleProfiles
@@ -163,7 +157,6 @@
                 {#each $leagueByRole.get(role) as entry}
                   <tr
                     class:top={entry.rank === 1}
-                    class:learner={isLearner(entry)}
                     class:focused={$focusedEntryId === entry.id}
                     aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
                     on:click={() => toggleExpand(entry.id)}
@@ -173,7 +166,6 @@
                     <td class="num rank">{entry.rank}</td>
                     <td class="name-cell">
                       {entry.display_name || entry.architecture}
-                      {#if isLearner(entry)}<span class="learner-badge" title="This policy is currently being trained against the other entries in the league">TRAINEE</span>{/if}
                       {#if entry.protection_remaining > 0}
                         <span class="protection-badge" title="Protected from retirement for {entry.protection_remaining} more epochs" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
                       {/if}
@@ -212,7 +204,6 @@
             {#each sorted as entry}
               <tr
                 class:top={entry.rank === 1}
-                class:learner={isLearner(entry)}
                 class:focused={$focusedEntryId === entry.id}
                 aria-expanded={$focusedEntryId === entry.id}
                 aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
@@ -231,9 +222,6 @@
                 <td class="name-cell">
                   <span class="role-badge {getRoleInfo(entry.role).cssClass}" title={getRoleInfo(entry.role).tooltip} aria-label="{getRoleInfo(entry.role).label} tier">{getRoleInfo(entry.role).icon}</span>
                   {entry.display_name || entry.architecture}
-                  {#if isLearner(entry)}
-                    <span class="learner-badge" title="This policy is currently being trained against the other entries in the league">TRAINEE</span>
-                  {/if}
                   {#if entry.protection_remaining > 0}
                     <span class="protection-badge" title="Protected from retirement for {entry.protection_remaining} more epochs" aria-label="Protected for {entry.protection_remaining} epochs"><span aria-hidden="true">🛡</span> {entry.protection_remaining}</span>
                   {/if}
@@ -331,27 +319,6 @@
   .crown {
     color: var(--accent-gold);
     font-size: 15px;
-  }
-
-  /* Current learner highlight */
-  tr.learner {
-    background: rgba(77, 184, 168, 0.08);
-    border-left: 3px solid var(--accent-teal);
-  }
-  tr.learner:hover {
-    background: rgba(77, 184, 168, 0.14);
-  }
-
-  .learner-badge {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    color: var(--accent-teal);
-    background: var(--badge-bg-teal);
-    padding: 1px 5px;
-    border-radius: 3px;
-    margin-left: 6px;
-    vertical-align: middle;
   }
 
   .name-cell {

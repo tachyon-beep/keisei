@@ -89,9 +89,8 @@ def run_inference(
 
     if contract == "multi_head":
         # NOTE: reshape(-1) flattens (9,9,139) in row-major order.
-        # This matches the DefaultActionMapper's flat index convention
-        # used by SpectatorEnv. If a spatial action mapper is used instead,
-        # the flatten order must be verified against that mapper.
+        # This matches the SpatialActionMapper's flat index convention
+        # used by SpectatorEnv(action_mode="spatial").
         policy_logits = output.policy_logits.squeeze(0).reshape(-1)
         win_prob = torch.softmax(output.value_logits.squeeze(0), dim=0)[0].item()
     else:

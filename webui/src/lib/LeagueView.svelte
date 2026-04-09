@@ -83,7 +83,7 @@
   <div class="league-grid">
     <div class="left-top">
       <div class="table-wrapper">
-        <LeagueTable {learnerName} />
+        <LeagueTable />
       </div>
     </div>
     <div class="right-top">

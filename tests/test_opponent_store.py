@@ -479,3 +479,90 @@ class TestFilesystemLayout:
         assert not (rf_dir / "optimizer.pt").exists(), "Recent Fixed should NOT have optimizer.pt"
 
         store.close()
+
+
+class TestCarryForwardElo:
+    """Tests for carry_forward_elo — atomic elo_history insertion."""
+
+    def test_carry_forward_writes_history_for_all_active(self, store_db, league_dir):
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
+
+        store.carry_forward_elo(epoch=5)
+
+        conn = sqlite3.connect(store_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM elo_history WHERE epoch = 5 ORDER BY entry_id"
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) == 2
+        assert rows[0]["entry_id"] == a.id
+        assert rows[0]["elo_rating"] == 1000.0
+        assert rows[1]["entry_id"] == b.id
+        store.close()
+
+    def test_carry_forward_does_not_overwrite_elo_rating(self, store_db, league_dir):
+        """Regression: the old carry-forward wrote to league_entries.elo_rating,
+        creating a TOCTOU race that reverted tournament Elo updates."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        # Simulate tournament updating elo to 1050
+        store.update_elo(a.id, 1050.0, epoch=3)
+
+        # Carry forward at epoch 4 — must NOT revert to 1000
+        store.carry_forward_elo(epoch=4)
+
+        refreshed = store.get_entry(a.id)
+        assert refreshed.elo_rating == 1050.0, (
+            "carry_forward_elo must not overwrite league_entries.elo_rating"
+        )
+        store.close()
+
+    def test_carry_forward_reads_current_db_value(self, store_db, league_dir):
+        """Carry-forward should snapshot the DB's current elo_rating, not a stale value."""
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        # Tournament sets elo to 1080
+        store.update_elo(a.id, 1080.0, epoch=5)
+
+        # Carry forward should capture 1080, not 1000
+        store.carry_forward_elo(epoch=6)
+
+        conn = sqlite3.connect(store_db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT elo_rating FROM elo_history WHERE entry_id = ? AND epoch = 6",
+            (a.id,),
+        ).fetchone()
+        conn.close()
+
+        assert row["elo_rating"] == 1080.0
+        store.close()
+
+    def test_carry_forward_excludes_retired(self, store_db, league_dir):
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        a = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        b = store.add_entry(model, "resnet", {}, epoch=2, role=Role.DYNAMIC)
+        store.retire_entry(b.id, reason="test")
+
+        store.carry_forward_elo(epoch=5)
+
+        conn = sqlite3.connect(store_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM elo_history WHERE epoch = 5"
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) == 1
+        assert rows[0]["entry_id"] == a.id
+        store.close()

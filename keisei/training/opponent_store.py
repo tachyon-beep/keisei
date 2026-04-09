@@ -812,6 +812,26 @@ class OpponentStore:
                 (entry_id, epoch, new_elo),
             )
 
+    def carry_forward_elo(self, epoch: int) -> None:
+        """Write elo_history entries for all active entries at the given epoch.
+
+        Uses a single INSERT...SELECT to atomically read current elo_rating
+        values from league_entries, avoiding TOCTOU races with the tournament
+        thread that updates elo_rating concurrently.
+
+        This does NOT modify league_entries.elo_rating — the tournament thread
+        owns that field.  This method only fills elo_history gaps so the
+        chart shows continuous lines.
+        """
+        with self.transaction():
+            self._conn.execute(
+                """INSERT INTO elo_history (entry_id, epoch, elo_rating)
+                   SELECT id, ?, elo_rating
+                   FROM league_entries
+                   WHERE status = ?""",
+                (epoch, EntryStatus.ACTIVE),
+            )
+
     def elo_spread(self, entry_id: int) -> float:
         """Return Elo spread (max - min) from elo_history for an entry.
 

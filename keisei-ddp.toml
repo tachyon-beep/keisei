@@ -5,7 +5,7 @@
 # Purpose:  Quick validation of DDP training (minutes, not hours).
 #           Use keisei-500k.toml for extended runs.
 #
-# Launch:   ./run-training.sh --config keisei-ddp.toml --epochs 100
+# Launch:   ./run.sh keisei-ddp.toml
 
 [model]
 display_name = "Kagami"
@@ -50,6 +50,9 @@ entropy_decay_epochs = 200      # R5
 [display]
 moves_per_minute = 30
 db_path = "data/keisei-ddp.db"
+
+[run]
+default_epochs = 100
 
 [distributed]
 sync_batchnorm = true

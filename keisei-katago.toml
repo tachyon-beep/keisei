@@ -6,7 +6,7 @@
 #           League mode (opponent pool, Elo tracking) requires single-GPU
 #           because split-merge produces unequal buffer sizes across ranks.
 #
-# Launch:   ./run-training.sh --config keisei-katago.toml --ngpus 1
+# Launch:   ./run.sh keisei-katago.toml
 
 [model]
 display_name = "Musashi"
@@ -52,5 +52,8 @@ entropy_decay_epochs = 200      # R5
 moves_per_minute = 30
 db_path = "data/keisei-katago.db"
 
-# For league mode, use keisei-league.toml + run-league.sh instead.
+[run]
+default_epochs = 1000
+
+# For league mode, use keisei-league.toml instead.
 # League requires matching architecture between checkpoint and config.

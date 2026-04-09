@@ -1434,9 +1434,10 @@ class KataGoTrainingLoop:
 
             # Carry forward Elo for entries that didn't play this epoch,
             # so the Elo chart has continuous lines with no gaps.
+            # Uses atomic INSERT...SELECT to avoid TOCTOU race with the
+            # tournament thread that updates elo_rating concurrently.
             if self.dist_ctx.is_main and self.store is not None:
-                for entry in self.store.list_entries():
-                    self.store.update_elo(entry.id, entry.elo_rating, epoch=epoch_i)
+                self.store.carry_forward_elo(epoch=epoch_i)
 
             if self.dist_ctx.is_main:
                 # Seat rotation (takes priority — includes its own snapshot)
