@@ -561,6 +561,93 @@ class TestCSAPromotionDetection:
         assert games[0].moves[2].move_usi == "7f7e"
 
 
+class TestCSAParserPIForm:
+    """CSAParser handling of PI initial-position form and P+/P- placement."""
+
+    def test_pi_standard_game_matches_p19(self, tmp_path):
+        """PI form should produce identical moves to explicit P1-P9."""
+        pi_game = (
+            "V2.2\nPI\n+\n"
+            "+7776FU\n-3334FU\n+8822UM\n%TORYO\n"
+        )
+        p19_game = (
+            "V2.2\n"
+            "P1-KY-KE-GI-KI-OU-KI-GI-KE-KY\n"
+            "P2 * -HI *  *  *  *  * -KA * \n"
+            "P3-FU-FU-FU-FU-FU-FU-FU-FU-FU\n"
+            "P4 *  *  *  *  *  *  *  *  * \n"
+            "P5 *  *  *  *  *  *  *  *  * \n"
+            "P6 *  *  *  *  *  *  *  *  * \n"
+            "P7+FU+FU+FU+FU+FU+FU+FU+FU+FU\n"
+            "P8 * +KA *  *  *  *  * +HI * \n"
+            "P9+KY+KE+GI+KI+OU+KI+GI+KE+KY\n"
+            "+\n"
+            "+7776FU\n-3334FU\n+8822UM\n%TORYO\n"
+        )
+        parser = CSAParser()
+        pi_file = tmp_path / "pi.csa"
+        pi_file.write_text(pi_game)
+        p19_file = tmp_path / "p19.csa"
+        p19_file.write_text(p19_game)
+        pi_moves = [m.move_usi for m in list(parser.parse(pi_file))[0].moves]
+        p19_moves = [m.move_usi for m in list(parser.parse(p19_file))[0].moves]
+        assert pi_moves == p19_moves
+
+    def test_pi_no_false_promotion_on_pre_promoted_piece(self, tmp_path):
+        """Moving an already-promoted piece should NOT add '+' suffix."""
+        csa = (
+            "V2.2\nPI\nP+33TO\n+\n"
+            "+3342TO\n%TORYO\n"
+        )
+        parser = CSAParser()
+        f = tmp_path / "game.csa"
+        f.write_text(csa)
+        games = list(parser.parse(f))
+        assert len(games) == 1
+        assert games[0].moves[0].move_usi == "3c4b"
+
+    def test_pi_handicap_removes_pieces(self, tmp_path):
+        """PI82HI22KA should parse as 2-piece handicap."""
+        csa = (
+            "V2.2\nPI82HI22KA\n-\n"
+            "-3334FU\n+7776FU\n%TORYO\n"
+        )
+        parser = CSAParser()
+        f = tmp_path / "game.csa"
+        f.write_text(csa)
+        games = list(parser.parse(f))
+        assert len(games) == 1
+        assert len(games[0].moves) == 2
+
+    def test_pp_lines_place_pieces_on_board(self, tmp_path):
+        """P+ line placing a promoted piece should be tracked for promotion detection."""
+        # Place a promoted bishop (UM) at (5,5) via P+, then move it
+        csa = (
+            "V2.2\nPI\nP+55UM\n+\n"
+            "+5566UM\n%TORYO\n"
+        )
+        parser = CSAParser()
+        f = tmp_path / "game.csa"
+        f.write_text(csa)
+        games = list(parser.parse(f))
+        assert len(games) == 1
+        # UM was already promoted — no '+' suffix
+        assert games[0].moves[0].move_usi == "5e6f"
+
+    def test_pp_hand_pieces_ignored_for_board(self, tmp_path):
+        """P+00FU (pieces in hand) should not affect board state."""
+        csa = (
+            "V2.2\nPI\nP+00FU\n+\n"
+            "+7776FU\n-3334FU\n%TORYO\n"
+        )
+        parser = CSAParser()
+        f = tmp_path / "game.csa"
+        f.write_text(csa)
+        games = list(parser.parse(f))
+        assert len(games) == 1
+        assert games[0].moves[0].move_usi == "7g7f"
+
+
 class TestSLTrainerCheckpointRoundTrip:
     """C3: Verify SL-trained weights can be saved and reloaded correctly."""
 

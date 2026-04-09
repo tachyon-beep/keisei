@@ -136,6 +136,27 @@ class CSAParser(GameParser):
     # Promoted CSA pieces
     _PROMOTED = {"TO", "NY", "NK", "NG", "UM", "RY"}
 
+    # Standard initial position board (col, row) -> piece_name.
+    # Used when the game specifies position via PI instead of P1-P9.
+    _INITIAL_BOARD: dict[tuple[int, int], str] = {
+        # Row 1 (white back rank)
+        (9, 1): "KY", (8, 1): "KE", (7, 1): "GI", (6, 1): "KI", (5, 1): "OU",
+        (4, 1): "KI", (3, 1): "GI", (2, 1): "KE", (1, 1): "KY",
+        # Row 2 (white rook + bishop)
+        (8, 2): "HI", (2, 2): "KA",
+        # Row 3 (white pawns)
+        (9, 3): "FU", (8, 3): "FU", (7, 3): "FU", (6, 3): "FU", (5, 3): "FU",
+        (4, 3): "FU", (3, 3): "FU", (2, 3): "FU", (1, 3): "FU",
+        # Row 7 (black pawns)
+        (9, 7): "FU", (8, 7): "FU", (7, 7): "FU", (6, 7): "FU", (5, 7): "FU",
+        (4, 7): "FU", (3, 7): "FU", (2, 7): "FU", (1, 7): "FU",
+        # Row 8 (black bishop + rook)
+        (8, 8): "KA", (2, 8): "HI",
+        # Row 9 (black back rank)
+        (9, 9): "KY", (8, 9): "KE", (7, 9): "GI", (6, 9): "KI", (5, 9): "OU",
+        (4, 9): "KI", (3, 9): "GI", (2, 9): "KE", (1, 9): "KY",
+    }
+
     def supported_extensions(self) -> set[str]:
         return {".csa"}
 
@@ -210,6 +231,41 @@ class CSAParser(GameParser):
                 board[(actual_col, row)] = piece_name
         return board
 
+    @classmethod
+    def _init_board(
+        cls,
+        p_lines: list[str],
+        pi_line: str | None,
+        pp_lines: list[str],
+    ) -> dict[tuple[int, int], str]:
+        """Build initial board from P1-P9, PI, and P+/P- position lines."""
+        if p_lines:
+            board = cls._parse_board_from_p_lines(p_lines)
+        elif pi_line is not None:
+            board = dict(cls._INITIAL_BOARD)
+            # PI may list squares to empty: PI82HI22KA → remove (8,2) and (2,2)
+            mods = pi_line[2:]  # strip leading "PI"
+            # Each modification is 4 chars: <col><row><piece(2)>
+            for i in range(0, len(mods) - 3, 4):
+                col = int(mods[i])
+                row = int(mods[i + 1])
+                board.pop((col, row), None)
+        else:
+            board = {}
+
+        # Apply P+/P- incremental piece placements (board squares only, not hand)
+        for line in pp_lines:
+            body = line[2:]  # strip "P+" or "P-"
+            for i in range(0, len(body) - 3, 4):
+                col = int(body[i])
+                row = int(body[i + 1])
+                piece = body[i + 2 : i + 4]
+                if col == 0 and row == 0:
+                    continue  # pieces in hand — not board state
+                board[(col, row)] = piece
+
+        return board
+
     def parse(self, path: Path) -> Iterator[GameRecord]:
         # Try UTF-8 first, fall back to Shift-JIS for older Floodgate files.
         try:
@@ -256,18 +312,23 @@ class CSAParser(GameParser):
         result_line: str = ""
         p_lines: list[str] = []
 
-        # First pass: collect P-lines for board state initialization
+        # First pass: collect position lines for board state initialization
+        pi_line: str | None = None
+        pp_lines: list[str] = []  # P+ / P- piece-placement lines
         for line in lines:
             line_stripped = line.strip()
-            if (
-                line_stripped.startswith("P")
-                and len(line_stripped) > 2
-                and line_stripped[1].isdigit()
-            ):
+            if not line_stripped.startswith("P") or len(line_stripped) < 2:
+                continue
+            second = line_stripped[1]
+            if second.isdigit():
                 p_lines.append(line_stripped)
+            elif second == "I":
+                pi_line = line_stripped
+            elif second in ("+", "-"):
+                pp_lines.append(line_stripped)
 
         # Initialize board state from position definition
-        board = self._parse_board_from_p_lines(p_lines) if p_lines else {}
+        board = self._init_board(p_lines, pi_line, pp_lines)
 
         for line in lines:
             line = line.strip()
