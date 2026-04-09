@@ -372,20 +372,14 @@ class ConcurrencyConfig:
                 f"max_resident_models ({self.max_resident_models}) must be >= 2 "
                 f"(at least one model pair)"
             )
-        min_for_full = self.parallel_matches * 2
-        if self.max_resident_models < min_for_full:
-            warnings.warn(
-                f"max_resident_models ({self.max_resident_models}) < "
-                f"parallel_matches * 2 ({min_for_full}): effective parallelism "
-                f"will be capped to {self.max_resident_models // 2} slots "
-                f"instead of {self.parallel_matches}",
-                stacklevel=2,
-            )
-
     @property
     def effective_parallel(self) -> int:
-        """Max concurrent slots, capped by max_resident_models // 2."""
-        return min(self.parallel_matches, self.max_resident_models // 2)
+        """Max concurrent slots — equals parallel_matches.
+
+        Model sharing via the LRU cache means slots don't need 2 unique
+        models each.  Cache sizing is validated at LeagueConfig level.
+        """
+        return self.parallel_matches
 
 
 @dataclass(frozen=True)
@@ -476,6 +470,18 @@ class LeagueConfig:
         if self.max_active_entries is not None and self.max_active_entries < 1:
             raise ValueError(
                 f"max_active_entries must be >= 1 or None, got {self.max_active_entries}"
+            )
+        # Cross-config validation: warn if LRU cache can't hold the full pool
+        if (
+            self.max_active_entries is not None
+            and self.concurrency.max_resident_models < self.max_active_entries
+        ):
+            warnings.warn(
+                f"max_resident_models ({self.concurrency.max_resident_models}) < "
+                f"max_active_entries ({self.max_active_entries}): LRU model cache "
+                f"cannot hold the full opponent pool, which may cause GPU memory "
+                f"thrashing during concurrent matches",
+                stacklevel=2,
             )
 
 

@@ -509,14 +509,14 @@ class TestRunRound:
 
 
 class TestMaxResidentModels:
-    def test_concurrent_slots_capped_by_max_resident(self) -> None:
-        """With 4 parallel slots but max_resident=4 (2 slots worth),
-        only 2 slots should be active at once."""
+    def test_all_slots_active_with_shared_cache(self) -> None:
+        """With LRU cache, all parallel_matches slots can be active
+        regardless of max_resident_models (models are shared objects)."""
         config = ConcurrencyConfig(
             parallel_matches=4,
             envs_per_match=2,
             total_envs=8,
-            max_resident_models=4,  # only 2 slots can be active (4 // 2)
+            max_resident_models=4,
         )
         pool = ConcurrentMatchPool(config)
         vecenv = MockVecEnv(num_envs=8, terminate_after=2)
@@ -528,36 +528,16 @@ class TestMaxResidentModels:
             (entries[6], entries[7]),
         ]
 
-        # Track peak concurrent model loads
-        loaded_models: list[object] = []
-        peak_loaded = 0
-
-        def tracking_load(entry: OpponentEntry) -> TinyModel:
-            nonlocal peak_loaded
-            m = TinyModel()
-            loaded_models.append(m)
-            peak_loaded = max(peak_loaded, len(loaded_models))
-            return m
-
-        def tracking_release(ma: object, mb: object) -> None:
-            if ma in loaded_models:
-                loaded_models.remove(ma)
-            if mb in loaded_models:
-                loaded_models.remove(mb)
-
         results, _stats = pool.run_round(
             vecenv,
             pairings,
-            load_fn=tracking_load,
-            release_fn=tracking_release,
+            load_fn=lambda entry: TinyModel(),
+            release_fn=lambda ma, mb: None,
             device="cpu",
             games_per_match=4,
         )
 
         assert len(results) == 4  # all pairings completed
-        assert peak_loaded <= 4, (
-            f"Peak loaded models {peak_loaded} exceeded max_resident_models 4"
-        )
 
 
 # ---------------------------------------------------------------------------

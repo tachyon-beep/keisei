@@ -150,9 +150,9 @@ def test_concurrency_config_validation_model_budget():
     with pytest.raises(ValueError, match="max_resident_models"):
         ConcurrencyConfig(parallel_matches=4, envs_per_match=2, total_envs=8, max_resident_models=1)
 
-    # max_resident < parallel*2 is now allowed (runtime caps active slots)
+    # max_resident < parallel*2 is now allowed (LRU cache shares models)
     c = ConcurrencyConfig(parallel_matches=4, envs_per_match=2, total_envs=8, max_resident_models=4)
-    assert c.effective_parallel == 2  # 4 // 2 = 2 slots
+    assert c.effective_parallel == 4  # no longer capped
 
 
 def test_league_scheduler_ratio_validation(tmp_path):
@@ -265,6 +265,48 @@ class TestAllConfigDefaults:
         assert c.dynamic_frontier_weight == 0.20
         assert c.recent_frontier_weight == 0.10
         assert c.recent_recent_weight == 0.05
+
+
+def test_effective_parallel_equals_parallel_matches():
+    """effective_parallel no longer caps by max_resident_models."""
+    c = ConcurrencyConfig(
+        parallel_matches=64,
+        envs_per_match=4,
+        total_envs=256,
+        max_resident_models=22,
+    )
+    assert c.effective_parallel == 64
+
+
+def test_league_warns_when_cache_too_small(recwarn):
+    """Warn when max_resident_models < max_active_entries."""
+    LeagueConfig(
+        max_active_entries=20,
+        concurrency=ConcurrencyConfig(
+            parallel_matches=4,
+            envs_per_match=8,
+            total_envs=32,
+            max_resident_models=10,
+        ),
+    )
+    assert len(recwarn) >= 1
+    assert "max_resident_models" in str(recwarn[0].message)
+
+
+def test_league_no_warn_when_cache_sufficient():
+    """No warning when max_resident_models >= max_active_entries."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        LeagueConfig(
+            max_active_entries=20,
+            concurrency=ConcurrencyConfig(
+                parallel_matches=64,
+                envs_per_match=4,
+                total_envs=256,
+                max_resident_models=22,
+            ),
+        )
 
 
 FULL_LEAGUE_TOML = """\
