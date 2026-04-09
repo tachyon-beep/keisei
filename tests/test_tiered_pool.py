@@ -553,8 +553,9 @@ class TestRecentFixedToDynamicPromote:
     def test_promote_oldest_to_dynamic(self, tmp_path):
         """Fill Recent Fixed to capacity, qualify the oldest, trigger overflow.
 
-        The oldest RF entry should be cloned into Dynamic with parent_entry_id
-        linking back to the source, and the source RF entry should be retired.
+        The oldest RF entry should be cloned into Dynamic.  When the pool has
+        spare capacity the source RF entry stays active (spare-capacity guard);
+        when at capacity the source is retired.
         """
         db_path = str(tmp_path / "promote.db")
         init_db(db_path)
@@ -616,16 +617,16 @@ class TestRecentFixedToDynamicPromote:
         # Snapshot again to trigger overflow (4th entry in 3-slot tier)
         pool.snapshot_learner(model, "resnet", {}, epoch=4)
 
-        # Assert: oldest RF should be retired
-        oldest_refreshed = store.get_entry(oldest.id)
-        assert oldest_refreshed is not None
-        assert oldest_refreshed.status == EntryStatus.RETIRED
-
         # Assert: a new Dynamic entry exists with parent_entry_id == oldest.id
         dynamic_entries = store.list_by_role(Role.DYNAMIC)
         promoted = [e for e in dynamic_entries if e.parent_entry_id == oldest.id]
         assert len(promoted) == 1, f"Expected 1 promoted Dynamic clone, got {len(promoted)}"
         assert promoted[0].role is Role.DYNAMIC
+
+        # Source RF stays active: pool has spare capacity (8 active < 18 capacity)
+        oldest_refreshed = store.get_entry(oldest.id)
+        assert oldest_refreshed is not None
+        assert oldest_refreshed.status == EntryStatus.ACTIVE
 
         store.close()
 
@@ -935,16 +936,86 @@ class TestPromotionWithWindowedSpread:
         # Trigger overflow
         pool.snapshot_learner(model, "resnet", {}, epoch=4)
 
-        # Oldest should have been promoted (not retired)
-        oldest_refreshed = store.get_entry(oldest.id)
-        assert oldest_refreshed is not None
-        assert oldest_refreshed.status == EntryStatus.RETIRED  # source is retired after clone
-        # A Dynamic clone should exist
+        # A Dynamic clone should exist (promotion succeeded)
         dynamic_entries = store.list_by_role(Role.DYNAMIC)
         promoted = [e for e in dynamic_entries if e.parent_entry_id == oldest.id]
         assert len(promoted) == 1, (
             f"Expected promotion to Dynamic, got {len(promoted)} clones. "
             f"Windowed spread should have allowed promotion."
         )
+        # Source RF stays active — pool has spare capacity
+        oldest_refreshed = store.get_entry(oldest.id)
+        assert oldest_refreshed is not None
+        assert oldest_refreshed.status == EntryStatus.ACTIVE
+
+        store.close()
+
+
+class TestPromoteKeepsSourceWhenSpareCapacity:
+    """When pool has spare capacity, PROMOTE should clone to Dynamic but
+    keep the source RF entry alive (same guard as RETIRE path)."""
+
+    def test_source_kept_alive_when_spare_capacity(self, tmp_path):
+        db_path = str(tmp_path / "spare.db")
+        init_db(db_path)
+        league_dir = tmp_path / "league"
+        league_dir.mkdir()
+        store = OpponentStore(db_path, str(league_dir))
+
+        # Total capacity = 5 + 3 + 10 = 18.
+        # We'll have 3 RF + 10 D = 13 active (< 18 → spare capacity).
+        config = LeagueConfig(
+            recent=RecentFixedConfig(
+                slots=3,
+                soft_overflow=0,
+                min_games_for_review=2,
+                min_unique_opponents=1,
+                promotion_margin_elo=0.0,
+                max_elo_spread=999.0,
+            ),
+            dynamic=DynamicConfig(
+                slots=10,
+                min_games_before_eviction=0,
+                protection_matches=0,
+            ),
+            frontier=FrontierStaticConfig(slots=5),
+        )
+        pool = TieredPool(store, config)
+        model = torch.nn.Linear(10, 10)
+
+        # Fill RF to capacity
+        entries = []
+        for i in range(1, 4):
+            entries.append(pool.snapshot_learner(model, "resnet", {}, epoch=i))
+        oldest = entries[0]
+
+        # Give oldest enough games and opponents to qualify
+        opp = store.add_entry(model, "resnet", {}, epoch=50, role=Role.DYNAMIC)
+        store.record_result(
+            epoch=10, entry_a_id=oldest.id, entry_b_id=opp.id,
+            wins_a=1, wins_b=1, draws=0, match_type="tournament",
+        )
+
+        total_before = len(store.list_entries())
+
+        # Trigger overflow → oldest qualifies → PROMOTE
+        pool.snapshot_learner(model, "resnet", {}, epoch=4)
+
+        # Dynamic clone should exist
+        dynamic_entries = store.list_by_role(Role.DYNAMIC)
+        promoted = [e for e in dynamic_entries if e.parent_entry_id == oldest.id]
+        assert len(promoted) == 1, "Should have cloned to Dynamic"
+
+        # Source RF should still be ACTIVE (spare capacity → skip retirement)
+        oldest_refreshed = store.get_entry(oldest.id)
+        assert oldest_refreshed is not None
+        assert oldest_refreshed.status == EntryStatus.ACTIVE, (
+            f"Source RF should remain active when pool has spare capacity, "
+            f"but got status={oldest_refreshed.status}"
+        )
+
+        # Total should have grown by 2 (new snapshot + dynamic clone)
+        total_after = len(store.list_entries())
+        assert total_after == total_before + 2
 
         store.close()

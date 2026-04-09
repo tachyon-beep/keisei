@@ -140,7 +140,18 @@ class TieredPool:
                     promo_ids = self._frontier_promotion_candidate_ids()
                     clone = self.dynamic_manager.admit(oldest, promotion_candidate_ids=promo_ids)
                     if clone is not None:
-                        self.store.retire_entry(oldest.id, "promoted to dynamic")
+                        # Re-read total_active after the clone+eviction to get
+                        # the current count before deciding whether to retire
+                        # the source.  Same spare-capacity guard as RETIRE.
+                        if self._total_active() >= self._total_capacity():
+                            self.store.retire_entry(oldest.id, "promoted to dynamic")
+                        else:
+                            logger.info(
+                                "Keeping promoted source id=%d in Recent Fixed: "
+                                "pool has spare capacity (%d/%d)",
+                                oldest.id, self._total_active(),
+                                self._total_capacity(),
+                            )
                     # else: Dynamic full and all protected — keep in Recent Fixed overflow
             elif outcome is ReviewOutcome.RETIRE:
                 if total_active < self._total_capacity():
