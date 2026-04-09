@@ -68,7 +68,7 @@ class DemonstratorRunner(threading.Thread):
 
         self._stream = None
         if device.startswith("cuda") and torch.cuda.is_available():
-            self._stream = torch.cuda.Stream()
+            self._stream = torch.cuda.Stream(device=device)
 
     def stop(self) -> None:
         self._stop_event.set()

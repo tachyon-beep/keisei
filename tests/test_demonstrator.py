@@ -116,6 +116,39 @@ class TestDemonstratorRunner:
         assert matchups[2].slot == 3  # random
 
 
+class TestCUDAStreamDevice:
+    """Verify CUDA stream is created on the correct device."""
+
+    def test_stream_created_with_device_arg(self):
+        """Stream must target self.device, not the default GPU."""
+        pool = _make_mock_pool()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(torch.cuda, "is_available", lambda: True)
+            created_streams: list[dict] = []
+            _orig_stream = torch.cuda.Stream
+
+            class _TrackingStream:
+                def __init__(self, device=None, **kw):
+                    created_streams.append({"device": device})
+
+            mp.setattr(torch.cuda, "Stream", _TrackingStream)
+            runner = DemonstratorRunner(
+                store=pool, db_path="/tmp/test.db",
+                num_slots=1, moves_per_minute=600, device="cuda:2",
+            )
+            assert len(created_streams) == 1
+            assert created_streams[0]["device"] == "cuda:2"
+
+    def test_no_stream_on_cpu(self):
+        """CPU device should not create a CUDA stream."""
+        pool = _make_mock_pool()
+        runner = DemonstratorRunner(
+            store=pool, db_path="/tmp/test.db",
+            num_slots=1, moves_per_minute=600, device="cpu",
+        )
+        assert runner._stream is None
+
+
 class TestPlayGamePinUnpin:
     """Tests for _play_game pin/unpin lifecycle (GAP H2)."""
 
