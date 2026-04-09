@@ -372,6 +372,7 @@ class ConcurrencyConfig:
                 f"max_resident_models ({self.max_resident_models}) must be >= 2 "
                 f"(at least one model pair)"
             )
+
     @property
     def effective_parallel(self) -> int:
         """Max concurrent slots — equals parallel_matches.
