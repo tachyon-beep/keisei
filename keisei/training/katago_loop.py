@@ -1382,6 +1382,7 @@ class KataGoTrainingLoop:
                 value_adapter=self.value_adapter,
                 heartbeat_fn=self._maybe_update_heartbeat,
             )
+            self.ppo.flush_timings()
             self._phase = "rollout"
 
             if losses["value_loss"] == 0.0:

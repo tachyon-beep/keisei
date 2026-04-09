@@ -144,6 +144,29 @@
         </div>
       {/if}
 
+      {#if hasProfile}
+        <div class="detail-section style-section">
+          <h4 class="section-label">Play Style {#if profile.profile_status === 'provisional'}<span class="epoch-tag">(provisional)</span>{/if}</h4>
+          {#if profile.primary_style}
+            <div class="style-primary">{profile.primary_style}</div>
+          {/if}
+          {#if profile.secondary_traits?.length}
+            <div class="style-traits">
+              {#each profile.secondary_traits as trait}
+                <span class="style-trait">{trait}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if profile.commentary?.length}
+            <div class="commentary-list">
+              {#each profile.commentary as fact}
+                <div class="commentary-item" class:high-conf={fact.confidence === 'high'}>{fact.text}</div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
       <div class="detail-section">
         <h4 class="section-label">Last Round {#if maxEpoch != null}<span class="epoch-tag">Epoch {maxEpoch}</span>{/if}</h4>
         {#if lastRound.length === 0}
@@ -188,29 +211,6 @@
           </div>
         {/if}
       </div>
-
-      {#if hasProfile}
-        <div class="detail-section style-section">
-          <h4 class="section-label">Play Style {#if profile.profile_status === 'provisional'}<span class="epoch-tag">(provisional)</span>{/if}</h4>
-          {#if profile.primary_style}
-            <div class="style-primary">{profile.primary_style}</div>
-          {/if}
-          {#if profile.secondary_traits?.length}
-            <div class="style-traits">
-              {#each profile.secondary_traits as trait}
-                <span class="style-trait">{trait}</span>
-              {/each}
-            </div>
-          {/if}
-          {#if profile.commentary?.length}
-            <div class="commentary-list">
-              {#each profile.commentary as fact}
-                <div class="commentary-item" class:high-conf={fact.confidence === 'high'}>{fact.text}</div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
 
       {#if secondaryElos.length > 0}
         <div class="detail-section role-stats">

@@ -96,13 +96,13 @@
       <MatchupMatrix {learnerName} />
     </div>
     <div class="bottom-left">
-      <div class="recent-matches-wrapper">
-        <RecentMatches />
+      <div class="event-log-wrapper">
+        <LeagueEventLog />
       </div>
     </div>
     <div class="bottom-right">
-      <div class="event-log-wrapper">
-        <LeagueEventLog />
+      <div class="recent-matches-wrapper">
+        <RecentMatches />
       </div>
     </div>
   </div>
