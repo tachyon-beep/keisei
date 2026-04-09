@@ -1,6 +1,7 @@
 <script>
-  import { leagueResults, leagueEntries, headToHead, styleProfiles } from '../stores/league.js'
+  import { leagueResults, leagueEntries, headToHead, styleProfiles, eloHistory } from '../stores/league.js'
   import { getRoleInfo } from './roleIcons.js'
+  import MetricsChart from './MetricsChart.svelte'
 
   export let entryId
   export let headingEl = undefined
@@ -55,6 +56,51 @@
     return opponents.sort((a, b) => b.total - a.total)
   })()
 
+  // Elo sparkline: history for this entry + top 2 most-played opponents
+  const SPARK_COLORS = ['#4ade80', '#60a5fa', '#f59e0b']
+  $: sparkData = (() => {
+    if (!entry) return { xData: [], series: [] }
+    const myHistory = $eloHistory.filter(h => h.entry_id === entryId && h.epoch >= 0)
+    if (myHistory.length < 2) return { xData: [], series: [] }
+
+    // Build epoch set from this entry's history
+    const epochSet = new Set(myHistory.map(h => h.epoch))
+    // Add top 2 opponents' history (most games played against)
+    const topOpps = overallOpponents.slice(0, 2).map(r => r.opponent.id)
+    const oppHistories = topOpps.map(id =>
+      $eloHistory.filter(h => h.entry_id === id && h.epoch >= 0)
+    )
+    for (const oh of oppHistories) {
+      for (const h of oh) epochSet.add(h.epoch)
+    }
+    const xData = [...epochSet].sort((a, b) => a - b)
+    const epochIndex = new Map(xData.map((e, i) => [e, i]))
+
+    const buildSeries = (history, label, color) => {
+      const data = new Array(xData.length).fill(null)
+      for (const h of history) {
+        const idx = epochIndex.get(h.epoch)
+        if (idx != null) data[idx] = h.elo_rating
+      }
+      return { label, data, color }
+    }
+
+    const series = [
+      buildSeries(myHistory, entry.display_name || entry.architecture, SPARK_COLORS[0]),
+    ]
+    topOpps.forEach((id, i) => {
+      const opp = entryMap.get(id)
+      if (opp) {
+        series.push(buildSeries(
+          oppHistories[i],
+          opp.display_name || opp.architecture,
+          SPARK_COLORS[i + 1],
+        ))
+      }
+    })
+    return { xData, series }
+  })()
+
   function matchPerspective(m) {
     const isA = m.entry_a_id === entryId
     const oppId = isA ? m.entry_b_id : m.entry_a_id
@@ -102,6 +148,22 @@
           </div>
         {/if}
       </div>
+
+      {#if sparkData.xData.length > 0}
+        <div class="detail-section spark-section">
+          <h4 class="section-label">Elo Trend</h4>
+          <div class="spark-chart">
+            <MetricsChart
+              title=""
+              xData={sparkData.xData}
+              series={sparkData.series}
+              height={120}
+              compact={true}
+              xLabel="Epoch"
+            />
+          </div>
+        </div>
+      {/if}
 
       <div class="detail-section">
         <h4 class="section-label">Overall Record</h4>
@@ -203,6 +265,13 @@
     font-size: 13px; font-style: italic; color: var(--text-muted); padding: 2px 0;
   }
   .commentary-item.high-conf { color: var(--text-secondary); }
+  .spark-section { min-width: 100%; }
+  .spark-chart { height: 120px; }
+  .spark-chart :global(.chart-wrapper) {
+    border: none;
+    padding: 0;
+    background: transparent;
+  }
   .empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 24px; }
   .empty-small { color: var(--text-muted); font-size: 13px; padding: 10px 0; }
 </style>
