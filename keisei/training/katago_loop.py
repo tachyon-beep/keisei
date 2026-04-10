@@ -249,6 +249,29 @@ class PendingTransitions:
         return result
 
 
+def _resolve_opponent_devices(
+    opponents: dict[int, torch.nn.Module],
+    learner_device: torch.device,
+) -> dict[int, torch.device | None]:
+    """Pre-compute opponent device map once per epoch.
+
+    Returns a dict mapping opponent ID to its device, or None if same as
+    learner (no cross-device transfer needed).  Avoids the per-step cost of
+    next(model.parameters()).device inside the hot rollout loop.
+    """
+    result: dict[int, torch.device | None] = {}
+    for opp_id, model in opponents.items():
+        try:
+            opp_device = next(model.parameters()).device
+        except (StopIteration, AttributeError):
+            opp_device = learner_device
+        if isinstance(opp_device, torch.device) and opp_device != learner_device:
+            result[opp_id] = opp_device
+        else:
+            result[opp_id] = None
+    return result
+
+
 def split_merge_step(
     obs: torch.Tensor,
     legal_masks: torch.Tensor,
@@ -259,12 +282,18 @@ def split_merge_step(
     env_opponent_ids: np.ndarray | None = None,
     learner_side: int | np.ndarray = 0,
     value_adapter: ValueHeadAdapter | None = None,
+    opponent_devices: dict[int, torch.device | None] | None = None,
 ) -> SplitMergeResult:
     """Execute one step with split learner/opponent forward passes.
 
     Supports both single-opponent (legacy) and multi-opponent (cohort) modes:
     - Legacy: pass opponent_model=<model>
     - Cohort: pass opponent_models={id: model, ...} and env_opponent_ids=<array>
+
+    Args:
+        opponent_devices: Pre-computed device map from _resolve_opponent_devices().
+            When provided, skips the per-model next(model.parameters()).device
+            probe on every step.  None values mean same device as learner.
 
     Returns only learner-side data (log_probs, values, indices). The caller
     stores ONLY learner transitions in the rollout buffer.
@@ -328,6 +357,8 @@ def split_merge_step(
         actions[learner_indices] = l_actions
 
     # Opponent forward passes (always no_grad, eval mode).
+    # Models are set to eval() once at load time and never toggled during
+    # rollout, so we skip redundant model.eval() calls here.
     # When the opponent lives on a different GPU (e.g. cuda:1), move
     # observations there for inference, then move actions back.
     opponent_mask_np = opponent_mask.cpu().numpy()
@@ -346,17 +377,21 @@ def split_merge_step(
         o_obs = obs[idx_tensor]
         o_masks = legal_masks[idx_tensor]
 
-        # Detect cross-device opponent (e.g. learner on cuda:0, opponent on cuda:1)
-        try:
-            opp_device = next(model.parameters()).device
-        except (StopIteration, AttributeError):
-            opp_device = device  # fallback: assume same device
-        cross_device = isinstance(opp_device, torch.device) and opp_device != device
+        # Use pre-computed device map when available (avoids per-step
+        # next(model.parameters()).device probe for each opponent).
+        if opponent_devices is not None:
+            opp_dev = opponent_devices.get(opp_id)
+            cross_device = opp_dev is not None
+        else:
+            try:
+                opp_dev = next(model.parameters()).device
+            except (StopIteration, AttributeError):
+                opp_dev = device
+            cross_device = isinstance(opp_dev, torch.device) and opp_dev != device
         if cross_device:
-            o_obs = o_obs.to(opp_device)
-            o_masks = o_masks.to(opp_device)
+            o_obs = o_obs.to(opp_dev)
+            o_masks = o_masks.to(opp_dev)
 
-        model.eval()
         with torch.no_grad():
             o_output = model(o_obs)
 
@@ -586,6 +621,7 @@ class KataGoTrainingLoop:
         # empty _loaded_by_role from __init__ can never reach sample_for_learner.
         self._opponent_models: dict[int, torch.nn.Module] | None = None
         self._opponent_pool_fingerprint: frozenset[tuple[int, str]] = frozenset()
+        self._opponent_device_map: dict[int, torch.device | None] = {}
         self._env_opponent_ids: np.ndarray | None = None
         self._cached_entries: list[OpponentEntry] = []
         self._cached_entries_by_id: dict[int, OpponentEntry] = {}
@@ -891,6 +927,14 @@ class KataGoTrainingLoop:
                         # since Dynamic updates are small (§10.2: lr_scale=0.25, 2 epochs).
                         self._opponent_models = self.store.load_all_opponents(device=opp_device)
                         self._opponent_pool_fingerprint = new_fingerprint
+                        # Pre-compute per-model device map and set eval mode once.
+                        # Avoids next(model.parameters()).device + model.eval()
+                        # on every step of the rollout loop (~515 calls/epoch/model).
+                        for m in self._opponent_models.values():
+                            m.eval()
+                        self._opponent_device_map = _resolve_opponent_devices(
+                            self._opponent_models, self.device,
+                        )
                         logger.info(
                             "Opponent pool changed: loaded %d models", len(self._opponent_models),
                         )
@@ -1066,6 +1110,7 @@ class KataGoTrainingLoop:
                             env_opponent_ids=self._env_opponent_ids,
                             learner_side=learner_side,
                             value_adapter=self.value_adapter,
+                            opponent_devices=self._opponent_device_map,
                         )
                     else:
                         sm_result = split_merge_step(
