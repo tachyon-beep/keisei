@@ -26,9 +26,8 @@ from keisei.db import (
     init_db,
     read_training_state,
     update_training_progress,
-    wal_checkpoint,
+    write_epoch_summary,
     write_game_snapshots,
-    write_metrics,
     write_training_state,
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
@@ -1514,38 +1513,20 @@ class KataGoTrainingLoop:
                     ),
                 }
                 try:
-                    write_metrics(self.db_path, metrics)
+                    write_epoch_summary(
+                        self.db_path, metrics, epoch_i, self.global_step,
+                    )
                 except Exception:
-                    logger.exception("Failed to write metrics for epoch %d — continuing", epoch_i)
+                    logger.exception("Failed to write epoch summary for epoch %d — continuing", epoch_i)
 
                 if hasattr(self.vecenv, "reset_stats"):
                     self.vecenv.reset_stats()
-
-                try:
-                    update_training_progress(self.db_path, epoch_i, self.global_step)
-                except Exception:
-                    logger.exception("Failed to update training progress — continuing")
 
                 logger.info(
                     "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
                     epoch_i, self.global_step, losses["policy_loss"],
                     losses["value_loss"], losses["score_loss"], losses["entropy"],
                 )
-
-                # Periodic WAL checkpoint: merge WAL back into main DB to prevent
-                # unbounded WAL growth.  A large WAL degrades read performance
-                # for all connections because SQLite checks the WAL index on
-                # every page read.
-                if (epoch_i + 1) % 10 == 0:
-                    try:
-                        busy, log_pages, checkpointed = wal_checkpoint(self.db_path)
-                        if log_pages > 0:
-                            logger.debug(
-                                "WAL checkpoint: %d/%d pages checkpointed (busy=%d)",
-                                checkpointed, log_pages, busy,
-                            )
-                    except Exception:
-                        pass  # best-effort
 
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
                 # Barrier ensures all ranks finish PPO update before checkpoint write

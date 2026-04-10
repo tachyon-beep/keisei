@@ -201,7 +201,7 @@ class TestRankGating:
              patch("keisei.training.katago_loop.dist.broadcast_object_list"):
             loop = KataGoTrainingLoop(config, vecenv=mock_env, dist_ctx=ctx)
 
-        with patch("keisei.training.katago_loop.write_metrics") as mock_write, \
+        with patch("keisei.training.katago_loop.write_epoch_summary") as mock_write, \
              patch("keisei.training.katago_loop.dist.barrier"), \
              patch("keisei.training.katago_loop.dist.all_reduce"):
             loop.run(num_epochs=1, steps_per_epoch=2)
@@ -471,13 +471,13 @@ class TestValueCategoryNoLeague:
 class TestSwallowedExceptions:
     """CRIT-1: Swallowed exceptions in run() must not crash training."""
 
-    def test_write_metrics_failure_continues_training(self, tmp_path):
-        """If write_metrics raises, training should continue to the next epoch."""
+    def test_write_epoch_summary_failure_continues_training(self, tmp_path):
+        """If write_epoch_summary raises, training should continue to the next epoch."""
         config = _make_config(tmp_path)
         mock_env = _make_mock_katago_vecenv(num_envs=2)
         loop = KataGoTrainingLoop(config, vecenv=mock_env)
 
-        with patch("keisei.training.katago_loop.write_metrics",
+        with patch("keisei.training.katago_loop.write_epoch_summary",
                    side_effect=RuntimeError("DB write failed")):
             # Should NOT raise — the exception is caught and logged
             loop.run(num_epochs=2, steps_per_epoch=2)

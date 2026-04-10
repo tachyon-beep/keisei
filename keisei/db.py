@@ -425,6 +425,68 @@ def write_metrics(db_path: str, metrics: dict[str, Any]) -> None:
         conn.close()
 
 
+def write_epoch_summary(
+    db_path: str,
+    metrics: dict[str, Any],
+    epoch: int,
+    step: int,
+    checkpoint_path: str | None = None,
+) -> None:
+    """Write metrics and training progress in a single connection+transaction.
+
+    Batches what was previously 2-3 separate connect/commit/close cycles into
+    one, reducing WAL page generation and eliminating redundant WAL index scans.
+    Also performs a WAL checkpoint (TRUNCATE) at the end to prevent WAL growth
+    across epochs.
+    """
+    conn = _connect(db_path)
+    try:
+        conn.execute("BEGIN")
+        # 1. Metrics INSERT
+        conn.execute(
+            """INSERT INTO metrics (epoch, step, policy_loss, value_loss, entropy,
+               win_rate, loss_rate, black_win_rate, white_win_rate, draw_rate,
+               truncation_rate, avg_episode_length,
+               gradient_norm, episodes_completed)
+               VALUES (:epoch, :step, :policy_loss, :value_loss, :entropy,
+               :win_rate, :loss_rate, :black_win_rate, :white_win_rate, :draw_rate,
+               :truncation_rate, :avg_episode_length,
+               :gradient_norm, :episodes_completed)""",
+            {
+                "epoch": metrics.get("epoch", 0), "step": metrics.get("step", 0),
+                "policy_loss": metrics.get("policy_loss"), "value_loss": metrics.get("value_loss"),
+                "entropy": metrics.get("entropy"), "win_rate": metrics.get("win_rate"),
+                "loss_rate": metrics.get("loss_rate"),
+                "black_win_rate": metrics.get("black_win_rate"),
+                "white_win_rate": metrics.get("white_win_rate"),
+                "draw_rate": metrics.get("draw_rate"),
+                "truncation_rate": metrics.get("truncation_rate"),
+                "avg_episode_length": metrics.get("avg_episode_length"),
+                "gradient_norm": metrics.get("gradient_norm"),
+                "episodes_completed": metrics.get("episodes_completed"),
+            },
+        )
+        # 2. Training progress UPDATE
+        parts = ["current_epoch = ?", "current_step = ?",
+                 "heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"]
+        params: list[int | str] = [epoch, step]
+        if checkpoint_path is not None:
+            parts.append("checkpoint_path = ?")
+            params.append(checkpoint_path)
+        conn.execute(
+            f"UPDATE training_state SET {', '.join(parts)} WHERE id = 1",
+            params,
+        )
+        conn.commit()
+
+        # 3. WAL checkpoint — cheap after a small batch of writes.
+        # TRUNCATE mode merges WAL back into main DB and resets WAL to zero
+        # length, preventing read degradation from WAL index scans.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+
+
 def read_metrics_since(db_path: str, since_id: int, limit: int = 500) -> list[dict[str, Any]]:
     conn = _connect(db_path)
     try:
