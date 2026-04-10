@@ -1086,6 +1086,10 @@ class KataGoTrainingLoop:
 
             self._phase = "rollout"
             self._force_heartbeat()
+            _t_rollout_start = time.monotonic()
+            _acc_inference = 0.0
+            _acc_env_step = 0.0
+            _acc_bookkeeping = 0.0
             for step_i in range(steps_per_epoch):
                 self.global_step += 1
 
@@ -1101,6 +1105,7 @@ class KataGoTrainingLoop:
                         learner_moved = pre_players_t == learner_side  # type: ignore[assignment]  # Tensor.__eq__ returns Tensor at runtime
 
                     # Split-merge: learner vs opponent
+                    _t0 = time.monotonic()
                     if self._opponent_models and self._env_opponent_ids is not None:
                         sm_result = split_merge_step(
                             obs=obs, legal_masks=legal_masks,
@@ -1121,9 +1126,13 @@ class KataGoTrainingLoop:
                             learner_side=learner_side,
                             value_adapter=self.value_adapter,
                         )
+                    _t1 = time.monotonic()
+                    _acc_inference += _t1 - _t0
                     actions = sm_result.actions
                     action_list = actions.tolist()
                     step_result = self.vecenv.step(action_list)
+                    _t2 = time.monotonic()
+                    _acc_env_step += _t2 - _t1
 
                     current_players = np.asarray(step_result.current_players)
                     current_players_t = torch.from_numpy(current_players).to(self.device)
@@ -1314,13 +1323,18 @@ class KataGoTrainingLoop:
                         ).to(self.device)
                 else:
                     # No opponent: all envs are learner (original behavior)
+                    _t0 = time.monotonic()
                     actions, log_probs, values = self.ppo.select_actions(
                         obs, legal_masks, value_adapter=self.value_adapter,
                     )
+                    _t1 = time.monotonic()
+                    _acc_inference += _t1 - _t0
                     self.latest_values = values.tolist()
                     action_list = actions.tolist()
                     pre_players = current_players.copy()
                     step_result = self.vecenv.step(action_list)
+                    _t2 = time.monotonic()
+                    _acc_env_step += _t2 - _t1
 
                     current_players = np.asarray(step_result.current_players)
 
@@ -1374,6 +1388,9 @@ class KataGoTrainingLoop:
                 legal_masks = torch.from_numpy(np.asarray(step_result.legal_masks)).to(self.device)
                 self._maybe_write_snapshots()
                 self._maybe_update_heartbeat()
+                _acc_bookkeeping += time.monotonic() - _t2
+
+            _t_rollout_end = time.monotonic()
 
             # Finalize any remaining pending transitions at epoch end.
             # These are learner moves whose games did not resolve before the epoch
@@ -1439,12 +1456,14 @@ class KataGoTrainingLoop:
 
             self._phase = "update"
             self._force_heartbeat()
+            _t_update_start = time.monotonic()
             losses = self.ppo.update(
                 self.buffer, next_values,
                 value_adapter=self.value_adapter,
                 heartbeat_fn=self._maybe_update_heartbeat,
             )
             self.ppo.flush_timings()
+            _t_update_end = time.monotonic()
             self._phase = "rollout"
 
             if losses["value_loss"] == 0.0:
@@ -1571,6 +1590,17 @@ class KataGoTrainingLoop:
                     "Epoch %d | step %d | policy=%.4f value=%.4f score=%.4f entropy=%.4f",
                     epoch_i, self.global_step, losses["policy_loss"],
                     losses["value_loss"], losses["score_loss"], losses["entropy"],
+                )
+
+                # Per-epoch timing breakdown — diagnose which phase is growing.
+                _rollout_s = _t_rollout_end - _t_rollout_start
+                _update_s = _t_update_end - _t_update_start
+                _n_opps = len(self._opponent_models) if self._opponent_models else 0
+                logger.info(
+                    "Epoch %d timing | rollout=%.1fs (inference=%.1fs env=%.1fs book=%.1fs) "
+                    "update=%.1fs | opponents=%d buf=%d",
+                    epoch_i, _rollout_s, _acc_inference, _acc_env_step, _acc_bookkeeping,
+                    _update_s, _n_opps, self.buffer.size,
                 )
 
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
