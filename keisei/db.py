@@ -14,6 +14,7 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA wal_autocheckpoint = 1000")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -863,5 +864,23 @@ def read_style_profiles(db_path: str) -> list[dict[str, Any]]:
             d["commentary"] = json.loads(d.pop("commentary_json"))
             result.append(d)
         return result
+    finally:
+        conn.close()
+
+
+def wal_checkpoint(db_path: str) -> tuple[int, int, int]:
+    """Force a WAL checkpoint to prevent unbounded WAL growth.
+
+    Uses TRUNCATE mode: merges the WAL back into the main DB and resets the
+    WAL file to zero length.  This is safe to call while other connections
+    are reading — SQLite will checkpoint as many pages as possible and report
+    the remainder.
+
+    Returns (busy, log_pages, checkpointed_pages).
+    """
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return (row[0], row[1], row[2]) if row else (0, 0, 0)
     finally:
         conn.close()

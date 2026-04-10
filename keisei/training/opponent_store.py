@@ -243,29 +243,85 @@ class OpponentStore:
         # limitation; persisting to DB is tracked as keisei-76cc7fdc85.
         self._pinned: set[int] = set()
         self._model_cache: OrderedDict[tuple[int, str, str], torch.nn.Module] = OrderedDict()
-        self._lock = threading.RLock()
-        self._transaction_depth: int = 0
-        # Rollback actions: ("delete", path) for new files,
-        # ("restore", path, backup_path) for overwritten files.
-        self._pending_fs_ops: list[tuple[str, ...]] = []
-        self._conn = self._open_connection()
+        self._cache_lock = threading.Lock()
+        # Thread-local storage: each thread gets its own SQLite connection,
+        # transaction depth counter, and pending filesystem ops list.
+        # SQLite WAL mode handles concurrent access from multiple connections
+        # natively — reads never block writes and vice versa, with busy_timeout
+        # retrying brief write conflicts.
+        self._local = threading.local()
+        # Open a connection eagerly for the creating thread.
+        self._conn  # triggers lazy creation via property
 
-    def _open_connection(self) -> sqlite3.Connection:
-        # check_same_thread=False is required: the connection is shared between
-        # the main training thread and the tournament thread.  Thread safety is
-        # provided by self._lock (RLock), which serializes all access.  WAL mode
-        # is set for crash resilience, not multi-writer concurrency.
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+    @staticmethod
+    def _new_connection(db_path: str) -> sqlite3.Connection:
+        """Open a new WAL-mode connection to the league database."""
+        conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Return the calling thread's dedicated connection (created on first access)."""
+        try:
+            return self._local.conn
+        except AttributeError:
+            self._local.conn = self._new_connection(self.db_path)
+            self._local.transaction_depth = 0
+            self._local.pending_fs_ops: list[tuple[str, ...]] = []
+            self._local.lock = threading.RLock()
+            return self._local.conn
+
+    @_conn.setter
+    def _conn(self, value: sqlite3.Connection) -> None:
+        """Replace the calling thread's connection (used by tests)."""
+        self._local.conn = value
+
+    @property
+    def _lock(self) -> threading.RLock:
+        """Per-thread lock for serializing DB operations within a single thread.
+
+        With thread-local connections, cross-thread contention is handled by
+        SQLite's WAL mode.  This lock only prevents interleaving of operations
+        within the same thread (e.g., nested transaction() calls from the same
+        thread).
+        """
+        # Trigger connection init if needed (sets up _local.lock)
+        self._conn
+        return self._local.lock
+
+    @property
+    def _transaction_depth(self) -> int:
+        self._conn  # ensure init
+        return self._local.transaction_depth
+
+    @_transaction_depth.setter
+    def _transaction_depth(self, value: int) -> None:
+        self._conn  # ensure init
+        self._local.transaction_depth = value
+
+    @property
+    def _pending_fs_ops(self) -> list[tuple[str, ...]]:
+        self._conn  # ensure init
+        return self._local.pending_fs_ops
+
+    @_pending_fs_ops.setter
+    def _pending_fs_ops(self, value: list[tuple[str, ...]]) -> None:
+        self._conn  # ensure init
+        self._local.pending_fs_ops = value
+
     def close(self) -> None:
-        """Close the held database connection."""
-        with self._lock:
-            self._conn.close()
+        """Close the calling thread's database connection."""
+        try:
+            conn = self._local.conn
+        except AttributeError:
+            return
+        conn.close()
+        del self._local.conn
 
     def __enter__(self) -> OpponentStore:
         return self
@@ -697,12 +753,12 @@ class OpponentStore:
 
     def pin(self, entry_id: int) -> None:
         """Pin an entry to prevent eviction."""
-        with self._lock:
+        with self._cache_lock:
             self._pinned.add(entry_id)
 
     def unpin(self, entry_id: int) -> None:
         """Release a pin."""
-        with self._lock:
+        with self._cache_lock:
             self._pinned.discard(entry_id)
 
     # ------------------------------------------------------------------
@@ -758,13 +814,13 @@ class OpponentStore:
         if max_cached <= 0:
             return self.load_opponent(entry, device=device)
         key = (entry.id, entry.checkpoint_path, device)
-        with self._lock:
+        with self._cache_lock:
             if key in self._model_cache:
                 self._model_cache.move_to_end(key)
                 return self._model_cache[key]
         # Load outside lock (disk I/O + GPU transfer can be slow)
         model = self.load_opponent(entry, device=device)
-        with self._lock:
+        with self._cache_lock:
             # Re-check after releasing lock — another thread may have loaded same key
             if key in self._model_cache:
                 self._model_cache.move_to_end(key)
@@ -776,12 +832,12 @@ class OpponentStore:
 
     def cache_size(self) -> int:
         """Number of models currently in the LRU cache."""
-        with self._lock:
+        with self._cache_lock:
             return len(self._model_cache)
 
     def clear_model_cache(self) -> None:
         """Drop all cached models."""
-        with self._lock:
+        with self._cache_lock:
             self._model_cache.clear()
 
     def load_all_opponents(self, device: str = "cpu") -> dict[int, torch.nn.Module]:
