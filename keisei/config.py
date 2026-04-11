@@ -416,6 +416,13 @@ class LeagueConfig:
     elo_floor: float = 500.0
     color_randomization: bool = True
     per_env_opponents: bool = True
+    # How many distinct opponents to draw from the pool at the start of each
+    # epoch when per_env_opponents is enabled. Training's per-step rollout
+    # cost is O(opponents_per_epoch), NOT O(len(pool)) — this decouples
+    # training speed from pool size (tournament growing the pool no longer
+    # slows the training loop). Opponent diversity comes from resampling K
+    # across epochs rather than fanning out within a single epoch.
+    opponents_per_epoch: int = 4
     opponent_device: str | None = None
     tournament_enabled: bool = False
     tournament_device: str | None = None
@@ -472,6 +479,10 @@ class LeagueConfig:
         if self.max_active_entries is not None and self.max_active_entries < 1:
             raise ValueError(
                 f"max_active_entries must be >= 1 or None, got {self.max_active_entries}"
+            )
+        if self.opponents_per_epoch < 1:
+            raise ValueError(
+                f"opponents_per_epoch must be >= 1, got {self.opponents_per_epoch}"
             )
         # Cross-config validation: warn if LRU cache can't hold the full pool
         if (

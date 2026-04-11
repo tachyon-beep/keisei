@@ -3,9 +3,10 @@
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 import torch
 
-from keisei.training.katago_loop import split_merge_step
+from keisei.training.katago_loop import _resolve_opponent_devices, split_merge_step
 
 
 def _make_mock_model(action_space: int = 11259):
@@ -256,3 +257,63 @@ class TestSplitMergeMultiOpponent:
         assert result.actions[1].item() >= 0
         assert result.actions[2].item() >= 0
         assert result.actions[3].item() >= 0
+
+
+class TestResolveOpponentDevices:
+    """Device map resolution for the rollout hot path."""
+
+    def test_cpu_same_device_returns_none(self):
+        """Opponents on the same CPU device as learner should map to None."""
+        model = torch.nn.Linear(4, 4)  # CPU
+        result = _resolve_opponent_devices(
+            {1: model}, learner_device=torch.device("cpu"),
+        )
+        assert result == {1: None}
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_cuda_indexed_same_device_returns_none(self):
+        """Opponents on cuda:0 vs learner on cuda:0 should map to None."""
+        model = torch.nn.Linear(4, 4).to("cuda:0")
+        result = _resolve_opponent_devices(
+            {1: model}, learner_device=torch.device("cuda:0"),
+        )
+        assert result == {1: None}
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_cuda_nonindexed_learner_matches_indexed_opponent(self):
+        """Regression: learner_device=torch.device('cuda') (no index) must
+        compare equal to opponent params on cuda:0. Previously this path
+        mis-classified same-device opponents as cross-device, causing
+        unnecessary D2D copies and blocking the opponent_device='cuda:0'
+        optimization."""
+        model = torch.nn.Linear(4, 4).to("cuda")
+        # Parameter device always has an explicit index even when you call .to("cuda").
+        assert next(model.parameters()).device.index == torch.cuda.current_device()
+        result = _resolve_opponent_devices(
+            {1: model}, learner_device=torch.device("cuda"),  # no index
+        )
+        assert result == {1: None}, (
+            "Same-device opponent should be None (no transfer needed)"
+        )
+
+    @pytest.mark.skipif(
+        not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+        reason="requires 2 CUDA devices",
+    )
+    def test_cuda_cross_device_returns_device(self):
+        """Opponents on cuda:1 with learner on cuda:0 must map to cuda:1."""
+        model = torch.nn.Linear(4, 4).to("cuda:1")
+        result = _resolve_opponent_devices(
+            {1: model}, learner_device=torch.device("cuda:0"),
+        )
+        assert result == {1: torch.device("cuda:1")}
+
+    def test_parameterless_model_falls_back_to_learner_device(self):
+        """Models with no parameters (edge case) should be treated as same-device."""
+        class Empty(torch.nn.Module):
+            pass
+
+        result = _resolve_opponent_devices(
+            {1: Empty()}, learner_device=torch.device("cpu"),
+        )
+        assert result == {1: None}

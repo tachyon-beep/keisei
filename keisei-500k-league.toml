@@ -68,9 +68,17 @@ mode = "mixed"
 max_active_entries = 20     # hard cap: 5 frontier + 5 recent + 10 dynamic (§1, §18)
 snapshot_interval = 10      # snapshot every 10 epochs — fills pool fast early on
 epochs_per_seat = 5         # rotate opponent every 5 epochs for diversity
+# K opponents per epoch: decouples per-step rollout cost from pool size.
+# Training fans out over only K models/step instead of len(pool). Diversity
+# comes from resampling K across epochs. Lower K = faster rollout, less
+# in-epoch diversity. K=4 ≈ role-balanced cohort (1 Frontier + 1 Recent + 2 Dynamic).
+opponents_per_epoch = 4
 elo_k_factor = 32.0
 elo_floor = 500.0
-opponent_device = "cuda:1"  # serve opponents on second GPU
+# Training's opponents live on cuda:0 with the learner: eliminates per-step
+# cross-device D2D copies and gives the tournament full exclusive use of cuda:1.
+# Physical decoupling — training owns GPU 0, tournament owns GPU 1.
+opponent_device = "cuda:0"
 tournament_enabled = true
 tournament_device = "cuda:1"
 tournament_num_envs = 64

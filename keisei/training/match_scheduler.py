@@ -151,6 +151,67 @@ class MatchScheduler:
         # present in entries_by_role with non-empty lists survive into non_empty.
         return random.choice(entries_by_role[chosen_role])
 
+    def sample_k_for_learner(
+        self, entries_by_role: dict[Role, list[OpponentEntry]], k: int,
+    ) -> list[OpponentEntry]:
+        """Sample K distinct opponents via role-weighted sampling without replacement.
+
+        Used at epoch start to pick the cohort of opponents the learner will
+        face for one rollout epoch. Role weights come from effective_ratios()
+        (same as sample_for_learner); within a role, entries are drawn
+        uniformly at random. When a role's entries are exhausted mid-sample,
+        its weight is redistributed to remaining non-empty roles.
+
+        Returns fewer than K entries if the pool is smaller than K. Returns
+        an empty list if k <= 0. Raises ValueError if the pool is empty.
+        """
+        if k <= 0:
+            return []
+
+        total_available = sum(len(v) for v in entries_by_role.values())
+        if total_available == 0:
+            raise ValueError(
+                "No entries available in any tier — cannot sample opponents"
+            )
+        if k >= total_available:
+            # Flatten all entries; order is implementation-defined but stable.
+            return [e for entries in entries_by_role.values() for e in entries]
+
+        # Shallow copy so we can drop sampled entries without mutating caller's dict.
+        remaining: dict[Role, list[OpponentEntry]] = {
+            role: list(entries) for role, entries in entries_by_role.items()
+        }
+
+        sampled: list[OpponentEntry] = []
+        while len(sampled) < k:
+            ratios = self.effective_ratios(remaining)
+            non_empty = {
+                r: w for r, w in ratios.items() if w > 0 and remaining.get(r)
+            }
+            if not non_empty:
+                # Roles with positive weight are exhausted. Fall back to
+                # uniform sampling across whatever is still in remaining —
+                # this handles the edge case where effective_ratios() zeros
+                # out all roles (e.g. learner dominates every tier) but we
+                # still have entries the caller wants us to pick from.
+                flat = [e for entries in remaining.values() for e in entries]
+                if not flat:
+                    break
+                sampled.append(flat[random.randrange(len(flat))])
+                # Remove sampled entry from remaining
+                for entries in remaining.values():
+                    if sampled[-1] in entries:
+                        entries.remove(sampled[-1])
+                        break
+                continue
+            roles = list(non_empty.keys())
+            weights = [non_empty[r] for r in roles]
+            chosen_role = random.choices(roles, weights=weights, k=1)[0]
+            idx = random.randrange(len(remaining[chosen_role]))
+            sampled.append(remaining[chosen_role].pop(idx))
+
+        return sampled
+
     def generate_round(
         self, entries: list[OpponentEntry],
     ) -> list[tuple[OpponentEntry, OpponentEntry]]:

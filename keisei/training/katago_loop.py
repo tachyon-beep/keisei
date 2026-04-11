@@ -259,6 +259,14 @@ def _resolve_opponent_devices(
     learner (no cross-device transfer needed).  Avoids the per-step cost of
     next(model.parameters()).device inside the hot rollout loop.
     """
+    # torch.device("cuda") (index=None) and torch.device("cuda:0") (index=0)
+    # resolve to the same physical device but compare as unequal. Model
+    # parameter devices always carry an explicit index, so same-device
+    # opponents would be mis-classified as cross-device unless we normalize
+    # the learner side here.
+    if learner_device.type == "cuda" and learner_device.index is None:
+        learner_device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
     result: dict[int, torch.device | None] = {}
     for opp_id, model in opponents.items():
         try:
@@ -898,113 +906,166 @@ class KataGoTrainingLoop:
                     and len(self._cached_entries) > 0
                 )
 
+                sampled_entries: list[OpponentEntry] = []
+
                 if use_per_env_opps:
-                    # Check if the pool has changed since last epoch by comparing
-                    # a lightweight fingerprint of (id, checkpoint_path) tuples.
-                    # Skips the expensive load_all_opponents() + empty_cache()
-                    # cycle when the pool is unchanged (the common case).
+                    assert self.config.league is not None
+                    # Build the full-pool role view (excluding the learner).
+                    full_by_role: dict[Role, list[OpponentEntry]] = {
+                        role: [] for role in (Role.FRONTIER_STATIC, Role.RECENT_FIXED, Role.DYNAMIC)
+                    }
+                    for e in self._cached_entries:
+                        if e.role in full_by_role and e.id != self._learner_entry_id:
+                            full_by_role[e.role].append(e)
+                    # Fresh-bootstrap fallback: include learner entries when every
+                    # non-learner role is empty, so sampling doesn't crash.
+                    if not any(full_by_role.values()):
+                        for e in self._cached_entries:
+                            if e.role in full_by_role:
+                                full_by_role[e.role].append(e)
+
+                    # Sample K distinct opponents via role-weighted sampling
+                    # without replacement. Decouples training's per-step rollout
+                    # cost from pool size: regardless of how many entries the
+                    # tournament pushes into the pool, training fans out over
+                    # only K models per step. Diversity comes from resampling K
+                    # across epochs, not from fanning out within a single epoch.
+                    k = self.config.league.opponents_per_epoch
+                    try:
+                        sampled_entries = self.scheduler.sample_k_for_learner(
+                            full_by_role, k,
+                        )
+                    except ValueError:
+                        sampled_entries = []
+
+                    if not sampled_entries:
+                        logger.warning(
+                            "sample_k_for_learner returned empty at epoch %d — "
+                            "falling back to single-opponent mode", epoch_i,
+                        )
+                        use_per_env_opps = False
+
+                if use_per_env_opps:
+                    # Delta-load: reuse already-resident models across epochs
+                    # when the sampled cohort overlaps with the previous one.
+                    # Only the new entries incur disk I/O + GPU transfer.
                     new_fingerprint = frozenset(
-                        (e.id, e.checkpoint_path) for e in self._cached_entries
+                        (e.id, e.checkpoint_path) for e in sampled_entries
                     )
                     pool_changed = new_fingerprint != self._opponent_pool_fingerprint
 
                     if pool_changed:
-                        # Memory cleanup: release previous epoch's models.
-                        # Safe at epoch start: ppo.update() backward pass is a
-                        # CUDA sync point, so all prior kernels have completed.
-                        if self._opponent_models is not None:
-                            del self._opponent_models
-                            self._opponent_models = None
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
+                        sampled_ids = {e.id for e in sampled_entries}
+                        current: dict[int, torch.nn.Module] = self._opponent_models or {}
 
-                        # NOTE: Models are loaded once per pool change and NOT refreshed
-                        # mid-epoch. Dynamic entries may train on the tournament thread
-                        # between loads, making these snapshots ~1 epoch stale. This is
-                        # intentional: mid-epoch reloads would require cross-thread
-                        # synchronization, risk inference inconsistency within a rollout,
-                        # and add CUDA sync overhead. The ~1 epoch lag is acceptable
-                        # since Dynamic updates are small (§10.2: lr_scale=0.25, 2 epochs).
-                        self._opponent_models = self.store.load_all_opponents(device=opp_device)
+                        # Release models no longer in the sampled cohort
+                        # (frees VRAM). Safe at epoch start: ppo.update()
+                        # backward pass is a CUDA sync point, so all prior
+                        # rollout kernels have completed.
+                        stale_ids = [eid for eid in current if eid not in sampled_ids]
+                        for eid in stale_ids:
+                            del current[eid]
+                        if stale_ids and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                        # NOTE: Models are loaded at epoch start and NOT
+                        # refreshed mid-epoch. Dynamic entries may be trained
+                        # on the tournament thread between loads, making these
+                        # snapshots up to ~1 epoch stale. The lag is intentional:
+                        # mid-epoch reloads would risk inference inconsistency
+                        # within a rollout and add CUDA sync overhead. Dynamic
+                        # updates are small (§10.2: lr_scale=0.25, 2 epochs).
+                        loaded_entries: list[OpponentEntry] = []
+                        for e in sampled_entries:
+                            if e.id in current:
+                                loaded_entries.append(e)
+                                continue
+                            try:
+                                current[e.id] = self.store.load_opponent(
+                                    e, device=opp_device,
+                                )
+                            except (FileNotFoundError, RuntimeError) as err:
+                                logger.warning(
+                                    "Skipping opponent id=%d (epoch %d): %s",
+                                    e.id, epoch_i, err,
+                                )
+                                continue
+                            loaded_entries.append(e)
+
+                        self._opponent_models = current
                         self._opponent_pool_fingerprint = new_fingerprint
-                        # Pre-compute per-model device map and set eval mode once.
-                        # Avoids next(model.parameters()).device + model.eval()
-                        # on every step of the rollout loop (~515 calls/epoch/model).
+                        # Set eval mode + pre-compute device map. Hoisted out
+                        # of the rollout hot loop (199dc54): eval/device probe
+                        # per step × K models × 512 steps adds up fast.
                         for m in self._opponent_models.values():
                             m.eval()
                         self._opponent_device_map = _resolve_opponent_devices(
                             self._opponent_models, self.device,
                         )
                         logger.info(
-                            "Opponent pool changed: loaded %d models", len(self._opponent_models),
+                            "Opponent cohort changed: %d resident models "
+                            "(K=%d sampled from pool=%d)",
+                            len(self._opponent_models), k, len(self._cached_entries),
                         )
+                        sampled_entries = loaded_entries
                     else:
                         assert self._opponent_models is not None
+                        # Same cohort as last epoch — still re-validate against
+                        # currently-resident models in case a prior load
+                        # dropped any for corruption.
+                        sampled_entries = [
+                            e for e in sampled_entries if e.id in self._opponent_models
+                        ]
 
-                    # Filter cached entries to only those whose models loaded.
-                    # Without this, sample_from could assign an entry whose
-                    # checkpoint was corrupt/missing → silent wrong actions.
-                    self._cached_entries = [
-                        e for e in self._cached_entries if e.id in self._opponent_models
-                    ]
-                    self._cached_entries_by_id = {e.id: e for e in self._cached_entries}
-
-                    # C3 guard: if every checkpoint was corrupt/missing,
-                    # fall back to single-opponent mode rather than crash
-                    # with an inscrutable ValueError from sample_for_learner.
-                    if not self._cached_entries:
+                    # C3 guard: if every sampled entry's checkpoint was
+                    # corrupt/missing, fall back to single-opponent mode
+                    # rather than crash downstream.
+                    if not sampled_entries:
                         logger.warning(
-                            "All opponent checkpoints failed to load — "
+                            "All sampled opponent checkpoints failed to load — "
                             "falling back to single-opponent mode for epoch %d",
                             epoch_i,
                         )
                         use_per_env_opps = False
 
                 if use_per_env_opps:
-                    # Per-env opponent assignment — sample only from entries
-                    # whose models were successfully loaded (self._cached_entries),
-                    # NOT from the full DB which may include corrupt checkpoints.
+                    assert self._opponent_models is not None
+                    # Build the role view over the sampled cohort — this is
+                    # what drives per-env assignment and mid-epoch re-sampling
+                    # on game done. Training only ever sees these K models.
                     self._loaded_by_role = {
                         role: [] for role in (Role.FRONTIER_STATIC, Role.RECENT_FIXED, Role.DYNAMIC)
                     }
-                    for e in self._cached_entries:
+                    for e in sampled_entries:
                         if e.role in self._loaded_by_role and e.id != self._learner_entry_id:
                             self._loaded_by_role[e.role].append(e)
-                    # Fallback: if filtering removed all entries (fresh bootstrap),
-                    # include the learner to avoid crashing — self-play is better.
+                    # Fresh-bootstrap fallback (same intent as full-pool build above).
                     if not any(self._loaded_by_role.values()):
-                        for e in self._cached_entries:
+                        for e in sampled_entries:
                             if e.role in self._loaded_by_role:
                                 self._loaded_by_role[e.role].append(e)
+
                     self._env_opponent_ids = np.zeros(self.num_envs, dtype=np.int64)
                     for env_i in range(self.num_envs):
                         entry = self.scheduler.sample_for_learner(self._loaded_by_role)
                         self._env_opponent_ids[env_i] = entry.id
 
-                    # Per-opponent W/L/D tracking for epoch-end Elo update.
-                    # Only track entries with assigned roles (the ones that
-                    # can actually be sampled for play); UNASSIGNED entries
-                    # are pre-bootstrap transitional state and never sampled.
+                    # Per-opponent W/L/D tracking over the K cohort only.
+                    # Entries outside the cohort don't play this epoch, so
+                    # they correctly accrue no Elo update from it.
                     self._opponent_results = {
-                        eid: [0, 0, 0] for eid in self._opponent_models
-                        if eid in self._cached_entries_by_id
-                        and self._cached_entries_by_id[eid].role != Role.UNASSIGNED
+                        e.id: [0, 0, 0] for e in sampled_entries
+                        if e.role != Role.UNASSIGNED
                     }
 
-                    # Reuse an already-loaded model for _current_opponent (used by
-                    # PendingTransitions guard, sign_correct_bootstrap, etc.).
-                    # Do NOT call load_opponent again — saves 14MB VRAM + disk I/O.
-                    # _current_opponent_entry is guaranteed non-None: set by
-                    # sample_for_learner() at the top of this scheduler block.
-                    opp_entry_id = self._current_opponent_entry.id
-                    if opp_entry_id in self._opponent_models:
-                        self._current_opponent = self._opponent_models[opp_entry_id]
-                    else:
-                        # Entry's checkpoint was corrupt/missing, or retired between
-                        # entries_by_role() and list_entries() calls — use any loaded
-                        # model as fallback for _current_opponent (used only for
-                        # bootstrap guards, not per-env play).
-                        self._current_opponent = next(iter(self._opponent_models.values()))
+                    # Pin _current_opponent / _current_opponent_entry to a
+                    # cohort member so fallback paths (PendingTransitions,
+                    # sign_correct_bootstrap, snapshot opponent_id telemetry)
+                    # reference a resident model. The earlier full-pool sample
+                    # at the top of this scheduler block may have picked an
+                    # entry that isn't in the sampled K.
+                    self._current_opponent_entry = sampled_entries[0]
+                    self._current_opponent = self._opponent_models[sampled_entries[0].id]
                 else:
                     self._opponent_models = None
                     self._env_opponent_ids = None

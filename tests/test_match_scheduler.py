@@ -90,6 +90,113 @@ class TestSampleForLearner:
             sched.sample_for_learner(entries)
 
 
+class TestSampleKForLearner:
+    """sample_k_for_learner draws K distinct opponents without replacement."""
+
+    def test_zero_k_returns_empty(self, full_entries):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        assert sched.sample_k_for_learner(full_entries, 0) == []
+
+    def test_negative_k_returns_empty(self, full_entries):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        assert sched.sample_k_for_learner(full_entries, -5) == []
+
+    def test_returns_k_distinct_entries(self, full_entries):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        sampled = sched.sample_k_for_learner(full_entries, k=4)
+        assert len(sampled) == 4
+        # Distinct: no duplicate IDs
+        ids = [e.id for e in sampled]
+        assert len(set(ids)) == 4
+
+    def test_k_larger_than_pool_returns_all(self):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = {
+            Role.FRONTIER_STATIC: [_make_entry(1, Role.FRONTIER_STATIC)],
+            Role.RECENT_FIXED: [_make_entry(2, Role.RECENT_FIXED)],
+            Role.DYNAMIC: [_make_entry(3, Role.DYNAMIC)],
+        }
+        sampled = sched.sample_k_for_learner(entries, k=10)
+        assert len(sampled) == 3
+        assert {e.id for e in sampled} == {1, 2, 3}
+
+    def test_k_equal_to_pool_returns_all(self):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = {
+            Role.FRONTIER_STATIC: [_make_entry(1, Role.FRONTIER_STATIC)],
+            Role.RECENT_FIXED: [_make_entry(2, Role.RECENT_FIXED)],
+            Role.DYNAMIC: [_make_entry(3, Role.DYNAMIC)],
+        }
+        sampled = sched.sample_k_for_learner(entries, k=3)
+        assert len(sampled) == 3
+        assert {e.id for e in sampled} == {1, 2, 3}
+
+    def test_empty_pool_raises(self):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = {Role.FRONTIER_STATIC: [], Role.RECENT_FIXED: [], Role.DYNAMIC: []}
+        with pytest.raises(ValueError, match="[Nn]o entries"):
+            sched.sample_k_for_learner(entries, k=4)
+
+    def test_does_not_mutate_input(self, full_entries):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        before = {role: list(entries) for role, entries in full_entries.items()}
+        sched.sample_k_for_learner(full_entries, k=4)
+        assert full_entries == before
+
+    def test_role_distribution_over_many_samples(self, full_entries):
+        """Across many K-samples, aggregate role frequencies should track
+        the configured tier ratios (dynamic=50%, frontier=30%, recent=20%)."""
+        sched = MatchScheduler(MatchSchedulerConfig())
+        counts = Counter()
+        n_trials = 500
+        k = 4
+        for _ in range(n_trials):
+            sampled = sched.sample_k_for_learner(full_entries, k=k)
+            assert len(sampled) == k
+            for e in sampled:
+                counts[e.role] += 1
+        total = sum(counts.values())
+        assert total == n_trials * k
+        # Bounds are loose because K-without-replacement skews toward uniform
+        # as K approaches the per-role size. Just verify all three tiers
+        # are represented and dynamic is the most-sampled.
+        assert counts[Role.DYNAMIC] > 0
+        assert counts[Role.FRONTIER_STATIC] > 0
+        assert counts[Role.RECENT_FIXED] > 0
+        # Dynamic (50% weight, 10 entries) should dominate Frontier and Recent
+        # in expectation; we just need to beat noise.
+        assert counts[Role.DYNAMIC] > counts[Role.RECENT_FIXED]
+
+    def test_single_tier_pool(self):
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = {
+            Role.FRONTIER_STATIC: [],
+            Role.RECENT_FIXED: [],
+            Role.DYNAMIC: [_make_entry(i, Role.DYNAMIC) for i in range(1, 6)],
+        }
+        sampled = sched.sample_k_for_learner(entries, k=3)
+        assert len(sampled) == 3
+        assert all(e.role is Role.DYNAMIC for e in sampled)
+        assert len({e.id for e in sampled}) == 3
+
+    def test_role_exhaustion_falls_through_to_other_roles(self):
+        """When one role's entries are drained mid-sample, remaining
+        picks should fall through to other non-empty roles."""
+        sched = MatchScheduler(MatchSchedulerConfig())
+        entries = {
+            # Only 1 Frontier entry — role weight can only contribute 1 pick.
+            Role.FRONTIER_STATIC: [_make_entry(1, Role.FRONTIER_STATIC)],
+            Role.RECENT_FIXED: [_make_entry(2, Role.RECENT_FIXED)],
+            Role.DYNAMIC: [
+                _make_entry(3, Role.DYNAMIC),
+                _make_entry(4, Role.DYNAMIC),
+            ],
+        }
+        # K=4 = total pool size → must return all 4 without error
+        sampled = sched.sample_k_for_learner(entries, k=4)
+        assert {e.id for e in sampled} == {1, 2, 3, 4}
+
+
 class TestGenerateRound:
     def test_produces_all_pairs(self):
         sched = MatchScheduler(MatchSchedulerConfig())
