@@ -80,6 +80,7 @@ elo_floor = 500.0
 # Physical decoupling — training owns GPU 0, tournament owns GPU 1.
 opponent_device = "cuda:0"
 tournament_enabled = true
+tournament_mode = "sidecar"
 tournament_device = "cuda:1"
 tournament_num_envs = 64
 tournament_games_per_match = 3    # best-of-3

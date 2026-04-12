@@ -71,6 +71,7 @@ snapshot_interval = 25      # snapshot model into pool every 25 epochs
 epochs_per_seat = 10        # play 10 epochs per sampled opponent
 elo_k_factor = 32.0
 tournament_enabled = true
+tournament_mode = "sidecar"
 tournament_device = "cuda:0" # single-GPU: share with learner
 tournament_num_envs = 32     # smaller than learner to reduce contention
 tournament_games_per_match = 3    # best-of-3
