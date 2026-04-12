@@ -1,6 +1,7 @@
 """Tests for OpponentStore -- the tiered pool storage layer."""
 
 import sqlite3
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -565,4 +566,60 @@ class TestCarryForwardElo:
 
         assert len(rows) == 1
         assert rows[0]["entry_id"] == a.id
+        store.close()
+
+
+class TestUpdateEloAtomic:
+    def test_update_elo_atomic_returns_new_value(self, store_db, league_dir):
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        assert entry.elo_rating == 1000.0
+
+        new_elo = store.update_elo_atomic(entry.id, lambda old: old + 50.0, epoch=2)
+
+        assert new_elo == 1050.0
+        # Verify DB state
+        updated = store.get_entry(entry.id)
+        assert updated.elo_rating == 1050.0
+        # Verify elo_history row was written
+        conn = sqlite3.connect(store_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM elo_history WHERE entry_id = ? AND epoch = 2",
+            (entry.id,),
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0]["elo_rating"] == 1050.0
+        store.close()
+
+    def test_update_elo_atomic_concurrent_no_lost_updates(self, store_db, league_dir):
+        store = OpponentStore(store_db, str(league_dir))
+        model = torch.nn.Linear(10, 10)
+        entry = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+
+        num_threads = 20
+        increment = 10.0
+        barrier = threading.Barrier(num_threads)
+        errors: list[Exception] = []
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=5)
+                store.update_elo_atomic(
+                    entry.id, lambda old: old + increment, epoch=99
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Worker errors: {errors}"
+        updated = store.get_entry(entry.id)
+        assert updated.elo_rating == 1000.0 + num_threads * increment
         store.close()

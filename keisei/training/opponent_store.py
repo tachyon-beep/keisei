@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Generator
 
 import torch
@@ -867,6 +868,42 @@ class OpponentStore:
                 "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
                 (entry_id, epoch, new_elo),
             )
+
+    def update_elo_atomic(
+        self,
+        entry_id: int,
+        compute: Callable[[float], float],
+        *,
+        epoch: int = 0,
+    ) -> float:
+        """Atomic read-compute-write Elo update safe under concurrent writers.
+
+        Uses BEGIN IMMEDIATE to serialize writers under WAL mode.
+        """
+        conn = self._conn
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT elo_rating FROM league_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"No league entry with id={entry_id}")
+            old_elo = row["elo_rating"]
+            new_elo = compute(old_elo)
+            conn.execute(
+                "UPDATE league_entries SET elo_rating = ? WHERE id = ?",
+                (new_elo, entry_id),
+            )
+            conn.execute(
+                "INSERT INTO elo_history (entry_id, epoch, elo_rating) VALUES (?, ?, ?)",
+                (entry_id, epoch, new_elo),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return new_elo
 
     def carry_forward_elo(self, epoch: int) -> None:
         """Write elo_history entries for all active entries at the given epoch.

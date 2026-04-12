@@ -442,6 +442,9 @@ class LeagueConfig:
     priority: PriorityScorerConfig = PriorityScorerConfig()
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     storage: StorageConfig = StorageConfig()
+    tournament_mode: str = "in_process"
+    dispatcher_max_queue_depth: int = 400
+    max_staleness_epochs: int = 50
 
     def __post_init__(self) -> None:
         # These validate LeagueConfig's OWN scalar fields — none overlap with
@@ -483,6 +486,21 @@ class LeagueConfig:
         if self.opponents_per_epoch < 1:
             raise ValueError(
                 f"opponents_per_epoch must be >= 1, got {self.opponents_per_epoch}"
+            )
+        if self.tournament_mode not in ("in_process", "sidecar"):
+            raise ValueError(
+                f"tournament_mode must be 'in_process' or 'sidecar', "
+                f"got {self.tournament_mode!r}"
+            )
+        if self.dispatcher_max_queue_depth < 1:
+            raise ValueError(
+                f"dispatcher_max_queue_depth must be >= 1, "
+                f"got {self.dispatcher_max_queue_depth}"
+            )
+        if self.max_staleness_epochs < 1:
+            raise ValueError(
+                f"max_staleness_epochs must be >= 1, "
+                f"got {self.max_staleness_epochs}"
             )
         # Cross-config validation: warn if LRU cache can't hold the full pool
         if (

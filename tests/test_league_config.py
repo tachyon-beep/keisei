@@ -525,3 +525,41 @@ def test_toml_round_trip_all_sections(tmp_path):
     # Storage
     assert lg.storage.clone_on_promotion is True
     assert lg.storage.persist_optimizer_for_dynamic is True
+
+
+# -- Tournament sidecar config fields --
+
+
+def test_tournament_mode_defaults_to_in_process():
+    lc = LeagueConfig()
+    assert lc.tournament_mode == "in_process"
+
+
+def test_tournament_mode_accepts_sidecar():
+    lc = LeagueConfig(tournament_mode="sidecar")
+    assert lc.tournament_mode == "sidecar"
+
+
+def test_tournament_mode_rejects_invalid():
+    with pytest.raises(ValueError, match="tournament_mode"):
+        LeagueConfig(tournament_mode="external")
+
+
+def test_dispatcher_max_queue_depth_default():
+    lc = LeagueConfig()
+    assert lc.dispatcher_max_queue_depth == 400
+
+
+def test_dispatcher_max_queue_depth_must_be_positive():
+    with pytest.raises(ValueError, match="dispatcher_max_queue_depth"):
+        LeagueConfig(dispatcher_max_queue_depth=0)
+
+
+def test_max_staleness_epochs_default():
+    lc = LeagueConfig()
+    assert lc.max_staleness_epochs == 50
+
+
+def test_max_staleness_epochs_must_be_positive():
+    with pytest.raises(ValueError, match="max_staleness_epochs"):
+        LeagueConfig(max_staleness_epochs=0)

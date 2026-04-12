@@ -16,6 +16,7 @@
 #   ./run.sh keisei-ddp.toml --epochs 2000
 #   ./run.sh keisei-ddp.toml --port 8741    # use TCP instead of unix socket
 #   ./run.sh keisei-league.toml --no-showcase  # skip the showcase sidecar
+#   ./run.sh keisei-league.toml --no-tournament # skip the tournament worker
 #
 # Options:
 #   --resume              Resume from existing DB/checkpoint (default: fresh)
@@ -25,6 +26,7 @@
 #   --port N              Use TCP port instead of unix socket
 #   --host ADDR           Bind address for TCP mode (default: 0.0.0.0)
 #   --no-showcase         Skip the showcase sidecar
+#   --no-tournament       Skip the tournament worker sidecar
 #   --background          Detach processes (default: foreground with monitor)
 #   --stop                Kill processes from a previous --background run
 #
@@ -38,8 +40,9 @@
 #   3. Launches training (torchrun for DDP configs, python for others)
 #   4. Launches the web dashboard on the same DB
 #   5. Launches the showcase sidecar (model-vs-model games)
-#   6. In foreground mode: monitors all, restarts dashboard/sidecar if they die
-#   7. Shuts down cleanly on Ctrl+C
+#   6. Launches the tournament worker sidecar (if enabled in config)
+#   7. In foreground mode: monitors all, restarts dashboard/sidecar if they die
+#   8. Shuts down cleanly on Ctrl+C
 # ============================================================================
 
 set -euo pipefail
@@ -61,6 +64,7 @@ if [[ "${1:-}" == "--stop" ]]; then
         pkill -f 'keisei.training.katago_loop' 2>/dev/null && echo "  Killed training" || true
         pkill -f 'keisei-serve' 2>/dev/null && echo "  Killed web server" || true
         pkill -f 'keisei.showcase.runner' 2>/dev/null && echo "  Killed showcase sidecar" || true
+        pkill -f 'keisei.training.tournament_runner' 2>/dev/null && echo "  Killed tournament worker" || true
     fi
     exit 0
 fi
@@ -99,6 +103,7 @@ WEB_PORT=""
 WEB_SOCKET="/run/keisei/uvicorn.sock"
 BACKGROUND=false
 NO_SHOWCASE=false
+NO_TOURNAMENT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -109,6 +114,7 @@ while [[ $# -gt 0 ]]; do
         --host)         WEB_HOST="$2"; shift 2 ;;
         --socket)       WEB_SOCKET="$2"; WEB_PORT=""; shift 2 ;;
         --no-showcase)  NO_SHOWCASE=true; shift ;;
+        --no-tournament) NO_TOURNAMENT=true; shift ;;
         --background)   BACKGROUND=true; shift ;;
         --help)         sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -155,10 +161,22 @@ default_epochs = r.get('default_epochs', 1000)
 # DDP: configs with [distributed] use torchrun, others use plain python
 use_ddp = 'distributed' in raw
 
+# Tournament sidecar settings
+league = raw.get('league', {})
+tournament_mode = league.get('tournament_mode', 'in_process')
+tournament_enabled = str(league.get('tournament_enabled', False)).lower()
+tournament_device = league.get('tournament_device', 'cuda:1')
+# Also extract league_dir from the checkpoint_dir (it's the same parent)
+league_dir = str((config_dir / t.get('checkpoint_dir', 'checkpoints/')).resolve())
+
 print(f'DB_PATH={db_path!r}')
 print(f'CKPT_DIR={ckpt_dir!r}')
 print(f'DEFAULT_EPOCHS={default_epochs}')
 print(f'USE_DDP={str(use_ddp).lower()}')
+print(f'TOURNAMENT_MODE={tournament_mode!r}')
+print(f'TOURNAMENT_ENABLED={tournament_enabled!r}')
+print(f'TOURNAMENT_DEVICE={tournament_device!r}')
+print(f'LEAGUE_DIR={league_dir!r}')
 ")"
 
 EPOCHS="${EPOCHS:-$DEFAULT_EPOCHS}"
@@ -249,6 +267,7 @@ CONFIG_STEM=$(basename "$CONFIG" .toml)
 TRAIN_LOG="logs/${CONFIG_STEM}_train_${TIMESTAMP}.log"
 SERVER_LOG="logs/${CONFIG_STEM}_server_${TIMESTAMP}.log"
 SHOWCASE_LOG="logs/${CONFIG_STEM}_showcase_${TIMESTAMP}.log"
+TOURNAMENT_LOG="logs/${CONFIG_STEM}_tournament_${TIMESTAMP}.log"
 
 # ---- Build server command ----
 
@@ -269,6 +288,19 @@ fi
 # ---- Build showcase sidecar command ----
 
 SHOWCASE_CMD=(uv run python -m keisei.showcase.runner --db-path "$DB_PATH")
+
+# ---- Build tournament worker sidecar command ----
+
+TOURNAMENT_CMD=(uv run python -m keisei.training.tournament_runner
+                --db-path "$DB_PATH"
+                --league-dir "$LEAGUE_DIR"
+                --worker-id worker-0
+                --device "$TOURNAMENT_DEVICE")
+
+LAUNCH_TOURNAMENT=false
+if [[ "$TOURNAMENT_ENABLED" == "true" && "$TOURNAMENT_MODE" == "sidecar" && "$NO_TOURNAMENT" != true ]]; then
+    LAUNCH_TOURNAMENT=true
+fi
 
 # ---- Build training command ----
 
@@ -312,6 +344,14 @@ if [[ "$BACKGROUND" == true ]]; then
         echo "  Showcase PID: $SHOWCASE_PID (log: $SHOWCASE_LOG)"
     fi
 
+    if [[ "$LAUNCH_TOURNAMENT" == true ]]; then
+        echo "Starting tournament worker sidecar ..."
+        nohup "${TOURNAMENT_CMD[@]}" > "$TOURNAMENT_LOG" 2>&1 &
+        TOURNAMENT_PID=$!
+        echo "$TOURNAMENT_PID" >> "$PIDFILE"
+        echo "  Tournament PID: $TOURNAMENT_PID (log: $TOURNAMENT_LOG)"
+    fi
+
     echo ""
     echo "All processes running in background."
     echo "  Dashboard: $DASHBOARD_URL"
@@ -328,6 +368,7 @@ cleanup() {
     [[ -n "${TRAIN_PID:-}" ]] && kill "$TRAIN_PID" 2>/dev/null && echo "  Trainer stopped (PID $TRAIN_PID)"
     [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null && echo "  Server stopped (PID $SERVER_PID)"
     [[ -n "${SHOWCASE_PID:-}" ]] && kill "$SHOWCASE_PID" 2>/dev/null && echo "  Showcase stopped (PID $SHOWCASE_PID)"
+    [[ -n "${TOURNAMENT_PID:-}" ]] && kill "$TOURNAMENT_PID" 2>/dev/null && echo "  Tournament stopped (PID $TOURNAMENT_PID)"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -368,6 +409,16 @@ if [[ "$NO_SHOWCASE" != true ]]; then
     echo "  PID:    $SHOWCASE_PID"
 fi
 
+# Start tournament worker sidecar
+TOURNAMENT_PID=""
+if [[ "$LAUNCH_TOURNAMENT" == true ]]; then
+    echo "Starting tournament worker sidecar"
+    echo "  Log:    $TOURNAMENT_LOG"
+    "${TOURNAMENT_CMD[@]}" > "$TOURNAMENT_LOG" 2>&1 &
+    TOURNAMENT_PID=$!
+    echo "  PID:    $TOURNAMENT_PID"
+fi
+
 echo ""
 echo "=========================================="
 echo "  Keisei Training — $(basename "$CONFIG" .toml)"
@@ -378,10 +429,16 @@ echo "  Server:     PID $SERVER_PID"
 if [[ -n "$SHOWCASE_PID" ]]; then
 echo "  Showcase:   PID $SHOWCASE_PID"
 fi
+if [[ -n "$TOURNAMENT_PID" ]]; then
+echo "  Tournament: PID $TOURNAMENT_PID ($TOURNAMENT_DEVICE)"
+fi
 echo "  Train log:  $TRAIN_LOG"
 echo "  Server log: $SERVER_LOG"
 if [[ -n "$SHOWCASE_PID" ]]; then
 echo "  Showcase:   $SHOWCASE_LOG"
+fi
+if [[ -n "$TOURNAMENT_PID" ]]; then
+echo "  Tournament: $TOURNAMENT_LOG"
 fi
 if [[ -n "$SEED_CHECKPOINT" ]]; then
 echo "  Seeded:     $SEED_CHECKPOINT"
@@ -403,6 +460,7 @@ while true; do
         echo "Stopping server and sidecar..."
         kill "$SERVER_PID" 2>/dev/null
         [[ -n "${SHOWCASE_PID:-}" ]] && kill "$SHOWCASE_PID" 2>/dev/null
+        [[ -n "${TOURNAMENT_PID:-}" ]] && kill "$TOURNAMENT_PID" 2>/dev/null
         exit "$TRAIN_EXIT"
     fi
 
@@ -418,6 +476,13 @@ while true; do
         "${SHOWCASE_CMD[@]}" >> "$SHOWCASE_LOG" 2>&1 &
         SHOWCASE_PID=$!
         echo "  Showcase restarted (PID $SHOWCASE_PID)"
+    fi
+
+    if [[ -n "$TOURNAMENT_PID" ]] && ! kill -0 "$TOURNAMENT_PID" 2>/dev/null; then
+        echo "Tournament worker died, restarting..."
+        "${TOURNAMENT_CMD[@]}" >> "$TOURNAMENT_LOG" 2>&1 &
+        TOURNAMENT_PID=$!
+        echo "  Tournament restarted (PID $TOURNAMENT_PID)"
     fi
 
     sleep 30

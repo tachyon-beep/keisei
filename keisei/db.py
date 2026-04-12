@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -73,12 +73,23 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     pass
 
 
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 -> v4: Tournament sidecar tables + dynamic_update_worker claim column.
+
+    New tables (tournament_pairing_queue, tournament_worker_heartbeat) are
+    created by init_db() via CREATE TABLE IF NOT EXISTS.  This migration
+    only covers the ALTER TABLE for the new column on league_entries.
+    """
+    _migrate_add_column(conn, "league_entries", "dynamic_update_worker", "TEXT")
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
     3: _migrate_v2_to_v3,
+    4: _migrate_v3_to_v4,
 }
 
 
@@ -174,7 +185,8 @@ def init_db(db_path: str) -> None:
                 training_enabled INTEGER NOT NULL DEFAULT 1,
                 games_vs_frontier INTEGER NOT NULL DEFAULT 0,
                 games_vs_dynamic  INTEGER NOT NULL DEFAULT 0,
-                games_vs_recent   INTEGER NOT NULL DEFAULT 0
+                games_vs_recent   INTEGER NOT NULL DEFAULT 0,
+                dynamic_update_worker TEXT
             );
             CREATE TABLE IF NOT EXISTS league_results (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,6 +372,32 @@ def init_db(db_path: str) -> None:
                 secondary_traits    TEXT NOT NULL DEFAULT '[]',
                 commentary_json     TEXT NOT NULL DEFAULT '[]',
                 updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS tournament_pairing_queue (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                round_id       INTEGER NOT NULL,
+                entry_a_id     INTEGER NOT NULL REFERENCES league_entries(id),
+                entry_b_id     INTEGER NOT NULL REFERENCES league_entries(id),
+                games_target   INTEGER NOT NULL,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                worker_id      TEXT,
+                claimed_at     TEXT,
+                completed_at   TEXT,
+                enqueued_epoch INTEGER NOT NULL,
+                priority       REAL NOT NULL DEFAULT 0.0
+            );
+            CREATE INDEX IF NOT EXISTS idx_pairing_queue_pending
+                ON tournament_pairing_queue (status, priority DESC, id);
+            CREATE INDEX IF NOT EXISTS idx_pairing_queue_round
+                ON tournament_pairing_queue (round_id);
+
+            CREATE TABLE IF NOT EXISTS tournament_worker_heartbeat (
+                worker_id      TEXT PRIMARY KEY,
+                pid            INTEGER NOT NULL,
+                device         TEXT NOT NULL,
+                last_seen      TEXT NOT NULL,
+                pairings_done  INTEGER NOT NULL DEFAULT 0
             );
         """)
         row = conn.execute("SELECT version FROM schema_version").fetchone()

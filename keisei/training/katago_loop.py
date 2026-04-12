@@ -56,6 +56,7 @@ from keisei.training.match_scheduler import MatchScheduler, build_match_class_we
 from keisei.training.priority_scorer import PriorityScorer
 from keisei.training.model_registry import build_model
 from keisei.training.tournament import LeagueTournament
+from keisei.training.tournament_dispatcher import TournamentDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -622,6 +623,7 @@ class KataGoTrainingLoop:
         self._current_opponent_entry: OpponentEntry | None = None
         self._learner_entry_id: int | None = None
         self._tournament: LeagueTournament | None = None
+        self._dispatcher: TournamentDispatcher | None = None
 
         # Per-env opponent state (Change 3) — populated at epoch start when
         # per-env opponents are enabled.  The re-sample path (which reads
@@ -665,44 +667,51 @@ class KataGoTrainingLoop:
                 config.league.dynamic.slots,
             )
 
-            # Background tournament for Elo calibration (optional)
-            if config.league.tournament_enabled and self.dist_ctx.is_main:
-                tournament_device = (
-                    config.league.tournament_device
-                    or config.league.opponent_device
-                    or str(self.device)
-                )
+            # Tournament setup: either in-process thread (legacy) or sidecar
+            # dispatcher that enqueues pairings for external worker processes.
+            tournament_mode = getattr(config.league, "tournament_mode", "in_process")
 
-                # Phase 2: create gauntlet if enabled
-                gauntlet: HistoricalGauntlet | None = None
-                if config.league.gauntlet.enabled:
-                    gauntlet = HistoricalGauntlet(
+            if config.league.tournament_enabled and self.dist_ctx.is_main:
+                if tournament_mode == "in_process":
+                    tournament_device = (
+                        config.league.tournament_device
+                        or config.league.opponent_device
+                        or str(self.device)
+                    )
+                    gauntlet: HistoricalGauntlet | None = None
+                    if config.league.gauntlet.enabled:
+                        gauntlet = HistoricalGauntlet(
+                            store=self.store,
+                            role_elo_tracker=self.tiered_pool.role_elo_tracker,
+                            config=config.league.gauntlet,
+                            device=tournament_device,
+                            num_envs=config.league.tournament_num_envs,
+                            max_ply=config.training.max_ply,
+                        )
+                    concurrent_pool = ConcurrentMatchPool(config.league.concurrency)
+                    self._tournament = LeagueTournament(
                         store=self.store,
-                        role_elo_tracker=self.tiered_pool.role_elo_tracker,
-                        config=config.league.gauntlet,
+                        scheduler=self.scheduler,
                         device=tournament_device,
                         num_envs=config.league.tournament_num_envs,
+                        games_per_match=config.league.tournament_games_per_match,
+                        k_factor=config.league.tournament_k_factor,
+                        pause_seconds=config.league.tournament_pause_seconds,
                         max_ply=config.training.max_ply,
+                        learner_entry_id=self._learner_entry_id,
+                        historical_library=self.tiered_pool.historical_library,
+                        gauntlet=gauntlet,
+                        concurrent_pool=concurrent_pool,
+                        role_elo_tracker=self.tiered_pool.role_elo_tracker,
+                        dynamic_trainer=self.tiered_pool.dynamic_trainer,
                     )
-
-                concurrent_pool = ConcurrentMatchPool(config.league.concurrency)
-
-                self._tournament = LeagueTournament(
-                    store=self.store,
-                    scheduler=self.scheduler,
-                    device=tournament_device,
-                    num_envs=config.league.tournament_num_envs,
-                    games_per_match=config.league.tournament_games_per_match,
-                    k_factor=config.league.tournament_k_factor,
-                    pause_seconds=config.league.tournament_pause_seconds,
-                    max_ply=config.training.max_ply,
-                    learner_entry_id=self._learner_entry_id,
-                    historical_library=self.tiered_pool.historical_library,
-                    gauntlet=gauntlet,
-                    concurrent_pool=concurrent_pool,
-                    role_elo_tracker=self.tiered_pool.role_elo_tracker,
-                    dynamic_trainer=self.tiered_pool.dynamic_trainer,
-                )
+                elif tournament_mode == "sidecar":
+                    self._dispatcher = TournamentDispatcher(
+                        store=self.store,
+                        scheduler=self.scheduler,
+                        games_per_match=config.league.tournament_games_per_match,
+                        priority_scorer=priority_scorer,
+                    )
 
         self._check_resume()
 
@@ -1663,6 +1672,31 @@ class KataGoTrainingLoop:
                     epoch_i, _rollout_s, _acc_inference, _acc_env_step, _acc_bookkeeping,
                     _update_s, _n_opps, self.buffer.size,
                 )
+
+            # Sidecar dispatcher: enqueue a tournament round if the queue has room.
+            if self._dispatcher is not None:
+                try:
+                    from keisei.training.tournament_queue import (
+                        get_active_queue_depth, get_worker_health,
+                    )
+                    cap = self.config.league.dispatcher_max_queue_depth
+                    depth = get_active_queue_depth(self.db_path)
+                    if depth < cap:
+                        alive = get_worker_health(self.db_path, stale_after_seconds=60)
+                        if not alive:
+                            logger.warning(
+                                "Dispatching tournament round with no healthy workers "
+                                "(queue depth %d/%d)",
+                                depth, cap,
+                            )
+                        round_id = self._dispatcher.enqueue_round(epoch=epoch_i)
+                        if round_id is not None:
+                            logger.info(
+                                "Dispatched tournament round %d (queue %d/%d)",
+                                round_id, depth, cap,
+                            )
+                except Exception:
+                    logger.exception("Dispatcher failed at epoch %d", epoch_i)
 
             if (epoch_i + 1) % self.config.training.checkpoint_interval == 0:
                 # Barrier ensures all ranks finish PPO update before checkpoint write

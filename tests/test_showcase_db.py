@@ -18,11 +18,11 @@ def db(tmp_path: Path) -> str:
 
 
 class TestShowcaseSchema:
-    def test_schema_version_is_3(self, db: str) -> None:
+    def test_schema_version_is_4(self, db: str) -> None:
         conn = _connect(db)
         try:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 3
+            assert row["version"] == 4
         finally:
             conn.close()
 
