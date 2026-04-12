@@ -78,7 +78,7 @@ class TournamentDispatcher:
         priorities: list[float] | None = None
         if self.priority_scorer is not None:
             priorities = [
-                self.priority_scorer.pair_priority(a.id, b.id)
+                self.priority_scorer.score(a, b)
                 for a, b in pairings
             ]
 

@@ -97,7 +97,7 @@ class TestTournamentDispatcher:
         _seed_entries(store, 3)
         sched = MatchScheduler(MatchSchedulerConfig())
         scorer = MagicMock()
-        scorer.pair_priority = MagicMock(return_value=0.0)
+        scorer.score = MagicMock(return_value=0.0)
         disp = TournamentDispatcher(
             store=store, scheduler=sched, priority_scorer=scorer,
         )
