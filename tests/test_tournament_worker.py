@@ -280,6 +280,67 @@ class TestBatchedLoop:
         assert b.elo_rating < 1000.0
         assert c.elo_rating < 1000.0
 
+    def test_elo_compounds_when_entry_shared_across_batch(
+        self, db: str, league_dir: str, concurrency: ConcurrencyConfig,
+        store: OpponentStore,
+    ) -> None:
+        """Shared entries across one claimed batch must use fresh Elo per result.
+
+        Regression: when a single claimed batch contains pairings (A,B) and
+        (A,C), recording the second result from the snapshot captured at
+        batch-claim time re-reads A's pre-batch rating, so the second
+        update_elo() overwrites the first instead of composing it.  A must
+        end with the compounded gain from beating both B and C, not just
+        one of them.
+        """
+        ids = _seed_entries(db)
+        _set_current_epoch(db, 5)
+        enqueue_pairings(
+            db, round_id=1, epoch=5,
+            pairings=[(ids[0], ids[1], 3), (ids[0], ids[2], 3)],
+        )
+        stop = threading.Event()
+        pool = _FakePool(concurrency, per_pairing_outcome=(3, 0, 0))
+
+        def stop_after(orig):  # noqa: ANN001
+            def wrapper(*args: Any, **kw: Any) -> Any:
+                out = orig(*args, **kw)
+                stop.set()
+                return out
+            return wrapper
+        pool.run_round = stop_after(pool.run_round)  # type: ignore[method-assign]
+
+        worker = _make_worker(
+            db, league_dir, concurrency, pool=pool, stop_event=stop,
+            k_factor=16.0,
+        )
+        worker.run()
+
+        a = store.get_entry(ids[0])
+        assert a is not None
+        # Single win against a 1000-rated opponent at k=16 yields 1008.0.
+        # Compounding both wins yields ~1015.82.  If the second record used
+        # A's stale pre-batch rating, the DB ends at 1008 (bug).
+        assert a.elo_rating == pytest.approx(1015.82, abs=0.05)
+
+        # league_results.elo_before_a for the second match must equal the
+        # first match's elo_after_a — the second result cannot see A at 1000
+        # after the first result already moved A to 1008.
+        conn = _connect(db)
+        try:
+            rows = conn.execute(
+                "SELECT elo_before_a, elo_after_a FROM league_results "
+                "WHERE entry_a_id = ? ORDER BY id ASC",
+                (ids[0],),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 2
+        first_after = rows[0]["elo_after_a"]
+        second_before = rows[1]["elo_before_a"]
+        assert first_after == pytest.approx(1008.0, abs=1e-6)
+        assert second_before == pytest.approx(first_after, abs=1e-6)
+
     def test_marks_batch_failed_on_exception(
         self, db: str, league_dir: str, concurrency: ConcurrencyConfig,
     ) -> None:

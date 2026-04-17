@@ -296,40 +296,53 @@ class TournamentWorker:
             )
 
     def _write_match_result(self, result: MatchResult, epoch: int) -> None:
-        entry_a = result.entry_a
-        entry_b = result.entry_b
+        entry_a_id = result.entry_a.id
+        entry_b_id = result.entry_b.id
+        # Re-read entries from the DB instead of using the snapshots from
+        # claim-time: a single batch may contain multiple pairings sharing an
+        # entry (e.g. (A,B) then (A,C)), and the first result's update_elo()
+        # only touches the DB, not the snapshot.  Computing from the snapshot
+        # would read A's pre-batch rating for the second result and overwrite
+        # the first update.
+        current_a = self.store.get_entry(entry_a_id)
+        current_b = self.store.get_entry(entry_b_id)
+        if current_a is None or current_b is None:
+            raise RuntimeError(
+                f"Entry disappeared between claim and record "
+                f"(a={entry_a_id}, b={entry_b_id})",
+            )
         result_score = majority_wins_result(
             result.a_wins, result.b_wins, result.draws,
         )
         new_a_elo, new_b_elo = compute_elo_update(
-            entry_a.elo_rating, entry_b.elo_rating,
+            current_a.elo_rating, current_b.elo_rating,
             result=result_score, k=self.k_factor,
         )
         self.store.record_result(
             epoch=epoch,
-            entry_a_id=entry_a.id,
-            entry_b_id=entry_b.id,
+            entry_a_id=entry_a_id,
+            entry_b_id=entry_b_id,
             wins_a=result.a_wins,
             wins_b=result.b_wins,
             draws=result.draws,
             match_type="calibration",
-            role_a=entry_a.role,
-            role_b=entry_b.role,
-            elo_before_a=entry_a.elo_rating,
+            role_a=current_a.role,
+            role_b=current_b.role,
+            elo_before_a=current_a.elo_rating,
             elo_after_a=new_a_elo,
-            elo_before_b=entry_b.elo_rating,
+            elo_before_b=current_b.elo_rating,
             elo_after_b=new_b_elo,
-            training_updates_a=entry_a.update_count,
-            training_updates_b=entry_b.update_count,
+            training_updates_a=current_a.update_count,
+            training_updates_b=current_b.update_count,
         )
-        self.store.update_elo(entry_a.id, new_a_elo, epoch=epoch)
-        self.store.update_elo(entry_b.id, new_b_elo, epoch=epoch)
+        self.store.update_elo(entry_a_id, new_a_elo, epoch=epoch)
+        self.store.update_elo(entry_b_id, new_b_elo, epoch=epoch)
         logger.info(
             "  %s vs %s — %dW %dL %dD (Elo: %.0f→%.0f / %.0f→%.0f)",
-            entry_a.display_name, entry_b.display_name,
+            current_a.display_name, current_b.display_name,
             result.a_wins, result.b_wins, result.draws,
-            entry_a.elo_rating, new_a_elo,
-            entry_b.elo_rating, new_b_elo,
+            current_a.elo_rating, new_a_elo,
+            current_b.elo_rating, new_b_elo,
         )
 
 
