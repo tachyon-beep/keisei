@@ -491,3 +491,145 @@ class TestHistoricalLibraryExclusion:
         """HistoricalLibraryConfig(active_league_participation=True) must raise."""
         with pytest.raises(ValueError, match="active_league_participation"):
             HistoricalLibraryConfig(active_league_participation=True)
+
+
+# ---------------------------------------------------------------------------
+# T10. Minimum coverage ratio
+# ---------------------------------------------------------------------------
+
+class TestMinCoverageRatio:
+    """Test min_coverage_ratio enforcement in weighted mode."""
+
+    def test_coverage_ratio_config_validation(self):
+        """min_coverage_ratio must be in [0.0, 1.0]."""
+        # Valid values should not raise
+        MatchSchedulerConfig(min_coverage_ratio=0.0)
+        MatchSchedulerConfig(min_coverage_ratio=0.5)
+        MatchSchedulerConfig(min_coverage_ratio=1.0)
+
+        # Invalid values should raise
+        with pytest.raises(ValueError, match="min_coverage_ratio"):
+            MatchSchedulerConfig(min_coverage_ratio=-0.1)
+        with pytest.raises(ValueError, match="min_coverage_ratio"):
+            MatchSchedulerConfig(min_coverage_ratio=1.1)
+
+    def test_weighted_mode_ensures_minimum_coverage(self):
+        """Weighted mode should ensure at least min_coverage_ratio of entries play."""
+        # Create a pool where weighted sampling would normally favor certain pairs
+        # 4 DYNAMIC (weight 0.40 for D-vs-D) + 4 FRONTIER (weight 0.0 for F-vs-F)
+        # Without coverage enforcement, Frontier entries might be excluded
+        entries = [
+            _make_entry(i, Role.DYNAMIC) for i in range(1, 5)
+        ] + [
+            _make_entry(i, Role.FRONTIER_STATIC) for i in range(5, 9)
+        ]
+        # 8 entries, 50% coverage = at least 4 must participate
+
+        scheduler = _make_scheduler(
+            tournament_mode="weighted",
+            weighted_round_size=4,  # small round to test coverage enforcement
+            min_coverage_ratio=0.5,
+            # Skew weights to make D-vs-D dominant
+            dynamic_dynamic_weight=0.95,
+            dynamic_recent_weight=0.0,
+            dynamic_frontier_weight=0.05,
+            recent_frontier_weight=0.0,
+            recent_recent_weight=0.0,
+        )
+
+        # Run multiple times to verify coverage is consistently enforced
+        for _ in range(10):
+            pairings = scheduler.generate_round(entries)
+            covered_ids = set()
+            for a, b in pairings:
+                covered_ids.add(a.id)
+                covered_ids.add(b.id)
+
+            # At least 50% of entries (4 out of 8) should be covered
+            assert len(covered_ids) >= 4, (
+                f"Expected at least 4 entries covered (50% of 8), "
+                f"got {len(covered_ids)}: {covered_ids}"
+            )
+
+    def test_zero_coverage_ratio_disables_enforcement(self):
+        """min_coverage_ratio=0.0 should disable coverage enforcement."""
+        entries = [
+            _make_entry(i, Role.DYNAMIC) for i in range(1, 5)
+        ] + [
+            _make_entry(i, Role.FRONTIER_STATIC) for i in range(5, 9)
+        ]
+
+        scheduler = _make_scheduler(
+            tournament_mode="weighted",
+            weighted_round_size=2,  # very small round
+            min_coverage_ratio=0.0,  # disabled
+            dynamic_dynamic_weight=1.0,  # only D-vs-D matches
+            dynamic_recent_weight=0.0,
+            dynamic_frontier_weight=0.0,
+            recent_frontier_weight=0.0,
+            recent_recent_weight=0.0,
+        )
+
+        pairings = scheduler.generate_round(entries)
+        # With coverage disabled and only D-vs-D weight, all pairs should be Dynamic
+        for a, b in pairings:
+            assert a.role == Role.DYNAMIC
+            assert b.role == Role.DYNAMIC
+
+    def test_full_coverage_ratio_includes_all_entries(self):
+        """min_coverage_ratio=1.0 should include all entries."""
+        entries = [
+            _make_entry(1, Role.DYNAMIC),
+            _make_entry(2, Role.DYNAMIC),
+            _make_entry(3, Role.FRONTIER_STATIC),
+            _make_entry(4, Role.FRONTIER_STATIC),
+        ]
+
+        scheduler = _make_scheduler(
+            tournament_mode="weighted",
+            min_coverage_ratio=1.0,
+        )
+
+        pairings = scheduler.generate_round(entries)
+        covered_ids = set()
+        for a, b in pairings:
+            covered_ids.add(a.id)
+            covered_ids.add(b.id)
+
+        assert covered_ids == {1, 2, 3, 4}, (
+            f"Expected all 4 entries covered, got {covered_ids}"
+        )
+
+    def test_coverage_enforcement_adds_minimum_pairings(self):
+        """Coverage enforcement should add pairings for uncovered entries."""
+        # Pool with 2 DYNAMIC (high weight) and 6 FRONTIER (zero weight for F-vs-F)
+        entries = [
+            _make_entry(1, Role.DYNAMIC),
+            _make_entry(2, Role.DYNAMIC),
+        ] + [
+            _make_entry(i, Role.FRONTIER_STATIC) for i in range(3, 9)
+        ]
+        # 8 entries, 50% coverage = at least 4 must participate
+
+        scheduler = _make_scheduler(
+            tournament_mode="weighted",
+            weighted_round_size=10,  # large enough to not constrain
+            min_coverage_ratio=0.5,
+            # Zero out most classes to force coverage mechanism to work
+            dynamic_dynamic_weight=1.0,
+            dynamic_recent_weight=0.0,
+            dynamic_frontier_weight=0.0,
+            recent_frontier_weight=0.0,
+            recent_recent_weight=0.0,
+        )
+
+        pairings = scheduler.generate_round(entries)
+        covered_ids = set()
+        for a, b in pairings:
+            covered_ids.add(a.id)
+            covered_ids.add(b.id)
+
+        # Must cover at least 4 entries (50% of 8)
+        assert len(covered_ids) >= 4, (
+            f"Expected at least 4 entries, got {len(covered_ids)}: {covered_ids}"
+        )

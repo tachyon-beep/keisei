@@ -92,6 +92,10 @@ frontier_static_slots = 5   # §4.1A: current measurement yardstick
 recent_fixed_slots = 5      # §4.1B: fresh blood / probation queue
 dynamic_slots = 10           # §4.1C: live trainable population
 
+[league.scheduler]
+tournament_mode = "weighted"    # "full", "weighted", or "random"
+min_coverage_ratio = 1.0        # all models play each round
+
 [league.concurrency]
 parallel_matches = 64        # 190 pairings / 64 = 3 waves per round
 envs_per_match = 4          # best-of-3 needs 3 games; 4 = minimal overshoot

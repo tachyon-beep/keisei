@@ -205,6 +205,9 @@ class MatchSchedulerConfig:
     # trains more against tiers it hasn't yet mastered.
     challenge_threshold: float = 0.70
     challenge_window: int = 100  # rolling window of recent results per tier
+    # Minimum fraction of entries that must appear in at least one pairing per
+    # round (weighted mode only). 0.5 = at least 50% of models play each round.
+    min_coverage_ratio: float = 0.5
 
     def __post_init__(self) -> None:
         for name in ("learner_dynamic_ratio", "learner_frontier_ratio", "learner_recent_ratio"):
@@ -248,6 +251,10 @@ class MatchSchedulerConfig:
             raise ValueError(
                 f"Only 'role_weighted_sparse_h2h' pairing_policy is supported, "
                 f"got {self.pairing_policy!r}"
+            )
+        if not (0.0 <= self.min_coverage_ratio <= 1.0):
+            raise ValueError(
+                f"min_coverage_ratio must be in [0.0, 1.0], got {self.min_coverage_ratio}"
             )
 
 

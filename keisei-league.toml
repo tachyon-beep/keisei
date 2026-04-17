@@ -82,6 +82,10 @@ frontier_static_slots = 5   # §4.1A: current measurement yardstick
 recent_fixed_slots = 5      # §4.1B: fresh blood / probation queue
 dynamic_slots = 10           # §4.1C: live trainable population
 
+[league.scheduler]
+tournament_mode = "weighted"    # "full", "weighted", or "random"
+min_coverage_ratio = 0.5        # at least 50% of models play each round
+
 [league.concurrency]
 parallel_matches = 2
 envs_per_match = 8

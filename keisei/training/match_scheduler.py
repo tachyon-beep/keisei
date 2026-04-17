@@ -258,6 +258,9 @@ class MatchScheduler:
         Groups all possible pairs by MatchClass, then draws from each class
         proportionally to MATCH_CLASS_WEIGHTS.  Within each class, pairs are
         priority-sorted (if scorer available) or shuffled.
+
+        After weighted selection, enforces min_coverage_ratio by adding pairings
+        for under-represented entries until the coverage threshold is met.
         """
         all_pairs = self._all_pairs(entries)
         if not all_pairs:
@@ -298,12 +301,100 @@ class MatchScheduler:
             share = max(1, round(round_size * weights[mc] / total_weight))
             result.extend(pool[:share])
 
+        # Enforce minimum coverage: ensure at least min_coverage_ratio of entries
+        # appear in at least one pairing. This prevents models from being starved
+        # of games when weighted sampling favors certain match classes.
+        result = self._enforce_min_coverage(entries, all_pairs, result)
+
         # Final priority sort across all selected pairs, then enforce budget
         if self._priority_scorer is not None:
             result = self._priority_scorer.sort_by_priority(result)
         else:
             random.shuffle(result)
         return result[:round_size]
+
+    def _enforce_min_coverage(
+        self,
+        entries: list[OpponentEntry],
+        all_pairs: list[tuple[OpponentEntry, OpponentEntry]],
+        selected: list[tuple[OpponentEntry, OpponentEntry]],
+    ) -> list[tuple[OpponentEntry, OpponentEntry]]:
+        """Add pairings to ensure min_coverage_ratio of entries participate.
+
+        Finds entries not covered by selected pairings and adds the best
+        available pairing for each until the coverage threshold is met.
+        """
+        if self.config.min_coverage_ratio <= 0.0:
+            return selected
+
+        all_entry_ids = {e.id for e in entries}
+        min_covered = max(1, int(len(entries) * self.config.min_coverage_ratio + 0.5))
+
+        # Track which entries are covered
+        covered_ids: set[int] = set()
+        for a, b in selected:
+            covered_ids.add(a.id)
+            covered_ids.add(b.id)
+
+        if len(covered_ids) >= min_covered:
+            return selected
+
+        # Build lookup for pairs containing each entry (excluding already selected)
+        selected_set = {(a.id, b.id) for a, b in selected}
+        selected_set |= {(b.id, a.id) for a, b in selected}
+
+        entry_to_pairs: dict[int, list[tuple[OpponentEntry, OpponentEntry]]] = {}
+        for a, b in all_pairs:
+            if (a.id, b.id) in selected_set:
+                continue
+            entry_to_pairs.setdefault(a.id, []).append((a, b))
+            entry_to_pairs.setdefault(b.id, []).append((a, b))
+
+        # Sort candidate pairs by priority if scorer available
+        if self._priority_scorer is not None:
+            for entry_id in entry_to_pairs:
+                entry_to_pairs[entry_id] = self._priority_scorer.sort_by_priority(
+                    entry_to_pairs[entry_id]
+                )
+
+        # Greedily add pairings for uncovered entries
+        result = list(selected)
+        uncovered_ids = all_entry_ids - covered_ids
+
+        while len(covered_ids) < min_covered and uncovered_ids:
+            # Pick an uncovered entry (prefer those with fewer candidate pairs
+            # to avoid getting stuck with impossible-to-cover entries)
+            best_entry_id = min(
+                uncovered_ids,
+                key=lambda eid: len(entry_to_pairs.get(eid, [])),
+            )
+
+            candidates = entry_to_pairs.get(best_entry_id, [])
+            if not candidates:
+                # No available pairs for this entry — remove from consideration
+                uncovered_ids.discard(best_entry_id)
+                continue
+
+            # Take the highest-priority candidate
+            pair = candidates[0]
+            result.append(pair)
+
+            # Update coverage tracking
+            covered_ids.add(pair[0].id)
+            covered_ids.add(pair[1].id)
+            uncovered_ids.discard(pair[0].id)
+            uncovered_ids.discard(pair[1].id)
+
+            # Remove this pair from all entry candidate lists
+            pair_key = (pair[0].id, pair[1].id)
+            pair_key_rev = (pair[1].id, pair[0].id)
+            for entry_id in entry_to_pairs:
+                entry_to_pairs[entry_id] = [
+                    p for p in entry_to_pairs[entry_id]
+                    if (p[0].id, p[1].id) != pair_key and (p[0].id, p[1].id) != pair_key_rev
+                ]
+
+        return result
 
     def effective_ratios(
         self, entries_by_role: dict[Role, list[OpponentEntry]],
