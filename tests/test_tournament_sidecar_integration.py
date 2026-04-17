@@ -14,11 +14,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from keisei.config import MatchSchedulerConfig
+from keisei.config import ConcurrencyConfig, MatchSchedulerConfig
 from keisei.db import _connect, init_db
+from keisei.training.concurrent_matches import MatchResult, RoundStats
 from keisei.training.match_scheduler import MatchScheduler
-from keisei.training.match_utils import MatchOutcome
-from keisei.training.opponent_store import OpponentStore, Role
+from keisei.training.opponent_store import OpponentStore
 from keisei.training.tournament_dispatcher import TournamentDispatcher
 from keisei.training.tournament_queue import get_round_status
 from keisei.training.tournament_runner import TournamentWorker
@@ -80,22 +80,51 @@ def test_dispatcher_and_worker_round_trip(tmp_path: Path) -> None:
 
     import threading
     stop = threading.Event()
+    concurrency = ConcurrencyConfig(
+        parallel_matches=3, envs_per_match=2, total_envs=6,
+        max_resident_models=4,
+    )
     completed = 0
+    observed_active_slots: list[int] = []
 
-    def play_fn(*args, **kwargs):
-        nonlocal completed
-        completed += 1
-        if completed >= n_pairings:
-            stop.set()
-        return MatchOutcome(a_wins=1, b_wins=1, draws=1)
+    class _RealRoundPool:
+        """Stand-in pool that records active_slots per call, proving the
+        worker hands the whole batch to run_round (not one-pairing-at-a-time)."""
+
+        def __init__(self) -> None:
+            self.config = concurrency
+
+        def run_round(self, vecenv, pairings, **kwargs):  # noqa: ANN001, ANN201
+            nonlocal completed
+            observed_active_slots.append(
+                min(concurrency.parallel_matches, len(pairings))
+            )
+            results = [
+                MatchResult(
+                    entry_a=a, entry_b=b,
+                    a_wins=1, b_wins=1, draws=1,
+                    rollout=None, feature_tracker=None,
+                )
+                for a, b in pairings
+            ]
+            completed += len(results)
+            if completed >= n_pairings:
+                stop.set()
+            return results, RoundStats(
+                pairings_requested=len(pairings),
+                pairings_completed=len(pairings),
+                total_games=3 * len(pairings),
+                active_slots=min(concurrency.parallel_matches, len(pairings)),
+            )
 
     import torch
     worker = TournamentWorker(
         db_path=db, league_dir=league_dir,
         worker_id="itest-w0", device="cpu",
+        concurrency=concurrency,
         games_per_match=3,
         stop_event=stop,
-        play_fn=play_fn,
+        pool=_RealRoundPool(),
         vecenv_factory=lambda: MagicMock(),
     )
     worker.store.load_opponent = lambda entry, device="cpu": torch.nn.Linear(4, 4)  # type: ignore[method-assign]
@@ -112,3 +141,10 @@ def test_dispatcher_and_worker_round_trip(tmp_path: Path) -> None:
         f"Expected {n_pairings} done, got {final_status}"
     )
     assert dispatcher.check_round_completion(round_id) is True
+    # Regression guard for the single-slot-at-a-time bug: at least one
+    # run_round call must have been handed > 1 pairing.  Without batching,
+    # every call would see exactly 1 slot active.
+    assert max(observed_active_slots) > 1, (
+        f"Worker never ran multiple slots concurrently: "
+        f"observed active_slots = {observed_active_slots}"
+    )
