@@ -1010,6 +1010,29 @@ class OpponentStore:
                 "UPDATE league_entries SET last_match_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
                 (entry_b_id,),
             )
+            # Update head_to_head aggregates (canonical ordering: smaller ID
+            # first). Skip self-play — the head_to_head table's CHECK constraint
+            # requires entry_a_id < entry_b_id, and H2H against oneself has no
+            # meaningful aggregate.
+            if entry_a_id != entry_b_id:
+                if entry_a_id < entry_b_id:
+                    h2h_a, h2h_b = entry_a_id, entry_b_id
+                    h2h_wins_a, h2h_wins_b = wins_a, wins_b
+                else:
+                    h2h_a, h2h_b = entry_b_id, entry_a_id
+                    h2h_wins_a, h2h_wins_b = wins_b, wins_a
+                self._conn.execute(
+                    """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(entry_a_id, entry_b_id) DO UPDATE SET
+                         wins_a = wins_a + excluded.wins_a,
+                         wins_b = wins_b + excluded.wins_b,
+                         draws = draws + excluded.draws,
+                         games = games + excluded.games,
+                         last_epoch = MAX(last_epoch, excluded.last_epoch),
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')""",
+                    (h2h_a, h2h_b, h2h_wins_a, h2h_wins_b, draws, num_games, epoch),
+                )
             # Decrement protection for both participants (deduplicate if same)
             self._decrement_protection_unlocked(entry_a_id)
             if entry_b_id != entry_a_id:
