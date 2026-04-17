@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -115,6 +115,21 @@ def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """v5 -> v6: Add (status, enqueued_epoch) index on tournament_pairing_queue.
+
+    Without this index, the staleness UPDATE in claim_next_pairings_batch
+    (WHERE status = 'pending' AND enqueued_epoch < ?) walks every pending
+    row via idx_pairing_queue_pending (status, priority, id), since
+    enqueued_epoch is not covered.  With this index, SQLite range-scans only
+    stale rows — O(stale) instead of O(pending).  Idempotent via IF NOT EXISTS.
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pairing_queue_staleness "
+        "ON tournament_pairing_queue (status, enqueued_epoch)"
+    )
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
@@ -123,6 +138,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     3: _migrate_v2_to_v3,
     4: _migrate_v3_to_v4,
     5: _migrate_v4_to_v5,
+    6: _migrate_v5_to_v6,
 }
 
 
@@ -440,6 +456,8 @@ def init_db(db_path: str) -> None:
                 ON tournament_pairing_queue (status, priority DESC, id);
             CREATE INDEX IF NOT EXISTS idx_pairing_queue_round
                 ON tournament_pairing_queue (round_id);
+            CREATE INDEX IF NOT EXISTS idx_pairing_queue_staleness
+                ON tournament_pairing_queue (status, enqueued_epoch);
 
             CREATE TABLE IF NOT EXISTS tournament_worker_heartbeat (
                 worker_id      TEXT PRIMARY KEY,
