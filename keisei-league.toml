@@ -90,7 +90,7 @@ min_coverage_ratio = 0.5        # at least 50% of models play each round
 parallel_matches = 2
 envs_per_match = 8
 total_envs = 16
-max_resident_models = 6
+max_resident_models = 22    # pool has 20 max; 22 keeps entire pool in LRU cache (~330MB)
 
 [league.dynamic]
 training_enabled = false     # single-GPU: disable dynamic training to save VRAM
