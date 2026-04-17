@@ -633,3 +633,36 @@ class TestMinCoverageRatio:
         assert len(covered_ids) >= 4, (
             f"Expected at least 4 entries, got {len(covered_ids)}: {covered_ids}"
         )
+
+    def test_coverage_survives_round_size_trim(self):
+        """Coverage enforcement must not be undone by the final priority sort + trim.
+
+        Regression test: previously _enforce_min_coverage ran BEFORE the final
+        sort/truncate, so a low-priority coverage pair added for an uncovered
+        entry was silently dropped when the combined list was trimmed back
+        to ``weighted_round_size``.  With 4 Dynamic entries, round_size=2,
+        min_coverage_ratio=1.0, and a scorer that rates pairs containing
+        entry 4 lowest, the coverage pair for entry 4 used to disappear.
+        """
+        entries = [_make_entry(i, Role.DYNAMIC) for i in range(1, 5)]
+
+        scorer = PriorityScorer(PriorityScorerConfig())
+        # Inflate pair_games for every pair containing entry 4 so that the
+        # under_sample component drives their priority below all other pairs.
+        for other in (1, 2, 3):
+            for _ in range(10):
+                scorer.record_result(other, 4)
+
+        scheduler = _make_scheduler(
+            priority_scorer=scorer,
+            tournament_mode="weighted",
+            weighted_round_size=2,
+            min_coverage_ratio=1.0,
+        )
+
+        pairings = scheduler.generate_round(entries)
+        covered_ids = {eid for a, b in pairings for eid in (a.id, b.id)}
+        assert covered_ids == {1, 2, 3, 4}, (
+            f"Expected all 4 entries covered under min_coverage_ratio=1.0, "
+            f"got {covered_ids} from {[(a.id, b.id) for a, b in pairings]}"
+        )

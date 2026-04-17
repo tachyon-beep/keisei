@@ -301,28 +301,40 @@ class MatchScheduler:
             share = max(1, round(round_size * weights[mc] / total_weight))
             result.extend(pool[:share])
 
-        # Enforce minimum coverage: ensure at least min_coverage_ratio of entries
-        # appear in at least one pairing. This prevents models from being starved
-        # of games when weighted sampling favors certain match classes.
-        result = self._enforce_min_coverage(entries, all_pairs, result)
-
-        # Final priority sort across all selected pairs, then enforce budget
+        # Final priority sort across all selected pairs, then enforce budget.
+        # Coverage enforcement runs AFTER the trim so coverage-critical pairs
+        # cannot be silently dropped when low-priority.
         if self._priority_scorer is not None:
             result = self._priority_scorer.sort_by_priority(result)
         else:
             random.shuffle(result)
-        return result[:round_size]
+        result = result[:round_size]
+
+        # Enforce minimum coverage: ensure at least min_coverage_ratio of entries
+        # appear in at least one pairing. This prevents models from being starved
+        # of games when weighted sampling favors certain match classes. When the
+        # budget is already saturated, evict the lowest-priority pair whose
+        # removal does not reduce coverage.
+        return self._enforce_min_coverage(entries, all_pairs, result, round_size)
 
     def _enforce_min_coverage(
         self,
         entries: list[OpponentEntry],
         all_pairs: list[tuple[OpponentEntry, OpponentEntry]],
         selected: list[tuple[OpponentEntry, OpponentEntry]],
+        round_size: int,
     ) -> list[tuple[OpponentEntry, OpponentEntry]]:
         """Add pairings to ensure min_coverage_ratio of entries participate.
 
         Finds entries not covered by selected pairings and adds the best
         available pairing for each until the coverage threshold is met.
+
+        When ``len(selected) >= round_size`` the round is already at budget;
+        we make room by evicting the lowest-priority pair whose removal does
+        not reduce coverage (i.e. both endpoints remain covered by another
+        selected pair).  If no such evictable pair exists, we append anyway
+        rather than silently violate the documented coverage invariant — a
+        small overrun is preferable to undercovering.
         """
         if self.config.min_coverage_ratio <= 0.0:
             return selected
@@ -330,7 +342,6 @@ class MatchScheduler:
         all_entry_ids = {e.id for e in entries}
         min_covered = max(1, int(len(entries) * self.config.min_coverage_ratio + 0.5))
 
-        # Track which entries are covered
         covered_ids: set[int] = set()
         for a, b in selected:
             covered_ids.add(a.id)
@@ -339,59 +350,78 @@ class MatchScheduler:
         if len(covered_ids) >= min_covered:
             return selected
 
-        # Build lookup for pairs containing each entry (excluding already selected)
-        selected_set = {(a.id, b.id) for a, b in selected}
-        selected_set |= {(b.id, a.id) for a, b in selected}
+        def _canon(pair: tuple[OpponentEntry, OpponentEntry]) -> tuple[int, int]:
+            return (min(pair[0].id, pair[1].id), max(pair[0].id, pair[1].id))
+
+        selected_set = {_canon(p) for p in selected}
 
         entry_to_pairs: dict[int, list[tuple[OpponentEntry, OpponentEntry]]] = {}
-        for a, b in all_pairs:
-            if (a.id, b.id) in selected_set:
+        for pair in all_pairs:
+            if _canon(pair) in selected_set:
                 continue
-            entry_to_pairs.setdefault(a.id, []).append((a, b))
-            entry_to_pairs.setdefault(b.id, []).append((a, b))
+            entry_to_pairs.setdefault(pair[0].id, []).append(pair)
+            entry_to_pairs.setdefault(pair[1].id, []).append(pair)
 
-        # Sort candidate pairs by priority if scorer available
         if self._priority_scorer is not None:
             for entry_id in entry_to_pairs:
                 entry_to_pairs[entry_id] = self._priority_scorer.sort_by_priority(
                     entry_to_pairs[entry_id]
                 )
 
-        # Greedily add pairings for uncovered entries
         result = list(selected)
         uncovered_ids = all_entry_ids - covered_ids
+        # Coverage pairs we've appended this pass; never evict them.
+        protected_keys: set[tuple[int, int]] = set()
+
+        def _find_evictable_index() -> int | None:
+            """Lowest-priority pair in ``result`` whose removal keeps coverage."""
+            id_count: dict[int, int] = {}
+            for a, b in result:
+                id_count[a.id] = id_count.get(a.id, 0) + 1
+                id_count[b.id] = id_count.get(b.id, 0) + 1
+            # ``result`` is priority-sorted by the caller, so last = lowest.
+            for idx in range(len(result) - 1, -1, -1):
+                if _canon(result[idx]) in protected_keys:
+                    continue
+                a, b = result[idx]
+                if id_count[a.id] > 1 and id_count[b.id] > 1:
+                    return idx
+            return None
 
         while len(covered_ids) < min_covered and uncovered_ids:
-            # Pick an uncovered entry (prefer those with fewer candidate pairs
-            # to avoid getting stuck with impossible-to-cover entries)
+            # Prefer covering entries with the fewest candidate pairs first
+            # so we don't get stuck on hard-to-cover entries.
             best_entry_id = min(
                 uncovered_ids,
                 key=lambda eid: len(entry_to_pairs.get(eid, [])),
             )
-
             candidates = entry_to_pairs.get(best_entry_id, [])
             if not candidates:
-                # No available pairs for this entry — remove from consideration
                 uncovered_ids.discard(best_entry_id)
                 continue
 
-            # Take the highest-priority candidate
             pair = candidates[0]
-            result.append(pair)
 
-            # Update coverage tracking
+            if len(result) >= round_size:
+                evict_idx = _find_evictable_index()
+                if evict_idx is not None:
+                    del result[evict_idx]
+                # If no evictable pair exists every selected pair uniquely
+                # covers an entry; appending still grows the round but keeps
+                # the coverage contract intact.
+
+            result.append(pair)
+            protected_keys.add(_canon(pair))
             covered_ids.add(pair[0].id)
             covered_ids.add(pair[1].id)
             uncovered_ids.discard(pair[0].id)
             uncovered_ids.discard(pair[1].id)
 
-            # Remove this pair from all entry candidate lists
-            pair_key = (pair[0].id, pair[1].id)
-            pair_key_rev = (pair[1].id, pair[0].id)
+            pair_key = _canon(pair)
             for entry_id in entry_to_pairs:
                 entry_to_pairs[entry_id] = [
                     p for p in entry_to_pairs[entry_id]
-                    if (p[0].id, p[1].id) != pair_key and (p[0].id, p[1].id) != pair_key_rev
+                    if _canon(p) != pair_key
                 ]
 
         return result
