@@ -8,6 +8,7 @@ import { trainingState } from '../stores/training.js'
 import {
   leagueEntries, leagueResults, eloHistory,
   historicalLibrary, gauntletResults, leagueTransitions,
+  headToHeadRaw,
 } from '../stores/league.js'
 import {
   showcaseGame, showcaseMoves, showcaseQueue, sidecarAlive,
@@ -24,6 +25,7 @@ beforeEach(() => {
   historicalLibrary.set([])
   gauntletResults.set([])
   leagueTransitions.set([])
+  headToHeadRaw.set([])
   showcaseGame.set(null)
   showcaseMoves.set([])
   showcaseQueue.set([])

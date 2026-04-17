@@ -23,6 +23,7 @@ from keisei.db import (
     read_elo_history,
     read_game_snapshots,
     read_game_snapshots_since,
+    read_head_to_head,
     read_league_data,
     read_metrics_since,
     read_style_profiles,
@@ -256,6 +257,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
     elo_history = await asyncio.to_thread(read_elo_history, db_path)
     t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
     style_profiles = await asyncio.to_thread(read_style_profiles, db_path)
+    head_to_head = await asyncio.to_thread(read_head_to_head, db_path)
 
     # Showcase init data
     showcase_game = await asyncio.to_thread(read_active_showcase_game, db_path)
@@ -287,6 +289,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             "elo_history": elo_history,
             "tournament_stats": t_stats,
             "style_profiles": style_profiles,
+            "head_to_head": head_to_head,
             "showcase": {
                 "game": dict(showcase_game) if showcase_game else None,
                 "moves": showcase_moves,
@@ -377,7 +380,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 or new_result_id != last_league_result_id
                 or new_transition_id != last_league_transition_id
             )
-            # Only re-read style profiles when league data changed
+            # Only re-read style profiles and h2h when league data changed
             if league_changed:
                 new_style = await asyncio.to_thread(read_style_profiles, db_path)
                 new_fp = _style_fingerprint(new_style)
@@ -385,6 +388,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 if style_changed:
                     last_style_fingerprint = new_fp
                     style_profiles = new_style
+                new_h2h = await asyncio.to_thread(read_head_to_head, db_path)
             else:
                 style_changed = False
 
@@ -401,6 +405,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                     "transitions": new_league["transitions"],
                     "elo_history": new_elo_hist,
                     "tournament_stats": new_t_stats,
+                    "head_to_head": new_h2h,
                 }
                 if style_changed:
                     msg["style_profiles"] = style_profiles

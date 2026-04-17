@@ -232,6 +232,22 @@ def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_transitions_entry ON league_transitions(entry_id);
             CREATE INDEX IF NOT EXISTS idx_league_results_entry_a ON league_results(entry_a_id);
             CREATE INDEX IF NOT EXISTS idx_league_results_entry_b ON league_results(entry_b_id);
+            -- Standing head-to-head aggregates: maintained incrementally by record_result()
+            -- Canonical ordering: entry_a_id < entry_b_id to avoid duplicate pairs
+            CREATE TABLE IF NOT EXISTS head_to_head (
+                entry_a_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                entry_b_id    INTEGER NOT NULL REFERENCES league_entries(id),
+                wins_a        INTEGER NOT NULL DEFAULT 0,
+                wins_b        INTEGER NOT NULL DEFAULT 0,
+                draws         INTEGER NOT NULL DEFAULT 0,
+                games         INTEGER NOT NULL DEFAULT 0,
+                last_epoch    INTEGER NOT NULL DEFAULT 0,
+                updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                PRIMARY KEY (entry_a_id, entry_b_id),
+                CHECK (entry_a_id < entry_b_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_h2h_entry_a ON head_to_head(entry_a_id);
+            CREATE INDEX IF NOT EXISTS idx_h2h_entry_b ON head_to_head(entry_b_id);
             CREATE TABLE IF NOT EXISTS league_meta (
                 id           INTEGER PRIMARY KEY CHECK (id = 1),
                 bootstrapped INTEGER NOT NULL DEFAULT 0
@@ -831,6 +847,57 @@ def read_tournament_stats(db_path: str) -> dict[str, Any] | None:
         return dict(row) if row else None
     except Exception:
         return None
+    finally:
+        conn.close()
+
+
+def read_head_to_head(db_path: str) -> list[dict[str, Any]]:
+    """Read all head-to-head aggregates for frontend consumption.
+
+    Returns a list of dicts with entry_a_id, entry_b_id, wins_a, wins_b, draws,
+    games, last_epoch. The canonical ordering (entry_a_id < entry_b_id) is
+    preserved; the frontend can derive bidirectional stats by mirroring.
+    """
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch
+               FROM head_to_head
+               ORDER BY games DESC, last_epoch DESC"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        # Table may not exist in older DBs
+        return []
+    finally:
+        conn.close()
+
+
+def backfill_head_to_head(db_path: str) -> int:
+    """Rebuild head_to_head table from league_results.
+
+    Used for initial migration or repair. Returns the number of pairs inserted.
+    """
+    conn = _connect(db_path)
+    try:
+        # Clear existing data and rebuild from league_results
+        conn.execute("DELETE FROM head_to_head")
+        cursor = conn.execute(
+            """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+               SELECT
+                   CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
+                   CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
+                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
+                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
+                   SUM(draws) AS d,
+                   SUM(wins_a + wins_b + draws) AS g,
+                   MAX(epoch) AS last_ep
+               FROM league_results
+               GROUP BY a_id, b_id"""
+        )
+        count = cursor.rowcount
+        conn.commit()
+        return count
     finally:
         conn.close()
 

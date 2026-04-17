@@ -7,6 +7,8 @@ export const leagueResults = writable([])
 export const eloHistory = writable([])
 export const tournamentStats = writable(null)
 export const styleProfilesRaw = writable([])
+/** Raw head-to-head aggregates from backend (canonical ordering: entry_a_id < entry_b_id) */
+export const headToHeadRaw = writable([])
 
 /** Currently expanded/focused entry in leaderboard — used for cross-highlighting */
 export const focusedEntryId = writable(null)
@@ -194,30 +196,34 @@ export const eloDelta = derived(eloHistory, ($history) => {
   return deltas
 })
 
-/** Head-to-head win rates: Map<"attackerId-defenderId", { w, l, d, winRate }> */
-export const headToHead = derived(leagueResults, ($results) => {
+/** Head-to-head win rates: Map<"attackerId-defenderId", { w, l, d, winRate, total }>
+ *  Built from pre-aggregated backend data (headToHeadRaw) instead of raw results.
+ *  Backend sends canonical ordering (a < b); we expand to bidirectional keys here.
+ */
+export const headToHead = derived(headToHeadRaw, ($h2hRaw) => {
   const map = new Map()
-  for (const r of $results) {
-    // A vs B
+  for (const r of $h2hRaw) {
+    // A vs B (canonical direction from backend)
     const keyAB = `${r.entry_a_id}-${r.entry_b_id}`
-    const ab = map.get(keyAB) || { w: 0, l: 0, d: 0 }
-    ab.w += r.wins_a || 0
-    ab.l += r.wins_b || 0
-    ab.d += r.draws || 0
-    map.set(keyAB, ab)
+    const totalGames = r.games || (r.wins_a + r.wins_b + r.draws)
+    const winRateAB = totalGames > 0 ? r.wins_a / totalGames : null
+    map.set(keyAB, {
+      w: r.wins_a,
+      l: r.wins_b,
+      d: r.draws,
+      total: totalGames,
+      winRate: winRateAB,
+    })
     // B vs A (mirror)
     const keyBA = `${r.entry_b_id}-${r.entry_a_id}`
-    const ba = map.get(keyBA) || { w: 0, l: 0, d: 0 }
-    ba.w += r.wins_b || 0
-    ba.l += r.wins_a || 0
-    ba.d += r.draws || 0
-    map.set(keyBA, ba)
-  }
-  // Compute win rates
-  for (const [key, rec] of map) {
-    const total = rec.w + rec.l + rec.d
-    rec.winRate = total > 0 ? rec.w / total : null
-    rec.total = total
+    const winRateBA = totalGames > 0 ? r.wins_b / totalGames : null
+    map.set(keyBA, {
+      w: r.wins_b,
+      l: r.wins_a,
+      d: r.draws,
+      total: totalGames,
+      winRate: winRateBA,
+    })
   }
   return map
 })

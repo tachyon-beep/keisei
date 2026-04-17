@@ -11,6 +11,7 @@ import { trainingState } from '../stores/training.js'
 import {
   leagueEntries, leagueResults, eloHistory, tournamentStats, diffLeagueEntries,
   historicalLibrary, gauntletResults, leagueTransitions, styleProfilesRaw,
+  headToHeadRaw,
 } from '../stores/league.js'
 import {
   showcaseGame, showcaseMoves, showcaseQueue, sidecarAlive,
@@ -89,6 +90,7 @@ export function handleMessage(msg) {
       historicalLibrary.set(msg.historical_library || [])
       gauntletResults.set(msg.gauntlet_results || [])
       leagueTransitions.set(msg.transitions || [])
+      headToHeadRaw.set(msg.head_to_head || [])
       if (msg.tournament_stats) tournamentStats.set(msg.tournament_stats)
       if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
       if (msg.games?.length > 0) {
@@ -157,6 +159,7 @@ export function handleMessage(msg) {
       historicalLibrary.set(msg.historical_library || [])
       gauntletResults.set(msg.gauntlet_results || [])
       leagueTransitions.set(msg.transitions || [])
+      headToHeadRaw.set(msg.head_to_head || [])
       if (msg.tournament_stats) tournamentStats.set(msg.tournament_stats)
       if (msg.style_profiles) styleProfilesRaw.set(msg.style_profiles)
       break

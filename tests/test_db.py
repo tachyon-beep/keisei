@@ -7,9 +7,11 @@ import pytest
 from keisei.db import (
     SCHEMA_VERSION,
     _connect,
+    backfill_head_to_head,
     init_db,
     read_elo_history,
     read_game_snapshots,
+    read_head_to_head,
     read_league_data,
     read_metrics_since,
     read_tournament_stats,
@@ -529,3 +531,83 @@ class TestForeignKeyEnforcement:
                 "VALUES (1, 9999, 9999, 'calibration', 1, 1, 0, 0)"
             )
         conn.close()
+
+
+class TestHeadToHead:
+    """Tests for head_to_head aggregate table functions."""
+
+    def test_read_head_to_head_empty(self, db: Path) -> None:
+        """read_head_to_head returns empty list when no data."""
+        result = read_head_to_head(str(db))
+        assert result == []
+
+    def test_read_head_to_head_returns_aggregates(self, db: Path) -> None:
+        """read_head_to_head returns aggregated h2h data."""
+        conn = _connect(str(db))
+        # Create entries first (FK constraint)
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'arch1', '{}', '', 0), (2, 'arch2', '{}', '', 0)"
+        )
+        conn.execute(
+            "INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch) "
+            "VALUES (1, 2, 5, 3, 2, 10, 5)"
+        )
+        conn.commit()
+        conn.close()
+
+        result = read_head_to_head(str(db))
+        assert len(result) == 1
+        row = result[0]
+        assert row["entry_a_id"] == 1
+        assert row["entry_b_id"] == 2
+        assert row["wins_a"] == 5
+        assert row["wins_b"] == 3
+        assert row["draws"] == 2
+        assert row["games"] == 10
+        assert row["last_epoch"] == 5
+
+    def test_backfill_head_to_head(self, db: Path) -> None:
+        """backfill_head_to_head rebuilds h2h from league_results."""
+        conn = _connect(str(db))
+        # Create entries
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'arch1', '{}', '', 0), (2, 'arch2', '{}', '', 0), (3, 'arch3', '{}', '', 0)"
+        )
+        # Create some league_results with different orderings
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 2, 'calibration', 6, 3, 2, 1)"  # canonical: 1 < 2
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (2, 2, 1, 'calibration', 6, 4, 1, 1)"  # reversed: need to flip
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (3, 1, 3, 'calibration', 4, 2, 2, 0)"  # 1 vs 3
+        )
+        conn.commit()
+        conn.close()
+
+        count = backfill_head_to_head(str(db))
+        assert count == 2  # Two unique pairs: 1-2 and 1-3
+
+        result = read_head_to_head(str(db))
+        h2h_map = {(r["entry_a_id"], r["entry_b_id"]): r for r in result}
+
+        # 1 vs 2: first result (1,2: 3-2-1) + second result (2,1: 4-1-1 → flipped to 1-4-1)
+        # Total for 1: 3+1=4 wins, for 2: 2+4=6 wins, draws: 1+1=2
+        pair_1_2 = h2h_map[(1, 2)]
+        assert pair_1_2["wins_a"] == 4  # entry 1's wins
+        assert pair_1_2["wins_b"] == 6  # entry 2's wins
+        assert pair_1_2["draws"] == 2
+        assert pair_1_2["games"] == 12
+
+        # 1 vs 3: 2-2-0
+        pair_1_3 = h2h_map[(1, 3)]
+        assert pair_1_3["wins_a"] == 2
+        assert pair_1_3["wins_b"] == 2
+        assert pair_1_3["draws"] == 0
+        assert pair_1_3["games"] == 4

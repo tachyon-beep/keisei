@@ -4,7 +4,7 @@ import {
   leagueEntries, leagueResults, eloHistory,
   leagueRanked, entryWLD, headToHead, eloDelta, leagueStats,
   historicalLibrary, gauntletResults, leagueTransitions,
-  learnerEntry, leagueByRole, transitionCounts,
+  learnerEntry, leagueByRole, transitionCounts, headToHeadRaw,
 } from './league.js'
 import { trainingState } from './training.js'
 
@@ -15,6 +15,7 @@ beforeEach(() => {
   historicalLibrary.set([])
   gauntletResults.set([])
   leagueTransitions.set([])
+  headToHeadRaw.set([])
   trainingState.set(null)
 })
 
@@ -197,13 +198,14 @@ describe('entryWLD', () => {
 })
 
 describe('headToHead', () => {
-  it('returns empty map when no results', () => {
+  it('returns empty map when no h2h data', () => {
     expect(get(headToHead).size).toBe(0)
   })
 
-  it('computes bidirectional win rates', () => {
-    leagueResults.set([
-      { entry_a_id: 1, entry_b_id: 2, wins_a: 3, wins_b: 1, draws: 0 },
+  it('computes bidirectional win rates from pre-aggregated data', () => {
+    // Backend sends canonical ordering (entry_a_id < entry_b_id)
+    headToHeadRaw.set([
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 3, wins_b: 1, draws: 0, games: 4 },
     ])
     const h2h = get(headToHead)
     const ab = h2h.get('1-2')
@@ -217,16 +219,16 @@ describe('headToHead', () => {
   })
 
   it('returns null winRate when total is 0', () => {
-    leagueResults.set([
-      { entry_a_id: 1, entry_b_id: 2, wins_a: 0, wins_b: 0, draws: 0 },
+    headToHeadRaw.set([
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 0, wins_b: 0, draws: 0, games: 0 },
     ])
     const h2h = get(headToHead)
     expect(h2h.get('1-2').winRate).toBeNull()
   })
 
   it('includes draws in total', () => {
-    leagueResults.set([
-      { entry_a_id: 1, entry_b_id: 2, wins_a: 1, wins_b: 1, draws: 2 },
+    headToHeadRaw.set([
+      { entry_a_id: 1, entry_b_id: 2, wins_a: 1, wins_b: 1, draws: 2, games: 4 },
     ])
     const h2h = get(headToHead)
     expect(h2h.get('1-2').total).toBe(4)

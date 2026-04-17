@@ -1,5 +1,5 @@
 <script>
-  import { leagueRanked, leagueResults, leagueEntries, focusedEntryId } from '../stores/league.js'
+  import { leagueRanked, leagueEntries, focusedEntryId, headToHead } from '../stores/league.js'
   import { getRoleIcon } from './roleIcons.js'
 
   /** Current learner display_name — used to build an aggregate "Trainer" row */
@@ -9,7 +9,6 @@
 
   $: focused = $focusedEntryId
 
-  // Build head-to-head data: for each (row, col) pair, aggregate W/L/D
   // Entries sorted by Elo descending (same as leaderboard)
   $: entries = $leagueRanked
 
@@ -56,46 +55,40 @@
     return name.length > 12 ? name.slice(0, 11) + '…' : name
   }
 
-  // Build h2h map: key = "rowId-colId" => { w, l, d, winRate }
+  // Build h2h map from pre-aggregated backend data + trainer aggregation
+  // Uses headToHead store for individual entry pairs, then adds trainer synthetic row
   $: h2h = (() => {
-    const map = new Map()
-    for (const r of $leagueResults) {
-      // Direct entry-to-entry
-      addResult(map, r.entry_a_id, r.entry_b_id, r.wins_a, r.wins_b, r.draws)
-      // If A is a trainer snapshot, also aggregate into trainer row
-      if (trainerSnapshotIds.has(r.entry_a_id)) {
-        addResult(map, 'trainer', r.entry_b_id, r.wins_a, r.wins_b, r.draws)
+    // Start with a copy of the pre-aggregated headToHead data
+    const map = new Map($headToHead)
+
+    // Add trainer aggregation: sum all trainer snapshot h2h vs non-trainer entries
+    if (hasTrainerRow) {
+      // Collect all opponent IDs that trainer snapshots have played against
+      const opponentIds = new Set()
+      for (const [key] of map) {
+        const [aStr, bStr] = key.split('-')
+        const a = Number(aStr), b = Number(bStr)
+        if (trainerSnapshotIds.has(a) && !trainerSnapshotIds.has(b)) opponentIds.add(b)
+        if (trainerSnapshotIds.has(b) && !trainerSnapshotIds.has(a)) opponentIds.add(a)
       }
-      // If B is a trainer snapshot, aggregate into trainer row (as opponent)
-      if (trainerSnapshotIds.has(r.entry_b_id)) {
-        addResult(map, 'trainer', r.entry_a_id, r.wins_b, r.wins_a, r.draws)
+
+      // Aggregate trainer vs each opponent
+      for (const oppId of opponentIds) {
+        let w = 0, l = 0, d = 0
+        for (const trainerId of trainerSnapshotIds) {
+          const rec = map.get(`${trainerId}-${oppId}`)
+          if (rec) { w += rec.w; l += rec.l; d += rec.d }
+        }
+        if (w + l + d > 0) {
+          const total = w + l + d
+          map.set(`trainer-${oppId}`, { w, l, d, total, winRate: w / total })
+          map.set(`${oppId}-trainer`, { w: l, l: w, d, total, winRate: l / total })
+        }
       }
     }
-    // Compute win rates
-    for (const [, rec] of map) {
-      const total = rec.w + rec.l + rec.d
-      rec.winRate = total > 0 ? rec.w / total : null
-      rec.total = total
-    }
+
     return map
   })()
-
-  function addResult(map, rowId, colId, wins, losses, draws) {
-    // row vs col
-    const key = `${rowId}-${colId}`
-    const rec = map.get(key) || { w: 0, l: 0, d: 0 }
-    rec.w += wins || 0
-    rec.l += losses || 0
-    rec.d += draws || 0
-    map.set(key, rec)
-    // col vs row (mirror)
-    const keyR = `${colId}-${rowId}`
-    const recR = map.get(keyR) || { w: 0, l: 0, d: 0 }
-    recR.w += losses || 0
-    recR.l += wins || 0
-    recR.d += draws || 0
-    map.set(keyR, recR)
-  }
 
   function cellData(rowId, colId) {
     if (rowId === colId) return null
