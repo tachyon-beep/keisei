@@ -13,6 +13,7 @@ from keisei.training.tournament_queue import (
     ClaimedPairing,
     claim_dynamic_update,
     claim_next_pairing,
+    claim_next_pairings_batch,
     enqueue_pairings,
     get_active_queue_depth,
     get_round_status,
@@ -265,6 +266,207 @@ class TestPairingQueueOps:
         reset_count = reset_stale_playing(db)
         assert reset_count == 2
         assert get_active_queue_depth(db) == 2
+
+
+# ── Batch claim ──────────────────────────────────────────────────────
+
+
+class TestBatchClaim:
+    def test_empty_queue_returns_empty_list(self, db: str) -> None:
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=8,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        assert batch == []
+
+    def test_returns_up_to_limit(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 3) for _ in range(10)],
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=4,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        assert len(batch) == 4
+        for claim in batch:
+            assert isinstance(claim, ClaimedPairing)
+            assert claim.worker_id == "w0"
+            assert claim.status == "playing"
+
+    def test_marks_claimed_rows_as_playing(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 3) for _ in range(4)],
+        )
+        claim_next_pairings_batch(
+            db, worker_id="w0", limit=2,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        status = get_round_status(db, round_id=1)
+        assert status == {"pending": 2, "playing": 2}
+
+    def test_returns_fewer_than_limit_when_queue_short(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 3), (ids[0], ids[2], 3)],
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=8,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        assert len(batch) == 2
+
+    def test_claims_highest_priority_first(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[
+                (ids[0], ids[1], 3),
+                (ids[0], ids[2], 3),
+                (ids[1], ids[2], 3),
+            ],
+            priorities=[1.0, 5.0, 3.0],
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=2,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        assert len(batch) == 2
+        # Priority order: 5.0 then 3.0
+        assert batch[0].entry_a_id == ids[0] and batch[0].entry_b_id == ids[2]
+        assert batch[1].entry_a_id == ids[1] and batch[1].entry_b_id == ids[2]
+
+    def test_successive_calls_are_disjoint(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 1) for _ in range(6)],
+        )
+        b1 = claim_next_pairings_batch(
+            db, worker_id="w0", limit=3,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        b2 = claim_next_pairings_batch(
+            db, worker_id="w1", limit=3,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        b3 = claim_next_pairings_batch(
+            db, worker_id="w2", limit=3,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        all_ids = {c.id for c in b1} | {c.id for c in b2} | {c.id for c in b3}
+        assert len(b1) == 3
+        assert len(b2) == 3
+        assert len(b3) == 0
+        assert len(all_ids) == 6
+
+    def test_expires_stale_pairings_and_excludes_them(self, db: str) -> None:
+        ids = _seed_entries(db)
+        # Two fresh (epoch=100), two stale (epoch=10); current=100, max_stale=50
+        enqueue_pairings(
+            db, round_id=1, epoch=10,
+            pairings=[(ids[0], ids[1], 1), (ids[0], ids[2], 1)],
+        )
+        enqueue_pairings(
+            db, round_id=2, epoch=100,
+            pairings=[(ids[1], ids[2], 1), (ids[0], ids[1], 1)],
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=8,
+            current_epoch=100, max_staleness_epochs=50,
+        )
+        # Only the 2 fresh pairings come back
+        assert len(batch) == 2
+        for claim in batch:
+            assert claim.enqueued_epoch == 100
+        # Stale ones are marked expired, not pending
+        conn = _connect(db)
+        try:
+            counts = {
+                r["status"]: r["n"] for r in conn.execute(
+                    "SELECT status, COUNT(*) as n FROM tournament_pairing_queue "
+                    "GROUP BY status"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        assert counts.get("expired", 0) == 2
+        assert counts.get("playing", 0) == 2
+        assert counts.get("pending", 0) == 0
+
+    def test_staleness_boundary_is_inclusive_upper(self, db: str) -> None:
+        # current - enqueued == max_staleness_epochs should still be fresh.
+        # Exceeding by 1 should expire.
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=50,
+            pairings=[(ids[0], ids[1], 1)],  # age == 50 at current=100
+        )
+        enqueue_pairings(
+            db, round_id=2, epoch=49,
+            pairings=[(ids[0], ids[2], 1)],  # age == 51 at current=100
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=8,
+            current_epoch=100, max_staleness_epochs=50,
+        )
+        assert len(batch) == 1
+        assert batch[0].enqueued_epoch == 50
+
+    def test_limit_zero_claims_nothing(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 1) for _ in range(3)],
+        )
+        batch = claim_next_pairings_batch(
+            db, worker_id="w0", limit=0,
+            current_epoch=0, max_staleness_epochs=50,
+        )
+        assert batch == []
+        # Pending rows are untouched
+        assert get_active_queue_depth(db) == 3
+
+    def test_concurrent_batch_claims_are_disjoint(self, db: str) -> None:
+        ids = _seed_entries(db)
+        enqueue_pairings(
+            db, round_id=1, epoch=0,
+            pairings=[(ids[0], ids[1], 1) for _ in range(200)],
+        )
+        claimed_by: dict[str, list[int]] = {f"w{i}": [] for i in range(4)}
+        lock = threading.Lock()
+
+        def worker_loop(wid: str) -> None:
+            while True:
+                batch = claim_next_pairings_batch(
+                    db, worker_id=wid, limit=7,
+                    current_epoch=0, max_staleness_epochs=50,
+                )
+                if not batch:
+                    return
+                with lock:
+                    claimed_by[wid].extend(c.id for c in batch)
+
+        threads = [threading.Thread(target=worker_loop, args=(w,)) for w in claimed_by]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        all_ids = [i for lst in claimed_by.values() for i in lst]
+        assert len(all_ids) == 200
+        assert len(set(all_ids)) == 200
+
+    def test_negative_limit_raises(self, db: str) -> None:
+        with pytest.raises(ValueError, match="limit"):
+            claim_next_pairings_batch(
+                db, worker_id="w0", limit=-1,
+                current_epoch=0, max_staleness_epochs=50,
+            )
 
 
 # ── Worker heartbeat ─────────────────────────────────────────────────

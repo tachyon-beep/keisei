@@ -125,6 +125,81 @@ def claim_next_pairing(
         conn.close()
 
 
+def claim_next_pairings_batch(
+    db_path: str,
+    *,
+    worker_id: str,
+    limit: int,
+    current_epoch: int,
+    max_staleness_epochs: int,
+) -> list[ClaimedPairing]:
+    """Atomically claim up to ``limit`` pending pairings in priority order.
+
+    Stale pairings — those with ``current_epoch - enqueued_epoch >
+    max_staleness_epochs`` — are marked ``'expired'`` within the same
+    transaction and never returned.  Returns fresh claims ordered by
+    ``priority DESC, id ASC``.  A single ``BEGIN IMMEDIATE`` serialises
+    the expiry sweep, selection, and claim UPDATE against other workers.
+    """
+    if limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit}")
+    if limit == 0:
+        return []
+    stale_cutoff_enqueued = current_epoch - max_staleness_epochs
+    conn = _connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = _now_iso()
+            # Expire stale pending rows first so they never appear in the
+            # selection set below.  Condition: age > max_staleness_epochs,
+            # i.e. enqueued_epoch < current_epoch - max_staleness_epochs.
+            conn.execute(
+                "UPDATE tournament_pairing_queue "
+                "SET status = 'expired', completed_at = ? "
+                "WHERE status = 'pending' AND enqueued_epoch < ?",
+                (now, stale_cutoff_enqueued),
+            )
+            rows = conn.execute(
+                "SELECT id FROM tournament_pairing_queue "
+                "WHERE status = 'pending' "
+                "ORDER BY priority DESC, id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            if not rows:
+                conn.execute("COMMIT")
+                return []
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE tournament_pairing_queue "
+                f"SET status = 'playing', worker_id = ?, claimed_at = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'pending'",
+                (worker_id, now, *ids),
+            )
+            full_rows = conn.execute(
+                f"SELECT * FROM tournament_pairing_queue "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        row_by_id = {r["id"]: r for r in full_rows}
+        return [
+            ClaimedPairing(
+                id=row["id"], round_id=row["round_id"],
+                entry_a_id=row["entry_a_id"], entry_b_id=row["entry_b_id"],
+                games_target=row["games_target"], worker_id=row["worker_id"],
+                status=row["status"], enqueued_epoch=row["enqueued_epoch"],
+            )
+            for row in (row_by_id[i] for i in ids)
+        ]
+    finally:
+        conn.close()
+
+
 def mark_pairing_done(
     db_path: str, pairing_id: int, *, status: str = "done",
 ) -> None:
