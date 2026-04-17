@@ -292,6 +292,7 @@ SHOWCASE_CMD=(uv run python -m keisei.showcase.runner --db-path "$DB_PATH")
 # ---- Build tournament worker sidecar command ----
 
 TOURNAMENT_CMD=(uv run python -m keisei.training.tournament_runner
+                --config "$CONFIG_ABS"
                 --db-path "$DB_PATH"
                 --league-dir "$LEAGUE_DIR"
                 --worker-id worker-0
