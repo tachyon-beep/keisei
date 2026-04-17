@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 6
 
@@ -97,22 +100,33 @@ def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     Self-play rows (entry_a_id == entry_b_id) are filtered — head_to_head's
     CHECK constraint forbids a == b, and a single such row would otherwise
     abort the entire INSERT...SELECT and leave the table empty.
+
+    Runs inside an explicit BEGIN IMMEDIATE transaction so a mid-INSERT
+    failure cannot leave the aggregates table wiped, even if driver-level
+    autocommit semantics change in the future.
     """
-    conn.execute("DELETE FROM head_to_head")
-    conn.execute(
-        """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
-           SELECT
-               CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
-               CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
-               SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
-               SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
-               SUM(draws) AS d,
-               SUM(wins_a + wins_b + draws) AS g,
-               MAX(epoch) AS last_ep
-           FROM league_results
-           WHERE entry_a_id != entry_b_id
-           GROUP BY a_id, b_id"""
-    )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM head_to_head")
+        conn.execute(
+            """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+               SELECT
+                   CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
+                   CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
+                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
+                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
+                   SUM(draws) AS d,
+                   SUM(wins_a + wins_b + draws) AS g,
+                   MAX(epoch) AS last_ep
+               FROM league_results
+               WHERE entry_a_id != entry_b_id
+               GROUP BY a_id, b_id"""
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        logger.exception("v4->v5 head_to_head backfill failed; rolling back")
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
@@ -917,9 +931,11 @@ def read_head_to_head(db_path: str) -> list[dict[str, Any]]:
                ORDER BY games DESC, last_epoch DESC"""
         ).fetchall()
         return [dict(r) for r in rows]
-    except Exception:
-        # Table may not exist in older DBs
-        return []
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            logger.warning("head_to_head table missing in %s; returning empty result", db_path)
+            return []
+        raise
     finally:
         conn.close()
 
@@ -934,25 +950,30 @@ def backfill_head_to_head(db_path: str) -> int:
     """
     conn = _connect(db_path)
     try:
-        # Clear existing data and rebuild from league_results
-        conn.execute("DELETE FROM head_to_head")
-        cursor = conn.execute(
-            """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
-               SELECT
-                   CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
-                   CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
-                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
-                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
-                   SUM(draws) AS d,
-                   SUM(wins_a + wins_b + draws) AS g,
-                   MAX(epoch) AS last_ep
-               FROM league_results
-               WHERE entry_a_id != entry_b_id
-               GROUP BY a_id, b_id"""
-        )
-        count = cursor.rowcount
-        conn.commit()
-        return count
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM head_to_head")
+            cursor = conn.execute(
+                """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+                   SELECT
+                       CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
+                       CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
+                       SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
+                       SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
+                       SUM(draws) AS d,
+                       SUM(wins_a + wins_b + draws) AS g,
+                       MAX(epoch) AS last_ep
+                   FROM league_results
+                   WHERE entry_a_id != entry_b_id
+                   GROUP BY a_id, b_id"""
+            )
+            count = cursor.rowcount
+            conn.execute("COMMIT")
+            return count
+        except Exception:
+            logger.exception("head_to_head backfill failed; rolling back")
+            conn.execute("ROLLBACK")
+            raise
     finally:
         conn.close()
 
