@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from keisei.db import _connect, init_db
+from keisei.db import SCHEMA_VERSION, _connect, init_db
 from keisei.training.tournament_queue import (
     ClaimedPairing,
     claim_dynamic_update,
@@ -59,11 +59,11 @@ def _seed_entries(db: str, n: int = 3) -> list[int]:
 
 
 class TestTournamentQueueSchema:
-    def test_schema_version_is_4(self, db: str) -> None:
+    def test_schema_version_matches_constant(self, db: str) -> None:
         conn = _connect(db)
         try:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 4
+            assert row["version"] == SCHEMA_VERSION
         finally:
             conn.close()
 

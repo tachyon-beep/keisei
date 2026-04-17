@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -83,6 +83,38 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "league_entries", "dynamic_update_worker", "TEXT")
 
 
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 -> v5: Backfill head_to_head from historical league_results.
+
+    head_to_head is created by init_db() (CREATE TABLE IF NOT EXISTS) and
+    maintained incrementally by record_result() going forward, but DBs that
+    accumulated league_results before the write-path landed have an empty
+    aggregate table.  Without this migration, the dashboard matchup matrix
+    only reflects post-deploy games on those DBs.
+
+    Mirrors the SQL in backfill_head_to_head().  Idempotent: clears the
+    table and rebuilds from league_results, canonicalising (a,b) ordering.
+    Self-play rows (entry_a_id == entry_b_id) are filtered — head_to_head's
+    CHECK constraint forbids a == b, and a single such row would otherwise
+    abort the entire INSERT...SELECT and leave the table empty.
+    """
+    conn.execute("DELETE FROM head_to_head")
+    conn.execute(
+        """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+           SELECT
+               CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
+               CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
+               SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
+               SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
+               SUM(draws) AS d,
+               SUM(wins_a + wins_b + draws) AS g,
+               MAX(epoch) AS last_ep
+           FROM league_results
+           WHERE entry_a_id != entry_b_id
+           GROUP BY a_id, b_id"""
+    )
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
@@ -90,6 +122,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v1_to_v2,
     3: _migrate_v2_to_v3,
     4: _migrate_v3_to_v4,
+    5: _migrate_v4_to_v5,
 }
 
 
@@ -877,6 +910,9 @@ def backfill_head_to_head(db_path: str) -> int:
     """Rebuild head_to_head table from league_results.
 
     Used for initial migration or repair. Returns the number of pairs inserted.
+    Self-play rows (entry_a_id == entry_b_id) are filtered: head_to_head's
+    CHECK constraint forbids a == b, mirroring the write-path guard added in
+    commit 8410bf2.
     """
     conn = _connect(db_path)
     try:
@@ -893,6 +929,7 @@ def backfill_head_to_head(db_path: str) -> int:
                    SUM(wins_a + wins_b + draws) AS g,
                    MAX(epoch) AS last_ep
                FROM league_results
+               WHERE entry_a_id != entry_b_id
                GROUP BY a_id, b_id"""
         )
         count = cursor.rowcount

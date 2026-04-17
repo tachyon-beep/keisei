@@ -57,14 +57,16 @@ class TestSchemaVersion:
         conn.close()
 
     def test_mismatched_version_raises(self, tmp_path):
-        """A database with a different schema version should raise RuntimeError."""
+        """A database with a schema version newer than the application
+        knows about should raise RuntimeError."""
+        future_version = SCHEMA_VERSION + 1
         db_path = str(tmp_path / "old.db")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-        conn.execute("INSERT INTO schema_version VALUES (5)")
+        conn.execute("INSERT INTO schema_version VALUES (?)", (future_version,))
         conn.commit()
         conn.close()
-        with pytest.raises(RuntimeError, match="schema version 5"):
+        with pytest.raises(RuntimeError, match=f"schema version {future_version}"):
             init_db(db_path)
 
 

@@ -611,3 +611,102 @@ class TestHeadToHead:
         assert pair_1_3["wins_b"] == 2
         assert pair_1_3["draws"] == 0
         assert pair_1_3["games"] == 4
+
+    def test_migration_backfills_head_to_head(self, db: Path) -> None:
+        """Upgrading from a pre-v5 DB with historical league_results must
+        populate head_to_head — otherwise the dashboard matchup matrix
+        comes up empty until someone runs a manual repair."""
+        conn = _connect(str(db))
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'arch1', '{}', '', 0), (2, 'arch2', '{}', '', 0)"
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 2, 'calibration', 10, 6, 3, 1)"
+        )
+        # Simulate a DB that was upgraded to v4 before the head_to_head
+        # write-path landed: table exists (CREATE IF NOT EXISTS) but is empty,
+        # and schema_version pre-dates the backfill migration.
+        conn.execute("DELETE FROM head_to_head")
+        conn.execute("UPDATE schema_version SET version = 4")
+        conn.commit()
+        conn.close()
+
+        init_db(str(db))
+
+        result = read_head_to_head(str(db))
+        assert len(result) == 1
+        row = result[0]
+        assert row["entry_a_id"] == 1
+        assert row["entry_b_id"] == 2
+        assert row["wins_a"] == 6
+        assert row["wins_b"] == 3
+        assert row["draws"] == 1
+        assert row["games"] == 10
+
+    def test_backfill_skips_self_play_rows(self, db: Path) -> None:
+        """league_results contains self-play rows (entry_a_id == entry_b_id);
+        the head_to_head CHECK constraint forbids a == b. Backfill must filter
+        these rows — otherwise INSERT...SELECT aborts on the first one and
+        zero pairs are inserted, regardless of how many valid rows exist.
+
+        Mirrors the write-path guard in OpponentStore.record_result()
+        (commit 8410bf2)."""
+        conn = _connect(str(db))
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'arch1', '{}', '', 0), (2, 'arch2', '{}', '', 0)"
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 2, 'calibration', 6, 3, 2, 1)"
+        )
+        # Self-play row: legal in league_results, illegal in head_to_head.
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 1, 'self-play', 4, 2, 2, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        count = backfill_head_to_head(str(db))
+        assert count == 1  # The (1,2) pair; the self-play row is filtered out.
+
+        result = read_head_to_head(str(db))
+        assert len(result) == 1
+        row = result[0]
+        assert row["entry_a_id"] == 1
+        assert row["entry_b_id"] == 2
+        assert row["games"] == 6  # Self-play games not counted
+
+    def test_migration_skips_self_play_rows(self, db: Path) -> None:
+        """The v4→v5 migration uses the same SELECT as backfill_head_to_head;
+        a single historical self-play row must not abort init_db() and
+        prevent the server from starting on upgraded DBs."""
+        conn = _connect(str(db))
+        conn.execute(
+            "INSERT INTO league_entries (id, architecture, model_params, checkpoint_path, created_epoch) "
+            "VALUES (1, 'arch1', '{}', '', 0), (2, 'arch2', '{}', '', 0)"
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 2, 'calibration', 6, 3, 2, 1)"
+        )
+        conn.execute(
+            "INSERT INTO league_results (epoch, entry_a_id, entry_b_id, match_type, num_games, wins_a, wins_b, draws) "
+            "VALUES (1, 1, 1, 'self-play', 4, 2, 2, 0)"
+        )
+        conn.execute("DELETE FROM head_to_head")
+        conn.execute("UPDATE schema_version SET version = 4")
+        conn.commit()
+        conn.close()
+
+        # Must not raise — pre-fix this raised IntegrityError on the
+        # CHECK constraint and left schema_version stuck at 4.
+        init_db(str(db))
+
+        result = read_head_to_head(str(db))
+        assert len(result) == 1
+        assert result[0]["entry_a_id"] == 1
+        assert result[0]["entry_b_id"] == 2

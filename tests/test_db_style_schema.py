@@ -6,6 +6,7 @@ import tempfile
 import pytest
 
 from keisei.db import (
+    SCHEMA_VERSION,
     init_db,
     read_all_game_features,
     read_game_features_for_checkpoint,
@@ -239,7 +240,7 @@ class TestSchemaVersion:
         conn = sqlite3.connect(db_path)
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         conn.close()
-        assert version == 4
+        assert version == SCHEMA_VERSION
 
     def test_v1_to_v2_migration(self):
         """A v1 database gets new tables and version bump on re-init."""
@@ -270,7 +271,7 @@ class TestSchemaVersion:
         conn.row_factory = sqlite3.Row
         # Version should be bumped
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert version == 4
+        assert version == SCHEMA_VERSION
         # New tables should exist
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"

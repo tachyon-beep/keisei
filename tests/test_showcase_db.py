@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from keisei.db import init_db, _connect
+from keisei.db import SCHEMA_VERSION, init_db, _connect
 
 
 @pytest.fixture
@@ -18,11 +18,11 @@ def db(tmp_path: Path) -> str:
 
 
 class TestShowcaseSchema:
-    def test_schema_version_is_4(self, db: str) -> None:
+    def test_schema_version_matches_constant(self, db: str) -> None:
         conn = _connect(db)
         try:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 4
+            assert row["version"] == SCHEMA_VERSION
         finally:
             conn.close()
 
