@@ -30,3 +30,19 @@ export const winProbHistory = derived(showcaseMoves, moves => {
 export const queueDepth = derived(showcaseQueue, q =>
   q.filter(e => e.status === 'pending').length
 )
+
+/** Persisted toggle for the showcase board's policy heatmap overlay. */
+const HEATMAP_KEY = 'showcaseHeatmapEnabled'
+
+function loadHeatmapInitial() {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(HEATMAP_KEY) === 'true'
+}
+
+export const showcaseHeatmapEnabled = writable(loadHeatmapInitial())
+
+showcaseHeatmapEnabled.subscribe((val) => {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(HEATMAP_KEY, val ? 'true' : 'false')
+  }
+})

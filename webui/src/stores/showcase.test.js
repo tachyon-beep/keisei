@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest'
+// @vitest-environment jsdom
+import { describe, it, expect, beforeEach } from 'vitest'
 import { get } from 'svelte/store'
 import {
   showcaseGame, showcaseMoves, showcaseQueue,
   showcaseCurrentMove, winProbHistory, queueDepth, sidecarAlive,
+  showcaseHeatmapEnabled,
 } from './showcase.js'
 
 describe('showcase stores', () => {
@@ -38,5 +40,22 @@ describe('showcase stores', () => {
       { id: 3, status: 'pending' },
     ])
     expect(get(queueDepth)).toBe(2)
+  })
+})
+
+describe('showcaseHeatmapEnabled', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('exposes a boolean store', () => {
+    expect(typeof get(showcaseHeatmapEnabled)).toBe('boolean')
+  })
+
+  it('persists value to localStorage when toggled', () => {
+    showcaseHeatmapEnabled.set(true)
+    expect(localStorage.getItem('showcaseHeatmapEnabled')).toBe('true')
+    showcaseHeatmapEnabled.set(false)
+    expect(localStorage.getItem('showcaseHeatmapEnabled')).toBe('false')
   })
 })
