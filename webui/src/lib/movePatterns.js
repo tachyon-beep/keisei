@@ -1,9 +1,14 @@
 /**
  * Movement patterns for Shogi pieces.
  *
- * Each pattern is a 2D grid (3x3 or 5x5 for Knight).
- * Values: null = empty, 'step' = one square (■), 'slide' = unlimited range (arrow).
- * Centre cell is the piece position.
+ * Each pattern is a 3x3 grid. Centre cell [1][1] is the piece position.
+ * Values:
+ *   null   = no move
+ *   'step' = one square (■)
+ *   'slide'= unlimited range in that direction (arrow)
+ *   'jump' = Knight leap (⇖/⇗) — drawn in a corner of row 0 to keep all
+ *            piece legends visually 3 rows tall, even though the actual
+ *            landing square is 2 forward + 1 sideways.
  *
  * Orientation: row 0 = forward (toward opponent), row 2 = backward.
  */
@@ -11,6 +16,7 @@
 const _ = null
 const s = 'step'
 const S = 'slide'
+const J = 'jump'
 
 // 3x3 patterns — centre is [1][1]
 export const KING = [
@@ -73,26 +79,22 @@ export const PAWN = [
   [_, _, _],
 ]
 
-// Knight: jumps 2 forward + 1 sideways
-// Base 3x3 is all empty; extra row above holds the two jump targets
+// Knight: jumps 2 forward + 1 sideways. Drawn as 'jump' markers in the
+// forward corners so the legend stays a uniform 3 rows.
 export const KNIGHT = [
-  [_, _, _],
+  [J, _, J],
   [_, _, _],
   [_, _, _],
 ]
 
-// Extra row rendered above the 3x3 grid for the knight
-export const KNIGHT_EXTRA = [s, _, s]
-
 /** Map from piece name to { base, promoted } patterns */
-/** Map from piece name to { base, promoted, extra? } patterns */
 export const PATTERNS = {
   King:   { base: KING,   promoted: null },
   Rook:   { base: ROOK,   promoted: DRAGON },
   Bishop: { base: BISHOP, promoted: HORSE },
   Gold:   { base: GOLD,   promoted: null },
   Silver: { base: SILVER, promoted: GOLD },
-  Knight: { base: KNIGHT, promoted: GOLD, extra: KNIGHT_EXTRA },
+  Knight: { base: KNIGHT, promoted: GOLD },
   Lance:  { base: LANCE,  promoted: GOLD },
   Pawn:   { base: PAWN,   promoted: GOLD },
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PATTERNS, KING, ROOK, BISHOP, DRAGON, HORSE, GOLD, SILVER, KNIGHT, KNIGHT_EXTRA, LANCE, PAWN } from './movePatterns.js'
+import { PATTERNS, KING, ROOK, BISHOP, DRAGON, HORSE, GOLD, SILVER, KNIGHT, LANCE, PAWN } from './movePatterns.js'
 
 describe('movePatterns', () => {
   it('all patterns are 3 rows of 3 columns', () => {
@@ -60,14 +60,15 @@ describe('movePatterns', () => {
     expect(steps).toHaveLength(5)
   })
 
-  it('Knight base grid is empty, jumps are in extra row', () => {
-    const baseSteps = KNIGHT.flat().filter(c => c === 'step')
-    expect(baseSteps).toHaveLength(0)
-    expect(KNIGHT_EXTRA).toHaveLength(3)
-    expect(KNIGHT_EXTRA[0]).toBe('step')
-    expect(KNIGHT_EXTRA[1]).toBeNull()
-    expect(KNIGHT_EXTRA[2]).toBe('step')
-    expect(PATTERNS.Knight.extra).toBe(KNIGHT_EXTRA)
+  it('Knight has two forward jumps in row 0 corners and nothing else', () => {
+    const jumps = KNIGHT.flat().filter(c => c === 'jump')
+    expect(jumps).toHaveLength(2)
+    expect(KNIGHT[0][0]).toBe('jump')
+    expect(KNIGHT[0][2]).toBe('jump')
+    expect(KNIGHT[0][1]).toBeNull()
+    expect(KNIGHT[2].every(c => c === null)).toBe(true)
+    // Knight no longer carries an extra-row escape hatch — legend stays 3 rows.
+    expect(PATTERNS.Knight.extra).toBeUndefined()
   })
 
   it('Lance slides forward only', () => {
@@ -108,7 +109,7 @@ describe('movePatterns', () => {
     for (const g of allGrids) {
       for (const row of g) {
         for (const cell of row) {
-          expect([null, 'step', 'slide']).toContain(cell)
+          expect([null, 'step', 'slide', 'jump']).toContain(cell)
         }
       }
     }

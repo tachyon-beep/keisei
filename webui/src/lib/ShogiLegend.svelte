@@ -23,7 +23,7 @@
       <div class="base-col">
         <span class="kanji">{p.kanji}</span>
         <span class="piece-name">{p.name}</span>
-        <MoveDots pattern={pat.base} extra={pat.extra || null} />
+        <MoveDots pattern={pat.base} />
       </div>
       <div class="arrow-col">
         {#if p.promoted}<span class="arrow">→</span>{/if}
@@ -52,11 +52,11 @@
     <div class="diff-list">
       <div class="diff-item">
         <span class="diff-icon">♻</span>
-        <div><strong>Drops</strong> — captured pieces join your army and can be placed back on any empty square on your turn</div>
+        <div><strong>Drops</strong> — captured pieces join your army and can be placed back on any empty square</div>
       </div>
       <div class="diff-item">
         <span class="diff-icon">⬆</span>
-        <div><strong>Promotion</strong> — most pieces promote when reaching the last 3 ranks (opponent's territory), gaining new moves</div>
+        <div><strong>Promotion</strong> — most pieces promote when reaching the last 3 ranks, gaining new moves</div>
       </div>
       <div class="diff-item">
         <span class="diff-icon">♟</span>
