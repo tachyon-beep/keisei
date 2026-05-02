@@ -341,6 +341,93 @@ class TestBatchedLoop:
         assert first_after == pytest.approx(1008.0, abs=1e-6)
         assert second_before == pytest.approx(first_after, abs=1e-6)
 
+    def test_result_epoch_tracks_claim_enqueued_epoch(
+        self, db: str, league_dir: str, concurrency: ConcurrencyConfig,
+        store: OpponentStore,
+    ) -> None:
+        """Each result row's epoch must equal the claim's enqueued_epoch.
+
+        Regression for keisei-b978c553da: the worker previously read
+        ``store.get_current_epoch()`` once per batch and stamped that on
+        every result row.  When a single batch straddles two queued rounds
+        (different ``enqueued_epoch`` values) and the trainer epoch has
+        advanced since the round was queued, this produced misleading
+        epoch labels in ``league_results``, ``head_to_head.last_epoch``,
+        and ``elo_history.epoch``.  Each result must carry the epoch that
+        was on the queue row, not the worker's current_epoch at write-time.
+        """
+        ids = _seed_entries(db)
+        # Worker reads current_epoch=20 — simulates trainer having
+        # advanced past the rounds being recorded.
+        _set_current_epoch(db, 20)
+        # Round 1 was queued at epoch 5; round 2 at epoch 7.  The worker
+        # must record league_results.epoch=5 for round 1's pairing and
+        # league_results.epoch=7 for round 2's pairing — never 20.
+        enqueue_pairings(
+            db, round_id=1, epoch=5,
+            pairings=[(ids[0], ids[1], 3)],
+        )
+        enqueue_pairings(
+            db, round_id=2, epoch=7,
+            pairings=[(ids[0], ids[2], 3)],
+        )
+        stop = threading.Event()
+        pool = _FakePool(concurrency, per_pairing_outcome=(2, 1, 0))
+
+        def stop_after(orig):  # noqa: ANN001
+            def wrapper(*args: Any, **kw: Any) -> Any:
+                out = orig(*args, **kw)
+                stop.set()
+                return out
+            return wrapper
+        pool.run_round = stop_after(pool.run_round)  # type: ignore[method-assign]
+
+        worker = _make_worker(db, league_dir, concurrency, pool=pool, stop_event=stop)
+        worker.run()
+
+        assert len(pool.run_round_calls) == 1
+        assert len(pool.run_round_calls[0]) == 2
+
+        conn = _connect(db)
+        try:
+            # league_results: epoch must match each pairing's enqueued_epoch.
+            results = {
+                (row["entry_a_id"], row["entry_b_id"]): row["epoch"]
+                for row in conn.execute(
+                    "SELECT entry_a_id, entry_b_id, epoch FROM league_results"
+                ).fetchall()
+            }
+            assert results[(ids[0], ids[1])] == 5
+            assert results[(ids[0], ids[2])] == 7
+
+            # head_to_head.last_epoch: max of contributing rounds' enqueued
+            # epochs — for the (0,1) pair only round 1 contributed (epoch 5),
+            # for (0,2) only round 2 contributed (epoch 7).  Neither should
+            # equal 20.
+            h2h = {
+                (row["entry_a_id"], row["entry_b_id"]): row["last_epoch"]
+                for row in conn.execute(
+                    "SELECT entry_a_id, entry_b_id, last_epoch FROM head_to_head"
+                ).fetchall()
+            }
+            assert h2h[(ids[0], ids[1])] == 5
+            assert h2h[(ids[0], ids[2])] == 7
+
+            # elo_history: each per-result update_elo() call writes an
+            # elo_history row with the same epoch as the result.  Both
+            # entries have rows at epochs {5, 7} (entry 0 played in both
+            # rounds; entries 1 and 2 each in one round).  None at epoch 20.
+            history_epochs = {
+                row["epoch"]
+                for row in conn.execute(
+                    "SELECT DISTINCT epoch FROM elo_history"
+                ).fetchall()
+            }
+            assert 20 not in history_epochs
+            assert history_epochs == {5, 7}
+        finally:
+            conn.close()
+
     def test_marks_batch_failed_on_exception(
         self, db: str, league_dir: str, concurrency: ConcurrencyConfig,
     ) -> None:

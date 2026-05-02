@@ -229,7 +229,7 @@ class TournamentWorker:
             return
 
         self._record_results(
-            results, pairings, claims_in_order, current_epoch, stats,
+            results, pairings, claims_in_order, stats,
         )
 
     def _record_results(
@@ -237,7 +237,6 @@ class TournamentWorker:
         results: list[MatchResult],
         pairings: list[tuple[OpponentEntry, OpponentEntry]],
         claims_in_order: list[ClaimedPairing],
-        epoch: int,
         stats: RoundStats,
     ) -> None:
         """Write Elo + result rows for each MatchResult; mark queue status.
@@ -247,6 +246,13 @@ class TournamentWorker:
         batch are handled correctly.  Claimed pairings that have no
         corresponding result (e.g. pool-side load failure, early stop) are
         marked 'failed' so the queue row has a terminal status.
+
+        Each result row is tagged with the claim's ``enqueued_epoch`` rather
+        than the worker's current_epoch — a single batch may straddle
+        multiple rounds, and the trainer epoch may have advanced since the
+        pairing was queued.  Using ``enqueued_epoch`` keeps
+        ``league_results`` / ``head_to_head`` / ``elo_history`` aligned with
+        ``tournament_pairing_queue`` per round.
         """
         unmatched_indices: set[int] = set(range(len(pairings)))
         for result in results:
@@ -269,7 +275,7 @@ class TournamentWorker:
                 mark_pairing_done(self.db_path, claim.id, status="failed")
                 continue
             try:
-                self._write_match_result(result, epoch)
+                self._write_match_result(result, claim.enqueued_epoch)
                 mark_pairing_done(self.db_path, claim.id, status="done")
                 self._pairings_done += 1
             except Exception:
