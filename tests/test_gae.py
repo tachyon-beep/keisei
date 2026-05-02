@@ -408,3 +408,75 @@ class TestGAEIntegerRewardDtype:
         ref = compute_gae_padded(rewards.float(), values, terminated, next_values, lengths,
                                  gamma=0.99, lam=0.95)
         assert torch.allclose(adv, ref, atol=1e-5)
+
+
+class TestGAENoAutogradLeak:
+    """Regression: GAE targets must be non-differentiable.
+
+    The advantages/returns computed by GAE are training targets — they must
+    not carry an autograd graph back into the value network or any prior
+    forward pass. Production callers detach defensively, but the helpers
+    themselves must enforce the contract so a future caller cannot leak
+    critic gradients into the policy loss.
+    """
+
+    @staticmethod
+    def _grad_inputs(T: int = 4, N: int = 2):
+        """Build inputs where every float tensor requires grad."""
+        rewards = torch.randn(T, N, requires_grad=True)
+        values = torch.randn(T, N, requires_grad=True)
+        terminated = torch.zeros(T, N)
+        next_value = torch.randn(N, requires_grad=True)
+        return rewards, values, terminated, next_value
+
+    def test_compute_gae_does_not_require_grad(self):
+        rewards, values, terminated, next_value = self._grad_inputs()
+        adv = compute_gae(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert not adv.requires_grad
+        assert adv.grad_fn is None
+
+    def test_compute_gae_gpu_does_not_require_grad(self):
+        rewards, values, terminated, next_value = self._grad_inputs()
+        adv = compute_gae_gpu(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        assert not adv.requires_grad
+        assert adv.grad_fn is None
+
+    def test_compute_gae_padded_does_not_require_grad(self):
+        from keisei.training.gae import compute_gae_padded
+
+        T, N = 4, 2
+        rewards = torch.randn(T, N, requires_grad=True)
+        values = torch.randn(T, N, requires_grad=True)
+        terminated = torch.zeros(T, N)
+        next_values = torch.randn(N, requires_grad=True)
+        lengths = torch.tensor([T, T])
+
+        adv = compute_gae_padded(rewards, values, terminated, next_values, lengths,
+                                 gamma=0.99, lam=0.95)
+        assert not adv.requires_grad
+        assert adv.grad_fn is None
+
+    def test_compute_gae_padded_gpu_does_not_require_grad(self):
+        from keisei.training.gae import compute_gae_padded_gpu
+
+        T, N = 4, 2
+        rewards = torch.randn(T, N, requires_grad=True)
+        values = torch.randn(T, N, requires_grad=True)
+        terminated = torch.zeros(T, N)
+        next_values = torch.randn(N, requires_grad=True)
+        lengths = torch.tensor([T, T])
+
+        adv = compute_gae_padded_gpu(rewards, values, terminated, next_values, lengths,
+                                     gamma=0.99, lam=0.95)
+        assert not adv.requires_grad
+        assert adv.grad_fn is None
+
+    def test_inputs_remain_differentiable_after_call(self):
+        """The helpers must not mutate the input tensors' grad state."""
+        rewards, values, terminated, next_value = self._grad_inputs()
+        _ = compute_gae(rewards, values, terminated, next_value, gamma=0.99, lam=0.95)
+        # Inputs are unchanged — caller can still backprop through them in
+        # their own computation graph if it does so directly (not via GAE).
+        assert values.requires_grad
+        assert next_value.requires_grad
+        assert rewards.requires_grad
