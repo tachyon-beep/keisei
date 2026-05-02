@@ -15,7 +15,7 @@ import pytest
 
 from keisei.showcase.heatmap import build_heatmap
 
-shogi_gym = pytest.importorskip("shogi_gym")
+shogi_gym = pytest.importorskip("shogi_gym", reason="Requires compiled shogi-gym Rust extension")
 
 
 def test_runner_produces_nonempty_heatmap_for_board_move() -> None:
@@ -65,7 +65,11 @@ def test_runner_produces_nonempty_heatmap_for_board_move() -> None:
 def test_runner_chosen_usi_differs_from_state_notation() -> None:
     """Pin the misleading-name issue: state['move_history'][-1]['notation']
     is Hodges, NOT USI. This test documents the contract so any future
-    rename of the field name catches us."""
+    rename of the field name catches us, AND demonstrates the actual failure
+    mode (feeding Hodges to build_heatmap silently yields {}) so a regression
+    of the fix in runner.py is loudly caught here."""
+    from keisei.showcase.heatmap import build_heatmap
+
     env = shogi_gym.SpectatorEnv(max_ply=512, action_mode="spatial")
     env.reset()
     legal_with_usi = env.legal_moves_with_usi()
@@ -79,5 +83,20 @@ def test_runner_chosen_usi_differs_from_state_notation() -> None:
         "If they are now equal, move_history.notation may have been changed to USI; "
         "the runner can then be simplified to drop chosen_usi_real derivation."
     )
-    assert "*" not in hodges and "*" not in usi  # no drops at startpos
-    assert "-" in hodges  # Hodges format uses dash for moves
+
+    # Demonstrate the bug: feeding Hodges to build_heatmap silently yields {}.
+    # If runner.py ever reverts to passing the Hodges value into chosen_usi=,
+    # the heatmap goes empty for every board move. This assertion pins that
+    # failure mode so the regression is caught in CI.
+    fake_probs = {int(i): 1.0 / len(legal_with_usi) for i, _ in legal_with_usi}
+    broken = build_heatmap(chosen_usi=hodges, legal_with_usi=legal_with_usi, probs=fake_probs)
+    assert broken == {}, (
+        f"Expected empty heatmap when feeding Hodges {hodges!r}, got {broken!r}. "
+        "If non-empty, the from-square prefix matching has changed and the runner's "
+        "chosen_usi_real derivation may no longer be needed."
+    )
+    correct = build_heatmap(chosen_usi=usi, legal_with_usi=legal_with_usi, probs=fake_probs)
+    assert correct, (
+        f"Expected non-empty heatmap when feeding real USI {usi!r}, got {correct!r}. "
+        "Heatmap producer contract is broken; investigate build_heatmap and legal_moves_with_usi."
+    )
