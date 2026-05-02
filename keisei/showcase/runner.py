@@ -37,6 +37,7 @@ from keisei.showcase.db_ops import (
     write_heartbeat,
     write_showcase_move,
 )
+from keisei.showcase.heatmap import build_heatmap
 from keisei.showcase.inference import (
     ModelCache,
     enforce_cpu_only,
@@ -144,6 +145,9 @@ class ShowcaseRunner:
                 inference_ms = int((time.monotonic() - start_ms) * 1000)
 
                 legal = env.legal_actions()
+                # Capture USIs for the heatmap before stepping — position must
+                # match the policy distribution we just computed.
+                legal_with_usi = env.legal_moves_with_usi()
                 mask = np.full(policy_logits.shape, -1e9)
                 mask[legal] = 0.0
                 masked_logits = policy_logits + mask
@@ -183,12 +187,21 @@ class ShowcaseRunner:
                 for tc in top_candidates:
                     tc["usi"] = usi_notation if tc["action"] == action else f"a{tc['action']}"
 
+                # Build heatmap of moves sharing the chosen move's from-square
+                # (board move) or drop prefix (drop). Lean: only same-prefix.
+                heatmap = build_heatmap(
+                    chosen_usi=usi_notation,
+                    legal_with_usi=legal_with_usi,
+                    probs={int(i): float(probs[i]) for i in legal},
+                )
+
                 write_showcase_move(
                     self.db_path, game_id=game_id, ply=ply, action_index=action,
                     usi_notation=usi_notation, board_json=json.dumps(state["board"]),
                     hands_json=json.dumps(state["hands"]), current_player=state["current_player"],
                     in_check=state.get("in_check", False), value_estimate=win_prob,
                     top_candidates=json.dumps(top_candidates), move_time_ms=inference_ms,
+                    move_heatmap_json=json.dumps(heatmap),
                 )
 
                 # Re-read speed from DB periodically (not every ply — W10)
