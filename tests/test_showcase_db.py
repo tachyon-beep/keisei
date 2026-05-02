@@ -43,7 +43,7 @@ class TestShowcaseSchema:
     def test_showcase_moves_table_exists(self, db: str) -> None:
         conn = _connect(db)
         try:
-            conn.execute("SELECT id, game_id, ply, action_index, usi_notation, board_json, hands_json, current_player, in_check, value_estimate, top_candidates, move_time_ms, created_at FROM showcase_moves LIMIT 0")
+            conn.execute("SELECT id, game_id, ply, action_index, usi_notation, board_json, hands_json, current_player, in_check, value_estimate, top_candidates, move_heatmap_json, move_time_ms, created_at FROM showcase_moves LIMIT 0")
         finally:
             conn.close()
 
