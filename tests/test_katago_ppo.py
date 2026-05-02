@@ -87,6 +87,56 @@ class TestKataGoRolloutBuffer:
         buf.clear()
         assert buf.size == 0
 
+    def test_next_value_override_round_trip(self):
+        """Buffer stores next_value_override and exposes it via flatten()."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        # Step 0: env 1 truncated, env 0 unaffected — caller stamps NaN for env 0
+        # and a finite override for env 1.
+        override_step0 = torch.tensor([float("nan"), -0.42])
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2), torch.zeros(2), torch.zeros(2),
+            torch.tensor([False, True]), torch.tensor([False, False]),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+            next_value_override=override_step0,
+        )
+        # Step 1: no truncations — caller passes override=None. The buffer must
+        # stamp NaN for these rows so stale values do not leak into GAE.
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2), torch.zeros(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+        )
+
+        data = buf.flatten()
+        assert "next_value_override" in data
+        flat = data["next_value_override"]
+        # Layout: 4 rows, [step0_env0, step0_env1, step1_env0, step1_env1]
+        assert flat.shape == (4,)
+        assert torch.isnan(flat[0])  # step0 env0: no override
+        assert abs(flat[1].item() - (-0.42)) < 1e-6  # step0 env1: truncated
+        assert torch.isnan(flat[2])  # step1 env0: no override
+        assert torch.isnan(flat[3])  # step1 env1: no override
+
+    def test_next_value_override_absent_when_never_supplied(self):
+        """Buffer omits the override key when no add() call supplies one."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2), torch.zeros(2), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+        )
+        data = buf.flatten()
+        assert "next_value_override" not in data, (
+            "Override key must be omitted when no caller ever supplied it — "
+            "this keeps the existing GAE call sites unchanged."
+        )
+
     def test_unnormalized_score_targets_rejected(self):
         """Buffer should reject score_targets that appear unnormalized (abs > 2.0)."""
         buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)

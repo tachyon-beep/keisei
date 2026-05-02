@@ -480,3 +480,148 @@ class TestGAENoAutogradLeak:
         assert values.requires_grad
         assert next_value.requires_grad
         assert rewards.requires_grad
+
+
+class TestGAEPerCellNextValueOverride:
+    """R: per-cell override of the bootstrap V used inside the GAE recurrence.
+
+    Required for truncation handling where V(s_{t+1}) must come from the
+    actual terminal observation, not from the post-auto-reset state. Also
+    needed for two-player perspective handling where V(s_{t+1}) belongs
+    to the opponent and must be sign-corrected.
+
+    Contract: a NaN cell in `next_value_override` falls back to default
+    behavior (values[t+1] for t<T-1, next_value at t=T-1). A finite cell
+    replaces the bootstrap at that (t, n).
+    """
+
+    def test_compute_gae_override_replaces_values_shift(self):
+        """Override at (t, n) replaces values[t+1, n] in the GAE delta."""
+        T, N = 3, 1
+        rewards = torch.tensor([[0.0], [0.0], [0.0]])
+        values = torch.tensor([[0.5], [0.6], [0.7]])
+        terminated = torch.zeros(T, N)
+        next_value = torch.tensor([0.0])
+
+        # Without override, step 0 bootstraps from values[1] = 0.6
+        adv_default = compute_gae(rewards, values, terminated, next_value,
+                                  gamma=1.0, lam=0.0)
+        # delta[0] = 0 + 1.0 * 0.6 - 0.5 = 0.1
+        assert abs(adv_default[0, 0].item() - 0.1) < 1e-5
+
+        # With override at (0, 0) = 9.0, step 0 bootstraps from 9.0 instead
+        override = torch.full((T, N), float("nan"))
+        override[0, 0] = 9.0
+        adv_override = compute_gae(rewards, values, terminated, next_value,
+                                   gamma=1.0, lam=0.0,
+                                   next_value_override=override)
+        # delta[0] = 0 + 1.0 * 9.0 - 0.5 = 8.5
+        assert abs(adv_override[0, 0].item() - 8.5) < 1e-5
+
+    def test_compute_gae_gpu_override_replaces_values_shift(self):
+        """compute_gae_gpu honours per-cell override the same way."""
+        T, N = 3, 1
+        rewards = torch.tensor([[0.0], [0.0], [0.0]])
+        values = torch.tensor([[0.5], [0.6], [0.7]])
+        terminated = torch.zeros(T, N)
+        next_value = torch.tensor([0.0])
+
+        adv_default = compute_gae_gpu(rewards, values, terminated, next_value,
+                                      gamma=1.0, lam=0.0)
+        assert abs(adv_default[0, 0].item() - 0.1) < 1e-5
+
+        override = torch.full((T, N), float("nan"))
+        override[0, 0] = 9.0
+        adv_override = compute_gae_gpu(rewards, values, terminated, next_value,
+                                       gamma=1.0, lam=0.0,
+                                       next_value_override=override)
+        assert abs(adv_override[0, 0].item() - 8.5) < 1e-5
+
+    def test_override_replaces_last_step_bootstrap(self):
+        """Override at t=T-1 replaces the last-step `next_value` parameter."""
+        T, N = 2, 1
+        rewards = torch.tensor([[0.0], [0.0]])
+        values = torch.tensor([[0.5], [0.6]])
+        terminated = torch.zeros(T, N)
+        next_value = torch.tensor([0.0])
+
+        adv_default = compute_gae(rewards, values, terminated, next_value,
+                                  gamma=1.0, lam=0.0)
+        # delta[1] = 0 + 1.0 * 0.0 - 0.6 = -0.6 (uses next_value)
+        assert abs(adv_default[1, 0].item() - (-0.6)) < 1e-5
+
+        override = torch.full((T, N), float("nan"))
+        override[1, 0] = 5.0
+        adv_override = compute_gae(rewards, values, terminated, next_value,
+                                   gamma=1.0, lam=0.0,
+                                   next_value_override=override)
+        # delta[1] = 0 + 1.0 * 5.0 - 0.6 = 4.4
+        assert abs(adv_override[1, 0].item() - 4.4) < 1e-5
+
+    def test_override_partial_falls_back_for_nan(self):
+        """Cells set to NaN keep default behavior; finite cells override."""
+        T, N = 3, 2
+        torch.manual_seed(0)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        terminated = torch.zeros(T, N)
+        next_value = torch.randn(N)
+
+        baseline = compute_gae(rewards, values, terminated, next_value,
+                               gamma=0.99, lam=0.95)
+
+        # Override only env 0, step 1 — env 1 must match baseline
+        override = torch.full((T, N), float("nan"))
+        override[1, 0] = 42.0
+        adv = compute_gae(rewards, values, terminated, next_value,
+                          gamma=0.99, lam=0.95,
+                          next_value_override=override)
+        assert torch.allclose(adv[:, 1], baseline[:, 1], atol=1e-5), \
+            "env 1 (no override) must match baseline"
+        assert not torch.isclose(adv[1, 0], baseline[1, 0]), \
+            "env 0 step 1 should differ — bootstrap was overridden"
+
+    def test_override_none_is_unchanged_behavior(self):
+        """Passing next_value_override=None must equal not passing it."""
+        T, N = 4, 2
+        torch.manual_seed(7)
+        rewards = torch.randn(T, N)
+        values = torch.randn(T, N)
+        terminated = torch.zeros(T, N)
+        next_value = torch.randn(N)
+
+        a = compute_gae(rewards, values, terminated, next_value,
+                        gamma=0.99, lam=0.95)
+        b = compute_gae(rewards, values, terminated, next_value,
+                        gamma=0.99, lam=0.95, next_value_override=None)
+        assert torch.allclose(a, b)
+
+        a_gpu = compute_gae_gpu(rewards, values, terminated, next_value,
+                                gamma=0.99, lam=0.95)
+        b_gpu = compute_gae_gpu(rewards, values, terminated, next_value,
+                                gamma=0.99, lam=0.95, next_value_override=None)
+        assert torch.allclose(a_gpu, b_gpu)
+
+    def test_override_preserves_no_grad_contract(self):
+        """The override path must not leak gradients either."""
+        T, N = 3, 2
+        rewards = torch.randn(T, N, requires_grad=True)
+        values = torch.randn(T, N, requires_grad=True)
+        terminated = torch.zeros(T, N)
+        next_value = torch.randn(N, requires_grad=True)
+        override = torch.full((T, N), float("nan"))
+        override[0, 0] = 1.5
+        override.requires_grad_(True)
+
+        adv = compute_gae(rewards, values, terminated, next_value,
+                          gamma=0.99, lam=0.95,
+                          next_value_override=override)
+        assert not adv.requires_grad
+        assert adv.grad_fn is None
+
+        adv_gpu = compute_gae_gpu(rewards, values, terminated, next_value,
+                                  gamma=0.99, lam=0.95,
+                                  next_value_override=override)
+        assert not adv_gpu.requires_grad
+        assert adv_gpu.grad_fn is None
+

@@ -136,6 +136,12 @@ class KataGoRolloutBuffer:
         self._step_count = 0
         self._storage: dict[str, torch.Tensor] = {}
         self._has_env_ids = False
+        # next_value_override is a per-transition bootstrap V passed through
+        # to GAE. Default-NaN cells fall back to the values[t+1] shift; finite
+        # cells inject a caller-supplied bootstrap (e.g. V(terminal_observation)
+        # for truncated transitions). Lazy-allocated on first add() that
+        # supplies the field.
+        self._has_next_value_override = False
 
     def _ensure_capacity(self, n_samples: int) -> None:
         """Grow storage if needed to fit n_samples more entries."""
@@ -159,6 +165,12 @@ class KataGoRolloutBuffer:
         }
         if self._has_env_ids:
             new_storage["env_ids"] = torch.empty(new_cap, dtype=torch.long)
+        if self._has_next_value_override:
+            # NaN sentinel — GAE falls back to values[t+1] for any cell
+            # the rollout did not explicitly populate.
+            new_storage["next_value_override"] = torch.full(
+                (new_cap,), float("nan"),
+            )
 
         # Copy existing data
         if self._write_offset > 0:
@@ -193,6 +205,7 @@ class KataGoRolloutBuffer:
         value_categories: torch.Tensor,
         score_targets: torch.Tensor,
         env_ids: torch.Tensor | None = None,
+        next_value_override: torch.Tensor | None = None,
     ) -> None:
         """Add a timestep to the buffer.
 
@@ -202,6 +215,11 @@ class KataGoRolloutBuffer:
                 KataGoPPOParams.score_normalization before storing here.
                 Raw scores can range from -200 to +200; without normalization,
                 the MSE loss would dominate all other loss terms.
+            next_value_override: optional per-transition bootstrap V used by GAE
+                in place of values[t+1]. Use NaN for "no override" (default
+                shift behavior); finite values inject the correct bootstrap
+                where the default is wrong (e.g. V(terminal_observation) at
+                truncation, with auto-reset).
         """
         # Detach and move to CPU first — all validation below runs on CPU
         # tensors, avoiding implicit CUDA synchronization on the hot path.
@@ -255,6 +273,10 @@ class KataGoRolloutBuffer:
         if self._step_count == 0 and env_ids is not None:
             self._has_env_ids = True
 
+        # Track next_value_override presence on first add that supplies it
+        if self._step_count == 0 and next_value_override is not None:
+            self._has_next_value_override = True
+
         self._ensure_capacity(n)
         off = self._write_offset
 
@@ -273,6 +295,24 @@ class KataGoRolloutBuffer:
                 # Late init — first add didn't have env_ids but a later one does
                 self._storage["env_ids"] = torch.empty(self._alloc_samples, dtype=torch.long)
             self._storage["env_ids"][off:off + n] = env_ids.detach().cpu()
+
+        if next_value_override is not None:
+            if "next_value_override" not in self._storage:
+                # Late init — first add didn't supply override but this one does.
+                # NaN sentinel for any cells the caller has not (yet) populated.
+                self._storage["next_value_override"] = torch.full(
+                    (self._alloc_samples,), float("nan"),
+                )
+                self._has_next_value_override = True
+            self._storage["next_value_override"][off:off + n] = (
+                next_value_override.detach().cpu().to(torch.float32)
+            )
+        elif self._has_next_value_override and "next_value_override" in self._storage:
+            # Override schema is active but this call does not supply one.
+            # Stamp NaN so downstream GAE falls back to values[t+1] for these
+            # rows. Without this, stale cells from a prior epoch (after clear)
+            # could leak into the current epoch's GAE bootstrap.
+            self._storage["next_value_override"][off:off + n] = float("nan")
 
         self._write_offset = off + n
         self._step_count += 1
@@ -297,6 +337,10 @@ class KataGoRolloutBuffer:
         }
         if self._has_env_ids and "env_ids" in self._storage:
             result["env_ids"] = self._storage["env_ids"][:off].reshape(-1)
+        if self._has_next_value_override and "next_value_override" in self._storage:
+            result["next_value_override"] = (
+                self._storage["next_value_override"][:off].reshape(-1)
+            )
         return result
 
 
@@ -571,6 +615,12 @@ class KataGoPPOAlgorithm:
             rewards_2d = data["rewards"].reshape(T, N).float()
             values_2d = data["values"].reshape(T, N).float()
             terminated_2d = data[gae_dones_key].reshape(T, N)
+            # Per-cell bootstrap override (e.g. V(terminal_observation) for
+            # truncations with auto-reset). Caller-supplied via buffer.add();
+            # NaN cells fall back to the values[t+1] shift.
+            override_2d: torch.Tensor | None = None
+            if "next_value_override" in data:
+                override_2d = data["next_value_override"].reshape(T, N).float()
 
             if device.type == "cuda":
                 _gae_stream = torch.cuda.current_stream(device)
@@ -587,11 +637,15 @@ class KataGoPPOAlgorithm:
                     rewards_2d.to(device), values_2d.to(device),
                     terminated_2d.to(device), next_values.detach().float(),
                     gamma=self.params.gamma, lam=self.params.gae_lambda,
+                    next_value_override=(
+                        override_2d.to(device) if override_2d is not None else None
+                    ),
                 ).reshape(-1).cpu()
             else:
                 advantages = compute_gae(
                     rewards_2d, values_2d, terminated_2d,
                     next_values_cpu, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                    next_value_override=override_2d,
                 ).reshape(-1)
 
             if device.type == "cuda":

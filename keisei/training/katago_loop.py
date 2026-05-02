@@ -1449,9 +1449,37 @@ class KataGoTrainingLoop:
                     ).to(self.device)
                     score_targets = material / self.score_norm
 
+                    # GAE bootstrap override for truncated envs. The default
+                    # values[t+1] would come from the auto-reset state of a
+                    # FRESH game, not the truncated game. Compute V(terminal_obs)
+                    # under no_grad and negate to convert from terminal-state
+                    # current-player perspective back to last-mover perspective
+                    # (Shogi alternates side every move).
+                    truncated_only = truncated.bool() & ~terminated.bool()
+                    next_value_override: torch.Tensor | None = None
+                    if bool(truncated_only.any()):
+                        term_obs_np = np.asarray(step_result.terminal_observations)
+                        term_obs = torch.from_numpy(term_obs_np).to(self.device)
+                        # Compute V only for truncated envs to keep cost minimal,
+                        # but evaluate the whole batch for shape simplicity (the
+                        # forward pass is cheap relative to the rollout step).
+                        self.ppo.forward_model.eval()
+                        with torch.no_grad():
+                            term_out = self.ppo.forward_model(term_obs)
+                            term_v = self.value_adapter.scalar_value_blended(
+                                term_out.value_logits, term_out.score_lead,
+                            )
+                        self.ppo.forward_model.train()
+                        # NaN sentinel; only truncated cells get a finite value,
+                        # negated because terminal_obs is in opponent-of-mover
+                        # perspective and GAE wants mover-of-step-t perspective.
+                        next_value_override = torch.full_like(term_v, float("nan"))
+                        next_value_override[truncated_only] = -term_v[truncated_only]
+
                     self.buffer.add(
                         obs, actions, log_probs, values, rewards, dones,
                         terminated, legal_masks, value_cats, score_targets,
+                        next_value_override=next_value_override,
                     )
 
                 obs = torch.from_numpy(np.asarray(step_result.observations)).to(self.device)

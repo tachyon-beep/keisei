@@ -12,6 +12,7 @@ def compute_gae(
     next_value: torch.Tensor,
     gamma: float,
     lam: float,
+    next_value_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute GAE advantages for one or many environments.
 
@@ -27,6 +28,12 @@ def compute_gae(
         next_value: value estimate(s) for the state after the last step
         gamma: discount factor
         lam: GAE lambda (bias-variance tradeoff)
+        next_value_override: optional per-step bootstrap override, same shape
+            as ``rewards``. Finite cells replace the default bootstrap (which
+            is ``values[t+1]`` for ``t < T-1`` and ``next_value`` at ``t = T-1``).
+            NaN cells fall back to the default. Used to inject the correct
+            bootstrap when the default ``values[t+1]`` is wrong (e.g. truncation
+            with auto-reset, two-player perspective alternation).
 
     Returns:
         Advantage estimates, same shape as rewards. Always non-differentiable —
@@ -42,11 +49,21 @@ def compute_gae(
         advantages = torch.zeros_like(rewards)
         last_gae = torch.zeros_like(next_value)
 
+        if next_value_override is not None:
+            override = next_value_override.to(dtype=compute_dtype)
+            override_mask = ~torch.isnan(override)
+        else:
+            override = None
+            override_mask = None
+
         for t in reversed(range(T)):
             if t == T - 1:
                 next_val = next_value
             else:
                 next_val = values[t + 1]
+
+            if override is not None and override_mask is not None:
+                next_val = torch.where(override_mask[t], override[t], next_val)
 
             not_done = 1.0 - terminated[t].float()
             delta = rewards[t] + gamma * next_val * not_done - values[t]
@@ -124,6 +141,7 @@ def compute_gae_gpu(
     next_value: torch.Tensor,
     gamma: float,
     lam: float,
+    next_value_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """GPU GAE for structured (T, N) rollouts.
 
@@ -144,6 +162,9 @@ def compute_gae_gpu(
         next_value: (N,) bootstrap value for the state after the last step
         gamma: discount factor
         lam: GAE lambda (bias-variance tradeoff)
+        next_value_override: optional (T, N) per-cell bootstrap override.
+            Finite cells replace the default bootstrap; NaN cells fall back
+            to ``values[t+1]`` for ``t < T-1`` and ``next_value`` at ``t = T-1``.
 
     Returns:
         (T, N) advantage estimates on the same device as inputs.
@@ -162,6 +183,10 @@ def compute_gae_gpu(
         # Step 1: vectorized delta and decay (no Python loop)
         # next_values[t] = values[t+1] for t < T-1, next_value for t == T-1
         next_values = torch.cat([values[1:], next_value.unsqueeze(0)], dim=0)
+        if next_value_override is not None:
+            override = next_value_override.to(dtype=compute_dtype, device=rewards.device)
+            override_mask = ~torch.isnan(override)
+            next_values = torch.where(override_mask, override, next_values)
         not_done = 1.0 - terminated.float()
         delta = rewards + gamma * next_values * not_done - values
         decay = gamma * lam * not_done
