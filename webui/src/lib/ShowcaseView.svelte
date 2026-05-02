@@ -1,6 +1,7 @@
 <script>
-  import { showcaseGame, showcaseMoves, showcaseCurrentMove, sidecarAlive } from '../stores/showcase.js'
+  import { showcaseGame, showcaseMoves, showcaseCurrentMove, sidecarAlive, showcaseHeatmapEnabled } from '../stores/showcase.js'
   import { safeParse } from './safeParse.js'
+  import { parseUsi } from './usiCoords.js'
   import Board from './Board.svelte'
   import PieceTray from './PieceTray.svelte'
   import MoveLog from './MoveLog.svelte'
@@ -20,6 +21,27 @@
       notation: m.usi_notation,
     }))
   )
+
+  // Last-move highlight: parse the current move's USI for from/to indices.
+  $: lastMoveCoords = move?.usi_notation ? parseUsi(move.usi_notation) : null
+  $: lastMoveFromIdx = lastMoveCoords?.fromIdx ?? -1
+  $: lastMoveToIdx = lastMoveCoords?.toIdx ?? -1
+
+  // Heatmap overlay: only computed when the toggle is on AND the ply has data.
+  // Promotion variants (e.g., "5g5f" and "5g5f+") share a destination — sum
+  // their probabilities so the spectator sees one combined "considered going to 5f".
+  $: heatmap = (() => {
+    if (!$showcaseHeatmapEnabled || !move?.move_heatmap_json) return null
+    const raw = safeParse(move.move_heatmap_json, null)
+    if (!raw || typeof raw !== 'object') return null
+    const out = {}
+    for (const [usi, prob] of Object.entries(raw)) {
+      const parsed = parseUsi(usi)
+      if (!parsed) continue
+      out[parsed.toIdx] = (out[parsed.toIdx] ?? 0) + prob
+    }
+    return out
+  })()
 </script>
 
 <div id="showcase-main" class="showcase-view" tabindex="-1" aria-labelledby="tab-showcase">
@@ -34,6 +56,14 @@
         <span class="vs">vs</span>
         <span class="player white">{game.name_white} ({game.elo_white?.toFixed(0) ?? '?'})</span>
         <span class="ply">Ply {game.total_ply}</span>
+        <button
+          class="heatmap-toggle"
+          on:click={() => showcaseHeatmapEnabled.update(v => !v)}
+          aria-pressed={$showcaseHeatmapEnabled}
+          title="Toggle policy heatmap overlay"
+        >
+          Heatmap: {$showcaseHeatmapEnabled ? 'On' : 'Off'}
+        </button>
         {#if game.status !== 'in_progress'}
           <span class="result">{game.status.replaceAll('_', ' ')}</span>
         {/if}
@@ -41,7 +71,14 @@
       <div class="game-content">
         <div class="board-side">
           <PieceTray color="white" hand={hands.white || {}} />
-          <Board board={board} inCheck={!!move?.in_check} currentPlayer={move?.current_player || 'black'} />
+          <Board
+            board={board}
+            inCheck={!!move?.in_check}
+            currentPlayer={move?.current_player || 'black'}
+            lastMoveFromIdx={lastMoveFromIdx}
+            lastMoveToIdx={lastMoveToIdx}
+            heatmap={heatmap}
+          />
           <PieceTray color="black" hand={hands.black || {}} />
         </div>
         <div class="eval-side">
@@ -76,6 +113,9 @@
   .player.white { color: var(--text-secondary); }
   .vs { color: var(--text-muted); font-size: 12px; }
   .ply { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+  .heatmap-toggle { padding: 4px 10px; background: var(--bg-elevated, transparent); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; cursor: pointer; }
+  .heatmap-toggle[aria-pressed="true"] { background: var(--accent-gold); color: #000; border-color: var(--accent-gold); }
+  .heatmap-toggle:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 2px; }
   .result { color: var(--accent-teal); font-weight: 600; text-transform: capitalize; }
   .game-content { flex: 1; display: flex; gap: 16px; padding: 8px; overflow: hidden; min-height: 0; }
   .board-side { display: flex; flex-direction: column; flex-shrink: 0; justify-content: center; }
