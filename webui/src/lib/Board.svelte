@@ -4,8 +4,16 @@
   export let board = []
   export let inCheck = false
   export let currentPlayer = 'black'
+  /** Index (0-80) of the last move's from-square, or -1 (drops, or no move yet). */
+  export let lastMoveFromIdx = -1
   /** Index (0-80) of the last move's destination square, or -1. */
-  export let lastMoveIdx = -1
+  export let lastMoveToIdx = -1
+  /**
+   * Optional policy heatmap: object mapping board index (0-80) to probability (0-1).
+   * Pass null or omit to render no overlay. The chosen move's destination square is
+   * intentionally skipped to avoid muddy interaction with the last-move highlight.
+   */
+  export let heatmap = null
 
   const colLabels = [9, 8, 7, 6, 5, 4, 3, 2, 1]
   const rowLabels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
@@ -31,11 +39,17 @@
     <div class="board" aria-hidden="true">
       {#each Array(81) as _, idx}
         {@const piece = board[idx]}
+        {@const heatProb = heatmap?.[idx] ?? null}
+        {@const showHeat = heatProb !== null && heatProb > 0 && idx !== lastMoveToIdx}
         <div
           class="square"
           class:has-piece={piece != null}
-          class:last-move={idx === lastMoveIdx}
+          class:last-move-to={idx === lastMoveToIdx}
+          class:last-move-from={idx === lastMoveFromIdx}
         >
+          {#if showHeat}
+            <div class="heatmap-overlay" style="opacity: {Math.min(1, heatProb * 0.5 + 0.15)};" aria-hidden="true"></div>
+          {/if}
           {#if piece}
             <span
               class="piece"
@@ -102,9 +116,21 @@
     position: relative;
   }
 
-  .square.last-move {
+  .square.last-move-to {
     background: var(--bg-last-move);
     border-color: var(--accent-teal);
+  }
+
+  .square.last-move-from {
+    box-shadow: inset 0 0 0 2px var(--accent-gold);
+  }
+
+  .heatmap-overlay {
+    position: absolute;
+    inset: 0;
+    background: hsl(45, 90%, 55%);
+    mix-blend-mode: multiply;
+    pointer-events: none;
   }
 
   .piece {
