@@ -317,6 +317,50 @@ class KataGoRolloutBuffer:
         self._write_offset = off + n
         self._step_count += 1
 
+    def fill_alternating_perspective_overrides(self) -> None:
+        """No-league perspective fix: every Shogi ply alternates side, so
+        ``values[t+1]`` (the default GAE bootstrap) is in the opponent's
+        frame, not the mover-of-step-t frame. For each non-terminal continuing
+        transition where the caller has not already supplied an override
+        (e.g. a truncation override from the rollout), set
+        ``next_value_override[t, n] = -values[t+1, n]``.
+
+        No-op for the split-merge / env_ids layout, where pending-transition
+        bookkeeping already keeps consecutive learner values in a consistent
+        perspective.
+
+        Must be called after the rollout loop completes and before
+        ``KataGoPPOAlgorithm.update``.
+        """
+        if self._has_env_ids:
+            return  # split-merge layout — perspective handled by pending protocol
+        T = self._step_count
+        if T <= 1:
+            return  # no t+1 to read from
+        N = self.num_envs
+        if self._write_offset != T * N:
+            return  # buffer is not in (T, N) flat layout
+        if "next_value_override" not in self._storage:
+            self._storage["next_value_override"] = torch.full(
+                (self._alloc_samples,), float("nan"),
+            )
+            self._has_next_value_override = True
+
+        sl = slice(0, T * N)
+        override = self._storage["next_value_override"][sl].view(T, N)
+        values = self._storage["values"][sl].view(T, N)
+        terminated = self._storage["terminated"][sl].view(T, N).bool()
+
+        # Only fill cells the caller has not already populated. Iterate t in
+        # range(T-1): the last step's bootstrap comes from the next_value
+        # parameter passed into update() — handled by the caller.
+        for t in range(T - 1):
+            unfilled = torch.isnan(override[t])
+            non_terminal = ~terminated[t]
+            target = unfilled & non_terminal
+            if target.any():
+                override[t, target] = -values[t + 1, target]
+
     def flatten(self) -> dict[str, torch.Tensor]:
         if self._step_count == 0:
             raise ValueError(

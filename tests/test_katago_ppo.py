@@ -121,6 +121,100 @@ class TestKataGoRolloutBuffer:
         assert torch.isnan(flat[2])  # step1 env0: no override
         assert torch.isnan(flat[3])  # step1 env1: no override
 
+    def test_fill_alternating_perspective_overrides_for_no_league(self):
+        """No-league perspective fix: -values[t+1] override for non-terminal
+        continuing transitions, leaving terminal/truncated overrides intact."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        # Step 0: env 1 truncated (override pre-set), env 0 continuing.
+        # values[0] = [0.10, 0.20]
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2),
+            torch.tensor([0.10, 0.20]),  # values
+            torch.zeros(2),
+            torch.tensor([False, True]),  # dones
+            torch.tensor([False, False]),  # terminated
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+            next_value_override=torch.tensor([float("nan"), -0.99]),  # truncation override
+        )
+        # Step 1: env 0 still continuing, env 1 in fresh game (terminated=False).
+        # values[1] = [0.30, 0.40]
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2),
+            torch.tensor([0.30, 0.40]),
+            torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool),
+            torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+        )
+
+        buf.fill_alternating_perspective_overrides()
+
+        data = buf.flatten()
+        flat = data["next_value_override"]
+        # Layout: [step0_env0, step0_env1, step1_env0, step1_env1]
+        # Step 0 env 0 (continuing): override = -values[1, 0] = -0.30
+        assert abs(flat[0].item() - (-0.30)) < 1e-6
+        # Step 0 env 1 (truncation): pre-existing override preserved (NOT overwritten)
+        assert abs(flat[1].item() - (-0.99)) < 1e-6
+        # Step 1: last step — leave NaN, GAE uses next_value parameter
+        assert torch.isnan(flat[2])
+        assert torch.isnan(flat[3])
+
+    def test_fill_alternating_perspective_skips_terminal_steps(self):
+        """Terminal steps must keep override = NaN; GAE zeros bootstrap there."""
+        buf = KataGoRolloutBuffer(num_envs=1, obs_shape=(50, 9, 9), action_space=11259)
+        # Step 0: terminal — bootstrap zeroed by GAE regardless
+        buf.add(
+            torch.randn(1, 50, 9, 9), torch.zeros(1, dtype=torch.long),
+            torch.zeros(1),
+            torch.tensor([0.5]),
+            torch.zeros(1),
+            torch.tensor([True]),
+            torch.tensor([True]),  # terminated
+            torch.ones(1, 11259, dtype=torch.bool),
+            torch.tensor([-1]), torch.zeros(1),
+        )
+        # Step 1: continuing (fresh game)
+        buf.add(
+            torch.randn(1, 50, 9, 9), torch.zeros(1, dtype=torch.long),
+            torch.zeros(1),
+            torch.tensor([0.6]),
+            torch.zeros(1),
+            torch.zeros(1, dtype=torch.bool),
+            torch.zeros(1, dtype=torch.bool),
+            torch.ones(1, 11259, dtype=torch.bool),
+            torch.tensor([-1]), torch.zeros(1),
+        )
+
+        buf.fill_alternating_perspective_overrides()
+        data = buf.flatten()
+        # Step 0 (terminal): NaN, GAE zeroes bootstrap
+        assert torch.isnan(data["next_value_override"][0])
+        # Step 1 (last): NaN, GAE uses next_value parameter
+        assert torch.isnan(data["next_value_override"][1])
+
+    def test_fill_alternating_perspective_no_op_when_split_merge(self):
+        """Helper must no-op when the buffer is in env_ids (split-merge) layout."""
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        buf.add(
+            torch.randn(2, 50, 9, 9), torch.zeros(2, dtype=torch.long),
+            torch.zeros(2), torch.tensor([0.1, 0.2]), torch.zeros(2),
+            torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+            torch.ones(2, 11259, dtype=torch.bool),
+            torch.tensor([-1, -1]), torch.zeros(2),
+            env_ids=torch.tensor([0, 1]),
+        )
+        buf.fill_alternating_perspective_overrides()
+        data = buf.flatten()
+        assert "next_value_override" not in data, (
+            "Split-merge mode uses per-env padded GAE; the no-league "
+            "perspective rule does not apply."
+        )
+
     def test_next_value_override_absent_when_never_supplied(self):
         """Buffer omits the override key when no add() call supplies one."""
         buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)

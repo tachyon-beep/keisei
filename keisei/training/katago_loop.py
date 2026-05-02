@@ -1534,6 +1534,16 @@ class KataGoTrainingLoop:
                 next_values = sign_correct_bootstrap(
                     next_values, current_players, learner_side,
                 )
+            else:
+                # No-league self-play: every Shogi ply alternates side. The
+                # final transition's mover was pre_players_for_last_step;
+                # next_values is V at the post-step current_players (= opposite),
+                # so negate to convert into mover-of-last-step perspective.
+                # Fill the (T-1) interior bootstrap overrides with the same
+                # alternating-perspective rule (-values[t+1]) for non-terminal
+                # continuing transitions.
+                next_values = -next_values
+                self.buffer.fill_alternating_perspective_overrides()
 
             # Materialize GPU counters to CPU once (single sync point)
             terminated_count = int(terminated_count_t.item())
