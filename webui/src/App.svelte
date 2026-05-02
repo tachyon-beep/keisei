@@ -52,14 +52,6 @@
 
   let thumbPanelHeight = 0
 
-  $: lastMoveIdx = (() => {
-    try {
-      const history = safeParse(moveHistory, [])
-      if (history.length === 0) return -1
-      return -1
-    } catch { return -1 }
-  })()
-
   // Learner info from training state
   $: learnerName = $trainingState?.display_name || $trainingState?.model_arch || 'Learner'
   $: learnerElo = $learnerEntry?.elo_rating ?? null
@@ -201,7 +193,6 @@
                 board={board}
                 inCheck={!!game.in_check}
                 currentPlayer={game.current_player || 'black'}
-                lastMoveIdx={lastMoveIdx}
               />
               <PieceTray color="black" hand={hands.black || {}} />
             </div>
