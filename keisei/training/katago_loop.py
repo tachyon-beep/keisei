@@ -1248,6 +1248,41 @@ class KataGoTrainingLoop:
                         black_wins += winner_is_black.sum()
                         white_wins += winner_is_white.sum()
 
+                    # GAE bootstrap override for truncated envs. The default
+                    # values[t+1] in the per-env padded layout is from the NEXT
+                    # game's first learner-move state (auto-reset), not the
+                    # truncated game. Compute V(terminal_observations) under
+                    # no_grad and convert from terminal-state current-player
+                    # perspective to learner perspective before stamping it
+                    # onto each truncated env's slot. Both finalize sites
+                    # below slice this by env_id.
+                    truncated_only = truncated.bool() & ~terminated.bool()
+                    override_full: torch.Tensor | None = None
+                    if bool(truncated_only.any()):
+                        term_obs_np = np.asarray(step_result.terminal_observations)
+                        term_obs = torch.from_numpy(term_obs_np).to(self.device)
+                        self.ppo.forward_model.eval()
+                        with torch.no_grad():
+                            term_out = self.ppo.forward_model(term_obs)
+                            if self.value_adapter is not None:
+                                term_v = self.value_adapter.scalar_value_blended(
+                                    term_out.value_logits, term_out.score_lead,
+                                )
+                            else:
+                                term_v = KataGoPPOAlgorithm.scalar_value(
+                                    term_out.value_logits,
+                                )
+                        self.ppo.forward_model.train()
+                        # Shogi alternates side every ply, so the player to move
+                        # at terminal_obs is (1 - pre_players). Convert V from
+                        # that perspective to learner perspective.
+                        term_current_players = 1 - pre_players
+                        term_v_learner = sign_correct_bootstrap(
+                            term_v, term_current_players, learner_side,
+                        )
+                        override_full = torch.full_like(term_v_learner, float("nan"))
+                        override_full[truncated_only] = term_v_learner[truncated_only]
+
                     # --- Pending transition protocol ---
                     # Steps 1-2 finalize transitions from PRIOR steps.
                     # Steps 3-4 create and possibly finalize transitions from THIS step.
@@ -1266,6 +1301,10 @@ class KataGoTrainingLoop:
                         f_value_cats = _compute_value_cats(
                             finalized["rewards"], finalized["terminated"].bool(), self.device,
                         )
+                        f_override = (
+                            override_full[finalized["env_ids"]]
+                            if override_full is not None else None
+                        )
                         self.buffer.add(
                             finalized["obs"], finalized["actions"],
                             finalized["log_probs"], finalized["values"],
@@ -1274,6 +1313,7 @@ class KataGoTrainingLoop:
                             finalized["legal_masks"], f_value_cats,
                             finalized["score_targets"],
                             env_ids=finalized["env_ids"],
+                            next_value_override=f_override,
                         )
 
                     # 3. Create new pending for envs where learner just moved
@@ -1310,6 +1350,10 @@ class KataGoTrainingLoop:
                                     imm_finalized["rewards"], imm_finalized["terminated"].bool(),
                                     self.device,
                                 )
+                                imm_override = (
+                                    override_full[imm_finalized["env_ids"]]
+                                    if override_full is not None else None
+                                )
                                 self.buffer.add(
                                     imm_finalized["obs"], imm_finalized["actions"],
                                     imm_finalized["log_probs"], imm_finalized["values"],
@@ -1318,6 +1362,7 @@ class KataGoTrainingLoop:
                                     imm_finalized["legal_masks"], imm_value_cats,
                                     imm_finalized["score_targets"],
                                     env_ids=imm_finalized["env_ids"],
+                                    next_value_override=imm_override,
                                 )
 
                     # --- Dones processing order (Changes 2+3) ---

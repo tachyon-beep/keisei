@@ -270,38 +270,150 @@ class TestVectorizedUpdateIntegration:
             assert not torch.tensor(val).isnan(), f"{key} is NaN"
             assert not torch.tensor(val).isinf(), f"{key} is inf"
 
+    def test_update_with_env_ids_threads_next_value_override(self, ppo, monkeypatch):
+        """env_ids branch must thread next_value_override into compute_gae_padded.
+
+        Discriminates "override flows through update()" from "override silently
+        dropped in update()" by capturing the actual kwargs passed to
+        compute_gae_padded — the integration smoke test alone (finite losses)
+        would pass even if the threading were removed.
+        """
+        torch.manual_seed(0)
+        buf = KataGoRolloutBuffer(num_envs=2, obs_shape=(50, 9, 9), action_space=11259)
+        # Uneven env coverage so total_samples != T*num_envs and update()
+        # routes through the env_ids / padded GAE branch.
+        # Step 0: env 0 only (truncated row, finite override)
+        # Step 1: envs 0, 1
+        # Step 2: env 1 only
+        env_lists = [[0], [0, 1], [1]]
+        rewards_per_step = [torch.tensor([0.0]), torch.tensor([0.0, 0.0]), torch.tensor([0.0])]
+        values_per_step = [torch.tensor([0.5]), torch.tensor([0.6, 0.4]), torch.tensor([0.55])]
+        # Step 0 env 0 row is truncated (dones=True, terminated=False).
+        dones_per_step = [
+            torch.tensor([True]),
+            torch.tensor([False, False]),
+            torch.tensor([False]),
+        ]
+        terminated_per_step = [
+            torch.tensor([False]),
+            torch.tensor([False, False]),
+            torch.tensor([False]),
+        ]
+        OVERRIDE_VAL = 7.5
+        override_per_step = [
+            torch.tensor([OVERRIDE_VAL]),
+            torch.tensor([float("nan"), float("nan")]),
+            torch.tensor([float("nan")]),
+        ]
+
+        for s in range(len(env_lists)):
+            envs = env_lists[s]
+            n = len(envs)
+            buf.add(
+                torch.randn(n, 50, 9, 9), torch.randint(0, 11259, (n,)),
+                torch.randn(n), values_per_step[s], rewards_per_step[s],
+                dones_per_step[s],
+                terminated_per_step[s],
+                torch.ones(n, 11259, dtype=torch.bool),
+                torch.full((n,), -1, dtype=torch.long),
+                torch.rand(n) * 2 - 1,
+                env_ids=torch.tensor(envs),
+                next_value_override=override_per_step[s],
+            )
+
+        # Confirm the buffer carries the override into flatten()
+        data = buf.flatten()
+        assert "next_value_override" in data
+        env_ids = data["env_ids"]
+        assert env_ids.tolist() == [0, 0, 1, 1]
+        # Row indices in flatten order: env 0 at indices 0,1 ; env 1 at 2,3
+        # Step 0 env 0 → flatten index 0 carries OVERRIDE_VAL
+        assert data["next_value_override"][0].item() == pytest.approx(OVERRIDE_VAL)
+        assert torch.isnan(data["next_value_override"][1:]).all()
+        # Sanity: total_samples != T * num_envs so update() takes env_ids branch
+        T = buf.size
+        assert data["rewards"].numel() != T * buf.num_envs
+
+        # Capture the kwargs passed to compute_gae_padded by ppo.update().
+        # update() does a local `from keisei.training.gae import compute_gae_padded`,
+        # so patching the module attribute intercepts it.
+        from keisei.training import gae as gae_module
+        captured: dict = {}
+        original = gae_module.compute_gae_padded
+
+        def spy(*args, **kwargs):
+            captured["override"] = kwargs.get("next_value_override")
+            captured["lengths"] = args[4] if len(args) >= 5 else kwargs.get("lengths")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(gae_module, "compute_gae_padded", spy)
+
+        losses = ppo.update(buf, torch.zeros(2))
+
+        # The override must have reached compute_gae_padded as a (T_max, N_env)
+        # padded tensor with our finite value at env 0's first valid step.
+        assert "override" in captured, "compute_gae_padded was not called"
+        assert captured["override"] is not None, (
+            "next_value_override was None — update() dropped the override"
+        )
+        ov = captured["override"]
+        assert ov.shape == (2, 2)
+        # env order in padded layout follows splits unique_consecutive of sorted env_ids;
+        # both envs appear in the same order (0, 1), so column index = env_id.
+        assert ov[0, 0].item() == pytest.approx(OVERRIDE_VAL)
+        assert torch.isnan(ov[1, 0])  # env 0 step 1 — no override
+        assert torch.isnan(ov[0, 1])  # env 1 step 0 — no override
+        assert torch.isnan(ov[1, 1])  # env 1 step 1 — no override
+
+        # Smoke: losses are finite (basic wiring sanity)
+        for key, val in losses.items():
+            if key.startswith("frac_") or key == "value_accuracy":
+                continue
+            assert not torch.tensor(val).isnan(), f"{key} is NaN"
+            assert not torch.tensor(val).isinf(), f"{key} is inf"
+
 
 class TestPerformanceSanity:
     """Sanity check that the optimized path isn't accidentally slower."""
 
     def test_argsort_faster_than_boolean_loop(self):
-        """argsort+split must be faster than boolean-index loop for 64+ envs."""
+        """argsort+split must be faster than boolean-index loop for 64+ envs.
+
+        Uses median-of-many runs to suppress scheduler jitter — at sub-ms
+        scales the per-iteration absolute gap is small, so a single-shot
+        comparison is too flaky for CI.
+        """
         torch.manual_seed(42)
-        N_envs = 64
-        total_samples = 8192
+        N_envs = 256
+        total_samples = 32768
         env_ids = torch.randint(0, N_envs, (total_samples,))
         rewards = torch.randn(total_samples)
+        runs = 25
 
-        # Boolean-index loop (old path)
-        start = time.perf_counter()
-        for _ in range(3):
+        bool_runs: list[float] = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
             for eid in range(N_envs):
                 mask = env_ids == eid
                 _ = rewards[mask]
-        bool_time = (time.perf_counter() - start) / 3
+            bool_runs.append(time.perf_counter() - t0)
+        bool_runs.sort()
+        bool_time = bool_runs[len(bool_runs) // 2]
 
-        # argsort+split (new path)
-        start = time.perf_counter()
-        for _ in range(3):
+        sort_runs: list[float] = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
             sort_idx = torch.argsort(env_ids, stable=True)
             sorted_ids = env_ids[sort_idx]
             _, counts = sorted_ids.unique_consecutive(return_counts=True)
             splits = torch.split(sort_idx, counts.tolist())
             for idx in splits:
                 _ = rewards[idx]
-        sort_time = (time.perf_counter() - start) / 3
+            sort_runs.append(time.perf_counter() - t0)
+        sort_runs.sort()
+        sort_time = sort_runs[len(sort_runs) // 2]
 
-        # argsort should be at least 2x faster for 64 envs
         assert sort_time < bool_time, (
-            f"argsort ({sort_time:.4f}s) not faster than bool loop ({bool_time:.4f}s)"
+            f"argsort median ({sort_time*1e3:.3f}ms) not faster than "
+            f"bool-loop median ({bool_time*1e3:.3f}ms)"
         )

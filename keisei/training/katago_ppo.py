@@ -717,6 +717,14 @@ class KataGoPPOAlgorithm:
             terminated_pad = torch.ones(max_T, N_env)  # padding = done to zero GAE
             nv = torch.zeros(N_env)
 
+            # Per-cell bootstrap override (e.g. V(terminal_observation) for
+            # truncated finalized transitions). Padded layout — NaN sentinel
+            # in unfilled cells (including padding) so GAE falls back to the
+            # default next_vals there.
+            override_pad: torch.Tensor | None = None
+            if "next_value_override" in data:
+                override_pad = torch.full((max_T, N_env), float("nan"))
+
             if unique_envs.max() >= next_values_cpu.shape[0]:
                 raise IndexError(
                     f"env_id {unique_envs.max().item()} >= next_values size "
@@ -728,6 +736,8 @@ class KataGoPPOAlgorithm:
                 values_pad[:L, i] = data["values"][idx]
                 terminated_pad[:L, i] = data[gae_dones_key][idx]
                 nv[i] = next_values_cpu[unique_envs[i]]
+                if override_pad is not None:
+                    override_pad[:L, i] = data["next_value_override"][idx].float()
 
             lengths_t = torch.tensor(env_lengths)
             if device.type == "cuda":
@@ -736,11 +746,15 @@ class KataGoPPOAlgorithm:
                     rewards_pad.to(device), values_pad.to(device),
                     terminated_pad.to(device), nv.to(device),
                     lengths_t, gamma=self.params.gamma, lam=self.params.gae_lambda,
+                    next_value_override=(
+                        override_pad.to(device) if override_pad is not None else None
+                    ),
                 ).cpu()
             else:
                 padded_adv = compute_gae_padded(
                     rewards_pad, values_pad, terminated_pad, nv, lengths_t,
                     gamma=self.params.gamma, lam=self.params.gae_lambda,
+                    next_value_override=override_pad,
                 )
 
             advantages = torch.zeros(total_samples)

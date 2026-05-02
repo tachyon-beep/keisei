@@ -625,3 +625,160 @@ class TestGAEPerCellNextValueOverride:
         assert not adv_gpu.requires_grad
         assert adv_gpu.grad_fn is None
 
+
+class TestGAEPaddedPerCellOverride:
+    """R: per-cell next_value_override for compute_gae_padded(_gpu).
+
+    Required for split-merge truncation handling: the per-env padded GAE
+    must use V(terminal_observations) instead of values[t+1] (which is
+    the next game's first learner-move state after auto-reset).
+
+    Contract mirrors the (T, N) flat helpers: NaN cells fall back to the
+    default next_vals (values[t+1] mid-sequence; next_values[i] at lengths[i]-1).
+    Finite cells replace the bootstrap at that (t, env_index).
+    """
+
+    def test_padded_override_replaces_values_shift_mid_seq(self):
+        from keisei.training.gae import compute_gae_padded
+        T_max, N = 4, 1
+        rewards = torch.tensor([[0.0], [0.0], [0.0], [0.0]])
+        values = torch.tensor([[0.5], [0.6], [0.7], [0.8]])
+        terminated = torch.zeros(T_max, N)
+        next_values = torch.tensor([0.0])
+        lengths = torch.tensor([4])
+
+        adv_default = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=1.0, lam=0.0,
+        )
+        # delta[0] = 0 + 1.0 * values[1] - values[0] = 0.6 - 0.5 = 0.1
+        assert abs(adv_default[0, 0].item() - 0.1) < 1e-5
+
+        override = torch.full((T_max, N), float("nan"))
+        override[0, 0] = 9.0
+        adv_override = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=1.0, lam=0.0, next_value_override=override,
+        )
+        # delta[0] = 0 + 1.0 * 9.0 - 0.5 = 8.5
+        assert abs(adv_override[0, 0].item() - 8.5) < 1e-5
+
+    def test_padded_override_replaces_last_valid_step(self):
+        """Override at (lengths[i]-1, i) must beat the next_values[i] stamp."""
+        from keisei.training.gae import compute_gae_padded
+        T_max, N = 4, 2
+        rewards = torch.zeros(T_max, N)
+        values = torch.tensor([[0.5, 0.5], [0.6, 0.6], [0.7, 0.0], [0.0, 0.0]])
+        terminated = torch.tensor([[0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        next_values = torch.tensor([0.0, 0.0])
+        lengths = torch.tensor([3, 2])  # env 0: 3 valid, env 1: 2 valid
+
+        adv_default = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=1.0, lam=0.0,
+        )
+        # env 0 step 2 (last valid): delta = 0 + 1.0 * next_values[0] - values[2,0]
+        #                                 = 0 - 0.7 = -0.7
+        assert abs(adv_default[2, 0].item() - (-0.7)) < 1e-5
+
+        # Override env 0's last valid step with a finite bootstrap.
+        override = torch.full((T_max, N), float("nan"))
+        override[2, 0] = 4.0  # replaces next_values[0] at env 0's last step
+        adv_override = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=1.0, lam=0.0, next_value_override=override,
+        )
+        # delta = 0 + 1.0 * 4.0 - 0.7 = 3.3
+        assert abs(adv_override[2, 0].item() - 3.3) < 1e-5
+        # env 1 untouched
+        assert torch.allclose(adv_override[:, 1], adv_default[:, 1], atol=1e-5)
+
+    def test_padded_override_partial_falls_back_for_nan(self):
+        from keisei.training.gae import compute_gae_padded
+        T_max, N = 3, 2
+        torch.manual_seed(0)
+        rewards = torch.randn(T_max, N)
+        values = torch.randn(T_max, N)
+        terminated = torch.zeros(T_max, N)
+        next_values = torch.randn(N)
+        lengths = torch.tensor([3, 3])
+
+        baseline = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95,
+        )
+        override = torch.full((T_max, N), float("nan"))
+        override[1, 0] = 42.0
+        adv = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95, next_value_override=override,
+        )
+        assert torch.allclose(adv[:, 1], baseline[:, 1], atol=1e-5)
+        assert not torch.isclose(adv[1, 0], baseline[1, 0])
+
+    def test_padded_override_none_is_unchanged(self):
+        from keisei.training.gae import compute_gae_padded
+        T_max, N = 4, 2
+        torch.manual_seed(11)
+        rewards = torch.randn(T_max, N)
+        values = torch.randn(T_max, N)
+        terminated = torch.zeros(T_max, N)
+        next_values = torch.randn(N)
+        lengths = torch.tensor([4, 4])
+
+        a = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95,
+        )
+        b = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95, next_value_override=None,
+        )
+        assert torch.allclose(a, b)
+
+    def test_padded_gpu_override_matches_cpu(self):
+        from keisei.training.gae import compute_gae_padded, compute_gae_padded_gpu
+        T_max, N = 4, 2
+        torch.manual_seed(3)
+        rewards = torch.randn(T_max, N)
+        values = torch.randn(T_max, N)
+        terminated = torch.tensor([[0.0, 0.0], [0.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        next_values = torch.randn(N)
+        lengths = torch.tensor([4, 3])
+        override = torch.full((T_max, N), float("nan"))
+        override[2, 1] = 1.25  # env 1 last valid step
+        override[1, 0] = -0.5  # env 0 mid-sequence
+
+        cpu = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.97, lam=0.9, next_value_override=override,
+        )
+        gpu = compute_gae_padded_gpu(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.97, lam=0.9, next_value_override=override,
+        )
+        assert torch.allclose(cpu, gpu, atol=1e-5)
+
+    def test_padded_override_preserves_no_grad(self):
+        from keisei.training.gae import compute_gae_padded, compute_gae_padded_gpu
+        T_max, N = 3, 2
+        rewards = torch.randn(T_max, N, requires_grad=True)
+        values = torch.randn(T_max, N, requires_grad=True)
+        terminated = torch.zeros(T_max, N)
+        next_values = torch.randn(N, requires_grad=True)
+        lengths = torch.tensor([3, 3])
+        override = torch.full((T_max, N), float("nan"))
+        override[0, 0] = 1.5
+        override.requires_grad_(True)
+
+        adv = compute_gae_padded(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95, next_value_override=override,
+        )
+        assert not adv.requires_grad and adv.grad_fn is None
+        adv_gpu = compute_gae_padded_gpu(
+            rewards, values, terminated, next_values, lengths,
+            gamma=0.99, lam=0.95, next_value_override=override,
+        )
+        assert not adv_gpu.requires_grad and adv_gpu.grad_fn is None
+

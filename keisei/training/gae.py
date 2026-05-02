@@ -81,6 +81,7 @@ def compute_gae_padded(
     lengths: torch.Tensor,
     gamma: float,
     lam: float,
+    next_value_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute GAE for multiple envs with variable-length episodes via padding.
 
@@ -97,6 +98,12 @@ def compute_gae_padded(
         lengths: (N,) actual sequence length per env
         gamma: discount factor
         lam: GAE lambda
+        next_value_override: optional (T_max, N) per-cell bootstrap override.
+            Finite cells replace ``next_vals[t, i]`` for that cell — including
+            the env's last valid step (overriding ``next_values[i]``). NaN cells
+            fall back to the default. Used to inject the correct bootstrap when
+            the default is wrong (e.g. truncation with auto-reset, where the
+            shifted ``values[t+1]`` is the fresh game's V).
 
     Returns:
         (T_max, N) advantages — only [:lengths[i], i] are meaningful per env.
@@ -124,6 +131,13 @@ def compute_gae_padded(
         last_step_np = last_step_idx.cpu().numpy().astype(int)
         for i in range(N):
             next_vals[last_step_np[i], i] = next_values[i]
+
+        # Apply per-cell override last so it wins over both the values-shift
+        # default and the last-valid-step next_values stamp.
+        if next_value_override is not None:
+            override = next_value_override.to(dtype=compute_dtype)
+            override_mask = ~torch.isnan(override)
+            next_vals = torch.where(override_mask, override, next_vals)
 
         for t in reversed(range(T_max)):
             not_done = 1.0 - terminated[t].float()
@@ -212,6 +226,7 @@ def compute_gae_padded_gpu(
     lengths: torch.Tensor,
     gamma: float,
     lam: float,
+    next_value_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """GPU GAE for variable-length per-env sequences via padding.
 
@@ -230,6 +245,9 @@ def compute_gae_padded_gpu(
         lengths: (N,) actual sequence length per env (CPU tensor is fine)
         gamma: discount factor
         lam: GAE lambda
+        next_value_override: optional (T_max, N) per-cell bootstrap override.
+            Finite cells replace ``next_vals[t, i]`` for that cell — including
+            the env's last valid step. NaN cells fall back to the default.
 
     Returns:
         (T_max, N) advantages on the same device as inputs.
@@ -256,6 +274,13 @@ def compute_gae_padded_gpu(
         last_step_idx = (lengths - 1).clamp(min=0).cpu().numpy().astype(int)
         for i in range(N):
             next_vals[last_step_idx[i], i] = next_values[i]
+
+        # Apply per-cell override last so it wins over both shift default and
+        # last-valid-step next_values stamp.
+        if next_value_override is not None:
+            override = next_value_override.to(dtype=compute_dtype, device=device)
+            override_mask = ~torch.isnan(override)
+            next_vals = torch.where(override_mask, override, next_vals)
 
         not_done = 1.0 - terminated.float()
         delta = rewards + gamma * next_vals * not_done - values
