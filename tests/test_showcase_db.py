@@ -43,7 +43,7 @@ class TestShowcaseSchema:
     def test_showcase_moves_table_exists(self, db: str) -> None:
         conn = _connect(db)
         try:
-            conn.execute("SELECT id, game_id, ply, action_index, usi_notation, board_json, hands_json, current_player, in_check, value_estimate, top_candidates, move_heatmap_json, move_time_ms, created_at FROM showcase_moves LIMIT 0")
+            conn.execute("SELECT id, game_id, ply, action_index, usi_notation, board_json, hands_json, current_player, in_check, value_estimate, top_candidates, move_heatmap_json, move_usi, move_time_ms, created_at FROM showcase_moves LIMIT 0")
         finally:
             conn.close()
 
@@ -218,6 +218,25 @@ class TestGameOperations:
         assert moves[0]["move_time_ms"] == 15
         assert moves[0]["ply"] == 1
         assert moves[0]["action_index"] == 42
+
+    def test_write_and_read_move_usi(self, db: str) -> None:
+        """move_usi round-trips through write_showcase_move (sibling to usi_notation)."""
+        qid = queue_match(db, "e1", "e2", "normal")
+        game_id = create_showcase_game(
+            db, queue_id=qid, entry_id_black="e1", entry_id_white="e2",
+            elo_black=1500.0, elo_white=1480.0, name_black="A", name_white="B",
+        )
+        write_showcase_move(
+            db, game_id=game_id, ply=1, action_index=42,
+            usi_notation="P-9f", board_json="[]", hands_json="{}",
+            current_player="white", in_check=False, value_estimate=0.52,
+            top_candidates='[]', move_time_ms=15,
+            move_usi="9g9f",
+        )
+        moves = read_showcase_moves_since(db, game_id, since_ply=0)
+        assert moves[0]["move_usi"] == "9g9f"
+        assert moves[0]["usi_notation"] == "P-9f"  # confirm both columns coexist
+        assert moves[0]["move_time_ms"] == 15  # adjacent-column transposition guard
 
     def test_write_move_heatmap_defaults_to_none(self, db: str) -> None:
         """Omitting move_heatmap_json leaves the column NULL (backward compat)."""

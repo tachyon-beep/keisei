@@ -10,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -155,6 +155,20 @@ def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     _migrate_add_column(conn, "showcase_moves", "move_heatmap_json", "TEXT")
 
 
+def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """v7 -> v8: Add showcase_moves.move_usi column.
+
+    The existing usi_notation column actually stores Hodges notation (e.g. 'P-9f'),
+    not USI (e.g. '9g9f'). This is legacy misnaming; the dashboard MoveLog and
+    CommentaryPanel rely on the Hodges format. The new policy heatmap and
+    last-move highlight features need real USI to match against
+    SpectatorEnv.legal_moves_with_usi() output. Storing it in a sibling column
+    avoids breaking existing consumers. Nullable: pre-migration rows render no
+    highlight, which is the correct fallback.
+    """
+    _migrate_add_column(conn, "showcase_moves", "move_usi", "TEXT")
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
@@ -165,6 +179,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: _migrate_v4_to_v5,
     6: _migrate_v5_to_v6,
     7: _migrate_v6_to_v7,
+    8: _migrate_v7_to_v8,
 }
 
 
@@ -442,6 +457,7 @@ def init_db(db_path: str) -> None:
                 value_estimate  REAL,
                 top_candidates  TEXT,
                 move_heatmap_json TEXT,
+                move_usi        TEXT,
                 move_time_ms    INTEGER,
                 created_at      TEXT NOT NULL,
                 UNIQUE(game_id, ply)

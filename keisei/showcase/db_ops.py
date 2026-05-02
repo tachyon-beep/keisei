@@ -125,7 +125,8 @@ def write_showcase_move(db_path: str, *, game_id: int, ply: int, action_index: i
                          usi_notation: str, board_json: str, hands_json: str,
                          current_player: str, in_check: bool, value_estimate: float,
                          top_candidates: str, move_time_ms: int,
-                         move_heatmap_json: str | None = None) -> None:
+                         move_heatmap_json: str | None = None,
+                         move_usi: str | None = None) -> None:
     """Atomic write: INSERT move + UPDATE total_ply in one transaction."""
     conn = _connect(db_path)
     try:
@@ -137,16 +138,17 @@ def write_showcase_move(db_path: str, *, game_id: int, ply: int, action_index: i
                     """INSERT OR IGNORE INTO showcase_moves
                        (game_id, ply, action_index, usi_notation, board_json, hands_json,
                         current_player, in_check, value_estimate, top_candidates,
-                        move_heatmap_json, move_time_ms, created_at)
+                        move_heatmap_json, move_usi, move_time_ms, created_at)
                        VALUES (:game_id, :ply, :action_index, :usi_notation, :board_json, :hands_json,
                                :current_player, :in_check, :value_estimate, :top_candidates,
-                               :move_heatmap_json, :move_time_ms, :created_at)""",
+                               :move_heatmap_json, :move_usi, :move_time_ms, :created_at)""",
                     {
                         "game_id": game_id, "ply": ply, "action_index": action_index,
                         "usi_notation": usi_notation, "board_json": board_json,
                         "hands_json": hands_json, "current_player": current_player,
                         "in_check": int(in_check), "value_estimate": value_estimate,
                         "top_candidates": top_candidates, "move_heatmap_json": move_heatmap_json,
+                        "move_usi": move_usi,
                         "move_time_ms": move_time_ms, "created_at": now,
                     })
                 conn.execute("UPDATE showcase_games SET total_ply = ? WHERE id = ?", (ply, game_id))

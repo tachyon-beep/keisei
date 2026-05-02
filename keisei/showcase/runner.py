@@ -184,12 +184,18 @@ class ShowcaseRunner:
                 else:
                     usi_notation = f"action_{action}"
 
+                # The 'usi_notation' field above is actually Hodges notation
+                # (e.g. 'P-9f') stored under a misleading legacy name. For the
+                # policy heatmap and frontend last-move highlighter we need real
+                # USI; derive it from the legal_with_usi list captured pre-step.
+                chosen_usi_real = next((u for i, u in legal_with_usi if i == action), "")
+
                 for tc in top_candidates:
                     tc["usi"] = usi_notation if tc["action"] == action else f"a{tc['action']}"
 
                 # Build policy-preference heatmap for the chosen move's from-square / drop prefix.
                 heatmap = build_heatmap(
-                    chosen_usi=usi_notation,
+                    chosen_usi=chosen_usi_real,
                     legal_with_usi=legal_with_usi,
                     probs={int(i): float(probs[i]) for i in legal},
                 )
@@ -201,6 +207,7 @@ class ShowcaseRunner:
                     in_check=state.get("in_check", False), value_estimate=win_prob,
                     top_candidates=json.dumps(top_candidates), move_time_ms=inference_ms,
                     move_heatmap_json=json.dumps(heatmap),
+                    move_usi=chosen_usi_real,
                 )
 
                 # Re-read speed from DB periodically (not every ply — W10)

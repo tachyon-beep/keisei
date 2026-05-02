@@ -23,7 +23,7 @@
   )
 
   // Last-move highlight: parse the current move's USI for from/to indices.
-  $: lastMoveCoords = move?.usi_notation ? parseUsi(move.usi_notation) : null
+  $: lastMoveCoords = move?.move_usi ? parseUsi(move.move_usi) : null
   $: lastMoveFromIdx = lastMoveCoords?.fromIdx ?? -1
   $: lastMoveToIdx = lastMoveCoords?.toIdx ?? -1
 
