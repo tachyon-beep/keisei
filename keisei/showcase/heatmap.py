@@ -6,6 +6,7 @@ serialized to JSON and stored in showcase_moves.move_heatmap_json.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 
 
@@ -42,7 +43,7 @@ def build_heatmap(
         if _move_prefix(usi) != target:
             continue
         prob = probs.get(idx)
-        if prob is None or prob <= 0.0:
+        if prob is None or not math.isfinite(prob) or prob <= 0.0:
             continue
         out[usi] = float(prob)
     return out

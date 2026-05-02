@@ -48,6 +48,22 @@ def test_zero_probability_entries_are_omitted() -> None:
     assert out == {"7g7f": pytest.approx(0.95)}
 
 
+def test_nan_and_inf_probabilities_are_omitted() -> None:
+    """NaN/Inf probabilities (poisoned logits) must not produce invalid JSON."""
+    import json
+    import math
+
+    legal = [(10, "7g7f"), (11, "7g7e"), (12, "7g7d"), (13, "7g7c")]
+    probs = {10: 0.50, 11: float("nan"), 12: float("inf"), 13: float("-inf")}
+    out = build_heatmap(chosen_usi="7g7f", legal_with_usi=legal, probs=probs)
+    # Only the finite, positive probability survives.
+    assert out == {"7g7f": pytest.approx(0.50)}
+    # And the result must serialize to strict JSON (no NaN / Infinity literals).
+    serialized = json.dumps(out)
+    parsed = json.loads(serialized)  # would raise on NaN/Infinity literal
+    assert all(math.isfinite(v) for v in parsed.values())
+
+
 def test_missing_action_index_in_probs_is_skipped() -> None:
     """Defensive: legal moves whose index isn't in probs are silently skipped."""
     legal = [(10, "7g7f"), (99, "7g7e")]
