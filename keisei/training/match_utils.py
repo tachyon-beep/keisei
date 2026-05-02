@@ -7,11 +7,11 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from keisei.training.dynamic_trainer import MatchRollout
@@ -84,6 +84,7 @@ def play_match(
             device=device, num_envs=num_envs, max_ply=max_ply,
             stop_event=stop_event, collect_rollout=collect_rollout,
             feature_tracker=feature_tracker,
+            active_envs=min(num_envs, games_remaining),
         )
         if collect_rollout:
             a_wins, b_wins, draws, rollout = batch_result
@@ -131,6 +132,7 @@ def play_batch(
     stop_event: threading.Event | None = None,
     collect_rollout: bool = False,
     feature_tracker: GameFeatureTracker | None = None,
+    active_envs: int | None = None,
 ) -> tuple[int, int, int] | tuple[int, int, int, Any]:
     """Play one batch of games (num_envs concurrent).
 
@@ -138,6 +140,9 @@ def play_batch(
     Player B = side 1 (white).
 
     When collect_rollout=True, returns (a_wins, b_wins, draws, MatchRollout).
+
+    ``active_envs`` limits how many leading env lanes count toward results.  The
+    full VecEnv is still stepped so every lane receives valid actions.
     """
     # Defensive: ensure both models are in eval mode so BatchNorm running
     # statistics are not corrupted during inference.  ConcurrentMatchPool
@@ -154,6 +159,8 @@ def play_batch(
     a_wins = 0
     b_wins = 0
     draws = 0
+    counted_envs = num_envs if active_envs is None else max(0, min(active_envs, num_envs))
+    active_env_mask = np.arange(num_envs) < counted_envs
 
     # Rollout collection buffers (CPU)
     if collect_rollout:
@@ -174,7 +181,9 @@ def play_batch(
         pre_step_players = current_players.copy()
 
         if collect_rollout:
-            step_perspective.append(torch.from_numpy(pre_step_players))
+            rollout_perspective = pre_step_players.astype(np.int64, copy=True)
+            rollout_perspective[~active_env_mask] = -1
+            step_perspective.append(torch.from_numpy(rollout_perspective))
             step_obs.append(obs.cpu())
             step_legal_masks.append(legal_masks.cpu())
 
@@ -236,14 +245,16 @@ def play_batch(
         # Feature tracking — extract per-game behavioural stats
         if feature_tracker is not None:
             meta = step_result.step_metadata
+            tracked_terminated = terminated & active_env_mask
+            tracked_truncated = truncated & active_env_mask
             feature_tracker.record_step(
                 actions=actions.cpu().numpy(),
                 captured_piece=np.asarray(meta.captured_piece),
                 termination_reason=np.asarray(meta.termination_reason),
                 ply_count=np.asarray(meta.ply_count),
                 pre_step_players=pre_step_players,
-                terminated=terminated,
-                truncated=truncated,
+                terminated=tracked_terminated,
+                truncated=tracked_truncated,
                 rewards=rewards,
             )
 
@@ -251,7 +262,7 @@ def play_batch(
         # Rewards are from the last-mover's perspective:
         #   reward > 0 means the mover won, reward < 0 means the mover lost.
         # pre_step_players tells us who moved (0=A/black, 1=B/white).
-        done = terminated | truncated
+        done = (terminated | truncated) & active_env_mask
         a_moved = pre_step_players == 0
         b_moved = pre_step_players == 1
         a_wins += int(((rewards > 0) & done & a_moved).sum())
@@ -260,12 +271,10 @@ def play_batch(
         b_wins += int(((rewards < 0) & done & a_moved).sum())
         draws += int(((rewards == 0) & done).sum())
 
-        # Heuristic: stop once enough games finish. All games completing in
-        # this step are counted ABOVE before this check — no games are dropped.
-        # May exceed num_envs on VecEnv auto-reset (a fast game can finish and
-        # restart within one batch), but that's fine — the outer play_match()
-        # manages games_remaining exactly.
-        if a_wins + b_wins + draws >= num_envs:
+        # Heuristic: stop once enough counted lanes finish.  Background lanes
+        # still advance above, but their completions are intentionally ignored
+        # when play_match asks for a partial final batch.
+        if a_wins + b_wins + draws >= counted_envs:
             break
 
     if collect_rollout:

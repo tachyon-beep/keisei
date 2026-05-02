@@ -12,9 +12,7 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 import torch
-import torch.nn as nn
 
 from keisei.training.dynamic_trainer import MatchRollout
 from keisei.training.match_utils import (
@@ -294,7 +292,7 @@ class TestPlayMatchBasic:
     """Test play_match returns correct tuple structure."""
 
     def test_play_match_basic_3tuple(self) -> None:
-        """Normal match returns (a_wins, b_wins, draws) summing to >= games_target."""
+        """Normal match returns exactly games_target completed games."""
         num_envs = 2
         vecenv = MockVecEnv(num_envs=num_envs, terminate_after=2, terminal_reward=1.0)
         model_a = TinyModel()
@@ -309,8 +307,29 @@ class TestPlayMatchBasic:
             games_target=games_target,
         )
         total = result.a_wins + result.b_wins + result.draws
-        assert total >= games_target, f"Expected >= {games_target} games, got {total}"
+        assert total == games_target, f"Expected {games_target} games, got {total}"
         assert result.rollout is None
+
+    def test_play_match_does_not_overshoot_when_target_below_num_envs(self) -> None:
+        """A partial final batch must not count more games than requested."""
+        num_envs = 4
+        games_target = 1
+        vecenv = MockVecEnv(
+            num_envs=num_envs, terminate_after=1, terminal_reward=1.0
+        )
+        model_a = TinyModel()
+        model_b = TinyModel()
+
+        result = play_match(
+            vecenv, model_a, model_b,
+            device=torch.device("cpu"),
+            num_envs=num_envs,
+            max_ply=10,
+            games_target=games_target,
+        )
+
+        total = result.a_wins + result.b_wins + result.draws
+        assert total == games_target
 
 
 class TestPlayMatchStopEvent:
@@ -389,6 +408,31 @@ class TestPlayMatchRollout:
         assert isinstance(result.rollout, MatchRollout)
         # Should have observations with ndim == 5: (steps, envs, C, 9, 9)
         assert result.rollout.observations.ndim == 5
+
+    def test_partial_batch_rollout_marks_inactive_lanes(self) -> None:
+        """Inactive lanes must not be selected by DynamicTrainer perspective masks."""
+        num_envs = 4
+        games_target = 1
+        vecenv = MockVecEnv(
+            num_envs=num_envs, terminate_after=1, terminal_reward=1.0
+        )
+        model_a = TinyModel()
+        model_b = TinyModel()
+
+        result = play_match(
+            vecenv, model_a, model_b,
+            device=torch.device("cpu"),
+            num_envs=num_envs,
+            max_ply=10,
+            games_target=games_target,
+            collect_rollout=True,
+        )
+
+        assert result.rollout is not None
+        total = result.a_wins + result.b_wins + result.draws
+        assert total == games_target
+        assert (result.rollout.perspective[:, :games_target] >= 0).all()
+        assert (result.rollout.perspective[:, games_target:] == -1).all()
 
 
 # ---------------------------------------------------------------------------
