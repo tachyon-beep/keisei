@@ -10,7 +10,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -144,6 +144,17 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """v6 -> v7: Add showcase_moves.move_heatmap_json column.
+
+    Stores a JSON {usi: probability} dict containing legal moves sharing the
+    chosen move's from-square (or drop prefix), used by the showcase tab's
+    toggleable policy-preference heatmap overlay. Nullable — pre-migration
+    rows render no heatmap, which is the correct fallback.
+    """
+    _migrate_add_column(conn, "showcase_moves", "move_heatmap_json", "TEXT")
+
+
 # Migration registry: maps target version to the function that migrates
 # from (target - 1) → target.  Each function receives an open connection
 # and must be idempotent (safe to re-run on an already-migrated DB).
@@ -153,6 +164,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migrate_v3_to_v4,
     5: _migrate_v4_to_v5,
     6: _migrate_v5_to_v6,
+    7: _migrate_v6_to_v7,
 }
 
 
@@ -429,6 +441,7 @@ def init_db(db_path: str) -> None:
                 in_check        INTEGER NOT NULL DEFAULT 0,
                 value_estimate  REAL,
                 top_candidates  TEXT,
+                move_heatmap_json TEXT,
                 move_time_ms    INTEGER,
                 created_at      TEXT NOT NULL,
                 UNIQUE(game_id, ply)
