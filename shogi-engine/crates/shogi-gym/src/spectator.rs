@@ -213,6 +213,22 @@ impl SpectatorEnv {
             .collect()
     }
 
+    /// Return all legal moves at the current position with their USI strings.
+    /// Read-only; no state mutation. Order matches `legal_actions()`.
+    pub fn legal_moves_with_usi(&mut self) -> Vec<(usize, String)> {
+        use crate::spectator_data::move_usi;
+        let perspective = self.game.position.current_player;
+        let moves = self.game.legal_moves();
+        moves
+            .into_iter()
+            .map(|mv| {
+                let idx = self.mapper.encode(mv, perspective)
+                    .expect("legal move must be encodable");
+                (idx, move_usi(mv))
+            })
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Property getters
     // -----------------------------------------------------------------------
