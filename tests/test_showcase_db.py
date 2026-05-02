@@ -199,6 +199,39 @@ class TestGameOperations:
         game = read_active_showcase_game(db)
         assert game is None
 
+    def test_write_and_read_move_heatmap_json(self, db: str) -> None:
+        """move_heatmap_json round-trips through write_showcase_move."""
+        qid = queue_match(db, "e1", "e2", "normal")
+        game_id = create_showcase_game(
+            db, queue_id=qid, entry_id_black="e1", entry_id_white="e2",
+            elo_black=1500.0, elo_white=1480.0, name_black="A", name_white="B",
+        )
+        write_showcase_move(
+            db, game_id=game_id, ply=1, action_index=42,
+            usi_notation="7g7f", board_json="[]", hands_json="{}",
+            current_player="white", in_check=False, value_estimate=0.52,
+            top_candidates='[]', move_time_ms=15,
+            move_heatmap_json='{"7g7f": 0.5, "7g7e": 0.3}',
+        )
+        moves = read_showcase_moves_since(db, game_id, since_ply=0)
+        assert moves[0]["move_heatmap_json"] == '{"7g7f": 0.5, "7g7e": 0.3}'
+
+    def test_write_move_heatmap_defaults_to_none(self, db: str) -> None:
+        """Omitting move_heatmap_json leaves the column NULL (backward compat)."""
+        qid = queue_match(db, "e1", "e2", "normal")
+        game_id = create_showcase_game(
+            db, queue_id=qid, entry_id_black="e1", entry_id_white="e2",
+            elo_black=1500.0, elo_white=1480.0, name_black="A", name_white="B",
+        )
+        write_showcase_move(
+            db, game_id=game_id, ply=1, action_index=42,
+            usi_notation="7g7f", board_json="[]", hands_json="{}",
+            current_player="white", in_check=False, value_estimate=0.52,
+            top_candidates='[]', move_time_ms=15,
+        )
+        moves = read_showcase_moves_since(db, game_id, since_ply=0)
+        assert moves[0]["move_heatmap_json"] is None
+
 
 class TestHeartbeat:
     def test_write_and_read_heartbeat(self, db: str) -> None:

@@ -124,7 +124,8 @@ def read_active_showcase_game(db_path: str) -> dict[str, Any] | None:
 def write_showcase_move(db_path: str, *, game_id: int, ply: int, action_index: int,
                          usi_notation: str, board_json: str, hands_json: str,
                          current_player: str, in_check: bool, value_estimate: float,
-                         top_candidates: str, move_time_ms: int) -> None:
+                         top_candidates: str, move_time_ms: int,
+                         move_heatmap_json: str | None = None) -> None:
     """Atomic write: INSERT move + UPDATE total_ply in one transaction."""
     conn = _connect(db_path)
     try:
@@ -135,10 +136,12 @@ def write_showcase_move(db_path: str, *, game_id: int, ply: int, action_index: i
                 conn.execute(
                     """INSERT OR IGNORE INTO showcase_moves
                        (game_id, ply, action_index, usi_notation, board_json, hands_json,
-                        current_player, in_check, value_estimate, top_candidates, move_time_ms, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        current_player, in_check, value_estimate, top_candidates,
+                        move_heatmap_json, move_time_ms, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (game_id, ply, action_index, usi_notation, board_json, hands_json,
-                     current_player, int(in_check), value_estimate, top_candidates, move_time_ms, now))
+                     current_player, int(in_check), value_estimate, top_candidates,
+                     move_heatmap_json, move_time_ms, now))
                 conn.execute("UPDATE showcase_games SET total_ply = ? WHERE id = ?", (ply, game_id))
                 conn.commit()
                 return
