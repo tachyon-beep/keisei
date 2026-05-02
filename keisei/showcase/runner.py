@@ -187,8 +187,7 @@ class ShowcaseRunner:
                 for tc in top_candidates:
                     tc["usi"] = usi_notation if tc["action"] == action else f"a{tc['action']}"
 
-                # Build heatmap of moves sharing the chosen move's from-square
-                # (board move) or drop prefix (drop). Lean: only same-prefix.
+                # Build policy-preference heatmap for the chosen move's from-square / drop prefix.
                 heatmap = build_heatmap(
                     chosen_usi=usi_notation,
                     legal_with_usi=legal_with_usi,
