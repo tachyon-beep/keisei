@@ -5,173 +5,215 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-04-02
+## [1.0.0] - 2026-05-02
 
-Second release. Adds the KataGo-inspired SE-ResNet architecture, multi-head PPO,
-opponent league play, supervised learning warmup, and significant infrastructure
-improvements.
-
-### Added
-
-#### KataGo-Style Neural Network (Plans A–B)
-- **SE-ResNet** architecture with GlobalPoolBiasBlock (global pooling bias +
-  Squeeze-and-Excitation with scale+shift), adapted from KataGo. (`5898460`,
-  `1d45608`)
-- `KataGoBaseModel` ABC and `KataGoOutput` dataclass for multi-head models.
-  (`b729d75`)
-- Three output heads: spatial policy `(B, 9, 9, 139)`, W/D/L value
-  classification `(B, 3)`, and score prediction `(B, 1)`. (`1d45608`)
-- `KataGoPPOAlgorithm` with multi-head loss (policy + W/D/L cross-entropy +
-  score MSE). (`54c2944`, `f4b5848`)
-- `KataGoRolloutBuffer` with `value_categories` and `score_targets` storage,
-  including NaN/unnormalized guards. (`5369152`)
-- `compute_value_metrics` for W/D/L prediction monitoring (degeneracy
-  detection). (`e1467f9`)
-- `se_resnet` and `katago_ppo` registered in model and algorithm registries.
-  (`6ecb5ed`, `a19e6a6`, `7417e6b`)
-
-#### Rust Engine Extensions (Plan A)
-- 50-channel KataGo observation generator with repetition count planes (1x, 2x,
-  3x, 4+) and check indicator. (`d653c8c`)
-- `SpatialActionMapper` with 11,259-action spatial encoding (81 squares x 139
-  move types). (`f49fde9`)
-- `VecEnv` mode dispatch for observation and action encoding formats. (`2709e70`)
-- `material_balance()` and `piece_value()` in shogi-core for score head
-  targets. (`256fa4f`)
-- Per-step `material_balance` buffer in `VecEnv` and `StepMetadata`. (`3edb6d3`)
-
-#### Supervised Learning Warmup (Plans C–D)
-- `CSAParser` for Floodgate game record parsing with Shift-JIS detection.
-  (`00d51a2`, `463e60a`)
-- `SLDataset` with memory-mapped binary shards for efficient data loading.
-  (`af4edcb`)
-- `SLTrainer` for supervised learning warmup before RL. (`b2c75bf`)
-- `keisei-prepare-sl` CLI for SL data preparation. (`50595e1`)
-- `ReduceLROnPlateau` scheduler in `KataGoTrainingLoop`. (`0420d49`)
-- RL warmup with elevated entropy coefficient (`get_entropy_coeff` method) to
-  soften overconfident SL policies. (`19bb0b5`)
-
-#### Training Infrastructure (Plan E)
-- `ValueHeadAdapter` pattern with `ScalarValueAdapter` and
-  `MultiHeadValueAdapter` for dual-contract model support. (`89efabf`)
-- Contract type and `obs_channels` added to model registry. (`9bd3be8`)
-- `KataGoTrainingLoop` wiring SE-ResNet + KataGoPPO + VecEnv. (`f6f96ef`)
-- Architecture metadata saved in checkpoints for safe resume. (`6e00422`)
-- `compute_gae` extracted to shared `gae.py` module. (`efaf366`)
-
-#### Opponent League (Plan E-1)
-- `OpponentPool` with SQLite-backed model storage and Elo tracking. (`d12f2bd`)
-- `OpponentSampler` for weighted opponent selection during training.
-- `LeagueConfig` and `DemonstratorConfig` added to config system. (`33219c5`)
-- DB schema v2 with league tables and `game_type` column. (`e001fbd`)
-
-#### Unified Training Loop (Plan E-2)
-- `split_merge_step` for learner vs. opponent forward passes. (`bf47a8c`)
-- League integration, split-merge, Elo updates, and seat rotation in training
-  loop. (`623a1a8`)
-
-#### Demonstrator and Evaluation (Plan E-3)
-- `DemonstratorRunner` for inference-only exhibition matches. (`47ee5b1`)
-- `keisei-evaluate` CLI for head-to-head checkpoint comparison. (`84c6a3d`)
-- GPU device support in `keisei-evaluate`. (`bcfe0aa`)
-- Old `TrainingLoop` and `PPOAlgorithm` removed; `keisei-train` rewired to
-  unified loop. (`c9e8505`, `f878759`)
-
-#### Score Head Fix
-- Per-step material balance replaces reward/76 for score targets (denser, more
-  accurate signal). (`57ceff8`)
-- NaN masking removed from score loss — per-step material provides targets for
-  every position. (`bf0c257`)
-
-#### Project Infrastructure
-- `CONTRIBUTING.md`, `SECURITY.md`, `.editorconfig` added.
-- GitHub Actions CI workflow (Python 3.12/3.13 + Rust).
-- PR template.
-- `py.typed` marker for PEP 561 compliance.
-- pyproject.toml: added authors, URLs, classifiers, keywords.
-- README: badges, architecture detail, prior art attribution, collapsible
-  sections.
-
-### Fixed
-- Score targets used reward/76 instead of material difference. (`57ceff8`)
-- NaN sentinel in score targets caused loss corruption. (`bf0c257`)
-- Eval/train mode not toggled correctly in PPO action selection. (`5cb68cf`)
-- Optimizer state tensors not moved to model device after checkpoint load.
-  (`16f4a27`)
-- White knight decode produced wrong target square in shogi-gym. (`5ab51d1`)
-- Multiple review findings addressed across Plans A–E. (`e484dd7`, `30bee78`,
-  `beaf645`, `1031123`, `f1b4452`, `089d977`, `2a13856`, `d1ac185`, `f5f1471`,
-  `74670a0`, `f2141c0`)
-
-### Changed
-- Model registry extended from 3 to 4 architectures (added SE-ResNet).
-- Test suite grew from 74 to 255 Python tests and 188 to 111 Rust tests (Rust
-  count decreased due to test consolidation and removal of redundant cases).
-- Observation encoding expanded from 46 to 50 channels for KataGo mode.
-- Action space: added 11,259 spatial encoding alongside 13,527 flat encoding.
-
-## [0.1.0] - 2026-04-01
-
-First release of the rebuilt Keisei, powered by a Rust game engine replacing
-the original pure-Python implementation.
+First stable release. Keisei is a Deep Reinforcement Learning system for Shogi
+built on a Rust game engine and a Python/PyTorch training harness, with a
+KataGo-inspired SE-ResNet as the primary network, opponent league self-play,
+supervised-learning warmup, and a live spectator WebUI.
 
 ### Added
 
 #### Rust Engine (`shogi-engine/`)
 - **shogi-core** crate — full Shogi implementation: board representation, legal
   move generation, rule enforcement (check, checkmate, repetition, impasse),
-  SFEN parsing/serialization, and Zobrist hashing. (`55f1666`)
+  SFEN parsing/serialization, Zobrist hashing, `material_balance()`, and
+  per-piece value lookup.
 - **shogi-gym** crate — RL environment layer: `VecEnv` vectorized environment,
-  46-plane board observations, 13,527-action mapping, and step/reset API
-  exposed to Python via PyO3. (`55f1666`)
-- `VecEnv.get_spectator_data()` for live game visualization. (`5f74bc3`)
-- `SpectatorEnv.from_sfen()` static constructor for replaying positions.
-  (`5fa589a`)
-- `VecEnv.get_sfen()` and `get_sfens()` for SFEN extraction from running
-  games. (`7754599`)
-- `VecEnv.mean_episode_length` and `truncation_rate` properties for episode
-  statistics. (`794232d`)
-- Shared `build_spectator_dict()` helper extracted into `spectator_data.rs`.
-  (`8b2ed18`)
-- 188 Rust tests across both crates covering move generation, rules, SFEN,
-  position logic, observations, action mapping, VecEnv, and spectator data.
-  (`c92722a`)
+  46-channel and 50-channel observation encoders (KataGo mode adds repetition
+  count planes 1x/2x/3x/4+ and a check indicator), flat 13,527-action and
+  spatial 11,259-action mappers (81 squares x 139 move types), per-step
+  `material_balance` buffer, and step/reset API exposed to Python via PyO3.
+- Spectator data layer — `get_spectator_data()`, `SpectatorEnv.from_sfen()`,
+  `get_sfen()` / `get_sfens()`, episode-length statistics, and shared
+  `build_spectator_dict()` helper for live game visualization.
 
-#### Python Training Harness (`keisei/`)
-- Package scaffold with `keisei-train` and `keisei-serve` entry points.
-  (`c1af445`)
+#### Neural Network Architectures
+- **SE-ResNet** (primary) — KataGo-style trunk with `GlobalPoolBiasBlock`
+  (global pooling bias projected through a bottleneck FC, plus
+  Squeeze-and-Excitation with scale+shift). Default 40 blocks x 256 channels.
+- **ResNet**, **MLP**, **Transformer** — baseline / ablation architectures with
+  scalar value heads.
+- Three-head output for SE-ResNet: spatial policy `(B, 9, 9, 139)` with
+  legal-mask softmax, W/D/L value classification `(B, 3)`, and material score
+  prediction `(B, 1)`.
+- `KataGoBaseModel` ABC, `KataGoOutput` dataclass, model registry with
+  contract type and `obs_channels` metadata.
+
+#### Training
+- **PPO** with rollout buffer, Generalized Advantage Estimation (GAE), clipped
+  surrogate objective, mini-batch updates, and global gradient clipping.
+- **KataGo-PPO** — multi-head loss (policy + W/D/L cross-entropy + score MSE +
+  entropy bonus) with `KataGoRolloutBuffer` storing `value_categories` and
+  `score_targets`, plus NaN/unnormalized guards.
+- **Per-step material balance** drives the score head (replaces the original
+  reward/76 scheme) for a dense, per-position regression target.
+- **Value adapter pattern** (`ScalarValueAdapter`, `MultiHeadValueAdapter`) so
+  the training loop is model-agnostic across scalar and multi-head contracts.
+- **Supervised learning warmup** — `CSAParser` for Floodgate game records
+  (Shift-JIS detection, PI initial position, P+/P- placement),
+  memory-mapped `SLDataset` binary shards, `SLTrainer`, `keisei-prepare-sl`
+  CLI, and `ReduceLROnPlateau` scheduler in the training loop.
+- **RL warmup** with elevated entropy coefficient to soften overconfident SL
+  policies.
+- **Mixed precision (AMP / bf16)** — wired through PPO update, SL trainer, and
+  `select_actions` rollout inference; GradScaler state persisted in
+  checkpoints.
+- **`torch.compile`** enabled across configs for fused kernel execution.
+- **DDP** support and per-epoch timing breakdowns to diagnose rollout
+  degradation.
+- **Checkpointing** — model weights, optimizer state, GradScaler, RNG state,
+  scheduler state, architecture metadata, and `learner_entry_id` for safe
+  resume.
+
+#### Opponent League and Tournament
+- **`OpponentPool`** with SQLite-backed model storage, Elo tracking, tiered
+  pool with `max_active_entries` cap, role-grouped leaderboard
+  (Frontier / Dynamic / Demonstrator), and LRU model cache sized to the full
+  pool.
+- **`OpponentSampler`** — weighted opponent selection with Elo-floor and
+  ratio controls.
+- **Split-merge step** for learner vs. opponent forward passes; vectorized
+  per-env partition (argsort+split) and GPU padded GAE for the split-merge
+  hot path.
+- **Promotion / demotion** — `PriorityScorer`, frontier-vs-dynamic Elo
+  tracking, weakest-dynamic eviction, and bootstrap-from-flat-pool logic.
+- **Tournament sidecar** — extracted into a separate worker subprocess with
+  `ConcurrentMatchPool`, batch inference across slots by model identity,
+  batch-claim DB op with in-transaction staleness sweep, `min_coverage_ratio`
+  weighted-round generation, server-side head-to-head pre-aggregation, and
+  pairing-queue index on `(status, enqueued_epoch)`.
+- **`DemonstratorRunner`** for inference-only exhibition matches and
+  `keisei-evaluate` CLI for head-to-head checkpoint comparison (with GPU
+  device support).
+
+#### Showcase Mode
+- Model-vs-model showcase tab — sidecar runner with game loop, heartbeat, and
+  auto-showcase; CPU-only inference with model cache; DB tables (schema v3)
+  for queue, games, moves, and heartbeat; WebSocket polling, client commands,
+  and init support; Svelte UI with board, commentary panel, controls, and
+  queue.
+- Spatial action mapper used in `SpectatorEnv` so showcase replays match the
+  trained models' action space.
+
+#### WebUI (Svelte)
+- League view restructured with always-visible matchup matrix, contextual
+  sparkline, role-grouped leaderboard, role tier badges, protection badges,
+  rounds/games stats banner, and 2x2 grid layout to prevent jerk on entry
+  selection.
+- `EntryDetail` component with Last Round, Overall Record, Role Stats, Elo
+  trend chart, and improved typography.
+- `HistoricalLibrary` component with slot table and gauntlet results.
+- `RecentMatches` with Elo ratings and upset indicators.
+- Showcase tab with board, commentary, controls, and queue.
+- Metrics chart with dual-axis support and P/V ratio calculation.
+- Transition count summary and batch-collapse in the event log; localStorage
+  persistence across reloads.
+- Opponent style profiling and card data system.
+- Accessibility and contrast fixes from design review.
+
+#### Database
+- SQLite (WAL mode) for training metrics, game snapshots, training state, and
+  spectator data.
+- Schema versioning with v2 (league tables, `game_type` column) and v3
+  (showcase tables); `learner_entry_id` column on `training_state` with
+  migration.
+- Batched end-of-epoch writes via a single connection + transaction;
+  thread-local SQLite connections + WAL checkpoint to prevent epoch
+  degradation.
+- `read_elo_history` with `max_epochs` support and supporting index.
+- `head_to_head` backfill on schema upgrade with transaction handling and
+  self-play row skipping.
+
+#### Configuration and CLI
 - TOML config loading with frozen dataclass validation (`AppConfig`,
-  `TrainingConfig`, `ModelConfig`, `DisplayConfig`). (`813c9d0`)
-- `BaseModel` ABC and ResNet policy+value network (policy head: 13,527 actions,
-  value head: scalar). (`593a3a0`)
-- MLP and Transformer model architectures. (`3e6b50e`)
-- SQLite database layer (WAL mode) for training metrics, game snapshots, and
-  training state. (`bea432a`)
-- Model checkpointing with save/load of model weights, optimizer state, epoch,
-  and step. (`a8c33db`)
-- PPO algorithm with rollout buffer, Generalized Advantage Estimation (GAE),
-  clipped surrogate objective, and mini-batch updates. (`55c39ea`)
-- Model and algorithm registries with validation. (`dc5b223`)
-- Training loop orchestrator tying config, models, PPO, database, and VecEnv
-  together, with resume-from-checkpoint support. (`2cd9bb5`)
-- 74 Python tests covering config, database, checkpointing, models, PPO, and
-  the training loop. (`73c537a`)
+  `TrainingConfig`, `ModelConfig`, `DisplayConfig`, `LeagueConfig`,
+  `DemonstratorConfig`).
+- Six provided configs: `keisei-katago.toml` (primary), `keisei-ddp.toml`,
+  `keisei-500k.toml`, `keisei-h200.toml`, `keisei-league.toml`,
+  `keisei-500k-league.toml`.
+- Entry points: `keisei-train`, `keisei-evaluate`, `keisei-serve`,
+  `keisei-prepare-sl`.
 
-### Fixed
-- Entropy NaN caused by `0 * -inf` in masked softmax — replaced with safe
-  log-prob masking. (`cd2e9e6`)
-- BatchNorm train/eval mode bug — model now correctly switches to eval mode
-  during action selection and back to train mode during updates. (`73c537a`)
-- Property access for Rust PyO3 getters (use attribute access, not method
-  calls). (`cd2e9e6`)
+#### Profiling and Diagnostics
+- Component-level hot-path profiler with loss-component and memory analysis.
+- `compute_value_metrics` for W/D/L prediction monitoring (degeneracy
+  detection).
+- Tournament monitoring instrumentation.
+
+#### Project Infrastructure
+- `CONTRIBUTING.md`, `SECURITY.md`, `.editorconfig`, PR template.
+- GitHub Actions CI workflow (Python 3.12/3.13 + Rust).
+- `py.typed` marker for PEP 561 compliance.
+- `pyproject.toml` with authors, URLs, classifiers, keywords.
+- README with badges, architecture detail, prior-art attribution
+  (KataGo, AlphaZero), and collapsible sections.
 
 ### Changed
-- Stripped the old pure-Python Shogi engine; all game logic now lives in Rust.
-  (`3cd44ae`)
-- Cleaned up stale docs, plans, and specs from the pre-Rust era. (`ae8d7d7`)
-- Fixed all Clippy warnings across shogi-core and shogi-gym. (`5baabd6`)
-- Fixed lint issues in Python (import sorting, line length, unused imports).
-  (`b99f403`)
+- **Rust replaces pure-Python engine.** All game logic, move generation, and
+  observation encoding live in Rust; the Python harness consumes them via
+  PyO3. The original pure-Python engine was removed.
+- **Model registry** grew from one to four architectures; observation
+  encoding from a single 46-channel format to 46/50-channel modes selected
+  by model contract; action space from flat 13,527 to flat-or-spatial.
+- **Training loop** unified — old `TrainingLoop` and `PPOAlgorithm` replaced
+  by the league-aware loop wiring SE-ResNet + KataGoPPO + VecEnv +
+  OpponentPool + split-merge.
+- **Rollout cost** decoupled from opponent pool size; per-model overhead
+  hoisted out of the rollout hot loop; pre-allocated contiguous rollout
+  buffer; CPU-first buffer storage with overlapped GPU transfer.
+- **Promotion logic** uses `elo_frontier` instead of generic `elo_rating`;
+  dynamic-pool eviction uses `elo_dynamic`.
+- Test suite grew from 74 Python / 188 Rust tests at 0.1.0 to **674 Python
+  tests / 363 Rust tests** at 1.0.0, including AMP integration, checkpoint
+  round-trip, GAE padded edge cases, SL trainer multi-epoch, OpponentPool /
+  OpponentSampler edge cases, seat rotation, LR scheduler boundaries,
+  WebSocket resilience, and many risk-based gap closures.
+- `ruff` line-length raised from 100 to 140.
 
-[0.2.0]: https://github.com/tachyon-beep/keisei/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/tachyon-beep/keisei/releases/tag/v0.1.0
+### Fixed
+- **Score head:** per-step material balance replaces reward/76 (denser, more
+  accurate signal); NaN sentinel removed from score loss.
+- **PPO correctness:** entropy NaN from `0 * -inf` in masked softmax;
+  BatchNorm train/eval mode toggling in action selection; old_log_probs
+  computed in eval mode; AMP device type for non-CUDA devices.
+- **Per-env GAE** correctness in split-merge mode; reindexed `next_values`
+  for GPU padded GAE.
+- **Knight decoder perspective bug** in shogi-gym; white knight decode
+  produced wrong target square.
+- **Optimizer state tensors** not moved to model device after checkpoint
+  load.
+- **Concurrent matches:** zero-legal guard `break`→`continue` and rollout
+  alignment; LRU-cached models no longer moved to CPU on release;
+  exception-safe cleanup.
+- **CSA parser:** PI initial-position and P+/P- placement lines now parsed.
+- **Showcase:** spatial action mapper in `SpectatorEnv` to match trained
+  models; sidecar interop threads.
+- **Tournament:** results recorded for entries retired mid-round; broad
+  `except` no longer sends entire batch to terminal failed status (RFC for
+  retry/requeue tracked); Elo reload from DB before recording batch results;
+  use `PriorityScorer.score()` not `pair_priority()`; `--config` wired into
+  `run.sh` tournament worker.
+- **Database:** WAL checkpointing prevents epoch degradation; `head_to_head`
+  INSERT guard for self-play matches; schema migrations for new columns.
+- **WebUI:** stale league event log cleared on DB wipe; ELO display unified
+  between stats banner and league table; localStorage persistence for league
+  diffs; flaky WebSocket tests stabilized via `ws_connect` fixture.
+- **Defensive bugs:** IPv6 host parsing, NaN softmax, glob case-sensitivity,
+  threshold bypass, shutdown delay, GPU leak, device pinning, param
+  validation, file ordering, rollback handling, weighted_sample budget,
+  unknown config keys, DB migration, GradScaler guard, per-side feature
+  tracking.
+- **`torch._dynamo.explain`** API call updated for PyTorch 2.11.
+
+### Removed
+- Pure-Python Shogi engine and its test suite.
+- Original scalar-only `TrainingLoop` and `PPOAlgorithm` classes.
+- `keisei.toml` config — the basic-PPO algorithm is no longer supported;
+  `katago_ppo` is the only training algorithm.
+- Stale docs, plans, and specs from the pre-Rust era.
+- NaN masking from score loss (per-step material gives a dense signal at
+  every position).
+- Noto Serif Google Font import in WebUI (~30KB savings).
+
+[1.0.0]: https://github.com/tachyon-beep/keisei/releases/tag/v1.0.0
