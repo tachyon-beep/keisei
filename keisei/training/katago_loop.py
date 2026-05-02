@@ -1681,7 +1681,22 @@ class KataGoTrainingLoop:
                     )
                     cap = self.config.league.dispatcher_max_queue_depth
                     depth = get_active_queue_depth(self.db_path)
-                    if depth < cap:
+                    if depth >= cap:
+                        # Queue saturated: skipping dispatch silently means
+                        # tournament work is being dropped without surfacing
+                        # the load problem.  Log it.
+                        logger.warning(
+                            "Tournament queue saturated (%d/%d) — skipping dispatch "
+                            "for epoch %d. Worker is not keeping up with dispatch cadence.",
+                            depth, cap, epoch_i,
+                        )
+                    else:
+                        if depth >= int(0.9 * cap):
+                            logger.warning(
+                                "Tournament queue near capacity (%d/%d) at epoch %d — "
+                                "worker may be falling behind",
+                                depth, cap, epoch_i,
+                            )
                         alive = get_worker_health(self.db_path, stale_after_seconds=60)
                         if not alive:
                             logger.warning(
