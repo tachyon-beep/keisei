@@ -1,11 +1,17 @@
 <script>
   import { activeTab } from '../stores/navigation.js'
   import { theme, toggleTheme } from '../stores/theme.js'
+  import { audioEnabled } from '../stores/audio.js'
+
+  function toggleAudio() {
+    audioEnabled.update((v) => !v)
+  }
 
   const tabs = [
     { id: 'training', label: 'Training' },
     { id: 'league', label: 'League' },
     { id: 'showcase', label: 'Showcase' },
+    { id: 'about', label: 'About' },
   ]
 
   function handleTabKeydown(e) {
@@ -27,6 +33,8 @@
   {#each tabs as tab}
     <button
       role="tab"
+      id={`tab-${tab.id}`}
+      aria-controls={`${tab.id}-main`}
       aria-selected={$activeTab === tab.id}
       class:active={$activeTab === tab.id}
       tabindex={$activeTab === tab.id ? 0 : -1}
@@ -37,7 +45,16 @@
     </button>
   {/each}
   <button
-    class="theme-toggle"
+    class="icon-toggle"
+    on:click={toggleAudio}
+    aria-pressed={$audioEnabled}
+    aria-label="{$audioEnabled ? 'Pause' : 'Play'} background lofi"
+    title="{$audioEnabled ? 'Pause' : 'Play'} background lofi"
+  >
+    {$audioEnabled ? '⏸' : '▶'}
+  </button>
+  <button
+    class="icon-toggle theme-toggle"
     on:click={toggleTheme}
     aria-label="Toggle {$theme === 'dark' ? 'light' : 'dark'} theme"
     title="{$theme === 'dark' ? 'Light' : 'Dark'} mode"
@@ -80,7 +97,7 @@
     background: var(--tab-active-bg);
   }
 
-  .theme-toggle {
+  .icon-toggle {
     margin-left: 8px;
     font-size: 14px;
     padding: 8px 12px;
@@ -89,6 +106,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .icon-toggle[aria-pressed='true'] {
+    border-color: var(--tab-active-border);
+    color: var(--tab-active-border);
+    background: var(--tab-active-bg);
   }
 
   @media (prefers-reduced-motion: reduce) {

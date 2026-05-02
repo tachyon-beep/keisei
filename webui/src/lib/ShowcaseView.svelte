@@ -22,7 +22,7 @@
   )
 </script>
 
-<div class="showcase-view">
+<div id="showcase-main" class="showcase-view" tabindex="-1" aria-labelledby="tab-showcase">
   <MatchControls />
   {#if !$sidecarAlive}
     <div class="offline-banner">Showcase engine is offline. Start the sidecar to enable live matches.</div>
@@ -67,6 +67,7 @@
 
 <style>
   .showcase-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .showcase-view:focus { outline: none; }
   .offline-banner { padding: 8px 16px; background: var(--accent-gold); color: #000; font-size: 13px; font-weight: 600; text-align: center; }
   .game-area { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   .game-header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }

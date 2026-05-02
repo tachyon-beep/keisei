@@ -16,13 +16,34 @@
   import PlayerCard from './lib/PlayerCard.svelte'
   import LeagueView from './lib/LeagueView.svelte'
   import ShowcaseView from './lib/ShowcaseView.svelte'
+  import AboutView from './lib/AboutView.svelte'
   import ShogiLegend from './lib/ShogiLegend.svelte'
   import { safeParse } from './lib/safeParse.js'
+  import { audioEnabled, AUDIO_VOLUME } from './stores/audio.js'
 
   onMount(() => {
     connect()
     return disconnect
   })
+
+  let audioEl
+  // The audio element survives tab switches because it lives at App scope.
+  // On reload with persisted "on", play() rejects with NotAllowedError until
+  // the user provides a gesture this load. Keep the store unchanged in that
+  // case so the button reflects the saved intent — only flip to off on real
+  // failures (decode errors, missing source, etc).
+  $: if (audioEl) {
+    audioEl.volume = AUDIO_VOLUME
+    if ($audioEnabled) {
+      audioEl.play().catch((err) => {
+        if (err?.name !== 'NotAllowedError') {
+          audioEnabled.set(false)
+        }
+      })
+    } else {
+      audioEl.pause()
+    }
+  }
 
   $: game = $selectedGame
   $: board = game ? safeParse(game.board_json, game.board || []) : []
@@ -150,11 +171,12 @@
 </script>
 
 <div class="app">
-  <a href={$activeTab === 'training' ? '#game-panel' : '#league-main'} class="skip-nav">Skip to content</a>
+  <a href={`#${$activeTab}-main`} class="skip-nav">Skip to content</a>
+  <audio bind:this={audioEl} src="/audio/lofi.opus" loop preload="none"></audio>
   <StatusIndicator />
 
   {#if $activeTab === 'training'}
-    <div class="main-content">
+    <div id="training-main" class="main-content" tabindex="-1" aria-labelledby="tab-training">
       <aside class="thumbnail-panel" aria-label="Game list" bind:clientHeight={thumbPanelHeight} style="width: {thumbPanelHeight - 94}px">
         <h2 class="section-label">Games ({Math.min($games.length, 16)}{#if $games.length > 16} / {$games.length}{/if})</h2>
         <div class="thumb-grid">
@@ -238,6 +260,8 @@
     <LeagueView />
   {:else if $activeTab === 'showcase'}
     <ShowcaseView />
+  {:else if $activeTab === 'about'}
+    <AboutView />
   {/if}
 </div>
 
@@ -274,6 +298,7 @@
     min-height: 0;
     border-bottom: 1px solid var(--border);
   }
+  .main-content:focus { outline: none; }
 
   .thumbnail-panel {
     flex: 0 0 auto;

@@ -40,7 +40,7 @@
   }
 </script>
 
-<main id="league-main" class="league-view" aria-label="League standings" on:keydown={handleMainKeydown}>
+<main id="league-main" class="league-view" aria-labelledby="tab-league" tabindex="-1" on:keydown={handleMainKeydown}>
   {#if stats}
     <div class="stats-banner" role="region" aria-label="League summary">
       <div class="stat-card">
@@ -118,6 +118,7 @@
     min-height: 0;
     overflow: hidden;
   }
+  .league-view:focus { outline: none; }
 
   .stats-banner {
     display: flex;

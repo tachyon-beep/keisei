@@ -227,6 +227,13 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
                 if not isinstance(exc, WebSocketDisconnect):
                     logger.warning("WebSocket error: %s", exc)
 
+    # Mount audio assets from the repo root, kept out of the bundled static
+    # directory because the file is ~700 MB. <audio> uses HTTP Range, so
+    # StaticFiles streams it on demand. Must register before the catch-all "/".
+    audio_dir = Path(__file__).resolve().parents[2] / "audio"
+    if audio_dir.is_dir():
+        app.mount("/audio", StaticFiles(directory=str(audio_dir)), name="audio")
+
     # Mount static files if the directory exists
     static_dir = Path(__file__).parent / "static"
     if static_dir.is_dir():

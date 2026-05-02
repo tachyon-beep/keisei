@@ -45,3 +45,8 @@ keisei-500k-league.db*
 node_modules/
 keisei-ddp.db
 keisei/server/static/index.html
+
+# Large media assets served via /audio mount
+audio/
+
+docs/bugs/generated/
