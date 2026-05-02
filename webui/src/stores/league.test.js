@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { get } from 'svelte/store'
 import {
@@ -44,9 +45,10 @@ describe('diffLeagueEntries', () => {
   let diffLeagueEntries, leagueEvents
 
   beforeEach(async () => {
-    // Clear persisted state — league.js persists events to localStorage,
-    // and jsdom shares it across vi.resetModules() calls.
+    // Clear persisted state — league.js persists events + a run marker to
+    // localStorage, and jsdom shares it across vi.resetModules() calls.
     try { localStorage.removeItem('keisei_league_events') } catch {}
+    try { localStorage.removeItem('keisei_league_event_run_marker') } catch {}
     vi.resetModules()
     const mod = await import('./league.js')
     diffLeagueEntries = mod.diffLeagueEntries
@@ -69,13 +71,55 @@ describe('diffLeagueEntries', () => {
     expect(events).toHaveLength(0)
   })
 
-  it('clears stale persisted events on first call even when entries exist (run restart)', () => {
-    // Simulate stale events left over from a previous training run
+  it('clears stale events on first call when no run marker is persisted (cold start)', () => {
+    // Simulate stale events left over from a previous training run, with
+    // no run marker stored (e.g. legacy localStorage state pre-fingerprint).
     leagueEvents.set([{ time: '04:06:26', type: 'departure', icon: '←', name: 'Stale-Bot', detail: 'retired' }])
-    // First diff call should always clear stale events, regardless of entry count
     diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
     const events = get(leagueEvents)
     expect(events).toHaveLength(0)
+  })
+
+  it('clears stale events on first call when fingerprints differ (new run)', async () => {
+    // Simulate localStorage from a previous run with completely different
+    // entries (e.g. fresh DB after a wipe).  Even if IDs collide (1, 2),
+    // names won't.
+    localStorage.setItem('keisei_league_events', JSON.stringify([
+      { time: '04:06:26', type: 'arrival', icon: '→', name: 'Old-Bot', detail: 'joined' },
+    ]))
+    localStorage.setItem('keisei_league_event_run_marker', JSON.stringify(['1:OldBot', '2:Defunct']))
+    vi.resetModules()
+    const mod = await import('./league.js')
+    mod.diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
+    expect(get(mod.leagueEvents)).toHaveLength(0)
+  })
+
+  it('preserves events on first call when fingerprints overlap (same-run refresh)', async () => {
+    // Simulate refreshing the page mid-run: localStorage has events plus
+    // a run marker that overlaps with the current pool.
+    localStorage.setItem('keisei_league_events', JSON.stringify([
+      { time: '04:06:26', type: 'arrival', icon: '→', name: 'Bot-X', detail: 'joined' },
+    ]))
+    localStorage.setItem('keisei_league_event_run_marker', JSON.stringify(['1:A', '2:B']))
+    vi.resetModules()
+    const mod = await import('./league.js')
+    mod.diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
+    const events = get(mod.leagueEvents)
+    expect(events).toHaveLength(1)
+    expect(events[0].name).toBe('Bot-X')
+  })
+
+  it('preserves events on first call when only one fingerprint overlaps (partial overlap = same run)', async () => {
+    // Mid-run, some entries got evicted and replaced.  At least one of
+    // the persisted fingerprints still matches -> same run.
+    localStorage.setItem('keisei_league_events', JSON.stringify([
+      { time: '04:06:26', type: 'arrival', icon: '→', name: 'Bot-X', detail: 'joined' },
+    ]))
+    localStorage.setItem('keisei_league_event_run_marker', JSON.stringify(['1:A', '99:Evicted']))
+    vi.resetModules()
+    const mod = await import('./league.js')
+    mod.diffLeagueEntries([entry(1, 1200, 'A'), entry(2, 1000, 'B')])
+    expect(get(mod.leagueEvents)).toHaveLength(1)
   })
 
   it('detects an arrival on subsequent calls', () => {

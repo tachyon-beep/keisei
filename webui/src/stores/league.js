@@ -18,15 +18,45 @@ export const gauntletResults = writable([])
 export const leagueTransitions = writable([])
 
 /** Event log: tracks arrivals, departures, and rank changes.
- *  Persisted to localStorage so events survive page refresh. */
+ *  Persisted to localStorage so events survive page refresh.
+ *
+ *  Run discrimination: events from a previous training run are stale and
+ *  must be cleared.  We persist a "run marker" (set of (id, display_name)
+ *  fingerprints from the entry pool) alongside events.  On first load:
+ *    - Any fingerprint overlap with current entries -> same run, keep events.
+ *    - No overlap (or no marker) -> new run (fresh DB, league reset, etc.) ->
+ *      clear stale events.
+ *  Display names are randomly generated per entry, so cross-run collisions
+ *  are effectively impossible even if IDs replay after a DB wipe. */
 const MAX_EVENTS = 50
 const EVENTS_STORAGE_KEY = 'keisei_league_events'
+const RUN_MARKER_STORAGE_KEY = 'keisei_league_event_run_marker'
 
 function loadPersistedEvents() {
   try {
     const raw = localStorage.getItem(EVENTS_STORAGE_KEY)
     return raw ? JSON.parse(raw) : []
   } catch { return [] }
+}
+
+function loadPersistedRunMarker() {
+  try {
+    const raw = localStorage.getItem(RUN_MARKER_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+
+function persistRunMarker(fingerprints) {
+  try {
+    localStorage.setItem(RUN_MARKER_STORAGE_KEY, JSON.stringify(fingerprints))
+  } catch {}
+}
+
+function entryFingerprints(entries) {
+  return entries
+    .filter(e => e.display_name)
+    .map(e => `${e.id}:${e.display_name}`)
 }
 
 export const leagueEvents = writable(loadPersistedEvents())
@@ -37,12 +67,15 @@ leagueEvents.subscribe(events => {
 
 let _prevEntryMap = new Map()
 let _prevRanks = new Map()
+let _persistedFingerprints = loadPersistedRunMarker()
 
 /** Clear persisted events and diff state. Used in tests to reset
  *  module-level mutable state after vi.resetModules(). */
 export function resetLeagueEvents() {
   _prevEntryMap = new Map()
   _prevRanks = new Map()
+  _persistedFingerprints = []
+  persistRunMarker([])
   leagueEvents.set([])
 }
 
@@ -58,12 +91,21 @@ export function diffLeagueEntries(entries) {
   // First load: seed state without generating events (avoids phantom
   // arrivals for every existing entry on page refresh).
   if (_prevEntryMap.size === 0) {
-    // Always clear persisted events on first load.  Stale events from a
-    // previous (possibly deleted) run would otherwise linger in
-    // localStorage indefinitely.  Fresh events will accumulate naturally
-    // from subsequent league_update diffs within this page session.
-    leagueEvents.set([])
+    // Discriminate same-run refresh from new-run startup using the
+    // (id, display_name) fingerprint marker.  Same run -> keep persisted
+    // events.  New run (DB wipe, league reset, switched config) -> drop
+    // stale events from the previous run.
+    const newFingerprints = entryFingerprints(entries)
+    const newFpSet = new Set(newFingerprints)
+    const sameRun = _persistedFingerprints.length > 0 &&
+                    _persistedFingerprints.some(fp => newFpSet.has(fp))
+    if (!sameRun) {
+      leagueEvents.set([])
+    }
     _prevEntryMap = newMap
+    _persistedFingerprints = newFingerprints
+    persistRunMarker(newFingerprints)
+
     const activeEntries = entries.filter(e => e.status === 'active')
     if (activeEntries.length > 0) {
       const sorted = [...activeEntries].sort((a, b) => b.elo_rating - a.elo_rating)
@@ -145,6 +187,10 @@ export function diffLeagueEntries(entries) {
   }
 
   _prevEntryMap = newMap
+  // Refresh the run marker so a refresh mid-run can detect the current
+  // entry set, not whatever was around the last time an event fired.
+  _persistedFingerprints = entryFingerprints(entries)
+  persistRunMarker(_persistedFingerprints)
 
   if (events.length > 0) {
     leagueEvents.update(existing => [...events, ...existing].slice(0, MAX_EVENTS))
