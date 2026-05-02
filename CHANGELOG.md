@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **WebUI "About" tab** — progressive-disclosure explainer of the system at five
+  levels (Big Idea → Learning Loop → Inside the Demo → Algorithmic →
+  Research View) with sticky level selector, right-rail TOC, SVG architecture
+  diagrams, and print stylesheet. Selected level persists in localStorage.
+- **Background lofi audio toggle** in the tab bar — opt-in, persisted, served
+  via a new `/audio` static mount on the FastAPI server (mounted from the repo
+  root so the ~700 MB asset stays out of the bundled `static/` dir; uses HTTP
+  Range so streaming is on demand). Vite dev proxy forwards `/audio` to the
+  backend.
+- **Tournament-queue saturation logging** in `KataGoTrainingLoop` — warns when
+  the dispatcher queue hits ≥90% capacity and again when fully saturated, so a
+  worker that has fallen behind dispatch cadence surfaces in logs instead of
+  silently dropping work.
+
+### Fixed
+- **`play_match()` overshoot when `num_envs > games_target`** — the first/final
+  partial batch counted every completed lane, so e.g. `games_target=1` with
+  `num_envs=4` returned 4 games. `play_batch()` now takes an `active_envs`
+  cap, masks completion bookkeeping and rollout-perspective rows for surplus
+  lanes, and `play_match()` returns exactly `games_target` games. Closes
+  `keisei-285eceba8b`.
+- **WebUI league events leaked across training runs** — first-load logic now
+  fingerprints `(id, display_name)` pairs and only clears persisted events
+  when no fingerprint overlaps the current pool (DB wipe, league reset,
+  switched config). Mid-run page refreshes preserve the event log instead of
+  discarding it on every reload.
+- **WebUI skip-nav target was hard-coded for the old two-tab layout.** It now
+  resolves to `#${activeTab}-main`, and `LeagueView` / `ShowcaseView` /
+  `AboutView` each expose a programmatically-focusable `<main>` with
+  `tabindex="-1"` and `aria-labelledby` pointing at the corresponding tab
+  button.
+
+### Changed
+- **WebUI Knight legend** uses jump glyphs (⇖ / ⇗) in row 0 of a uniform 3×3
+  grid instead of an extra row above the grid. Every piece's legend is now
+  the same physical height, simplifying layout. `KNIGHT_EXTRA` and the
+  `extra` prop on `MoveDots` are removed.
+
 ## [1.0.0] - 2026-05-02
 
 First stable release. Keisei is a Deep Reinforcement Learning system for Shogi
@@ -216,4 +257,5 @@ supervised-learning warmup, and a live spectator WebUI.
   every position).
 - Noto Serif Google Font import in WebUI (~30KB savings).
 
+[Unreleased]: https://github.com/tachyon-beep/keisei/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/tachyon-beep/keisei/releases/tag/v1.0.0

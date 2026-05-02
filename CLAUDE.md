@@ -46,7 +46,7 @@ python -m pytest tests/ -v       # Run Python-side tests (exercises Rust code vi
 - Python training: TBD
 - WebUI: TBD
 
-<!-- filigree:instructions:v1.6.0:84820288 -->
+<!-- filigree:instructions:v1.6.1:84820288 -->
 ## Filigree Issue Tracker
 
 Use `filigree` for all task tracking in this project. Data lives in `.filigree/`.

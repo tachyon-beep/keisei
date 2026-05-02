@@ -1,7 +1,7 @@
 # keisei-katago.toml — "Musashi" (武蔵, lone duelist) — Single-GPU KataGo training (league-capable)
 #
 # Hardware: Single GPU (RTX 4060 Ti 16GB or similar)
-# Model:    KataGo SE-ResNet b40c256 (~120M params)
+# Model:    KataGo SE-ResNet b40c256 (~53M params)
 # Purpose:  Single-GPU training with optional league mode.
 #           League mode (opponent pool, Elo tracking) requires single-GPU
 #           because split-merge produces unequal buffer sizes across ranks.

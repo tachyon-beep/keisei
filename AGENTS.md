@@ -47,7 +47,7 @@
 - Session start: load context, claim a ready issue, move it to `in_progress`, then implement.
 - Record side findings as observations and promote important ones to issues.
 
-<!-- filigree:instructions:v1.6.0:84820288 -->
+<!-- filigree:instructions:v1.6.1:84820288 -->
 ## Filigree Issue Tracker
 
 Use `filigree` for all task tracking in this project. Data lives in `.filigree/`.
@@ -155,7 +155,6 @@ The dashboard exposes REST endpoints for file tracking and scan result ingestion
 Use `GET /api/files/_schema` for available endpoints and valid field values.
 
 Key endpoints:
-
 - `GET /api/files/_schema` — Discovery: valid enums, endpoint catalog
 - `POST /api/v1/scan-results` — Ingest scan results (SARIF-lite format)
 - `GET /api/files` — List tracked files with filtering and sorting
@@ -163,7 +162,6 @@ Key endpoints:
 - `GET /api/files/{file_id}/findings` — Findings for a specific file
 
 ### Workflow
-
 1. `filigree ready` to find available work
 2. `filigree show <id>` to review details
 3. `filigree transitions <id>` to see valid state changes
@@ -172,13 +170,11 @@ Key endpoints:
 6. `filigree close <id>` when done
 
 ### Session Start
-
 When beginning a new session, run `filigree session-context` to load the project
 snapshot (ready work, in-progress items, critical path). This provides the
 context needed to pick up where the previous session left off.
 
 ### Priority Scale
-
 - P0: Critical (drop everything)
 - P1: High (do next)
 - P2: Medium (default)
