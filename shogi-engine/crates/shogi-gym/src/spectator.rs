@@ -6,7 +6,7 @@ use shogi_core::GameState;
 use crate::action_mapper::{ActionMapper, DefaultActionMapper, ACTION_SPACE_SIZE};
 use crate::observation::{DefaultObservationGenerator, ObservationGenerator, BUFFER_LEN, NUM_CHANNELS};
 use crate::spatial_action_mapper::{SpatialActionMapper, SPATIAL_ACTION_SPACE_SIZE};
-use crate::spectator_data::{build_spectator_dict, color_name, move_notation};
+use crate::spectator_data::{build_spectator_dict, color_name, move_notation, move_usi};
 
 // ---------------------------------------------------------------------------
 // ActionMode dispatch (mirrors vec_env.rs)
@@ -213,10 +213,15 @@ impl SpectatorEnv {
             .collect()
     }
 
-    /// Return all legal moves at the current position with their USI strings.
-    /// Read-only; no state mutation. Order matches `legal_actions()`.
+    /// Return all legal moves for the current position as `(action_index, usi_string)` pairs.
+    ///
+    /// `action_index` is the same value that `legal_actions()` returns; iteration order matches
+    /// `legal_actions()` element-for-element. `usi_string` is the USI-protocol representation
+    /// (e.g., `"7g7f"`, `"8h2b+"`, `"P*5e"`).
+    ///
+    /// `&mut self` is required because the underlying move-legality check uses make/unmake
+    /// internally; the position is logically unchanged on return.
     pub fn legal_moves_with_usi(&mut self) -> Vec<(usize, String)> {
-        use crate::spectator_data::move_usi;
         let perspective = self.game.position.current_player;
         let moves = self.game.legal_moves();
         moves
@@ -348,6 +353,47 @@ mod tests {
                 err
             );
         });
+    }
+
+    /// Verify legal_moves_with_usi() matches legal_actions() in order and content.
+    #[test]
+    fn test_legal_moves_with_usi_ordering_matches_legal_actions() {
+        let mut env = SpectatorEnv {
+            game: GameState::with_max_ply(500),
+            max_ply: 500,
+            mapper: SpectatorActionMode::Default(DefaultActionMapper),
+            obs_gen: DefaultObservationGenerator::new(),
+            move_history: Vec::new(),
+        };
+
+        let actions = env.legal_actions();
+        let pairs = env.legal_moves_with_usi();
+
+        assert_eq!(actions.len(), 30, "Startpos should have 30 legal actions");
+        assert_eq!(pairs.len(), 30, "legal_moves_with_usi should also yield 30 entries");
+        assert_eq!(actions.len(), pairs.len(), "lengths must match");
+
+        for (i, (a, (idx, usi))) in actions.iter().zip(pairs.iter()).enumerate() {
+            assert_eq!(
+                *a, *idx,
+                "action index mismatch at position {}: legal_actions={}, legal_moves_with_usi={}",
+                i, a, idx
+            );
+            assert!(!usi.is_empty(), "USI string at position {} must be non-empty", i);
+            assert_eq!(
+                usi.len(),
+                4,
+                "USI at position {} should be length 4 at startpos (no promotion), got {:?}",
+                i,
+                usi
+            );
+            assert!(
+                !usi.contains('*'),
+                "USI at position {} must not contain '*' at startpos (no drops), got {:?}",
+                i,
+                usi
+            );
+        }
     }
 
     /// Test that legal_actions at startpos returns 30 entries.
