@@ -113,7 +113,7 @@
   .player.white { color: var(--text-secondary); }
   .vs { color: var(--text-muted); font-size: 12px; }
   .ply { color: var(--text-muted); font-size: 12px; margin-left: auto; }
-  .heatmap-toggle { padding: 4px 10px; background: var(--bg-elevated, transparent); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; cursor: pointer; }
+  .heatmap-toggle { padding: 4px 10px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; cursor: pointer; }
   .heatmap-toggle[aria-pressed="true"] { background: var(--accent-gold); color: #000; border-color: var(--accent-gold); }
   .heatmap-toggle:focus-visible { outline: 2px solid var(--accent-teal); outline-offset: 2px; }
   .result { color: var(--accent-teal); font-weight: 600; text-transform: capitalize; }
