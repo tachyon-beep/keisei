@@ -215,6 +215,9 @@ class TestGameOperations:
         )
         moves = read_showcase_moves_since(db, game_id, since_ply=0)
         assert moves[0]["move_heatmap_json"] == '{"7g7f": 0.5, "7g7e": 0.3}'
+        assert moves[0]["move_time_ms"] == 15
+        assert moves[0]["ply"] == 1
+        assert moves[0]["action_index"] == 42
 
     def test_write_move_heatmap_defaults_to_none(self, db: str) -> None:
         """Omitting move_heatmap_json leaves the column NULL (backward compat)."""
@@ -231,6 +234,8 @@ class TestGameOperations:
         )
         moves = read_showcase_moves_since(db, game_id, since_ply=0)
         assert moves[0]["move_heatmap_json"] is None
+        assert moves[0]["move_time_ms"] == 15
+        assert moves[0]["ply"] == 1
 
 
 class TestHeartbeat:

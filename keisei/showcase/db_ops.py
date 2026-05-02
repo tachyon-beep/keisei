@@ -138,10 +138,17 @@ def write_showcase_move(db_path: str, *, game_id: int, ply: int, action_index: i
                        (game_id, ply, action_index, usi_notation, board_json, hands_json,
                         current_player, in_check, value_estimate, top_candidates,
                         move_heatmap_json, move_time_ms, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (game_id, ply, action_index, usi_notation, board_json, hands_json,
-                     current_player, int(in_check), value_estimate, top_candidates,
-                     move_heatmap_json, move_time_ms, now))
+                       VALUES (:game_id, :ply, :action_index, :usi_notation, :board_json, :hands_json,
+                               :current_player, :in_check, :value_estimate, :top_candidates,
+                               :move_heatmap_json, :move_time_ms, :created_at)""",
+                    {
+                        "game_id": game_id, "ply": ply, "action_index": action_index,
+                        "usi_notation": usi_notation, "board_json": board_json,
+                        "hands_json": hands_json, "current_player": current_player,
+                        "in_check": int(in_check), "value_estimate": value_estimate,
+                        "top_candidates": top_candidates, "move_heatmap_json": move_heatmap_json,
+                        "move_time_ms": move_time_ms, "created_at": now,
+                    })
                 conn.execute("UPDATE showcase_games SET total_ply = ? WHERE id = ?", (ply, game_id))
                 conn.commit()
                 return
