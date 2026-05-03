@@ -49,7 +49,7 @@ vi.stubGlobal('WebSocket', MockWebSocket)
 vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:8001' })
 
 // Use dynamic import so the module picks up mocked globals
-let connect, disconnect
+let connect, disconnect, connectionState
 
 beforeEach(async () => {
   vi.useFakeTimers()
@@ -60,6 +60,7 @@ beforeEach(async () => {
   const mod = await import('./ws.js')
   connect = mod.connect
   disconnect = mod.disconnect
+  connectionState = mod.connectionState
 })
 
 afterEach(() => {
@@ -228,6 +229,92 @@ describe('scheduleReconnect (via onclose)', () => {
     expect(mockInstances).toHaveLength(2)
 
     Math.random.mockRestore()
+  })
+})
+
+describe('connectionState debounce on close', () => {
+  function readState() {
+    let value
+    const unsubscribe = connectionState.subscribe(v => { value = v })
+    unsubscribe()
+    return value
+  }
+
+  it('does not flip to reconnecting immediately on close', () => {
+    connect()
+    mockInstances[0]._simulateOpen()
+    expect(readState()).toBe('connected')
+
+    mockInstances[0]._simulateClose()
+    // Visible state stays 'connected' inside the grace window.
+    expect(readState()).toBe('connected')
+  })
+
+  it('flips to reconnecting once grace window elapses without recovery', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5) // jitter = 1.0 → 1000ms
+
+    connect()
+    mockInstances[0]._simulateOpen()
+    mockInstances[0]._simulateClose()
+
+    // Reconnect attempt fires at ~1000ms, but never opens — grace fires at 3000ms.
+    vi.advanceTimersByTime(2999)
+    expect(readState()).toBe('connected')
+    vi.advanceTimersByTime(1)
+    expect(readState()).toBe('reconnecting')
+
+    Math.random.mockRestore()
+  })
+
+  it('hides the flicker when reconnect succeeds within grace window', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5) // jitter = 1.0 → 1000ms
+
+    connect()
+    mockInstances[0]._simulateOpen()
+    mockInstances[0]._simulateClose()
+
+    // Advance to the first reconnect attempt and let it open.
+    vi.advanceTimersByTime(1000)
+    expect(mockInstances).toHaveLength(2)
+    mockInstances[1]._simulateOpen()
+
+    // Cross the original grace deadline — state should have stayed 'connected'.
+    vi.advanceTimersByTime(5000)
+    expect(readState()).toBe('connected')
+
+    Math.random.mockRestore()
+  })
+
+  it('does not leave a stale grace timer when a second close arrives', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    connect()
+    mockInstances[0]._simulateOpen()
+    mockInstances[0]._simulateClose()
+    // Second close before the first grace fires (e.g. retry that failed instantly).
+    vi.advanceTimersByTime(500)
+    mockInstances[0]._simulateClose()
+
+    // Grace was armed at the first close; flips to reconnecting at 3000ms total,
+    // not 3000ms after the second close.
+    vi.advanceTimersByTime(2499)
+    expect(readState()).toBe('connected')
+    vi.advanceTimersByTime(1)
+    expect(readState()).toBe('reconnecting')
+
+    Math.random.mockRestore()
+  })
+
+  it('disconnect() cancels the pending grace timer', () => {
+    connect()
+    mockInstances[0]._simulateOpen()
+    mockInstances[0]._simulateClose()
+    expect(readState()).toBe('connected')
+
+    disconnect()
+    vi.advanceTimersByTime(10000)
+    // Grace timer was cleared, so state never flipped to reconnecting.
+    expect(readState()).toBe('connected')
   })
 })
 

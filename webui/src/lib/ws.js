@@ -15,11 +15,16 @@ import {
 } from '../stores/league.js'
 import {
   showcaseGame, showcaseMoves, showcaseQueue, sidecarAlive,
+  resetShowcaseSelectionOnGameChange,
 } from '../stores/showcase.js'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 30000
+// Brief drops are common (proxy idle-timeouts, GPU stalls, network blips). Hold the
+// "reconnecting" banner back this long so a drop+recover within the window is invisible.
+// Backoff exceeds this after ~2 failed attempts, so sustained outages still surface.
+const DISCONNECT_GRACE_MS = 3000
 
 /** Connection state: 'connecting' | 'connected' | 'reconnecting' */
 export const connectionState = writable('connecting')
@@ -27,6 +32,7 @@ export const connectionState = writable('connecting')
 let ws = null
 let reconnectAttempt = 0
 let reconnectTimer = null
+let reconnectingGraceTimer = null
 
 export function sendShowcaseCommand(message) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -42,6 +48,10 @@ export function connect() {
   ws.onopen = () => {
     console.log('[ws] connected')
     reconnectAttempt = 0
+    if (reconnectingGraceTimer != null) {
+      clearTimeout(reconnectingGraceTimer)
+      reconnectingGraceTimer = null
+    }
     connectionState.set('connected')
   }
 
@@ -56,7 +66,12 @@ export function connect() {
 
   ws.onclose = () => {
     console.log('[ws] disconnected, reconnecting...')
-    connectionState.set('reconnecting')
+    if (reconnectingGraceTimer == null) {
+      reconnectingGraceTimer = setTimeout(() => {
+        connectionState.set('reconnecting')
+        reconnectingGraceTimer = null
+      }, DISCONNECT_GRACE_MS)
+    }
     scheduleReconnect()
   }
 
@@ -169,15 +184,21 @@ export function handleMessage(msg) {
       const gameId = game ? game.id : null
       showcaseGame.set(game)
       // Reset moves when game changes; append within same game
+      let gameChanged = false
       showcaseMoves.update(existing => {
         const newMoves = msg.new_moves || []
         if (existing.length > 0 && existing[0].game_id !== gameId) {
+          gameChanged = true
           return newMoves
+        }
+        if (existing.length === 0 && newMoves.length > 0) {
+          gameChanged = true
         }
         const maxPly = existing.length > 0 ? existing[existing.length - 1].ply : 0
         const fresh = newMoves.filter(m => m.ply > maxPly)
         return [...existing, ...fresh]
       })
+      if (gameChanged) resetShowcaseSelectionOnGameChange(gameId)
       // Moves only arrive when sidecar is actively playing
       sidecarAlive.set(true)
       break
@@ -190,6 +211,7 @@ export function handleMessage(msg) {
       if (!msg.active_game_id) {
         showcaseGame.set(null)
         showcaseMoves.set([])
+        resetShowcaseSelectionOnGameChange(null)
       }
       break
 
@@ -206,6 +228,10 @@ export function disconnect() {
   if (reconnectTimer != null) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
+  }
+  if (reconnectingGraceTimer != null) {
+    clearTimeout(reconnectingGraceTimer)
+    reconnectingGraceTimer = null
   }
   if (ws) {
     ws.close()
