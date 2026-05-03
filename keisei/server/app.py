@@ -71,6 +71,37 @@ WS_SEND_TIMEOUT_S = 5.0
 WS_PING_INTERVAL_S = 15.0
 
 
+def _flatten_exception_group(eg: BaseException) -> "list[BaseException]":
+    """Recursively flatten nested ExceptionGroups so logging never drops a leaf."""
+    if isinstance(eg, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        for sub in eg.exceptions:
+            leaves.extend(_flatten_exception_group(sub))
+        return leaves
+    return [eg]
+
+
+async def _send_json(
+    ws: WebSocket,
+    send_lock: asyncio.Lock,
+    msg: dict[str, Any],
+    *,
+    timeout: float = WS_SEND_TIMEOUT_S,
+) -> None:
+    """Send a JSON frame with a per-connection write lock.
+
+    The legacy websockets protocol asserts in `_drain_helper` that no other
+    coroutine is already draining (`assert waiter is None or waiter.cancelled()`
+    at websockets/legacy/protocol.py:308). Our four background tasks all push
+    independently, so without serialisation the second concurrent send blows
+    up with a bare `AssertionError` and the connection dies. The lock makes
+    sends single-writer per connection, which is the contract the library
+    assumes.
+    """
+    async with send_lock:
+        await asyncio.wait_for(ws.send_json(msg), timeout=timeout)
+
+
 def _db_accessible(db_path: str) -> bool:
     try:
         conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -209,12 +240,13 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
             await websocket.close(code=1008, reason="Forbidden")
             return
         await websocket.accept()
+        send_lock = asyncio.Lock()
         try:
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(_poll_and_push(websocket, db_path))
-                tg.create_task(_keepalive(websocket))
-                tg.create_task(_receive_commands(websocket, db_path))
-                tg.create_task(_poll_showcase(websocket, db_path))
+                tg.create_task(_poll_and_push(websocket, send_lock, db_path))
+                tg.create_task(_keepalive(websocket, send_lock))
+                tg.create_task(_receive_commands(websocket, send_lock, db_path))
+                tg.create_task(_poll_showcase(websocket, send_lock, db_path))
         except* WebSocketDisconnect:
             pass
         except* asyncio.CancelledError:
@@ -223,9 +255,12 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
             # except* Exception, so it needs its own clause.
             pass
         except* Exception as eg:
-            for exc in eg.exceptions:
+            for exc in _flatten_exception_group(eg):
                 if not isinstance(exc, WebSocketDisconnect):
-                    logger.warning("WebSocket error: %s", exc)
+                    # exc_info=exc surfaces the traceback for empty-message
+                    # exceptions (TimeoutError, AssertionError) that would
+                    # otherwise log as "WebSocket error: " with no context.
+                    logger.warning("WebSocket error: %r", exc, exc_info=exc)
 
     # Mount audio assets from the repo root, kept out of the bundled static
     # directory because the file is ~700 MB. <audio> uses HTTP Range, so
@@ -242,7 +277,7 @@ def create_app(db_path: str, allowed_hosts: frozenset[str] | None = None) -> Fas
     return app
 
 
-async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
+async def _poll_and_push(ws: WebSocket, send_lock: asyncio.Lock, db_path: str) -> None:
     """Poll SQLite and push updates to the WebSocket client."""
     # Send init message
     metrics = await asyncio.to_thread(read_metrics_since, db_path, 0, MAX_METRICS_IN_INIT)
@@ -261,7 +296,11 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         )
 
     league_data = await asyncio.to_thread(read_league_data, db_path)
-    elo_history = await asyncio.to_thread(read_elo_history, db_path)
+    # Match the steady-state cap below: an unbounded read at epoch 500+ produces
+    # ~90k rows and pushes the init send past WS_SEND_TIMEOUT_S, killing the WS
+    # before the client ever sees the payload. The frontend replaces eloHistory
+    # on every league_update anyway, so it never holds more than this slice.
+    elo_history = await asyncio.to_thread(read_elo_history, db_path, max_epochs=500)
     t_stats = await asyncio.to_thread(read_tournament_stats, db_path)
     style_profiles = await asyncio.to_thread(read_style_profiles, db_path)
     head_to_head = await asyncio.to_thread(read_head_to_head, db_path)
@@ -282,30 +321,27 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         except (ValueError, TypeError):
             pass
 
-    await asyncio.wait_for(
-        ws.send_json({
-            "type": "init",
-            "games": games,
-            "metrics": metrics,
-            "training_state": state,
-            "league_entries": league_data["entries"],
-            "league_results": league_data["results"],
-            "historical_library": league_data["historical_library"],
-            "gauntlet_results": league_data["gauntlet_results"],
-            "transitions": league_data["transitions"],
-            "elo_history": elo_history,
-            "tournament_stats": t_stats,
-            "style_profiles": style_profiles,
-            "head_to_head": head_to_head,
-            "showcase": {
-                "game": dict(showcase_game) if showcase_game else None,
-                "moves": showcase_moves,
-                "queue": showcase_queue,
-                "sidecar_alive": showcase_alive,
-            },
-        }),
-        timeout=WS_SEND_TIMEOUT_S,
-    )
+    await _send_json(ws, send_lock, {
+        "type": "init",
+        "games": games,
+        "metrics": metrics,
+        "training_state": state,
+        "league_entries": league_data["entries"],
+        "league_results": league_data["results"],
+        "historical_library": league_data["historical_library"],
+        "gauntlet_results": league_data["gauntlet_results"],
+        "transitions": league_data["transitions"],
+        "elo_history": elo_history,
+        "tournament_stats": t_stats,
+        "style_profiles": style_profiles,
+        "head_to_head": head_to_head,
+        "showcase": {
+            "game": dict(showcase_game) if showcase_game else None,
+            "moves": showcase_moves,
+            "queue": showcase_queue,
+            "sidecar_alive": showcase_alive,
+        },
+    })
 
     last_league_entry_ids = frozenset(e["id"] for e in league_data["entries"])
     last_league_result_id = league_data["results"][0]["id"] if league_data["results"] else 0
@@ -329,10 +365,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
             total_episodes += sum(
                 (m.get("episodes_completed") or 0) for m in new_metrics
             )
-            await asyncio.wait_for(
-                ws.send_json({"type": "metrics_update", "rows": new_metrics}),
-                timeout=WS_SEND_TIMEOUT_S,
-            )
+            await _send_json(ws, send_lock, {"type": "metrics_update", "rows": new_metrics})
 
         changed_games, new_game_ts, new_game_id = await asyncio.to_thread(
             read_game_snapshots_since, db_path, last_game_ts, last_game_id
@@ -340,10 +373,7 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         if changed_games:
             last_game_ts = new_game_ts
             last_game_id = new_game_id
-            await asyncio.wait_for(
-                ws.send_json({"type": "game_update", "snapshots": changed_games}),
-                timeout=WS_SEND_TIMEOUT_S,
-            )
+            await _send_json(ws, send_lock, {"type": "game_update", "snapshots": changed_games})
 
         new_state = await asyncio.to_thread(read_training_state, db_path)
         if new_state and (
@@ -354,24 +384,21 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
         ):
             sys_stats = await asyncio.to_thread(_get_system_stats)
             state = new_state
-            await asyncio.wait_for(
-                ws.send_json({
-                    "type": "training_status",
-                    "status": new_state.get("status"),
-                    "phase": new_state.get("phase", ""),
-                    "heartbeat_at": new_state.get("heartbeat_at"),
-                    "epoch": new_state.get("current_epoch"),
-                    "step": new_state.get("current_step"),
-                    "episodes": total_episodes,
-                    "config_json": new_state.get("config_json"),
-                    "display_name": new_state.get("display_name"),
-                    "model_arch": new_state.get("model_arch"),
-                    "total_epochs": new_state.get("total_epochs"),
-                    "system_stats": sys_stats,
-                    "learner_entry_id": new_state.get("learner_entry_id"),
-                }),
-                timeout=WS_SEND_TIMEOUT_S,
-            )
+            await _send_json(ws, send_lock, {
+                "type": "training_status",
+                "status": new_state.get("status"),
+                "phase": new_state.get("phase", ""),
+                "heartbeat_at": new_state.get("heartbeat_at"),
+                "epoch": new_state.get("current_epoch"),
+                "step": new_state.get("current_step"),
+                "episodes": total_episodes,
+                "config_json": new_state.get("config_json"),
+                "display_name": new_state.get("display_name"),
+                "model_arch": new_state.get("model_arch"),
+                "total_epochs": new_state.get("total_epochs"),
+                "system_stats": sys_stats,
+                "learner_entry_id": new_state.get("learner_entry_id"),
+            })
 
         league_poll_elapsed += POLL_INTERVAL_S
         if league_poll_elapsed >= LEAGUE_POLL_INTERVAL_S:
@@ -416,23 +443,20 @@ async def _poll_and_push(ws: WebSocket, db_path: str) -> None:
                 }
                 if style_changed:
                     msg["style_profiles"] = style_profiles
-                await asyncio.wait_for(
-                    ws.send_json(msg),
-                    timeout=WS_SEND_TIMEOUT_S,
-                )
+                await _send_json(ws, send_lock, msg)
 
 
-async def _keepalive(ws: WebSocket) -> None:
+async def _keepalive(ws: WebSocket, send_lock: asyncio.Lock) -> None:
     """Ping/pong heartbeat to detect dead connections."""
     while True:
         await asyncio.sleep(WS_PING_INTERVAL_S)
         try:
-            await asyncio.wait_for(ws.send_json({"type": "ping"}), timeout=WS_SEND_TIMEOUT_S)
+            await _send_json(ws, send_lock, {"type": "ping"})
         except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
             raise WebSocketDisconnect()
 
 
-async def _receive_commands(ws: WebSocket, db_path: str) -> None:
+async def _receive_commands(ws: WebSocket, send_lock: asyncio.Lock, db_path: str) -> None:
     """Listen for client-to-server commands on the WebSocket."""
     while True:
         try:
@@ -451,11 +475,11 @@ async def _receive_commands(ws: WebSocket, db_path: str) -> None:
         msg_type = data.get("type", "")
         try:
             if msg_type == "request_showcase_match":
-                await _handle_match_request(ws, db_path, data)
+                await _handle_match_request(ws, send_lock, db_path, data)
             elif msg_type == "change_showcase_speed":
-                await _handle_speed_change(ws, db_path, data)
+                await _handle_speed_change(ws, send_lock, db_path, data)
             elif msg_type == "cancel_showcase_match":
-                await _handle_cancel(ws, db_path, data)
+                await _handle_cancel(ws, send_lock, db_path, data)
             elif msg_type == "pong":
                 pass  # client keepalive response
             else:
@@ -464,95 +488,65 @@ async def _receive_commands(ws: WebSocket, db_path: str) -> None:
             logger.exception("Error handling client command %s", msg_type)
 
 
-async def _handle_match_request(ws: WebSocket, db_path: str, data: dict[str, Any]) -> None:
+async def _handle_match_request(ws: WebSocket, send_lock: asyncio.Lock, db_path: str, data: dict[str, Any]) -> None:
     """Validate and queue a showcase match request."""
     entry_id_1 = str(data.get("entry_id_1", ""))
     entry_id_2 = str(data.get("entry_id_2", ""))
     speed = data.get("speed", "normal")
 
     if speed not in VALID_SPEEDS:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": f"Invalid speed: {speed}. Valid: {sorted(VALID_SPEEDS)}"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": f"Invalid speed: {speed}. Valid: {sorted(VALID_SPEEDS)}"})
         return
 
     if not entry_id_1 or not entry_id_2:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "Both entry_id_1 and entry_id_2 are required"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": "Both entry_id_1 and entry_id_2 are required"})
         return
 
     if entry_id_1 == entry_id_2:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "Cannot match an entry against itself"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": "Cannot match an entry against itself"})
         return
 
     # Check queue depth
     queue = await asyncio.to_thread(showcase_read_queue, db_path)
     pending = [q for q in queue if q["status"] == "pending"]
     if len(pending) >= MAX_SHOWCASE_QUEUE_DEPTH:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "Queue is full"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": "Queue is full"})
         return
 
     await asyncio.to_thread(showcase_queue_match, db_path, entry_id_1, entry_id_2, speed)
-    await asyncio.wait_for(
-        ws.send_json({"type": "showcase_match_queued", "entry_id_1": entry_id_1, "entry_id_2": entry_id_2, "speed": speed}),
-        timeout=WS_SEND_TIMEOUT_S,
-    )
+    await _send_json(ws, send_lock, {"type": "showcase_match_queued", "entry_id_1": entry_id_1, "entry_id_2": entry_id_2, "speed": speed})
 
 
-async def _handle_speed_change(ws: WebSocket, db_path: str, data: dict[str, Any]) -> None:
+async def _handle_speed_change(ws: WebSocket, send_lock: asyncio.Lock, db_path: str, data: dict[str, Any]) -> None:
     """Change the speed of a queued/running match."""
     queue_id = data.get("queue_id")
     speed = data.get("speed", "")
 
     if speed not in VALID_SPEEDS:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": f"Invalid speed: {speed}"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": f"Invalid speed: {speed}"})
         return
 
     if queue_id is None:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "queue_id is required"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": "queue_id is required"})
         return
 
     await asyncio.to_thread(showcase_update_speed, db_path, int(queue_id), speed)
-    await asyncio.wait_for(
-        ws.send_json({"type": "showcase_speed_changed", "queue_id": queue_id, "speed": speed}),
-        timeout=WS_SEND_TIMEOUT_S,
-    )
+    await _send_json(ws, send_lock, {"type": "showcase_speed_changed", "queue_id": queue_id, "speed": speed})
 
 
-async def _handle_cancel(ws: WebSocket, db_path: str, data: dict[str, Any]) -> None:
+async def _handle_cancel(ws: WebSocket, send_lock: asyncio.Lock, db_path: str, data: dict[str, Any]) -> None:
     """Cancel a pending showcase match."""
     queue_id = data.get("queue_id")
 
     if queue_id is None:
-        await asyncio.wait_for(
-            ws.send_json({"type": "showcase_error", "error": "queue_id is required"}),
-            timeout=WS_SEND_TIMEOUT_S,
-        )
+        await _send_json(ws, send_lock, {"type": "showcase_error", "error": "queue_id is required"})
         return
 
     await asyncio.to_thread(showcase_cancel_match, db_path, int(queue_id))
-    await asyncio.wait_for(
-        ws.send_json({"type": "showcase_match_cancelled", "queue_id": queue_id}),
-        timeout=WS_SEND_TIMEOUT_S,
-    )
+    await _send_json(ws, send_lock, {"type": "showcase_match_cancelled", "queue_id": queue_id})
 
 
-async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
+async def _poll_showcase(ws: WebSocket, send_lock: asyncio.Lock, db_path: str) -> None:
     """Poll showcase tables and push incremental updates.
 
     Uses incremental move delivery: only moves since last_sent_ply are sent.
@@ -590,15 +584,12 @@ async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
         if status_fingerprint != last_status_fingerprint:
             last_status_fingerprint = status_fingerprint
             try:
-                await asyncio.wait_for(
-                    ws.send_json({
-                        "type": "showcase_status",
-                        "queue": queue,
-                        "active_game_id": game_id,
-                        "sidecar_alive": alive,
-                    }),
-                    timeout=WS_SEND_TIMEOUT_S,
-                )
+                await _send_json(ws, send_lock, {
+                    "type": "showcase_status",
+                    "queue": queue,
+                    "active_game_id": game_id,
+                    "sidecar_alive": alive,
+                })
             except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
                 raise WebSocketDisconnect()
 
@@ -610,14 +601,11 @@ async def _poll_showcase(ws: WebSocket, db_path: str) -> None:
             if new_moves:
                 last_sent_ply = max(m["ply"] for m in new_moves)
                 try:
-                    await asyncio.wait_for(
-                        ws.send_json({
-                            "type": "showcase_update",
-                            "game": dict(game),
-                            "new_moves": new_moves,
-                        }),
-                        timeout=WS_SEND_TIMEOUT_S,
-                    )
+                    await _send_json(ws, send_lock, {
+                        "type": "showcase_update",
+                        "game": dict(game),
+                        "new_moves": new_moves,
+                    })
                 except (WebSocketDisconnect, ConnectionError, asyncio.TimeoutError):
                     raise WebSocketDisconnect()
 
