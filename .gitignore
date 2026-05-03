@@ -49,4 +49,6 @@ keisei/server/static/index.html
 # Large media assets served via /audio mount
 audio/
 
+# Misc 
 docs/bugs/generated/
+keisei.db-*
