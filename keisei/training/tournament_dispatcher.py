@@ -35,12 +35,14 @@ class TournamentDispatcher:
         games_per_match: int = 3,
         min_pool_size: int = 3,
         priority_scorer: PriorityScorer | None = None,
+        recompute_profiles_every: int = 5,
     ) -> None:
         self.store = store
         self.scheduler = scheduler
         self.games_per_match = games_per_match
         self.min_pool_size = min_pool_size
         self.priority_scorer = priority_scorer
+        self.recompute_profiles_every = recompute_profiles_every
         self._round_counter = 0
 
     def _next_round_id(self) -> int:
@@ -98,7 +100,31 @@ class TournamentDispatcher:
             "Dispatched round %d: %d pairings from %d entries at epoch %d",
             round_id, len(pairings), len(entries), epoch,
         )
+
+        self._round_counter += 1
+        if (
+            self.recompute_profiles_every > 0
+            and self._round_counter % self.recompute_profiles_every == 0
+        ):
+            self._recompute_style_profiles()
+
         return round_id
+
+    def _recompute_style_profiles(self) -> None:
+        """Re-aggregate game_features into style_profiles.
+
+        Single-owner: only the trainer-side dispatcher calls this. Workers
+        write game_features rows independently; multiple writers here would
+        race on the style_profiles table.
+        """
+        try:
+            from keisei.training.style_profiler import StyleProfiler
+            written = StyleProfiler(self.store.db_path).recompute_all()
+            logger.debug(
+                "Style profiles recomputed: %d checkpoints", written,
+            )
+        except Exception:
+            logger.debug("Style profiling failed", exc_info=True)
 
     def check_round_completion(self, round_id: int) -> bool:
         """Check if all pairings in a round are finished.

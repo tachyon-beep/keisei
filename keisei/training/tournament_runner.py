@@ -284,6 +284,11 @@ class TournamentWorker:
                     result.entry_a.display_name, result.entry_b.display_name,
                 )
                 mark_pairing_done(self.db_path, claim.id, status="failed")
+                continue
+            # Persist per-game feature rows (drives StyleProfiler later).
+            # Independent of match-result write: feature failure must not
+            # un-mark the pairing or rewind Elo.
+            self._write_game_features(result)
 
         for i in unmatched_indices:
             claim = claims_in_order[i]
@@ -300,6 +305,18 @@ class TournamentWorker:
                 stats.pairings_completed, stats.pairings_requested,
                 stats.total_games, stats.round_duration_s,
             )
+
+    def _write_game_features(self, result: MatchResult) -> None:
+        """Persist completed per-game feature rows for one match."""
+        tracker = result.feature_tracker
+        if tracker is None or not tracker.completed_rows:
+            return
+        try:
+            from keisei.db import write_game_features
+            rows = [r.to_dict() for r in tracker.completed_rows]
+            write_game_features(self.db_path, rows)
+        except Exception:
+            logger.warning("Failed to write game features", exc_info=True)
 
     def _write_match_result(self, result: MatchResult, epoch: int) -> None:
         entry_a_id = result.entry_a.id
