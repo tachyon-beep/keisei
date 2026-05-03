@@ -17,10 +17,10 @@
   {#if $leagueEvents.length === 0}
     <p class="empty">No league events yet.</p>
   {:else}
-    <div class="feed">
+    <div class="feed" role="list" aria-label="League events">
       {#each collapsedEvents as event}
         {#if event.collapsed}
-          <div class="event {event.type}" tabindex="0" aria-label="{event.count} {event.type === 'arrival' ? 'arrivals' : event.type === 'departure' ? 'departures' : event.type === 'promotion' ? 'promotions' : 'demotions'}: {event.names.join(', ')}">
+          <div class="event {event.type}" role="listitem" aria-label="{event.count} {event.type === 'arrival' ? 'arrivals' : event.type === 'departure' ? 'departures' : event.type === 'promotion' ? 'promotions' : 'demotions'}: {event.names.join(', ')}">
             <span class="event-time">{event.time}</span>
             <span class="event-icon" aria-hidden="true">{event.icon}</span>
             <span class="sr-only">{event.type}</span>
@@ -28,7 +28,7 @@
             <span class="event-detail" title={event.names.join(', ')}>{event.names.slice(0, 3).join(', ')}{event.names.length > 3 ? ` +${event.names.length - 3}` : ''}</span>
           </div>
         {:else}
-          <div class="event" class:arrival={event.type === 'arrival'} class:departure={event.type === 'departure'} class:promotion={event.type === 'promotion'} class:demotion={event.type === 'demotion'}>
+          <div class="event" role="listitem" class:arrival={event.type === 'arrival'} class:departure={event.type === 'departure'} class:promotion={event.type === 'promotion'} class:demotion={event.type === 'demotion'}>
             <span class="event-time">{event.time}</span>
             <span class="event-icon" aria-hidden="true">{event.icon}</span>
             <span class="sr-only">{event.type}</span>

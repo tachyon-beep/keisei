@@ -149,10 +149,10 @@
             {#each ROLE_ORDER as role}
               {#if $leagueByRole.has(role)}
                 <tr class="group-header">
-                  <td colspan="11" class="group-heading" role="separator">
+                  <th colspan="11" class="group-heading" scope="colgroup">
                     <span aria-hidden="true">{ROLE_LABELS[role]?.split(' ')[0]}</span>
                     {ROLE_LABELS[role]?.split(' ').slice(1).join(' ') || role} · {$leagueByRole.get(role).length}/{ROLE_CAPACITY[role] || '?'}
-                  </td>
+                  </th>
                 </tr>
                 {#each $leagueByRole.get(role) as entry}
                   <tr

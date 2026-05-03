@@ -225,10 +225,7 @@
                 </div>
               </div>
 
-              <MoveLog
-                moveHistoryJson={moveHistory}
-                currentPlayer={game.current_player || 'black'}
-              />
+              <MoveLog moveHistoryJson={moveHistory} />
             </div>
 
             <div class="legend-area">

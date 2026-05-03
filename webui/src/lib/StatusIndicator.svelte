@@ -52,7 +52,7 @@
   })
 </script>
 
-<header class="status-bar" role="banner">
+<header class="status-bar">
   <div class="left">
     <img src="/favicon.svg" alt="" class="app-icon" aria-hidden="true" />
     <h1>
@@ -195,12 +195,6 @@
 
   .right {
     font-size: 14px;
-  }
-
-  .player-name {
-    color: var(--accent-teal);
-    font-weight: 600;
-    cursor: help;
   }
 
   .connecting-banner {

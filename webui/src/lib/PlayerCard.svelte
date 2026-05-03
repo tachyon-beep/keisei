@@ -99,6 +99,8 @@
   {#if currentCommentary}
     <div
       class="commentary-row"
+      role="group"
+      aria-label="Style commentary carousel"
       on:mouseenter={() => commentaryPaused = true}
       on:mouseleave={() => commentaryPaused = false}
       on:focusin={() => commentaryPaused = true}

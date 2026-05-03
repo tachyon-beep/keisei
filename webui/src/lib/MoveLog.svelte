@@ -1,27 +1,52 @@
 <script>
-  import { afterUpdate } from 'svelte'
+  import { afterUpdate, createEventDispatcher } from 'svelte'
   import { parseMoves, buildMoveRows } from './moveRows.js'
+  import { notationStyle } from '../stores/notation.js'
+  import NotationToggle from './NotationToggle.svelte'
 
   export let moveHistoryJson = '[]'
-  export let currentPlayer = 'black'
+  /**
+   * Index (0-based) of the currently displayed move in the moves array, or -1
+   * for "live tail" / no selection. When >= 0 the matching cell is highlighted
+   * and an "← Live" affordance is shown so users can return to follow-mode.
+   */
+  export let selectedIdx = -1
+  /**
+   * When true, move cells become clickable and emit a 'select' event with the
+   * 0-based move index. Defaults to false so existing read-only callers (the
+   * Training tab) keep their current behavior.
+   */
+  export let interactive = false
+
+  const dispatch = createEventDispatcher()
 
   let scrollContainer
-  let notationStyle = 'western'
-  const STYLES = ['western', 'japanese', 'usi']
-  const STYLE_LABELS = { western: 'W', japanese: '漢', usi: 'USI' }
-  const STYLE_NAMES = { western: 'Western', japanese: 'Japanese', usi: 'USI' }
-
-  $: nextStyle = STYLES[(STYLES.indexOf(notationStyle) + 1) % STYLES.length]
-
-  function toggleNotation() {
-    notationStyle = nextStyle
-  }
 
   $: moves = parseMoves(moveHistoryJson)
-  $: rows = buildMoveRows(moves, notationStyle)
+  $: rows = buildMoveRows(moves, $notationStyle)
+  $: totalMoves = moves.length
+  $: scrubbing = interactive && selectedIdx >= 0 && selectedIdx < totalMoves - 1
+
+  function selectIdx(idx) {
+    if (!interactive) return
+    if (idx < 0 || idx >= totalMoves) return
+    dispatch('select', { idx })
+  }
+
+  function returnToLive() {
+    dispatch('select', { idx: -1 })
+  }
+
+  function handleCellKeydown(e, idx) {
+    if (!interactive) return
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      selectIdx(idx)
+    }
+  }
 
   afterUpdate(() => {
-    if (scrollContainer) {
+    if (scrollContainer && !scrubbing) {
       scrollContainer.scrollTop = 0
     }
   })
@@ -30,10 +55,20 @@
 <div class="move-log">
   <div class="header-row">
     <h2 class="header">Move Log</h2>
-    <button class="notation-toggle" on:click={toggleNotation} title="Switch to {STYLE_NAMES[nextStyle]} notation" aria-label="Notation: {STYLE_NAMES[notationStyle]}. Click to switch to {STYLE_NAMES[nextStyle]}.">
-      {STYLE_LABELS[notationStyle]}
-    </button>
+    {#if scrubbing}
+      <button
+        class="live-btn"
+        on:click={returnToLive}
+        title="Return to the live position (End)"
+        aria-label="Return to live position"
+      >
+        ← Live
+      </button>
+    {/if}
+    <NotationToggle />
   </div>
+  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+  <!-- Scrollable region: keyboard users need to focus this to scroll the move history with arrow keys. -->
   <div class="table-container" role="log" aria-label="Move history" tabindex="0" bind:this={scrollContainer}>
     <table>
       <thead>
@@ -45,10 +80,30 @@
       </thead>
       <tbody>
         {#each [...rows].reverse() as row}
-          <tr class:latest={row.isLatest}>
+          {@const blackIdx = (row.num - 1) * 2}
+          {@const whiteIdx = blackIdx + 1}
+          {@const blackHasMove = blackIdx < totalMoves}
+          {@const whiteHasMove = whiteIdx < totalMoves}
+          <tr class:latest={row.isLatest && !scrubbing}>
             <td class="num">{row.num}</td>
-            <td>{row.black}</td>
-            <td>{row.white}</td>
+            <td
+              class:cell={interactive && blackHasMove}
+              class:selected={interactive && blackIdx === selectedIdx}
+              on:click={() => blackHasMove && selectIdx(blackIdx)}
+              on:keydown={(e) => handleCellKeydown(e, blackIdx)}
+              role={interactive && blackHasMove ? 'button' : undefined}
+              tabindex={interactive && blackHasMove ? 0 : undefined}
+              aria-pressed={interactive && blackHasMove ? blackIdx === selectedIdx : undefined}
+            >{row.black}</td>
+            <td
+              class:cell={interactive && whiteHasMove}
+              class:selected={interactive && whiteIdx === selectedIdx}
+              on:click={() => whiteHasMove && selectIdx(whiteIdx)}
+              on:keydown={(e) => handleCellKeydown(e, whiteIdx)}
+              role={interactive && whiteHasMove ? 'button' : undefined}
+              tabindex={interactive && whiteHasMove ? 0 : undefined}
+              aria-pressed={interactive && whiteHasMove ? whiteIdx === selectedIdx : undefined}
+            >{row.white}</td>
           </tr>
         {/each}
         {#if rows.length === 0}
@@ -75,6 +130,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 6px;
     padding: 8px 10px;
     border-bottom: 1px solid var(--border-subtle);
     position: sticky;
@@ -88,33 +144,24 @@
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 1px;
+    flex: 1;
   }
 
-  .notation-toggle {
-    background: none;
-    border: 1px solid var(--border);
+  .live-btn {
+    background: var(--badge-bg-gold);
+    border: 1px solid var(--accent-gold);
     border-radius: 3px;
-    padding: 4px 10px;
-    min-width: 36px;
-    min-height: 36px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted);
+    color: var(--accent-gold);
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 4px 8px;
+    text-transform: uppercase;
   }
 
-  .notation-toggle:hover {
-    color: var(--text-primary);
-    border-color: var(--text-secondary);
-  }
-
-  .notation-toggle:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-  }
+  .live-btn:hover { background: var(--accent-gold); color: var(--bg-primary); }
+  .live-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
   .table-container {
     overflow-y: scroll;
@@ -165,6 +212,28 @@
 
   tr.latest td {
     color: var(--accent-teal);
+  }
+
+  td.cell {
+    cursor: pointer;
+    border-radius: 2px;
+  }
+
+  td.cell:hover {
+    background: var(--bg-selected);
+    color: var(--accent-teal);
+  }
+
+  td.cell:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+  }
+
+  td.selected {
+    background: var(--bg-selected) !important;
+    color: var(--accent-gold) !important;
+    font-weight: 700;
+    box-shadow: inset 2px 0 0 var(--accent-gold);
   }
 
   .empty {

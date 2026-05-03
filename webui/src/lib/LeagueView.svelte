@@ -40,6 +40,9 @@
   }
 </script>
 
+<!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+<!-- Esc-to-close-detail handler — needs to be on the focused main region so it
+     only fires while the user is engaged with the league view, not globally. -->
 <main id="league-main" class="league-view" aria-labelledby="tab-league" tabindex="-1" on:keydown={handleMainKeydown}>
   {#if stats}
     <div class="stats-banner" role="region" aria-label="League summary">
