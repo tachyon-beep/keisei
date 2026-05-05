@@ -14,7 +14,7 @@ from keisei.config import ConcurrencyConfig
 from keisei.db import _connect, init_db
 from keisei.training.concurrent_matches import MatchResult, RoundStats
 from keisei.training.opponent_store import OpponentEntry, OpponentStore
-from keisei.training.tournament_queue import (
+from keisei.db.tournament_queue import (
     claim_next_pairing,
     enqueue_pairings,
     get_round_status,
