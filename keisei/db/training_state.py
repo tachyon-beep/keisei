@@ -64,6 +64,22 @@ def read_training_state(db_path: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def set_total_epochs(db_path: str, total_epochs: int) -> None:
+    """Record the total planned epochs for the run so the dashboard can
+    display progress.  Caller is responsible for choosing what to do with
+    transient errors (the training_state row is created elsewhere in run
+    setup; this helper assumes it already exists)."""
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE training_state SET total_epochs = ? WHERE id = 1",
+            (total_epochs,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_heartbeat(db_path: str) -> None:
     conn = _connect(db_path)
     try:

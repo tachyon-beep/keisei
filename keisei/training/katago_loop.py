@@ -836,20 +836,19 @@ class KataGoTrainingLoop:
         return entries_by_role
 
     def run(self, num_epochs: int, steps_per_epoch: int) -> None:
-        # Store total planned epochs in DB so the dashboard can show progress
+        # Store total planned epochs in DB so the dashboard can show progress.
+        # Failure here is non-fatal (the dashboard simply won't show a
+        # progress denominator) — log and continue rather than crash the run.
         if self.dist_ctx.is_main:
-            from keisei.db import _connect
-            conn = _connect(self.db_path)
+            from keisei.db import set_total_epochs
             try:
-                conn.execute(
-                    "UPDATE training_state SET total_epochs = ? WHERE id = 1",
-                    (self.epoch + num_epochs,),
-                )
-                conn.commit()
+                set_total_epochs(self.db_path, self.epoch + num_epochs)
             except Exception:
-                pass  # Column may not exist in old DBs
-            finally:
-                conn.close()
+                logger.warning(
+                    "Failed to record total_epochs in training_state; "
+                    "dashboard progress denominator will be unavailable",
+                    exc_info=True,
+                )
 
         # Start background tournament if configured
         if self._tournament is not None:
