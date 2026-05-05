@@ -52,32 +52,130 @@ class EloColumn(StrEnum):
     HISTORICAL = "elo_historical"
 
 
-# Themed name pool for league entries — Japanese shogi/martial arts themed.
+# Themed name pool for league entries. 500 names drawn from pre-1900
+# historical cultures — large enough that the deconfliction fallback
+# in _generate_display_name should never trigger in practice.
 LEAGUE_NAMES: list[str] = [
-    # Batch 1 — warriors and strategists
+    # Batch 1 — Japanese warriors and strategists
     "Takeshi", "Haruka", "Renjiro", "Sakura", "Noboru",
     "Kaede", "Shingen", "Tomoe", "Genryu", "Hana",
     "Kenshin", "Mizuki", "Raiden", "Ayame", "Daisuke",
     "Shiori", "Hayato", "Natsuki", "Sorin", "Yuki",
     "Jubei", "Kasumi", "Tetsuo", "Akane", "Goemon",
-    # Batch 2 — poets and wanderers
+    # Batch 2 — Japanese poets and wanderers
     "Rin", "Masato", "Chihiro", "Ryoma", "Satsuki",
     "Kojiro", "Fumiko", "Hideki", "Koharu", "Saburo",
     "Mio", "Tadashi", "Hotaru", "Isamu", "Nanami",
     "Shiro", "Kaori", "Benkei", "Sumire", "Yasuo",
     "Tsubaki", "Goro", "Hikari", "Kenji", "Aoi",
-    # Batch 3 — legends and scholars
+    # Batch 3 — Japanese legends and scholars
     "Musashi", "Hanzo", "Kagero", "Tsukasa", "Rinko",
     "Souji", "Yukimura", "Makoto", "Azami", "Taro",
     "Hinata", "Shizuka", "Ieyasu", "Momiji", "Tetsu",
     "Kurama", "Suzu", "Dosetsu", "Fubuki", "Sei",
     "Nagato", "Chiyo", "Ranmaru", "Mayumi", "Jinbei",
-    # Batch 4 — elements and seasons
+    # Batch 4 — Japanese elements and seasons
     "Arashi", "Tsukimi", "Enma", "Wakaba", "Ryusei",
     "Asuka", "Kagerou", "Tamamo", "Sora", "Inari",
     "Kaze", "Kurenai", "Yamato", "Suzume", "Homura",
     "Michiru", "Hayate", "Kaguya", "Ibuki", "Akira",
     "Minato", "Shinobu", "Sessho", "Uzume", "Ginga",
+    # Batch 5 — Greek heroes and warriors
+    "Achilles", "Ajax", "Hector", "Odysseus", "Diomedes",
+    "Patroclus", "Theseus", "Perseus", "Heracles", "Jason",
+    "Bellerophon", "Atalanta", "Cassandra", "Andromache", "Helen",
+    "Penelope", "Antigone", "Electra", "Iphigenia", "Hippolyta",
+    "Pelops", "Orpheus", "Daedalus", "Telemachus", "Menelaus",
+    # Batch 6 — Greek philosophers and poets
+    "Socrates", "Plato", "Aristotle", "Diogenes", "Pythagoras",
+    "Heraclitus", "Parmenides", "Democritus", "Epicurus", "Zeno",
+    "Thales", "Anaximander", "Anaxagoras", "Empedocles", "Protagoras",
+    "Hypatia", "Aspasia", "Sappho", "Hesiod", "Solon",
+    "Pericles", "Themistocles", "Leonidas", "Xenophon", "Euripides",
+    # Batch 7 — Roman generals and statesmen
+    "Cincinnatus", "Scipio", "Fabius", "Marcellus", "Camillus",
+    "Regulus", "Cato", "Cicero", "Brutus", "Antonius",
+    "Agrippa", "Gracchus", "Sulla", "Pompey", "Crassus",
+    "Vespasian", "Titus", "Trajan", "Hadrian", "Aurelius",
+    "Seneca", "Tacitus", "Livy", "Virgil", "Ovid",
+    # Batch 8 — Roman matrons and noblewomen
+    "Livia", "Octavia", "Cornelia", "Aurelia", "Calpurnia",
+    "Antonia", "Drusilla", "Faustina", "Plautia", "Tullia",
+    "Junia", "Servilia", "Vipsania", "Aemilia", "Claudia",
+    "Domitia", "Marcia", "Pomponia", "Sabina", "Sulpicia",
+    "Terentia", "Valeria", "Vibia", "Julia", "Lucilla",
+    # Batch 9 — Norse warriors and skalds
+    "Ragnar", "Bjorn", "Sigurd", "Harald", "Knut",
+    "Olaf", "Egil", "Thorfinn", "Leif", "Hrolf",
+    "Eirik", "Gunnar", "Hakon", "Ivar", "Sweyn",
+    "Magnus", "Thorvald", "Snorri", "Aslaug", "Freydis",
+    "Sigrid", "Gudrun", "Brynhild", "Astrid", "Halfdan",
+    # Batch 10 — Celtic kings, druids, and warrior-queens
+    "Brennus", "Vercingetorix", "Cathbad", "Conchobar", "Cuchulain",
+    "Finn", "Oisin", "Diarmuid", "Niall", "Bran",
+    "Lugh", "Nuada", "Fergus", "Aed", "Eogan",
+    "Boudica", "Cartimandua", "Maeve", "Deirdre", "Grainne",
+    "Etain", "Aoife", "Brigid", "Macha", "Scathach",
+    # Batch 11 — Egyptian pharaohs and viziers
+    "Ramesses", "Amenhotep", "Thutmose", "Khufu", "Khafre",
+    "Sneferu", "Djoser", "Akhenaten", "Tutankhamun", "Seti",
+    "Merneptah", "Horemheb", "Imhotep", "Ptahhotep", "Hatshepsut",
+    "Nefertiti", "Nefertari", "Tiye", "Ahmose", "Sobekneferu",
+    "Twosret", "Berenice", "Cleopatra", "Arsinoe", "Senusret",
+    # Batch 12 — Persian kings and poets
+    "Cyrus", "Darius", "Xerxes", "Cambyses", "Artaxerxes",
+    "Bahram", "Khosrow", "Shapur", "Ardashir", "Yazdegerd",
+    "Bardiya", "Tiridates", "Mithridates", "Orodes", "Phraates",
+    "Roxana", "Atossa", "Parysatis", "Stateira", "Amestris",
+    "Rudaki", "Ferdowsi", "Nizami", "Hafez", "Saadi",
+    # Batch 13 — Mesopotamian rulers and scribes
+    "Gilgamesh", "Sargon", "Hammurabi", "Nebuchadnezzar", "Ashurbanipal",
+    "Tiglath", "Sennacherib", "Esarhaddon", "Shulgi", "Belshazzar",
+    "Nabonidus", "Eannatum", "Enmerkar", "Lugalbanda", "Semiramis",
+    "Kubaba", "Enheduanna", "Etana", "Ziusudra", "Lugalzagesi",
+    "Urukagina", "Mesannepada", "Naramsin", "Ammisaduqa", "Hattusili",
+    # Batch 14 — Mongol, Hun, and Steppe
+    "Temujin", "Subutai", "Jebe", "Jochi", "Tolui",
+    "Ogedei", "Mongke", "Hulagu", "Berke", "Batu",
+    "Borte", "Sorghaghtani", "Toregene", "Hoelun", "Bumin",
+    "Bilge", "Tonyukuk", "Attila", "Bleda", "Ellac",
+    "Modu", "Yesugei", "Chormaqan", "Mukhali", "Tamerlane",
+    # Batch 15 — Chinese sages, generals, and emperors
+    "Confucius", "Mencius", "Laozi", "Zhuangzi", "Sunzi",
+    "Mozi", "Hanfei", "Xunzi", "Wuzetian", "Mulan",
+    "Zhuge", "Caocao", "Liubei", "Sunquan", "Lubu",
+    "Guanyu", "Zhangfei", "Zhaoyun", "Hanxin", "Liubang",
+    "Xiangyu", "Qinshi", "Wudi", "Taizong", "Yongle",
+    # Batch 16 — Indian and Vedic kings, sages, and emperors
+    "Ashoka", "Chandragupta", "Bindusara", "Samudragupta", "Vikramaditya",
+    "Harsha", "Akbar", "Babur", "Humayun", "Jahangir",
+    "Shahjahan", "Aurangzeb", "Rajaraja", "Krishnadevaraya", "Shivaji",
+    "Prithviraj", "Porus", "Bharata", "Yudhishthira", "Arjuna",
+    "Vyasa", "Valmiki", "Patanjali", "Kalidasa", "Aryabhata",
+    # Batch 17 — Islamic Golden Age scholars and sultans
+    "Avicenna", "Averroes", "Alhazen", "Khwarizmi", "Razi",
+    "Biruni", "Tusi", "Battuta", "Saladin", "Harun",
+    "Mansur", "Mamun", "Mutawakkil", "Muqaffa", "Jahiz",
+    "Tabari", "Maimonides", "Rumi", "Attar", "Hallaj",
+    "Junayd", "Ghazali", "Bukhari", "Tirmidhi", "Khayyam",
+    # Batch 18 — Medieval European knights and kings
+    "Charlemagne", "Roland", "Oliver", "Arthur", "Lancelot",
+    "Gawain", "Galahad", "Percival", "Bedivere", "Tristan",
+    "Merlin", "Geraint", "Kay", "Robin", "Beowulf",
+    "Wiglaf", "Alfred", "Cnut", "Edmund", "Aethelstan",
+    "Aethelred", "Godfrey", "Tancred", "Bohemond", "Frederick",
+    # Batch 19 — Slavic princes and voivodes
+    "Vladimir", "Yaroslav", "Igor", "Olga", "Sviatoslav",
+    "Rurik", "Mstislav", "Vsevolod", "Bogdan", "Stefan",
+    "Dobrynya", "Boris", "Gleb", "Rostislav", "Wladyslaw",
+    "Kazimierz", "Mieszko", "Boleslaw", "Jagiello", "Dragutin",
+    "Stojan", "Marko", "Milos", "Lazar", "Dusan",
+    # Batch 20 — Pre-Columbian Americas
+    "Pacal", "Yikin", "Itzamnaaj", "Chan", "Kinich",
+    "Moctezuma", "Acamapichtli", "Itzcoatl", "Cuitlahuac", "Cuauhtemoc",
+    "Nezahualcoyotl", "Axayacatl", "Tizoc", "Ahuitzotl", "Tlacaelel",
+    "Pachacuti", "Huayna", "Atahualpa", "Huascar", "Tupac",
+    "Yupanqui", "Mayta", "Capac", "Sinchi", "Manco",
 ]
 
 
