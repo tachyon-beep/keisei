@@ -147,7 +147,7 @@ class HistoricalGauntlet:
                     continue
 
                 try:
-                    wins, losses, draws = play_match(
+                    outcome = play_match(
                         vecenv, learner_model, hist_model,
                         device=self.device, num_envs=effective_num_envs,
                         max_ply=self.max_ply, games_target=self.config.games_per_matchup,
@@ -162,6 +162,7 @@ class HistoricalGauntlet:
                 finally:
                     release_models(hist_model, device_type=self.device.type)
 
+                wins, losses, draws = outcome.a_wins, outcome.b_wins, outcome.draws
                 game_count = wins + losses + draws
                 if game_count == 0:
                     continue

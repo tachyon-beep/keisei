@@ -773,3 +773,149 @@ class TestPlayMatchModelCleanup:
             assert fake_model in args[0], (
                 "release_models should include the successfully-loaded model_a"
             )
+
+
+# ===========================================================================
+# Regression: keisei-fa604bad63 — atomic _record_match_result
+# ===========================================================================
+
+
+class TestRecordMatchResultAtomicity:
+    """Failure mid-write must roll back: no half-applied Elo, no orphan results.
+
+    Background: _record_match_result issues four writes (record_result, two
+    update_elo, role_elo update_from_result). Pre-fix each was its own
+    transaction, so a crash between writes left the DB with a recorded match
+    pointing at stale ratings — corrupting Elo trajectories silently.
+    Post-fix everything is wrapped in a single store.transaction() block.
+    """
+
+    def test_failure_on_second_update_elo_rolls_back_everything(
+        self, store, tournament_db,
+    ):
+        """Inject failure on entry_b's update_elo — confirm nothing partial persists."""
+        import torch
+
+        # Real entries via store.add_entry so all columns (status, role) are set.
+        model = torch.nn.Linear(8, 8)
+        entry_a = store.add_entry(
+            model, "resnet", {}, epoch=1, role=Role.DYNAMIC,
+        )
+        entry_b = store.add_entry(
+            model, "resnet", {}, epoch=2, role=Role.DYNAMIC,
+        )
+        original_elo_a = entry_a.elo_rating
+        original_elo_b = entry_b.elo_rating
+
+        tournament = _make_tournament(store)
+
+        # Patch update_elo: succeed for entry_a (id=1), raise for entry_b (id=2).
+        real_update_elo = store.update_elo
+        call_log: list[int] = []
+
+        def flaky_update_elo(entry_id: int, new_elo: float, epoch: int = 0) -> None:
+            call_log.append(entry_id)
+            if entry_id == entry_b.id:
+                raise sqlite3.OperationalError(
+                    "simulated DB failure on second Elo update",
+                )
+            real_update_elo(entry_id, new_elo, epoch=epoch)
+
+        with patch.object(store, "update_elo", side_effect=flaky_update_elo):
+            with pytest.raises(sqlite3.OperationalError, match="simulated DB failure"):
+                tournament._record_match_result(
+                    epoch=5,
+                    entry_a_id=entry_a.id,
+                    entry_b_id=entry_b.id,
+                    a_wins=10, b_wins=0, draws=0,
+                    rollout=None,
+                )
+
+        # Confirm the injected fault actually fired (both attempts ran).
+        assert call_log == [entry_a.id, entry_b.id], (
+            f"expected update_elo called for A then B, got {call_log}"
+        )
+
+        # ── Assert no partial state survived ──
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+
+        # 1. league_results: no row for this match
+        rows = check_conn.execute(
+            "SELECT COUNT(*) AS n FROM league_results WHERE epoch = ?", (5,),
+        ).fetchone()
+        assert rows["n"] == 0, "record_result must roll back on failure"
+
+        # 2. elo_history: no rows at this epoch (update_elo writes elo_history)
+        rows = check_conn.execute(
+            "SELECT COUNT(*) AS n FROM elo_history WHERE epoch = ?", (5,),
+        ).fetchone()
+        assert rows["n"] == 0, "first update_elo's elo_history insert must roll back"
+
+        # 3. league_entries: original Elo ratings unchanged for both players
+        a_now = check_conn.execute(
+            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_a.id,),
+        ).fetchone()
+        b_now = check_conn.execute(
+            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_b.id,),
+        ).fetchone()
+        assert a_now["elo_rating"] == pytest.approx(original_elo_a), (
+            f"entry A Elo changed despite rollback: {a_now['elo_rating']} != {original_elo_a}"
+        )
+        assert b_now["elo_rating"] == pytest.approx(original_elo_b)
+
+        # 4. games_played: no increment (record_result rolled back)
+        a_games = check_conn.execute(
+            "SELECT games_played FROM league_entries WHERE id = ?", (entry_a.id,),
+        ).fetchone()
+        assert a_games["games_played"] == 0
+        check_conn.close()
+
+    def test_happy_path_still_commits(self, store, tournament_db):
+        """Sanity: with no injected failure, all four writes land normally."""
+        import torch
+
+        model = torch.nn.Linear(8, 8)
+        entry_a = store.add_entry(
+            model, "resnet", {}, epoch=1, role=Role.DYNAMIC,
+        )
+        entry_b = store.add_entry(
+            model, "resnet", {}, epoch=2, role=Role.DYNAMIC,
+        )
+
+        tournament = _make_tournament(store)
+        recorded = tournament._record_match_result(
+            epoch=7,
+            entry_a_id=entry_a.id,
+            entry_b_id=entry_b.id,
+            a_wins=8, b_wins=2, draws=2,
+            rollout=None,
+        )
+        assert recorded is True
+
+        check_conn = sqlite3.connect(tournament_db)
+        check_conn.row_factory = sqlite3.Row
+
+        # league_results row exists
+        row = check_conn.execute(
+            "SELECT wins_a, wins_b, draws FROM league_results WHERE epoch = ?", (7,),
+        ).fetchone()
+        assert row is not None
+        assert (row["wins_a"], row["wins_b"], row["draws"]) == (8, 2, 2)
+
+        # elo_history rows for both entries at epoch 7
+        n_hist = check_conn.execute(
+            "SELECT COUNT(*) AS n FROM elo_history WHERE epoch = ?", (7,),
+        ).fetchone()["n"]
+        assert n_hist == 2
+
+        # Elo moved on both league_entries
+        a_now = check_conn.execute(
+            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_a.id,),
+        ).fetchone()["elo_rating"]
+        b_now = check_conn.execute(
+            "SELECT elo_rating FROM league_entries WHERE id = ?", (entry_b.id,),
+        ).fetchone()["elo_rating"]
+        assert a_now > 1000.0, "winner's Elo should rise"
+        assert b_now < 1000.0, "loser's Elo should fall"
+        check_conn.close()

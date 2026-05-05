@@ -410,29 +410,36 @@ class LeagueTournament:
             elo_before_b = current_b.elo_rating
             role_new_a = new_a_elo
             role_new_b = new_b_elo
-        self.store.record_result(
-            epoch=epoch,
-            entry_a_id=entry_a_id,
-            entry_b_id=entry_b_id,
-            wins_a=a_wins,
-            wins_b=b_wins,
-            draws=draws,
-            match_type="train" if is_train else "calibration",
-            role_a=current_a.role,
-            role_b=current_b.role,
-            elo_before_a=elo_before_a,
-            elo_after_a=role_new_a,
-            elo_before_b=elo_before_b,
-            elo_after_b=role_new_b,
-            training_updates_a=current_a.update_count,
-            training_updates_b=current_b.update_count,
-        )
-        self.store.update_elo(entry_a_id, new_a_elo, epoch=epoch)
-        self.store.update_elo(entry_b_id, new_b_elo, epoch=epoch)
-        if self.role_elo_tracker:
-            self.role_elo_tracker.update_from_result(
-                current_a, current_b, result_score, context,
+        # keisei-fa604bad63: wrap result + composite Elo + role Elo in one
+        # transaction so a crash between writes cannot leave a recorded match
+        # with partially-applied ratings. transaction() is reentrant — the
+        # nested transactions inside record_result/update_elo/update_role_elo
+        # see _transaction_depth > 1 and skip commit/rollback, so only this
+        # outer block decides atomicity.
+        with self.store.transaction():
+            self.store.record_result(
+                epoch=epoch,
+                entry_a_id=entry_a_id,
+                entry_b_id=entry_b_id,
+                wins_a=a_wins,
+                wins_b=b_wins,
+                draws=draws,
+                match_type="train" if is_train else "calibration",
+                role_a=current_a.role,
+                role_b=current_b.role,
+                elo_before_a=elo_before_a,
+                elo_after_a=role_new_a,
+                elo_before_b=elo_before_b,
+                elo_after_b=role_new_b,
+                training_updates_a=current_a.update_count,
+                training_updates_b=current_b.update_count,
             )
+            self.store.update_elo(entry_a_id, new_a_elo, epoch=epoch)
+            self.store.update_elo(entry_b_id, new_b_elo, epoch=epoch)
+            if self.role_elo_tracker:
+                self.role_elo_tracker.update_from_result(
+                    current_a, current_b, result_score, context,
+                )
         logger.info(
             "  %s vs %s — %dW %dL %dD",
             current_a.display_name, current_b.display_name,

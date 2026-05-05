@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,17 @@ class SLConfig:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
         if self.num_workers < 0:
             raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
+        # keisei-678359b7aa: each lambda must be a finite, non-negative number.
+        # Zero is legitimate (disables a head); negative values silently invert
+        # the optimisation direction (gradient ascent) for that head, and
+        # NaN/inf would poison the combined loss. MultiHeadValueAdapter (RL)
+        # enforces the same contract.
+        for name in ("lambda_policy", "lambda_value", "lambda_score"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite, got {value!r}")
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value!r}")
 
 
 logger = logging.getLogger(__name__)
