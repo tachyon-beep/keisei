@@ -47,6 +47,7 @@ from keisei.db.style_profiles import read_style_profiles, write_style_profile
 from keisei.db.tournament import read_tournament_stats, write_tournament_stats
 from keisei.db.training_state import (
     read_training_state,
+    set_total_epochs,
     update_heartbeat,
     update_training_progress,
     write_epoch_summary,
@@ -78,11 +79,10 @@ _DDL_MODULES = (
 
 def init_db(db_path: str) -> None:
     """Create tables if they don't exist. Idempotent."""
+    # WAL/busy/autocheckpoint PRAGMAs are set inside _connect; no need to
+    # re-issue them here.
     conn = _connect(db_path)
     try:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA wal_autocheckpoint = 1000")
-        conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(
             _SCHEMA_VERSION_DDL + "".join(m.DDL for m in _DDL_MODULES)
         )
@@ -145,6 +145,7 @@ __all__ = [
     "read_game_snapshots_since",
     "write_training_state",
     "read_training_state",
+    "set_total_epochs",
     "update_heartbeat",
     "update_training_progress",
     "write_epoch_summary",
