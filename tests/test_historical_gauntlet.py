@@ -11,6 +11,7 @@ from keisei.config import GauntletConfig, RoleEloConfig
 from keisei.db import init_db
 from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.historical_library import HistoricalSlot
+from keisei.training.match_utils import MatchOutcome
 from keisei.training.opponent_store import EloColumn, OpponentStore, Role
 from keisei.training.role_elo import RoleEloTracker
 
@@ -203,7 +204,7 @@ class TestStaleEloAccumulation:
 
         with (
             patch.object(store, "load_opponent", return_value=dummy_model),
-            patch("keisei.training.historical_gauntlet.play_match", return_value=(16, 0, 0)),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=MatchOutcome(16, 0, 0)),
             patch("keisei.training.historical_gauntlet.release_models"),
         ):
             gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
@@ -290,7 +291,7 @@ class TestRunGauntletFailurePaths:
 
         with (
             patch.object(store, "load_opponent", side_effect=selective_load),
-            patch("keisei.training.historical_gauntlet.play_match", return_value=(8, 4, 4)),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=MatchOutcome(8, 4, 4)),
             patch("keisei.training.historical_gauntlet.release_models"),
         ):
             gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
@@ -317,7 +318,7 @@ class TestRunGauntletFailurePaths:
 
         with (
             patch.object(store, "load_opponent", return_value=dummy_model),
-            patch("keisei.training.historical_gauntlet.play_match", return_value=(0, 0, 0)),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=MatchOutcome(0, 0, 0)),
             patch("keisei.training.historical_gauntlet.release_models"),
         ):
             gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
@@ -346,7 +347,7 @@ class TestRunGauntletFailurePaths:
 
         with (
             patch.object(store, "load_opponent", return_value=dummy_model),
-            patch("keisei.training.historical_gauntlet.play_match", return_value=(10, 2, 4)),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=MatchOutcome(10, 2, 4)),
             patch("keisei.training.historical_gauntlet.release_models"),
         ):
             gauntlet.run_gauntlet(epoch=100, learner_entry=learner, historical_slots=slots, vecenv=dummy_vecenv)
@@ -356,3 +357,92 @@ class TestRunGauntletFailurePaths:
             rows = store._conn.execute("SELECT * FROM gauntlet_results").fetchall()
             assert len(rows) == 1
             assert dict(rows[0])["historical_slot"] == 1
+
+
+class TestMatchOutcomeUnpacking:
+    """Regression for keisei-4509042dd1: production play_match returns MatchOutcome.
+
+    Earlier tests patched play_match to return raw tuples, masking the bug
+    that the gauntlet was tuple-unpacking a dataclass with no __iter__.
+    These tests use real MatchOutcome instances to prove the call site
+    handles the actual production return type.
+    """
+
+    def test_real_match_outcome_records_wins(self, gauntlet_setup):
+        """A real MatchOutcome (not a tuple) must yield a recorded gauntlet result."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+        store.retire_entry(hist.id, "archive")
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist.id, actual_epoch=50, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+
+        # Always-win opponent: 16W 0L 0D as a real MatchOutcome dataclass.
+        with (
+            patch.object(store, "load_opponent", return_value=dummy_model),
+            patch(
+                "keisei.training.historical_gauntlet.play_match",
+                return_value=MatchOutcome(a_wins=16, b_wins=0, draws=0),
+            ),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(
+                epoch=100, learner_entry=learner,
+                historical_slots=slots, vecenv=dummy_vecenv,
+            )
+
+        with store._lock:
+            row = store._conn.execute(
+                "SELECT wins, losses, draws, elo_before, elo_after "
+                "FROM gauntlet_results"
+            ).fetchone()
+
+        assert row is not None, (
+            "Gauntlet failed to record any result — MatchOutcome unpacking regressed"
+        )
+        assert row["wins"] == 16
+        assert row["losses"] == 0
+        assert row["draws"] == 0
+        assert row["elo_after"] > row["elo_before"], "Always-win must raise Elo"
+
+    def test_match_outcome_with_rollout_field_is_unpacked(self, gauntlet_setup):
+        """MatchOutcome's optional rollout field must not break the unpack."""
+        gauntlet, store, _ = gauntlet_setup
+        model = torch.nn.Linear(10, 10)
+        learner = store.add_entry(model, "resnet", {}, epoch=1, role=Role.DYNAMIC)
+        hist = store.add_entry(model, "resnet", {}, epoch=50, role=Role.RECENT_FIXED)
+
+        slots = [
+            HistoricalSlot(0, target_epoch=50, entry_id=hist.id, actual_epoch=50, selection_mode="log_spaced"),
+        ]
+
+        dummy_model = object()
+        dummy_vecenv = object()
+
+        # rollout defaults to None — confirm production-shaped MatchOutcome unpacks.
+        outcome = MatchOutcome(a_wins=4, b_wins=8, draws=4)
+        assert outcome.rollout is None  # sanity: matches production default
+
+        with (
+            patch.object(store, "load_opponent", return_value=dummy_model),
+            patch("keisei.training.historical_gauntlet.play_match", return_value=outcome),
+            patch("keisei.training.historical_gauntlet.release_models"),
+        ):
+            gauntlet.run_gauntlet(
+                epoch=100, learner_entry=learner,
+                historical_slots=slots, vecenv=dummy_vecenv,
+            )
+
+        with store._lock:
+            row = store._conn.execute(
+                "SELECT wins, losses, draws FROM gauntlet_results"
+            ).fetchone()
+
+        assert row is not None
+        assert (row["wins"], row["losses"], row["draws"]) == (4, 8, 4)
