@@ -86,38 +86,15 @@ def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     aggregate table.  Without this migration, the dashboard matchup matrix
     only reflects post-deploy games on those DBs.
 
-    Mirrors the SQL in backfill_head_to_head().  Idempotent: clears the
-    table and rebuilds from league_results, canonicalising (a,b) ordering.
-    Self-play rows (entry_a_id == entry_b_id) are filtered — head_to_head's
-    CHECK constraint forbids a == b, and a single such row would otherwise
-    abort the entire INSERT...SELECT and leave the table empty.
-
-    Runs inside an explicit BEGIN IMMEDIATE transaction so a mid-INSERT
-    failure cannot leave the aggregates table wiped, even if driver-level
-    autocommit semantics change in the future.
+    Delegates to ``head_to_head.apply_backfill`` so the SQL stays single-sourced
+    (the public ``backfill_head_to_head`` helper calls the same function).
+    Idempotent: clears the table and rebuilds from league_results.
     """
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM head_to_head")
-        conn.execute(
-            """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
-               SELECT
-                   CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
-                   CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
-                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
-                   SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
-                   SUM(draws) AS d,
-                   SUM(wins_a + wins_b + draws) AS g,
-                   MAX(epoch) AS last_ep
-               FROM league_results
-               WHERE entry_a_id != entry_b_id
-               GROUP BY a_id, b_id"""
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        logger.exception("v4->v5 head_to_head backfill failed; rolling back")
-        conn.execute("ROLLBACK")
-        raise
+    # Local import: keisei.db._migrations is imported during keisei.db package
+    # init, so we defer this to call time to avoid a partial-import cycle.
+    from keisei.db.head_to_head import apply_backfill
+
+    apply_backfill(conn)
 
 
 def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:

@@ -54,39 +54,55 @@ def read_head_to_head(db_path: str) -> list[dict[str, Any]]:
         conn.close()
 
 
+_BACKFILL_INSERT_SQL = """
+INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
+SELECT
+    CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
+    CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
+    SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
+    SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
+    SUM(draws) AS d,
+    SUM(wins_a + wins_b + draws) AS g,
+    MAX(epoch) AS last_ep
+FROM league_results
+WHERE entry_a_id != entry_b_id
+GROUP BY a_id, b_id
+"""
+
+
+def apply_backfill(conn: sqlite3.Connection) -> int:
+    """Execute the head_to_head backfill on an open connection.
+
+    Wraps DELETE + INSERT...SELECT in BEGIN IMMEDIATE / COMMIT so a
+    mid-INSERT failure cannot leave the aggregates table wiped.  Self-play
+    rows (entry_a_id == entry_b_id) are filtered: head_to_head's CHECK
+    constraint forbids a == b, and a single such row would otherwise abort
+    the entire INSERT and leave the table empty.
+
+    Shared between the public ``backfill_head_to_head`` (db_path API) and
+    the v4→v5 migration in :mod:`keisei.db._migrations` (connection API).
+    Returns the number of pairs inserted.
+    """
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM head_to_head")
+        cursor = conn.execute(_BACKFILL_INSERT_SQL)
+        count = cursor.rowcount
+        conn.execute("COMMIT")
+        return count
+    except Exception:
+        logger.exception("head_to_head backfill failed; rolling back")
+        conn.execute("ROLLBACK")
+        raise
+
+
 def backfill_head_to_head(db_path: str) -> int:
     """Rebuild head_to_head table from league_results.
 
     Used for initial migration or repair. Returns the number of pairs inserted.
-    Self-play rows (entry_a_id == entry_b_id) are filtered: head_to_head's
-    CHECK constraint forbids a == b, mirroring the write-path guard added in
-    commit 8410bf2.
     """
     conn = _connect(db_path)
     try:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM head_to_head")
-            cursor = conn.execute(
-                """INSERT INTO head_to_head (entry_a_id, entry_b_id, wins_a, wins_b, draws, games, last_epoch)
-                   SELECT
-                       CASE WHEN entry_a_id < entry_b_id THEN entry_a_id ELSE entry_b_id END AS a_id,
-                       CASE WHEN entry_a_id < entry_b_id THEN entry_b_id ELSE entry_a_id END AS b_id,
-                       SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_a ELSE wins_b END) AS w_a,
-                       SUM(CASE WHEN entry_a_id < entry_b_id THEN wins_b ELSE wins_a END) AS w_b,
-                       SUM(draws) AS d,
-                       SUM(wins_a + wins_b + draws) AS g,
-                       MAX(epoch) AS last_ep
-                   FROM league_results
-                   WHERE entry_a_id != entry_b_id
-                   GROUP BY a_id, b_id"""
-            )
-            count = cursor.rowcount
-            conn.execute("COMMIT")
-            return count
-        except Exception:
-            logger.exception("head_to_head backfill failed; rolling back")
-            conn.execute("ROLLBACK")
-            raise
+        return apply_backfill(conn)
     finally:
         conn.close()
