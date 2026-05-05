@@ -37,10 +37,13 @@
   --accent-moss: #6b9e6b;    /* secondary positive */
 
   /* Status */
-  --danger: #e05050;
+  --danger: #ff6b5a;
   --warning: #c8962e;
   --promoted: #8b0000;
-  --promoted-bright: #e05050;
+  /* Used for promoted-piece move glyphs in MoveDots on dark surfaces. The
+     previous #e05050 sat at ~4.5:1 on --bg-secondary which is borderline for
+     thin kanji-like markers; bumped to vermilion for clearer readability. */
+  --promoted-bright: #ff6b5a;
 
   /* Tabs */
   --tab-active-bg: #0d2e28;
@@ -166,6 +169,7 @@ body {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 1px;
+  margin-top: 0;
   margin-bottom: 10px;
   flex-shrink: 0;
 }
@@ -180,4 +184,17 @@ body {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* Global reduced-motion safety net. Component-level rules remain primary;
+   this catches anything not explicitly handled. Transforms are left intact. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

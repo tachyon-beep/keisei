@@ -8,9 +8,9 @@ beforeEach(() => {
 })
 
 describe('aboutLevel store', () => {
-  it('defaults to level 2 (Learning Loop) when nothing stored', async () => {
+  it('defaults to level 1 (The Big Idea) when nothing stored', async () => {
     const { aboutLevel } = await import('./aboutLevel.js')
-    expect(get(aboutLevel)).toBe(2)
+    expect(get(aboutLevel)).toBe(1)
   })
 
   it('rehydrates a valid stored level', async () => {
@@ -28,19 +28,19 @@ describe('aboutLevel store', () => {
   it('falls back to default for out-of-range values', async () => {
     localStorage.setItem('aboutLevel', '99')
     const { aboutLevel } = await import('./aboutLevel.js')
-    expect(get(aboutLevel)).toBe(2)
+    expect(get(aboutLevel)).toBe(1)
   })
 
   it('falls back to default for the now-out-of-range value 6', async () => {
     localStorage.setItem('aboutLevel', '6')
     const { aboutLevel } = await import('./aboutLevel.js')
-    expect(get(aboutLevel)).toBe(2)
+    expect(get(aboutLevel)).toBe(1)
   })
 
   it('falls back to default for non-numeric values', async () => {
     localStorage.setItem('aboutLevel', 'banana')
     const { aboutLevel } = await import('./aboutLevel.js')
-    expect(get(aboutLevel)).toBe(2)
+    expect(get(aboutLevel)).toBe(1)
   })
 
   it('persists set values to localStorage', async () => {

@@ -15,7 +15,12 @@
 </script>
 
 <section class="stats-banner" aria-label="Showcase summary">
-  <div class="stat-card" class:alive={$sidecarAlive} class:dead={!$sidecarAlive}>
+  <!--
+    Engine status here is a passive indicator; the urgent "engine is offline"
+    callout (role=alert) lives in ShowcaseView so screen readers don't get
+    duplicate announcements. We still tint the dot for sighted users.
+  -->
+  <div class="stat-card" class:alive={$sidecarAlive} class:offline={!$sidecarAlive}>
     <span class="stat-value">
       <span class="dot" aria-hidden="true"></span>
       {$sidecarAlive ? 'Online' : 'Offline'}
@@ -81,9 +86,10 @@
     background: var(--badge-bg-gold);
   }
 
-  .stat-card.dead {
-    border-color: var(--danger);
-    background: var(--badge-bg-danger);
+  .stat-card.offline {
+    /* Passive — no urgent border treatment. The role="alert" callout in
+       ShowcaseView is the loud signal. The dot is muted via colour rule below. */
+    border-color: var(--border);
   }
 
   .stat-value {
@@ -98,7 +104,8 @@
 
   .stat-card.highlight .stat-value { color: var(--accent-teal); }
   .stat-card.warn .stat-value { color: var(--accent-gold); }
-  .stat-card.dead .stat-value { color: var(--danger); }
+  .stat-card.offline .stat-value { color: var(--text-muted); }
+  .stat-card.offline .dot { background: var(--text-muted); }
 
   .dot {
     width: 8px;

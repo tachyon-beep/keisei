@@ -9,7 +9,8 @@
 
 <div class="event-log">
   <h2 class="section-header">Event Log</h2>
-  <div class="transition-summary" aria-live="polite">
+  <p class="section-subtitle">Pool transitions</p>
+  <div class="transition-summary">
     {#if counts.promotions > 0}<span class="summary-item promotion">↑ {counts.promotions} promoted</span>{/if}
     {#if counts.evictions > 0}<span class="summary-item eviction">↓ {counts.evictions} evicted</span>{/if}
     {#if counts.admissions > 0}<span class="summary-item admission">→ {counts.admissions} admitted</span>{/if}
@@ -17,7 +18,7 @@
   {#if $leagueEvents.length === 0}
     <p class="empty">No league events yet.</p>
   {:else}
-    <div class="feed" role="list" aria-label="League events">
+    <div class="feed" role="list" aria-label="League events" aria-live="polite" aria-relevant="additions">
       {#each collapsedEvents as event}
         {#if event.collapsed}
           <div class="event {event.type}" role="listitem" aria-label="{event.count} {event.type === 'arrival' ? 'arrivals' : event.type === 'departure' ? 'departures' : event.type === 'promotion' ? 'promotions' : 'demotions'}: {event.names.join(', ')}">
@@ -120,6 +121,16 @@
     font-size: 12px;
     text-align: center;
     padding: 12px;
+  }
+
+  .section-subtitle {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: -4px 0 6px;
+    font-weight: 600;
+    opacity: 0.75;
   }
 
   .transition-summary {

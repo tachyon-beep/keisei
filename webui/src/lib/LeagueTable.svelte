@@ -100,6 +100,18 @@
     return parts.join(' | ')
   }
 
+  // Compose row aria-label including style/trait info so keyboard users get
+  // the same context as mouse users (who see the title= tooltip).
+  function rowAriaLabel(entry) {
+    const w = wld.get(entry.id)?.w || 0
+    const l = wld.get(entry.id)?.l || 0
+    const d = wld.get(entry.id)?.d || 0
+    const elo = displayElo(entry)
+    const base = `Rank ${entry.rank}: ${entry.display_name || entry.architecture}, ${elo.tag || 'Elo'} ${Math.round(elo.value)}, ${w}W ${l}L ${d}D`
+    const styleInfo = getStyleTooltip(entry.id)
+    return styleInfo ? `${base}. Style: ${styleInfo}` : base
+  }
+
   $: placeholderCount = Math.max(0, totalSlots - sorted.length)
   $: placeholders = Array.from({ length: placeholderCount }, (_, i) => sorted.length + i + 1)
 </script>
@@ -113,6 +125,19 @@
     <div class="table-scroll">
       <table>
         <caption class="sr-only">Elo leaderboard, sorted by {sortColumn} {sortAsc ? 'ascending' : 'descending'}</caption>
+        <colgroup>
+          <col style="width: 4%" />
+          <col style="width: 22%" />
+          <col style="width: 8%" />
+          <col style="width: 7%" />
+          <col style="width: 8%" />
+          <col style="width: 6%" />
+          <col style="width: 6%" />
+          <col style="width: 6%" />
+          <col style="width: 20%" />
+          <col style="width: 8%" />
+          <col style="width: 5%" />
+        </colgroup>
         <thead>
           <tr>
             <th class="num" aria-sort="none">#</th>
@@ -158,7 +183,8 @@
                   <tr
                     class:top={entry.rank === 1}
                     class:focused={$focusedEntryId === entry.id}
-                    aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
+                    aria-expanded={$focusedEntryId === entry.id}
+                    aria-label={rowAriaLabel(entry)}
                     on:click={() => toggleExpand(entry.id)}
                     tabindex="0"
                     on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -206,7 +232,7 @@
                 class:top={entry.rank === 1}
                 class:focused={$focusedEntryId === entry.id}
                 aria-expanded={$focusedEntryId === entry.id}
-                aria-label="Rank {entry.rank}: {entry.display_name || entry.architecture}, {displayElo(entry).tag || 'Elo'} {Math.round(displayElo(entry).value)}, {wld.get(entry.id)?.w || 0}W {wld.get(entry.id)?.l || 0}L {wld.get(entry.id)?.d || 0}D"
+                aria-label={rowAriaLabel(entry)}
                 on:click={() => toggleExpand(entry.id)}
                 tabindex="0"
                 on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(entry.id) }}}
@@ -277,7 +303,7 @@
     min-height: 0;
   }
 
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
   thead { color: var(--text-muted); font-size: 13px; position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
   th, td { text-align: left; padding: 6px 10px; }
   th.num, td.num { text-align: right; }
@@ -322,8 +348,7 @@
   }
 
   .name-cell {
-    white-space: nowrap;
-    width: 28%;
+    overflow-wrap: anywhere;
   }
 
   .role-badge {
@@ -363,12 +388,17 @@
 
   .placeholder-row {
     cursor: default;
+    border-bottom: 1px solid var(--border-subtle);
+    opacity: 0.45;
+  }
+  .placeholder-row td {
+    padding: 3px 10px;
+    border-color: transparent;
   }
   .placeholder-row:hover { background: transparent; }
   .placeholder-text {
     color: var(--text-muted);
-    opacity: 0.5;
-    font-size: 12px;
+    font-size: 11px;
     user-select: none;
   }
 

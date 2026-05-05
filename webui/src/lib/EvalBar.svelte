@@ -84,4 +84,9 @@
     color: var(--text-secondary);
     white-space: nowrap;
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    .white-fill,
+    .black-fill { transition: none; }
+  }
 </style>

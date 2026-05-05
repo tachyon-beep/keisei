@@ -81,6 +81,9 @@
   .eval-display { display: flex; flex-direction: column; gap: 4px; }
   .eval-bar-container { height: 8px; background: var(--bg-secondary, #333); border-radius: 4px; overflow: hidden; }
   .eval-bar-fill { height: 100%; background: var(--accent-teal); transition: width 0.3s ease; }
+  @media (prefers-reduced-motion: reduce) {
+    .eval-bar-fill { transition: none; }
+  }
   .eval-value { font-size: 14px; font-weight: 600; color: var(--text-primary); }
   .candidates { display: flex; flex-direction: column; gap: 2px; }
   .candidate { display: flex; gap: 6px; font-size: 13px; padding: 2px 4px; border-radius: 3px; }

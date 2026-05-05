@@ -27,6 +27,7 @@
   })
 
   let audioEl
+  let thumbPanelHeight = 0
   // The audio element survives tab switches because it lives at App scope.
   // On reload with persisted "on", play() rejects with NotAllowedError until
   // the user provides a gesture this load. Keep the store unchanged in that
@@ -49,8 +50,6 @@
   $: board = game ? safeParse(game.board_json, game.board || []) : []
   $: hands = game ? safeParse(game.hands_json, game.hands || {}) : {}
   $: moveHistory = game?.move_history_json || '[]'
-
-  let thumbPanelHeight = 0
 
   // Learner info from training state
   $: learnerName = $trainingState?.display_name || $trainingState?.model_arch || 'Learner'
@@ -120,20 +119,20 @@
       }), { w: 0, l: 0, d: 0 })
       s.push(['Recent W/L/D', `${totals.w} / ${totals.l} / ${totals.d}`])
     }
-    // Fun facts
-    for (const [label, value] of learnerFlavour) {
-      s.push([label, value])
-    }
     return s
   })()
 
+  $: learnerFacts = learnerFlavour.map(([label, value]) => [label, value])
+
   // Opponent info from selected game
   $: opp = $selectedOpponent
-  $: opponentName = opp ? opp.display_name : 'Self-play'
+  $: opponentName = opp ? opp.display_name : (game ? 'Self-play' : 'No opponent yet')
   $: opponentElo = opp?.elo_rating ?? null
   $: opponentDetail = opp
     ? `${opp.architecture} · Epoch ${opp.created_epoch}`
-    : ''
+    : (game
+        ? 'Learner playing both sides — no league snapshot for this game.'
+        : 'Waiting for a game to start.')
 
   // Opponent stats for PlayerCard
   $: opponentStats = (() => {
@@ -152,14 +151,10 @@
       const d = new Date(opp.created_at)
       s.push(['Born', d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })])
     }
-    // Append flavour facts from the league entry
-    if (opp.flavour_facts) {
-      for (const [label, value] of opp.flavour_facts) {
-        s.push([label, value])
-      }
-    }
     return s
   })()
+
+  $: opponentFacts = opp?.flavour_facts ? opp.flavour_facts.map(([label, value]) => [label, value]) : []
 </script>
 
 <div class="app">
@@ -169,7 +164,12 @@
 
   {#if $activeTab === 'training'}
     <div id="training-main" class="main-content" tabindex="-1" aria-labelledby="tab-training">
-      <aside class="thumbnail-panel" aria-label="Game list" bind:clientHeight={thumbPanelHeight} style="width: {thumbPanelHeight - 94}px">
+      <aside
+        class="thumbnail-panel"
+        aria-label="Game list"
+        bind:clientHeight={thumbPanelHeight}
+        style="width: {Math.min(Math.max(thumbPanelHeight - 94, 280), 720)}px"
+      >
         <h2 class="section-label">Games ({Math.min($games.length, 16)}{#if $games.length > 16} / {$games.length}{/if})</h2>
         <div class="thumb-grid">
           {#each $games.slice(0, 16) as g (g.game_id)}
@@ -179,9 +179,9 @@
       </aside>
 
       <div class="player-panel">
-        <PlayerCard role="learner" name={learnerName} elo={learnerElo} detail={learnerDetail} stats={learnerStats} />
+        <PlayerCard role="learner" name={learnerName} elo={learnerElo} detail={learnerDetail} stats={learnerStats} facts={learnerFacts} />
         <div class="vs-separator">VS</div>
-        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} stats={opponentStats} tierRole={opp?.role} />
+        <PlayerCard role="opponent" name={opponentName} elo={opponentElo} detail={opponentDetail} stats={opponentStats} facts={opponentFacts} tierRole={opp?.role} />
       </div>
 
       <main id="game-panel" class="game-panel" aria-label="Game viewer">
@@ -290,7 +290,7 @@
 
   .thumbnail-panel {
     flex: 0 0 auto;
-    min-width: 200px;
+    min-width: 280px;
     border-right: 1px solid var(--border);
     padding: 8px;
     overflow: hidden;
@@ -357,11 +357,11 @@
   }
 
   .info-area {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: 52ch;
+    min-width: 36ch;
     min-height: 0;
     overflow: hidden;
   }
@@ -399,10 +399,9 @@
   .no-game-hint { font-size: 13px; color: var(--text-muted); }
 
   .legend-area {
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 0 0 auto;
+    width: 320px;
     min-height: 0;
-    overflow: auto;
     border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;

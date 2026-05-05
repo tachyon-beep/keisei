@@ -65,15 +65,15 @@
     {#if alive || epoch > 0}
       <div class="stats">
         {#if !alive && indicator.dot === 'yellow'}
-          <span class="phase-badge stale" aria-live="polite">&#9679; STALE</span>
+          <span class="phase-badge stale" aria-live="polite">&#9680; STALE — no heartbeat</span>
         {:else if !alive}
           <span class="phase-badge stopped" aria-live="polite">&#9632; {indicator.text.replace('Training ', '').toUpperCase()}</span>
         {:else if phase === 'update'}
-          <span class="phase-badge update" aria-live="polite">&#9650; PPO UPDATE</span>
+          <span class="phase-badge update">&#9650; PPO UPDATE</span>
         {:else if phase === 'rollout'}
-          <span class="phase-badge rollout" aria-live="polite">&#9654; ROLLOUT</span>
+          <span class="phase-badge rollout">&#9654; ROLLOUT</span>
         {:else}
-          <span class="phase-badge alive" aria-live="polite">&#9679; ALIVE</span>
+          <span class="phase-badge alive">&#9679; ALIVE</span>
         {/if}
         <span class="sep">|</span>
         <span class="stat">Epoch {epoch.toLocaleString()}{#if totalEpochs} / {totalEpochs.toLocaleString()}{/if}</span>

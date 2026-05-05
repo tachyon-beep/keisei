@@ -99,6 +99,7 @@
 
 <div class="recent-card">
   <h2 class="section-header">Recent Matches</h2>
+  <p class="section-subtitle">Match outcomes</p>
   {#if items.length === 0}
     <p class="empty">No matches played yet.</p>
   {:else}
@@ -119,7 +120,7 @@
               <span class="vs">vs</span>
               <span class="name"><span class="role-icon" aria-hidden="true">{getRoleIcon(item.loserRole, item.loserStatus)}</span>{item.loserName}{#if item.loserElo != null}<span class="name-elo">({item.loserElo})</span>{/if}</span>
               {#if item.upset}<span class="upset-badge" title="Upset: lower-rated player won">!</span>{/if}
-              <span class="match-score" class:win={item.aWon} class:loss={!item.aWon && !item.draw} class:tied={item.draw}>
+              <span class="match-score" class:win={!item.draw} class:tied={item.draw}>
                 {item.w}W {item.l}L {item.draws}D
               </span>
             </div>
@@ -157,6 +158,7 @@
 
   .feed {
     overflow-y: auto;
+    overflow-x: auto;
     min-height: 0;
     flex: 1;
     display: flex;
@@ -186,6 +188,9 @@
     padding: 5px 8px;
     border-radius: 4px;
     font-size: 12px;
+    /* Let the row expand to its content so .feed's overflow-x: auto activates
+       when names + score won't fit in the column width. */
+    min-width: max-content;
   }
 
   .match-item:hover {
@@ -200,8 +205,6 @@
 
   .name {
     color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -248,8 +251,17 @@
   }
 
   .match-score.win { color: var(--accent-teal); background: var(--badge-bg-teal); }
-  .match-score.loss { color: var(--danger); background: var(--badge-bg-danger); }
   .match-score.tied { color: var(--accent-gold); background: var(--badge-bg-gold); }
+
+  .section-subtitle {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: -4px 0 8px;
+    font-weight: 600;
+    opacity: 0.75;
+  }
 
   .match-detail {
     font-size: 12px;

@@ -80,6 +80,8 @@
     top: -5px;
     right: -5px;
     background: var(--accent-teal);
+    /* Deliberate hardcode: the teal badge is bright in both themes, and pure
+       black gives the highest contrast for this 9px count chip in either. */
     color: #000;
     font-size: 9px;
     border-radius: 50%;

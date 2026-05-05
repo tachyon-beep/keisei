@@ -121,6 +121,17 @@
     showcaseHeatmapEnabled.update(v => !v)
   }
 
+  // Range scrubber: bind input value to the displayed ply. Writing back to
+  // the store goes through setSelected so that landing on the live tail flips
+  // back into "follow live" mode automatically.
+  $: scrubberMax = Math.max(0, moves.length - 1)
+  $: scrubberValue = selectedMoveIdx
+  function onScrubberInput(event) {
+    const raw = Number(event.target.value)
+    if (!Number.isFinite(raw)) return
+    setSelected(raw)
+  }
+
   // ── Move announcer (aria-live) ─────────────────────────────────────
   // Polite announcer that emits a plain-English description of each new move
   // arriving on the wire. We watch only the currentMove (live tail), not the
@@ -174,6 +185,54 @@
           heatmap={heatmap}
         />
         <PieceTray color="black" hand={hands.black || {}} />
+        {#if moves.length > 0}
+          <div class="scrubber-row" role="group" aria-label="Replay scrubber">
+            <button
+              type="button"
+              class="scrub-btn"
+              on:click={() => setSelected(0)}
+              aria-label="Jump to first ply"
+              title="First ply (Home)"
+            >⏮</button>
+            <button
+              type="button"
+              class="scrub-btn"
+              on:click={() => step(-1)}
+              aria-label="Previous ply"
+              title="Previous ply (←)"
+            >◀</button>
+            <input
+              class="scrubber"
+              type="range"
+              min="0"
+              max={scrubberMax}
+              step="1"
+              value={scrubberValue}
+              on:input={onScrubberInput}
+              aria-label="Scrub to ply"
+              aria-valuemin="0"
+              aria-valuemax={scrubberMax}
+              aria-valuenow={scrubberValue}
+              aria-valuetext={`Ply ${scrubberValue} of ${scrubberMax}`}
+            />
+            <button
+              type="button"
+              class="scrub-btn"
+              on:click={() => step(1)}
+              aria-label="Next ply"
+              title="Next ply (→)"
+            >▶</button>
+            <button
+              type="button"
+              class="scrub-btn"
+              class:live={!scrubbing}
+              on:click={() => setSelected(-1)}
+              aria-label="Jump to live"
+              aria-pressed={!scrubbing}
+              title="Live (End)"
+            >LIVE</button>
+          </div>
+        {/if}
         <div class="analysis-cluster" role="group" aria-label="Board analysis overlays">
           <button
             class="heatmap-toggle"
@@ -247,6 +306,10 @@
     overflow: hidden;
   }
   .showcase-view:focus { outline: none; }
+  .showcase-view:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+  }
 
   .sr-only {
     position: absolute;
@@ -286,6 +349,80 @@
     gap: 6px;
   }
 
+  .scrubber-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    align-self: stretch;
+  }
+
+  .scrub-btn {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .scrub-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .scrub-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+  .scrub-btn.live[aria-pressed='true'] {
+    background: var(--accent-teal);
+    color: var(--bg-primary);
+    border-color: var(--accent-teal);
+  }
+
+  .scrubber {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    margin: 0;
+    background: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+  }
+  .scrubber:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+  .scrubber::-webkit-slider-runnable-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+  }
+  .scrubber::-moz-range-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    border: none;
+  }
+  .scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -6px;
+    background: var(--accent-teal);
+    border: 2px solid var(--bg-primary);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .scrubber::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--accent-teal);
+    border: 2px solid var(--bg-primary);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
   .analysis-cluster {
     display: flex;
     align-items: center;
@@ -301,7 +438,7 @@
 
   .heatmap-toggle {
     padding: 4px 10px;
-    min-height: 32px;
+    min-height: 44px;
     background: var(--bg-primary);
     color: var(--text-primary);
     border: 1px solid var(--border);

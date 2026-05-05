@@ -114,6 +114,7 @@
     justify-content: center;
     font-size: min(36px, calc(var(--sq) * 0.5));
     position: relative;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .square.last-move-to {
@@ -123,6 +124,10 @@
 
   .square.last-move-from {
     box-shadow: inset 0 0 0 2px var(--accent-gold);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .square { transition: none; }
   }
 
   .heatmap-overlay {

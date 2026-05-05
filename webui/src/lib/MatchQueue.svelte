@@ -28,8 +28,8 @@
 </script>
 
 {#if $showcaseQueue.length > 0}
-  <section class="up-next" aria-label="Up next queue">
-    <h3 class="section-label">Up Next</h3>
+  <section class="up-next" aria-label="Match queue">
+    <h3 class="section-label">Match Queue</h3>
     <div class="queue-list">
       {#each $showcaseQueue as q (q.id)}
         {@const blackName = entryName(q.entry_id_1 ?? q.entry_id_black)}
@@ -129,9 +129,9 @@
   }
 
   .cancel-btn {
-    font-size: 11px;
-    padding: 3px 10px;
-    min-height: 28px;
+    font-size: 12px;
+    padding: 6px 12px;
+    min-height: 36px;
     border: 1px solid var(--border);
     border-radius: 3px;
     background: transparent;
@@ -149,9 +149,9 @@
   .confirm-text { font-weight: 600; color: var(--accent-gold); font-size: 11px; }
 
   .confirm-btn {
-    font-size: 11px;
-    padding: 3px 8px;
-    min-height: 28px;
+    font-size: 12px;
+    padding: 6px 12px;
+    min-height: 36px;
     border-radius: 3px;
     cursor: pointer;
     font-weight: 600;

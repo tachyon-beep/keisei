@@ -74,25 +74,58 @@
   ]
 
   // TOC entries — keep in render order. minLevel filters per active level.
+  // section is the level-section heading the item lives under (used for grouping
+  // in the right-rail TOC). L1 has no section heading by design — the hero card
+  // is the section.
   const tocItems = [
-    { id: 'about-big-idea', label: 'The big idea', minLevel: 1 },
-    { id: 'about-self-play', label: 'Self-play loop', minLevel: 2 },
-    { id: 'about-observation', label: 'Observation tensor', minLevel: 3 },
-    { id: 'about-architecture', label: 'Architecture', minLevel: 3 },
-    { id: 'about-block', label: 'Residual block', minLevel: 3 },
-    { id: 'about-heads', label: 'Output heads', minLevel: 3 },
-    { id: 'about-ppo', label: 'PPO objective', minLevel: 4 },
-    { id: 'about-knobs', label: 'Training knobs', minLevel: 4 },
-    { id: 'about-framing', label: 'Problem framing', minLevel: 5 },
-    { id: 'about-limitations', label: 'Limitations', minLevel: 5 },
+    { id: 'about-big-idea', label: 'The big idea', minLevel: 1, section: 'L1 · Overview' },
+    { id: 'about-self-play', label: 'Self-play loop', minLevel: 2, section: 'L2 · Learning loop' },
+    { id: 'about-observation', label: 'Observation tensor', minLevel: 3, section: 'L3 · Inside the demo' },
+    { id: 'about-architecture', label: 'Architecture', minLevel: 3, section: 'L3 · Inside the demo' },
+    { id: 'about-block', label: 'Residual block', minLevel: 3, section: 'L3 · Inside the demo' },
+    { id: 'about-heads', label: 'Output heads', minLevel: 3, section: 'L3 · Inside the demo' },
+    { id: 'about-ppo', label: 'PPO objective', minLevel: 4, section: 'L4 · Algorithmic detail' },
+    { id: 'about-knobs', label: 'Training knobs', minLevel: 4, section: 'L4 · Algorithmic detail' },
+    { id: 'about-framing', label: 'Problem framing', minLevel: 5, section: 'L5 · Research view' },
+    { id: 'about-limitations', label: 'Limitations', minLevel: 5, section: 'L5 · Research view' },
   ]
 
   $: visibleToc = tocItems.filter((item) => item.minLevel <= $aboutLevel)
+  // Group TOC into [{ section, items: [...] }] preserving order.
+  $: groupedToc = visibleToc.reduce((acc, item) => {
+    const last = acc[acc.length - 1]
+    if (last && last.section === item.section) last.items.push(item)
+    else acc.push({ section: item.section, items: [item] })
+    return acc
+  }, [])
   $: currentLevelMeta = ABOUT_LEVELS.find((l) => l.id === $aboutLevel)
 
+  // Build date is captured at module init — good enough for "is this a stale
+  // tab?" without pulling git hash through Vite config. Version surfacing is
+  // deferred until we wire in import.meta.env.PACKAGE_VERSION.
+  const buildDate = new Date().toISOString().split('T')[0]
+  const repoUrl = 'https://github.com/tachyon-beep/keisei'
+
   // Roving-tabindex + arrow-key navigation for the L1–L5 radio strip.
+  // Activation (Space/Enter) is handled by each radio's underlying <button>
+  // element — synthetic role="radio" on a <button> preserves native button
+  // activation, so we only need to wire arrow / Home / End ourselves. The
+  // explicit Enter/Space branch below is belt-and-braces in case a future
+  // refactor swaps the <button> for a <div>.
   let levelGroup
   function handleLevelKeydown(e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      const target = e.target
+      if (target && target.getAttribute && target.getAttribute('role') === 'radio') {
+        const radios = Array.from(levelGroup?.querySelectorAll('[role="radio"]') ?? [])
+        const idx = radios.indexOf(target)
+        if (idx >= 0) {
+          e.preventDefault()
+          aboutLevel.set(ABOUT_LEVELS[idx].id)
+        }
+      }
+      return
+    }
     const idx = ABOUT_LEVELS.findIndex((l) => l.id === $aboutLevel)
     let next = -1
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (idx + 1) % ABOUT_LEVELS.length
@@ -130,6 +163,12 @@
   onDestroy(() => observer?.disconnect())
 </script>
 
+<!-- The L1–L5 strip below uses role="radio" on native <button> elements inside
+     a role="radiogroup" container. The ignore-comment suppresses Svelte's
+     warning about role="radio" on a non-input; this is conformant because
+     <button> is interactive, preserves native Space/Enter activation, and the
+     keydown handler above adds arrow / Home / End navigation per the WAI-ARIA
+     radiogroup pattern. -->
 <!-- svelte-ignore a11y-no-noninteractive-element-to-interactive-role -->
 <section
   id="about-main"
@@ -158,6 +197,24 @@
           progressively deeper material as you move right.
         </p>
       </header>
+
+      <aside class="project-identity" aria-label="About Keisei">
+        <p>
+          <strong>Keisei</strong> is an interpretable DRL prototype for studying
+          self-play dynamics on a hard action-space — a Rust shogi engine
+          (<code>shogi-core</code> + <code>shogi-gym</code>) wrapped in a Python
+          PPO trainer. Single-host research code, not a competitive engine.
+        </p>
+        <p class="project-identity-meta">
+          <a
+            class="project-identity-link"
+            href={repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >github.com/tachyon-beep/keisei ↗<span class="sr-only"> (opens in new tab)</span></a>
+          · see Limitations (L5) for the full caveat list.
+        </p>
+      </aside>
 
       <div class="level-bar">
         <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
@@ -191,7 +248,7 @@
 
       <!-- ── L1: The big idea ──────────────────────────────────── -->
       <article id="about-big-idea" class="card hero" data-min-level="1">
-        <h2>The big idea</h2>
+        <h3 class="card-heading">The big idea</h3>
         <p>
           Two copies of the same player sit down at a Shogi board. They make moves. One wins, the
           other loses. We tell each of them which moves seemed to lead toward winning, and they get a
@@ -215,7 +272,7 @@
 
       <!-- ── L2: Self-play loop ─────────────────────────────────── -->
       <article id="about-self-play" class="card" data-min-level="2">
-        <h2>The self-play loop</h2>
+        <h3 class="card-heading">The self-play loop</h3>
         <p>
           Every step in training is one of these mini-cycles, repeated across 128 games happening in
           parallel:
@@ -307,7 +364,7 @@
 
       <!-- ── L3: What the network sees ──────────────────────────── -->
       <article id="about-observation" class="card" data-min-level="3">
-        <h2>What the network sees: the observation tensor</h2>
+        <h3 class="card-heading">What the network sees: the observation tensor</h3>
         <p>
           Every position is encoded as a stack of 50 9×9 binary or scalar planes — always from the
           perspective of the player to move, so the network never has to learn "am I black or white".
@@ -331,7 +388,7 @@
 
       <!-- ── L3: Architecture overview ─────────────────────────── -->
       <article id="about-architecture" class="card" data-min-level="3">
-        <h2>Architecture: stem → trunk → three heads</h2>
+        <h3 class="card-heading">Architecture: stem → trunk → three heads</h3>
         <p>
           Keisei's network is a <strong>KataGo-flavoured SE-ResNet</strong>: a stack of residual blocks
           with squeeze-and-excitation gates and a global-pool bias injection. Two trained configurations
@@ -443,7 +500,7 @@
 
       <!-- ── L3: Residual block ─────────────────────────────────── -->
       <article id="about-block" class="card" data-min-level="3">
-        <h2>The GlobalPoolBiasBlock</h2>
+        <h3 class="card-heading">The GlobalPoolBiasBlock</h3>
         <p>
           Each block in the trunk is a KataGo-flavoured residual unit. It diverges from a vanilla
           SE-ResNet block in two specific ways:
@@ -552,7 +609,7 @@
 
       <!-- ── L3: Output heads ──────────────────────────────────── -->
       <article id="about-heads" class="card" data-min-level="3">
-        <h2>The three output heads</h2>
+        <h3 class="card-heading">The three output heads</h3>
         <div class="table-scroll">
           <table class="data-table">
             <thead>
@@ -603,7 +660,7 @@
 
       <!-- ── L4: PPO loss ─────────────────────────────────────── -->
       <article id="about-ppo" class="card" data-min-level="4">
-        <h2>The PPO objective</h2>
+        <h3 class="card-heading">The PPO objective</h3>
         <div class="ppo-grid">
           <div class="loss-formula">
             <span class="loss-label">Objective</span>
@@ -637,7 +694,7 @@
 
       <!-- ── L4: Training knobs ───────────────────────────────── -->
       <article id="about-knobs" class="card" data-min-level="4">
-        <h2>Training knobs (Heavy config)</h2>
+        <h3 class="card-heading">Training knobs (Heavy config)</h3>
         <p class="footnote">
           Values shown reflect the production Heavy config (<code>keisei-katago.toml</code>). The
           in-code <code>KataGoPPOParams</code> dataclass defaults differ for some fields
@@ -672,7 +729,7 @@
 
       <!-- ── L5: Problem framing & evaluation ─────────────────── -->
       <article id="about-framing" class="card research" data-min-level="5">
-        <h2>Problem framing & evaluation</h2>
+        <h3 class="card-heading">Problem framing & evaluation</h3>
         <p>
           Shogi is an episodic, deterministic, perfect-information, zero-sum, two-player game. The raw
           game has non-Markovian repetition rules; the agent's MDP is recovered by including the
@@ -680,7 +737,7 @@
           depending on hidden state.
         </p>
 
-        <h3 class="card-h3">Action-space structure</h3>
+        <h4 class="card-h4">Action-space structure</h4>
         <p>
           11,259 spatial actions decompose as <strong>81 squares × (132 board move-types + 7 drops)</strong>.
           Legal-mask sparsity is extreme: a typical mid-game position has on the order of 80 legal moves
@@ -688,7 +745,7 @@
           stylistic choices; they're a precondition for stable learning at this density.
         </p>
 
-        <h3 class="card-h3">Reward & credit assignment</h3>
+        <h4 class="card-h4">Reward & credit assignment</h4>
         <p>
           Reward is terminal only: <code>+1</code> on win, <code>0</code> on draw, <code>-1</code> on
           loss. With <code>γ = 0.99</code> and ~100-ply games, the effective horizon is roughly the
@@ -696,14 +753,14 @@
           signal but does not change the fundamental sparse-reward structure.
         </p>
 
-        <h3 class="card-h3">What we measure</h3>
+        <h4 class="card-h4">What we measure</h4>
         <ul class="diff-list">
           <li><strong>Self-play Elo</strong> via the league pool (see the League tab).</li>
           <li><strong>Head-to-head W/D/L</strong> against archived snapshots of the learner's former selves.</li>
           <li><strong>Value-head log-loss</strong> against eventual game outcomes — measures how well the W/D/L head is calibrated.</li>
         </ul>
 
-        <h3 class="card-h3">What we do not measure</h3>
+        <h4 class="card-h4">What we do not measure</h4>
         <ul class="diff-list">
           <li>No comparison against external engines (YaneuraOu, Apery, etc.).</li>
           <li>No human-game play strength.</li>
@@ -726,7 +783,7 @@
 
       <!-- ── L5: Limitations & open questions ─────────────────── -->
       <article id="about-limitations" class="card research" data-min-level="5">
-        <h2>Limitations & open questions</h2>
+        <h3 class="card-heading">Limitations & open questions</h3>
         <ul class="diff-list">
           <li>
             <strong>No search at training or inference.</strong> AlphaZero-style improvement comes from
@@ -777,15 +834,25 @@
             rel="noopener noreferrer"
           >Open an issue ↗<span class="sr-only"> (opens in new tab)</span></a>
         </p>
+        <p class="build-meta">
+          dev build · loaded {buildDate}
+        </p>
       </footer>
     </div>
 
     <aside class="about-toc" aria-label="On this page">
       <p class="toc-heading">On this page</p>
-      <ol class="toc-list">
-        {#each visibleToc as item}
-          <li class:active={activeSection === item.id}>
-            <a href={`#${item.id}`}>{item.label}</a>
+      <ol class="toc-groups">
+        {#each groupedToc as group}
+          <li class="toc-group">
+            <p class="toc-group-label">{group.section}</p>
+            <ol class="toc-list">
+              {#each group.items as item}
+                <li class:active={activeSection === item.id}>
+                  <a href={`#${item.id}`}>{item.label}</a>
+                </li>
+              {/each}
+            </ol>
           </li>
         {/each}
       </ol>
@@ -866,6 +933,59 @@
   }
   .lede strong { color: var(--accent-teal); }
 
+  /* ── Project identity card (sits between header and level bar) ── */
+  .project-identity {
+    max-width: 760px;
+    margin: 0 auto 18px;
+    padding: 12px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+  }
+  .project-identity p {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+  }
+  .project-identity p + p { margin-top: 6px; }
+  .project-identity strong { color: var(--text-primary); }
+  .project-identity code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent-ink) 10%, var(--bg-secondary));
+    color: var(--text-primary);
+  }
+  .project-identity-meta {
+    color: var(--text-muted) !important;
+    font-size: 12.5px !important;
+  }
+  .project-identity-link {
+    color: var(--accent-teal);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .project-identity-link:hover { text-decoration-thickness: 2px; }
+  .project-identity-link:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
   /* ── Sticky level bar with elevation ───────────────── */
   .level-bar {
     position: sticky;
@@ -940,7 +1060,7 @@
   }
 
   .level-blurb {
-    font-size: 12.5px;
+    font-size: 13px;
     color: var(--text-muted);
     margin-top: 2px;
   }
@@ -991,13 +1111,13 @@
     border-radius: 8px;
     position: relative;
   }
-  .card h2 {
+  .card .card-heading {
     font-size: 19px;
     font-weight: 700;
     margin-bottom: 12px;
     color: var(--text-primary);
   }
-  .card .card-h3 {
+  .card .card-h4 {
     font-size: 15.5px;
     font-weight: 700;
     margin: 16px 0 6px;
@@ -1037,7 +1157,7 @@
     border-left: 4px solid var(--accent-teal);
     padding-left: 26px;
   }
-  .card.hero h2 {
+  .card.hero .card-heading {
     font-size: 22px;
     color: var(--accent-teal);
   }
@@ -1051,7 +1171,7 @@
     border-left: 4px solid var(--accent-gold);
     padding-left: 26px;
   }
-  .card.research h2 { color: var(--accent-gold); }
+  .card.research .card-heading { color: var(--accent-gold); }
 
   /* ── Callout, lists ─────────────────────────────────── */
   .callout {
@@ -1062,7 +1182,7 @@
     border-radius: 0 4px 4px 0;
     font-size: 14px;
     line-height: 1.55;
-    max-width: 80ch;
+    max-width: 70ch;
   }
   .callout strong { color: var(--accent-gold); margin-right: 4px; }
 
@@ -1286,6 +1406,14 @@
     text-underline-offset: 2px;
     font-style: normal;
   }
+  .about-footer .build-meta {
+    margin-top: 6px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    opacity: 0.7;
+  }
   .about-footer .issue-link:hover { text-decoration-thickness: 2px; }
   .about-footer .issue-link:focus-visible {
     outline: 2px solid var(--focus-ring);
@@ -1311,6 +1439,25 @@
     color: var(--text-muted);
     margin-bottom: 10px;
   }
+  .toc-groups {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .toc-group {
+    margin: 0 0 12px;
+    padding: 0;
+  }
+  .toc-group:last-child { margin-bottom: 0; }
+  .toc-group-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 4px 10px;
+    opacity: 0.7;
+  }
   .toc-list {
     list-style: none;
     margin: 0;
@@ -1322,7 +1469,7 @@
   }
   .toc-list a {
     display: block;
-    padding: 5px 10px;
+    padding: 5px 10px 5px 18px;
     font-size: 13px;
     color: var(--text-secondary);
     text-decoration: none;

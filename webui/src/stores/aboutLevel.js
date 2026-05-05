@@ -17,10 +17,10 @@ export const ABOUT_LEVELS = [
 const KEY = 'aboutLevel'
 
 function loadInitial() {
-  if (typeof localStorage === 'undefined') return 2
+  if (typeof localStorage === 'undefined') return 1
   const raw = localStorage.getItem(KEY)
   const n = Number.parseInt(raw, 10)
-  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 2
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1
 }
 
 export const aboutLevel = writable(loadInitial())

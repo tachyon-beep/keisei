@@ -46,6 +46,10 @@
 <main id="league-main" class="league-view" aria-labelledby="tab-league" tabindex="-1" on:keydown={handleMainKeydown}>
   {#if stats}
     <div class="stats-banner" role="region" aria-label="League summary">
+      <div class="stat-card highlight">
+        <span class="stat-value">{stats.topEntry?.display_name || stats.topEntry?.architecture || '—'}</span>
+        <span class="stat-label">Top Rated · {Math.round(stats.topEntry ? displayElo(stats.topEntry).value : 0)}</span>
+      </div>
       <div class="stat-card">
         <span class="stat-value">{stats.poolSize} / {POOL_CAPACITY}</span>
         <span class="stat-label">Pool Size</span>
@@ -66,18 +70,17 @@
           <span class="stat-label">Games</span>
         </div>
       </div>
-      <div class="stat-card highlight">
-        <span class="stat-value">{stats.topEntry?.display_name || stats.topEntry?.architecture || '—'}</span>
-        <span class="stat-label">Top Rated · {Math.round(stats.topEntry ? displayElo(stats.topEntry).value : 0)}</span>
-      </div>
       <div class="stat-card">
         <span class="stat-value">{stats.eloMin} – {stats.eloMax}</span>
         <span class="stat-label">Elo Range · {stats.eloSpread} spread</span>
       </div>
       {#if tStats}
-        <div class="stat-card">
-          <span class="stat-value">{Math.round(tStats.games_per_min)}</span>
-          <span class="stat-label">Games/min · {tStats.active_slots} slots</span>
+        <div class="stat-card live">
+          <span class="stat-value">
+            <span class="live-dot" class:active={tStats.active_slots > 0} aria-hidden="true"></span>
+            {tStats.active_slots} <span class="live-unit">active</span>
+          </span>
+          <span class="stat-label">Live · {Math.round(tStats.games_per_min)} games/min</span>
         </div>
       {/if}
     </div>
@@ -90,7 +93,9 @@
       </div>
       {#if $focusedEntryId != null}
         <div class="entry-detail-wrapper" role="region" aria-label="Entry detail">
-          <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
+          <div class="detail-close-anchor">
+            <button class="detail-close-btn" on:click={closeDetail} aria-label="Close entry detail">✕</button>
+          </div>
           <EntryDetail entryId={$focusedEntryId} bind:headingEl={entryDetailHeading} />
         </div>
       {/if}
@@ -98,12 +103,10 @@
     <div class="right-col">
       <MatchupMatrix {learnerName} />
     </div>
-    <div class="bottom-left">
+    <div class="bottom-right-split">
       <div class="event-log-wrapper">
         <LeagueEventLog />
       </div>
-    </div>
-    <div class="bottom-right">
       <div class="recent-matches-wrapper">
         <RecentMatches />
       </div>
@@ -142,8 +145,44 @@
   }
 
   .stat-card.highlight {
+    flex: 1.5;
     border-color: var(--accent-gold);
     background: rgba(200, 150, 46, 0.06);
+  }
+
+  .stat-card.live {
+    border-color: var(--accent-teal);
+  }
+
+  .live-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  .live-dot.active {
+    background: var(--accent-teal);
+    box-shadow: 0 0 6px var(--accent-teal);
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot.active { animation: none; }
+  }
+
+  .live-unit {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
   }
 
   .stat-value {
@@ -187,10 +226,12 @@
     background: var(--border);
   }
 
-  /* --- Main grid: 2 columns, 2 rows --- */
+  /* --- Main grid: 2 columns, 2 rows. The 21×21 head-to-head matrix needs
+     more horizontal room than the 11-column leaderboard, so the right column
+     gets the larger share. --- */
   .league-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 2fr 3fr;
     grid-template-rows: 3fr 1fr;
     gap: 12px;
     flex: 1;
@@ -198,10 +239,11 @@
     overflow: hidden;
   }
 
-  /* Left column: table + optional detail */
+  /* Left column: table + optional detail. Spans both rows so the leaderboard
+     extends down to where the event log used to live. */
   .left-col {
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 1 / span 2;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -232,11 +274,22 @@
     position: relative;
   }
 
+  /* Sticky anchor row: zero-height container that pins to the top of the
+     scrolling wrapper, allowing the close button to float in the top-right
+     corner while EntryDetail content scrolls underneath. */
+  .detail-close-anchor {
+    position: sticky;
+    top: 0;
+    height: 0;
+    z-index: 2;
+    display: flex;
+    justify-content: flex-end;
+    pointer-events: none;
+  }
+
   .detail-close-btn {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    z-index: 1;
+    pointer-events: auto;
+    margin: 4px 4px 0 0;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -272,9 +325,19 @@
     flex-direction: column;
   }
 
-  /* Bottom cells: align with columns above */
-  .bottom-left,
-  .bottom-right {
+  /* Bottom-right cell: 50/50 split between event log and recent matches. */
+  .bottom-right-split {
+    grid-column: 2;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .recent-matches-wrapper,
+  .event-log-wrapper {
     min-height: 0;
     overflow: hidden;
     display: flex;
@@ -282,32 +345,31 @@
   }
 
   .recent-matches-wrapper {
-    height: 100%;
-    min-height: 0;
-    overflow: hidden;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 6px;
   }
 
-  .event-log-wrapper {
-    height: 100%;
-    min-height: 0;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
   @media (max-width: 1200px) {
     .league-grid {
       grid-template-columns: 1fr;
-      grid-template-rows: auto auto auto auto;
+      grid-template-rows: auto auto auto;
       overflow-y: auto;
     }
 
-    .bottom-left,
-    .bottom-right {
-      max-height: none;
+    .left-col {
+      grid-column: 1;
+      grid-row: 1;
+    }
+    .right-col {
+      grid-column: 1;
+      grid-row: 2;
+    }
+    .bottom-right-split {
+      grid-column: 1;
+      grid-row: 3;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto;
     }
   }
 </style>

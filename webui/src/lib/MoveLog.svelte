@@ -1,5 +1,5 @@
 <script>
-  import { afterUpdate, createEventDispatcher } from 'svelte'
+  import { afterUpdate, beforeUpdate, createEventDispatcher } from 'svelte'
   import { parseMoves, buildMoveRows } from './moveRows.js'
   import { notationStyle } from '../stores/notation.js'
   import NotationToggle from './NotationToggle.svelte'
@@ -21,6 +21,11 @@
   const dispatch = createEventDispatcher()
 
   let scrollContainer
+  // Snapshot whether the user was scrolled to the top before the next render,
+  // so we can avoid yanking their scroll position when new moves arrive while
+  // they're reviewing older moves. Captured in beforeUpdate, consumed in
+  // afterUpdate.
+  let wasAtTop = true
 
   $: moves = parseMoves(moveHistoryJson)
   $: rows = buildMoveRows(moves, $notationStyle)
@@ -45,8 +50,23 @@
     }
   }
 
+  beforeUpdate(() => {
+    if (scrollContainer) {
+      wasAtTop = scrollContainer.scrollTop <= 8
+    }
+  })
+
   afterUpdate(() => {
-    if (scrollContainer && !scrubbing) {
+    if (!scrollContainer) return
+    if (interactive && selectedIdx >= 0) {
+      // Scrubbing or explicit selection — keep the chosen cell visible.
+      const selectedCell = scrollContainer.querySelector('[aria-pressed="true"]')
+      if (selectedCell) {
+        selectedCell.scrollIntoView({ block: 'nearest', behavior: 'auto' })
+      }
+    } else if (wasAtTop) {
+      // Live-tail mode: only snap to the latest move when the user was already
+      // at the top. If they've scrolled to review older moves, leave them be.
       scrollContainer.scrollTop = 0
     }
   })

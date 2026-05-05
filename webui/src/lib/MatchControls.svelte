@@ -124,7 +124,13 @@
       title={disabledReason || 'Start a new showcase match'}
       aria-describedby={disabledReason ? 'start-disabled-reason' : undefined}
     >Start Match</button>
-    {#if disabledReason}
+    {#if disabledReason && $sidecarAlive}
+      <!--
+        Offline message is already announced by the role="alert" banner in
+        ShowcaseView; restating it here would be the third copy. For other
+        disabled reasons (queue full, same player picked, etc.) we still want
+        an inline status message visible next to the button.
+      -->
       <div id="start-disabled-reason" class="disabled-reason" role="status">{disabledReason}</div>
     {/if}
   </div>

@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, afterUpdate } from 'svelte'
+  import { onDestroy, afterUpdate, onMount } from 'svelte'
   import { getRoleInfo } from './roleIcons.js'
 
   /** @type {'learner' | 'opponent'} */
@@ -12,8 +12,10 @@
   export let elo = null
   /** @type {string} */
   export let detail = ''
-  /** @type {Array<[string, string]>} */
+  /** @type {Array<[string, string]>} Hard metrics / structured stats */
   export let stats = []
+  /** @type {Array<[string, string]>} Whimsical flavour facts shown below stats */
+  export let facts = []
   /** @type {object | null} Style profile from StyleProfiler */
   export let styleProfile = null
 
@@ -38,10 +40,19 @@
   let prevCommentaryLen = 0
   let commentaryPaused = false
 
-  // Respect prefers-reduced-motion: disable auto-rotation entirely
-  const prefersReducedMotion = typeof window !== 'undefined'
-    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    : false
+  // Live prefers-reduced-motion tracking — flips on/off if the user toggles
+  // the OS-level preference after the page loads.
+  let prefersReducedMotion = false
+  let mediaQuery = null
+
+  function handleMotionChange(e) {
+    prefersReducedMotion = e.matches
+    if (prefersReducedMotion) {
+      stopRotation()
+    } else {
+      startRotation()
+    }
+  }
 
   function startRotation() {
     if (rotationInterval || prefersReducedMotion) return
@@ -59,6 +70,14 @@
     rotationInterval = null
   }
 
+  onMount(() => {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+      prefersReducedMotion = mediaQuery.matches
+      mediaQuery.addEventListener('change', handleMotionChange)
+    }
+  })
+
   afterUpdate(() => {
     if (commentary.length !== prevCommentaryLen) {
       prevCommentaryLen = commentary.length
@@ -66,7 +85,10 @@
       startRotation()
     }
   })
-  onDestroy(() => stopRotation())
+  onDestroy(() => {
+    stopRotation()
+    if (mediaQuery) mediaQuery.removeEventListener('change', handleMotionChange)
+  })
 </script>
 
 <div
@@ -123,6 +145,17 @@
   {#if stats.length > 0}
     <div class="facts">
       {#each stats as [label, value]}
+        <div class="fact-row">
+          <span class="fact-label">{label}</span>
+          <span class="fact-value">{value}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if facts.length > 0}
+    <div class="facts facts-flavour" aria-label="Flavour facts">
+      <div class="facts-heading">Flavour</div>
+      {#each facts as [label, value]}
         <div class="fact-row">
           <span class="fact-label">{label}</span>
           <span class="fact-value">{value}</span>
@@ -222,7 +255,7 @@
   .commentary-row {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
     margin-top: 6px;
   }
 
@@ -241,9 +274,9 @@
     border-radius: 3px;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
-    min-width: 24px;
-    min-height: 24px;
+    font-size: 16px;
+    min-width: 32px;
+    min-height: 32px;
     padding: 0;
     display: flex;
     align-items: center;
@@ -285,6 +318,20 @@
     gap: 4px;
     flex: 1;
     justify-content: space-evenly;
+  }
+
+  .facts-flavour {
+    flex: 0 0 auto;
+    border-top-style: dashed;
+  }
+
+  .facts-heading {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 2px;
   }
 
   .fact-row {

@@ -144,20 +144,20 @@
   <div class="matrix-legend" aria-label="Color legend">
     <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.35)"></span>
     <span class="legend-label">0%</span>
-    <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.08)"></span>
+    <span class="legend-swatch" style="background: rgba(224, 80, 80, 0.22)"></span>
     <span class="legend-swatch" style="background: transparent; border: 1px solid var(--border-subtle)"></span>
     <span class="legend-label">50%</span>
-    <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.08)"></span>
+    <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.22)"></span>
     <span class="legend-swatch" style="background: rgba(77, 184, 168, 0.43)"></span>
     <span class="legend-label">100%</span>
   </div>
     <div class="matrix-scroll">
-      <table class="matrix" role="grid" aria-label="Head-to-head win rate matrix">
+      <table class="matrix" aria-label="Head-to-head win rate matrix">
         <thead>
           <tr>
-            <th class="corner"></th>
+            <th class="corner" scope="col"></th>
             {#each participants as col}
-              <th class="col-header" class:hl={focused != null && col.id === focused} class:placeholder={col.isPlaceholder} title={col.label}>
+              <th class="col-header" class:hl={focused != null && col.id === focused} class:placeholder={col.isPlaceholder} title={col.label} scope="col">
                 <span class="rotated">{col.shortLabel}</span>
               </th>
             {/each}
@@ -166,7 +166,7 @@
         <tbody>
           {#each participants as row}
             <tr class:hl-row={focused != null && row.id === focused}>
-              <th class="row-header" class:trainer-row={row.isTrainer} class:hl={focused != null && row.id === focused} class:placeholder={row.isPlaceholder} title={row.label}>{row.shortLabel}</th>
+              <th class="row-header" class:trainer-row={row.isTrainer} class:hl={focused != null && row.id === focused} class:placeholder={row.isPlaceholder} title={row.label} scope="row">{row.shortLabel}</th>
               {#each participants as col}
                 {#if row.id === col.id}
                   <td class="self-cell" class:hl={focused != null && (row.id === focused || col.id === focused)}>—</td>
@@ -178,7 +178,6 @@
                     class:hl={focused != null && (row.id === focused || col.id === focused)}
                     style="background: {cellColor(cellData(row.id, col.id).winRate)}"
                     title="{row.label} vs {col.label}: {cellData(row.id, col.id).w}W {cellData(row.id, col.id).l}L {cellData(row.id, col.id).d}D ({cellData(row.id, col.id).total} games)"
-                    tabindex="0"
                     aria-label="{row.label} vs {col.label}: {formatRate(cellData(row.id, col.id).winRate)} win rate, {cellData(row.id, col.id).w} wins, {cellData(row.id, col.id).l} losses, {cellData(row.id, col.id).d} draws"
                   >
                     {formatRate(cellData(row.id, col.id).winRate)}

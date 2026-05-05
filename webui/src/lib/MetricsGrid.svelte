@@ -55,7 +55,10 @@
   </h2>
 
   {#if $metrics.length === 0}
-    <p class="empty-state">Metrics will appear once training begins.</p>
+    <div class="empty-state">
+      <p>Metrics will appear once training begins.</p>
+      <p class="empty-state-hint">Connect a training session to see live charts.</p>
+    </div>
   {:else}
   <div class="layout">
     <div class="mini-column">
@@ -139,10 +142,18 @@
   }
 
   .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
     color: var(--text-muted);
+    gap: 8px;
+  }
+
+  .empty-state-hint {
     font-size: 13px;
-    text-align: center;
-    padding: 32px 16px;
+    color: var(--text-muted);
   }
 
   .expand-hint {

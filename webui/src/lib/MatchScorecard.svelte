@@ -282,6 +282,9 @@
     background: var(--accent-teal);
     transition: width 0.3s ease;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .ply-progress-fill { transition: none; }
+  }
 
   .h2h {
     font-family: monospace;
