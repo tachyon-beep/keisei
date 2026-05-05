@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from keisei.db import init_db, write_training_state
 from keisei.server.app import create_app, TEST_ALLOWED_HOSTS
-from keisei.showcase.db_ops import (
+from keisei.db.showcase import (
     queue_match,
     claim_next_match,
     create_showcase_game,

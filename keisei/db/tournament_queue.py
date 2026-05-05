@@ -1,4 +1,4 @@
-"""Database operations for the tournament pairing queue and worker heartbeat.
+"""Tournament pairing queue + worker heartbeat tables — concurrent-worker scheduling.
 
 All operations use atomic SQL patterns (conditional UPDATE, BEGIN IMMEDIATE)
 to guarantee correctness under concurrent workers sharing the same SQLite
@@ -10,7 +10,37 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from keisei.db import _connect
+from keisei.db._connection import _connect
+
+DDL = """
+CREATE TABLE IF NOT EXISTS tournament_pairing_queue (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id       INTEGER NOT NULL,
+    entry_a_id     INTEGER NOT NULL REFERENCES league_entries(id),
+    entry_b_id     INTEGER NOT NULL REFERENCES league_entries(id),
+    games_target   INTEGER NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    worker_id      TEXT,
+    claimed_at     TEXT,
+    completed_at   TEXT,
+    enqueued_epoch INTEGER NOT NULL,
+    priority       REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_pairing_queue_pending
+    ON tournament_pairing_queue (status, priority DESC, id);
+CREATE INDEX IF NOT EXISTS idx_pairing_queue_round
+    ON tournament_pairing_queue (round_id);
+CREATE INDEX IF NOT EXISTS idx_pairing_queue_staleness
+    ON tournament_pairing_queue (status, enqueued_epoch);
+
+CREATE TABLE IF NOT EXISTS tournament_worker_heartbeat (
+    worker_id      TEXT PRIMARY KEY,
+    pid            INTEGER NOT NULL,
+    device         TEXT NOT NULL,
+    last_seen      TEXT NOT NULL,
+    pairings_done  INTEGER NOT NULL DEFAULT 0
+);
+"""
 
 
 @dataclass(frozen=True)

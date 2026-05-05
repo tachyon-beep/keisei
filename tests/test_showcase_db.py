@@ -71,7 +71,7 @@ class TestShowcaseSchema:
             conn.close()
 
 
-from keisei.showcase.db_ops import (
+from keisei.db.showcase import (
     queue_match,
     claim_next_match,
     read_queue,

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 import torch
 
 from keisei.db import _connect
-from keisei.showcase.db_ops import (
+from keisei.db.showcase import (
     _now_iso,
     claim_next_match,
     cleanup_orphaned_games,

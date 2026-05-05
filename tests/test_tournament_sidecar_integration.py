@@ -20,7 +20,7 @@ from keisei.training.concurrent_matches import MatchResult, RoundStats
 from keisei.training.match_scheduler import MatchScheduler
 from keisei.training.opponent_store import OpponentStore
 from keisei.training.tournament_dispatcher import TournamentDispatcher
-from keisei.training.tournament_queue import get_round_status
+from keisei.db.tournament_queue import get_round_status
 from keisei.training.tournament_runner import TournamentWorker
 
 

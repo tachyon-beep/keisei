@@ -1,5 +1,5 @@
-# keisei/showcase/db_ops.py
-"""Database operations for the showcase sidecar and server."""
+"""Showcase queue/games/moves/heartbeat tables — sidecar for the dashboard showcase tab."""
+
 from __future__ import annotations
 
 import random
@@ -8,7 +8,66 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from keisei.db import _connect
+from keisei.db._connection import _connect
+
+DDL = """
+CREATE TABLE IF NOT EXISTS showcase_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id_1  TEXT NOT NULL,
+    entry_id_2  TEXT NOT NULL,
+    speed       TEXT NOT NULL DEFAULT 'normal',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    requested_at TEXT NOT NULL,
+    started_at  TEXT,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_showcase_queue_status ON showcase_queue(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_showcase_queue_one_running
+    ON showcase_queue(status) WHERE status = 'running';
+
+CREATE TABLE IF NOT EXISTS showcase_games (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_id        INTEGER NOT NULL REFERENCES showcase_queue(id),
+    entry_id_black  TEXT NOT NULL,
+    entry_id_white  TEXT NOT NULL,
+    elo_black       REAL,
+    elo_white       REAL,
+    name_black      TEXT,
+    name_white      TEXT,
+    status          TEXT NOT NULL DEFAULT 'in_progress',
+    abandon_reason  TEXT,
+    started_at      TEXT NOT NULL,
+    completed_at    TEXT,
+    total_ply       INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_showcase_games_status ON showcase_games(status);
+
+CREATE TABLE IF NOT EXISTS showcase_moves (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id         INTEGER NOT NULL REFERENCES showcase_games(id),
+    ply             INTEGER NOT NULL,
+    action_index    INTEGER NOT NULL,
+    usi_notation    TEXT NOT NULL,
+    board_json      TEXT NOT NULL,
+    hands_json      TEXT NOT NULL,
+    current_player  TEXT NOT NULL,
+    in_check        INTEGER NOT NULL DEFAULT 0,
+    value_estimate  REAL,
+    top_candidates  TEXT,
+    move_heatmap_json TEXT,
+    move_usi        TEXT,
+    move_time_ms    INTEGER,
+    created_at      TEXT NOT NULL,
+    UNIQUE(game_id, ply)
+);
+CREATE INDEX IF NOT EXISTS idx_showcase_moves_game_ply ON showcase_moves(game_id, ply);
+
+CREATE TABLE IF NOT EXISTS showcase_heartbeat (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    last_heartbeat  TEXT NOT NULL,
+    runner_pid      INTEGER
+);
+"""
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 0.1
