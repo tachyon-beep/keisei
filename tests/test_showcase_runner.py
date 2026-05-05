@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from keisei.db import init_db
-from keisei.showcase.db_ops import (
+from keisei.db.showcase import (
     queue_match,
     claim_next_match,
     read_active_showcase_game,

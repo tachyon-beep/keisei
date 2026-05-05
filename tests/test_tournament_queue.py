@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from keisei.db import SCHEMA_VERSION, _connect, init_db
-from keisei.training.tournament_queue import (
+from keisei.db.tournament_queue import (
     ClaimedPairing,
     claim_dynamic_update,
     claim_next_pairing,

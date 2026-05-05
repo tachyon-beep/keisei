@@ -14,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from keisei.db import _connect
-from keisei.training.tournament_queue import enqueue_pairings, get_round_status
+from keisei.db.tournament_queue import enqueue_pairings, get_round_status
 
 if TYPE_CHECKING:
     from keisei.training.match_scheduler import MatchScheduler

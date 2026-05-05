@@ -32,6 +32,7 @@ from keisei.db import (
 )
 from keisei.training.algorithm_registry import validate_algorithm_params
 from keisei.training.checkpoint import load_checkpoint, save_checkpoint
+from keisei.training.concurrent_matches import ConcurrentMatchPool
 from keisei.training.distributed import (
     DistributedContext,
     cleanup_distributed,
@@ -39,22 +40,21 @@ from keisei.training.distributed import (
     seed_all_ranks,
     setup_distributed,
 )
+
+# scalar_value is used in split_merge_step to keep value computation
+# centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
+from keisei.training.historical_gauntlet import HistoricalGauntlet
 from keisei.training.katago_ppo import (
     KataGoPPOAlgorithm,
     KataGoPPOParams,
     KataGoRolloutBuffer,
 )
-
-# scalar_value is used in split_merge_step to keep value computation
-# centralized — the single source of truth is KataGoPPOAlgorithm.scalar_value.
-from keisei.training.historical_gauntlet import HistoricalGauntlet
+from keisei.training.match_scheduler import MatchScheduler, build_match_class_weights
+from keisei.training.model_registry import build_model
 from keisei.training.opponent_store import OpponentEntry, OpponentStore, Role
+from keisei.training.priority_scorer import PriorityScorer
 from keisei.training.role_elo import RoleEloTracker
 from keisei.training.tiered_pool import TieredPool
-from keisei.training.concurrent_matches import ConcurrentMatchPool
-from keisei.training.match_scheduler import MatchScheduler, build_match_class_weights
-from keisei.training.priority_scorer import PriorityScorer
-from keisei.training.model_registry import build_model
 from keisei.training.tournament import LeagueTournament
 from keisei.training.tournament_dispatcher import TournamentDispatcher
 
@@ -1759,8 +1759,9 @@ class KataGoTrainingLoop:
             # Sidecar dispatcher: enqueue a tournament round if the queue has room.
             if self._dispatcher is not None:
                 try:
-                    from keisei.training.tournament_queue import (
-                        get_active_queue_depth, get_worker_health,
+                    from keisei.db.tournament_queue import (
+                        get_active_queue_depth,
+                        get_worker_health,
                     )
                     cap = self.config.league.dispatcher_max_queue_depth
                     depth = get_active_queue_depth(self.db_path)

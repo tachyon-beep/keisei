@@ -28,6 +28,13 @@ from typing import Any
 import torch
 
 from keisei.config import ConcurrencyConfig, load_config
+from keisei.db.tournament_queue import (
+    ClaimedPairing,
+    claim_next_pairings_batch,
+    mark_pairing_done,
+    reset_stale_playing,
+    write_worker_heartbeat,
+)
 from keisei.training.concurrent_matches import (
     ConcurrentMatchPool,
     MatchResult,
@@ -40,13 +47,6 @@ from keisei.training.opponent_store import (
     compute_elo_update,
 )
 from keisei.training.tournament import majority_wins_result
-from keisei.training.tournament_queue import (
-    ClaimedPairing,
-    claim_next_pairings_batch,
-    mark_pairing_done,
-    reset_stale_playing,
-    write_worker_heartbeat,
-)
 
 logger = logging.getLogger(__name__)
 
